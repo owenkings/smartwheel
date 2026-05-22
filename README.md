@@ -341,6 +341,42 @@ sudo usermod -a -G dialout $USER
 
 重新登录后生效。建议在 AGX Orin 上用 udev 规则把 H30、超声波、ZLAC8030/KeepLINK 固定成稳定设备名。
 
+### 一键启动真实传感器
+
+当前只接 XT-M60、H30 IMU、2 个超声波和 2 个摄像头时，使用：
+
+```bash
+cd ~/smartwheel
+chmod +x scripts/run_real_sensors.sh scripts/check_topics.sh
+scripts/run_real_sensors.sh
+```
+
+该脚本会启动真实传感器、`pointcloud_to_laserscan_node` 和 Web UI，不启动 Nav2、底盘驱动或自动驾驶速度链路。默认启动 H30 IMU；如果临时没有接 IMU：
+
+```bash
+scripts/run_real_sensors.sh --no-imu
+```
+
+如果已经构建过，跳过 build：
+
+```bash
+scripts/run_real_sensors.sh --no-build
+```
+
+另开终端验证：
+
+```bash
+cd ~/smartwheel
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+bash scripts/check_topics.sh sensors
+ros2 topic hz /xtm60/points
+ros2 topic hz /scan
+ros2 topic hz /imu/data
+ros2 topic echo /ultrasonic/range_0 --once
+ros2 topic hz /camera/front/image_raw
+```
+
 ## 建图
 
 ```bash

@@ -16,6 +16,16 @@ ros2 launch wheelchair_bringup record_bag.launch.py output:=bags/test_001
 ros2 launch wheelchair_bringup replay_bag.launch.py bag:=bags/test_001
 ```
 
+当前只接 XT-M60、H30 IMU、2 个超声波和 2 个摄像头时，可直接使用一键脚本：
+
+```bash
+cd ~/smartwheel
+chmod +x scripts/run_real_sensors.sh scripts/check_topics.sh
+scripts/run_real_sensors.sh
+```
+
+脚本默认启动 IMU，但不启动 Nav2、底盘驱动和速度控制链路；只用于真实传感器接入验证。临时不接 IMU 时使用 `scripts/run_real_sensors.sh --no-imu`。
+
 关键配置：
 
 - `config/pointcloud_to_scan.yaml`：XT-M60 点云投影参数

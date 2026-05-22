@@ -10,6 +10,10 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     mode = LaunchConfiguration("mode")
     publish_description = LaunchConfiguration("publish_description")
+    enable_xtm60 = LaunchConfiguration("enable_xtm60")
+    enable_imu = LaunchConfiguration("enable_imu")
+    enable_ultrasonic = LaunchConfiguration("enable_ultrasonic")
+    enable_camera = LaunchConfiguration("enable_camera")
 
     bringup_share = FindPackageShare("wheelchair_bringup")
     description_share = FindPackageShare("wheelchair_description")
@@ -39,6 +43,10 @@ def generate_launch_description():
                 default_value="true",
                 description="Start robot_state_publisher for the wheelchair URDF.",
             ),
+            DeclareLaunchArgument("enable_xtm60", default_value="true"),
+            DeclareLaunchArgument("enable_imu", default_value="true"),
+            DeclareLaunchArgument("enable_ultrasonic", default_value="true"),
+            DeclareLaunchArgument("enable_camera", default_value="true"),
             Node(
                 package="robot_state_publisher",
                 executable="robot_state_publisher",
@@ -56,6 +64,7 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "config", "xtm60_sdk.yaml"]),
                     {"mode": mode},
                 ],
+                condition=IfCondition(enable_xtm60),
             ),
             Node(
                 package="wheelchair_sensors",
@@ -66,6 +75,7 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "config", "h30_imu.yaml"]),
                     {"mode": mode},
                 ],
+                condition=IfCondition(enable_imu),
             ),
             Node(
                 package="wheelchair_sensors",
@@ -76,6 +86,7 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "config", "ultrasonic.yaml"]),
                     {"mode": mode},
                 ],
+                condition=IfCondition(enable_ultrasonic),
             ),
             Node(
                 package="wheelchair_sensors",
@@ -86,6 +97,7 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "config", "camera.yaml"]),
                     {"mode": mode},
                 ],
+                condition=IfCondition(enable_camera),
             ),
         ]
     )
