@@ -18,7 +18,7 @@
 ```text
 XT-M60 /xtm60/points --> pointcloud_to_laserscan --> /scan --> slam_toolbox / Nav2 costmap
 IMU /imu/data -------------------------------> robot_localization 预留
-Ultrasonic /ultrasonic/*/range --------------> local costmap + safety_supervisor
+Ultrasonic /ultrasonic/range_* -------------> local costmap + safety_supervisor
 Nav2 /cmd_vel_nav ---------------------------> safety_supervisor --> /cmd_vel_safe
 /cmd_vel_safe -------------------------------> zlac8030_driver --> /wheel/odom + odom->base_link
 Web UI / voice intent ------------------------> goal_manager --> /goal_pose
@@ -58,7 +58,7 @@ map
 | --- | --- | --- |
 | 输入 | `/xtm60/points` | `sensor_msgs/PointCloud2` |
 | 输入 | `/imu/data` | `sensor_msgs/Imu` |
-| 输入 | `/ultrasonic/0/range` 到 `/ultrasonic/5/range` | `sensor_msgs/Range` |
+| 输入 | `/ultrasonic/range_0` 到 `/ultrasonic/range_5` | `sensor_msgs/Range` |
 | 输入 | `/camera/front/image_raw` | `sensor_msgs/Image` |
 | 输入 | `/camera/left/image_raw` | `sensor_msgs/Image` |
 | 输入 | `/wheel/odom` | `nav_msgs/Odometry` |
@@ -177,7 +177,7 @@ ros2 launch wheelchair_bringup sensors.launch.py mode:=real
 ros2 topic hz /xtm60/points
 ros2 topic hz /scan
 ros2 topic hz /imu/data
-ros2 topic echo /ultrasonic/0/range
+ros2 topic echo /ultrasonic/range_0
 ros2 topic hz /camera/front/image_raw
 ```
 
@@ -323,7 +323,7 @@ ros2 launch wheelchair_bringup sensors.launch.py mode:=real
 ros2 topic hz /imu/data
 ```
 
-FD07-34 超声波使用 RS485 Modbus RTU，默认串口 `/dev/ttyUSB1`、`9600` baud，地址 `[1, 2]`，读取保持寄存器 `0x0001`，单位按 mm 转 m，发布 `/ultrasonic/0/range` 和 `/ultrasonic/1/range`；未启用的 2-5 号 topic 发布最大量程，避免安全模块误判离线为急停。
+FD07-34 超声波使用 RS485 Modbus RTU，默认串口 `/dev/ttyUSB1`、`9600` baud，地址 `[1, 2]`，读取保持寄存器 `0x0001`，单位按 mm 转 m，发布 `/ultrasonic/range_0` 和 `/ultrasonic/range_1`；未启用的 2-5 号 topic 发布最大量程，避免安全模块误判离线为急停。
 
 USB 摄像头使用 OpenCV/V4L2，默认 `front_device=0`、`left_device=1`，发布 `/camera/front/image_raw` 和 `/camera/left/image_raw`。所有参数在：
 
@@ -454,7 +454,7 @@ ros2 topic pub --once /voice/text_command std_msgs/msg/String "{data: '去卫生
 
 - `wheelchair_sensors/xtm60_adapter_node.py`：官方 `xtsdk_py`，发布 `/xtm60/points`
 - `wheelchair_sensors/imu_adapter_node.py`：H30 Yesense 串口协议，发布 `/imu/data`
-- `wheelchair_sensors/ultrasonic_adapter_node.py`：FD07-34 Modbus RTU，发布 `/ultrasonic/*/range`
+- `wheelchair_sensors/ultrasonic_adapter_node.py`：FD07-34 Modbus RTU，发布 `/ultrasonic/range_*`
 - `wheelchair_sensors/camera_adapter_node.py`：OpenCV/V4L2，发布 `/camera/front/image_raw`、`/camera/left/image_raw`
 - `wheelchair_base/zlac8030_driver_node.py`：ZLAC8030/KeepLINK Modbus RTU 底盘接口，发布 `/wheel/odom`
 

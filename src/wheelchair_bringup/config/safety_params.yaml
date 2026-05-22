@@ -7,12 +7,12 @@ safety_supervisor_node:
     emergency_stop_hw_topic: /emergency_stop_hw
     emergency_stop_sw_topic: /emergency_stop_sw
     ultrasonic_topics:
-      - /ultrasonic/0/range
-      - /ultrasonic/1/range
-      - /ultrasonic/2/range
-      - /ultrasonic/3/range
-      - /ultrasonic/4/range
-      - /ultrasonic/5/range
+      - /ultrasonic/range_0
+      - /ultrasonic/range_1
+      - /ultrasonic/range_2
+      - /ultrasonic/range_3
+      - /ultrasonic/range_4
+      - /ultrasonic/range_5
     max_auto_speed: 0.4
     debug_max_speed: 0.6
     hard_max_speed: 0.8

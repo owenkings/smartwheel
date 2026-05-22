@@ -181,7 +181,7 @@ class UltrasonicAdapterNode(Node):
             register=int(self.get_parameter("register").value),
             sensors=self.sensors,
         )
-        self.pubs = [self.create_publisher(Range, f"/ultrasonic/{i}/range", 10) for i in range(6)]
+        self.pubs = [self.create_publisher(Range, f"/ultrasonic/range_{i}", 10) for i in range(6)]
         self.warned = False
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter("publish_rate_hz").value), self.tick

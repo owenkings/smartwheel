@@ -92,7 +92,7 @@ class WheelchairUiRosNode(Node):
         for index in range(6):
             self.create_subscription(
                 Range,
-                f"/ultrasonic/{index}/range",
+                f"/ultrasonic/range_{index}",
                 lambda msg, i=index: self.on_ultrasonic(i, msg),
                 10,
             )

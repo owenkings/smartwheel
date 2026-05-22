@@ -2,7 +2,7 @@
 
 安全监督包。
 
-`safety_supervisor_node` 订阅 `/cmd_vel_nav`、`/scan`、`/ultrasonic/*/range`、`/emergency_stop_hw`、`/emergency_stop_sw`、`/system_stop_required`、`/passability/status` 和可选 `/localization/is_healthy`，发布 `/cmd_vel_safe` 和 `/safety_state`。
+`safety_supervisor_node` 订阅 `/cmd_vel_nav`、`/scan`、`/ultrasonic/range_*`、`/emergency_stop_hw`、`/emergency_stop_sw`、`/system_stop_required`、`/passability/status` 和可选 `/localization/is_healthy`，发布 `/cmd_vel_safe` 和 `/safety_state`。
 
 动态停车距离：
 

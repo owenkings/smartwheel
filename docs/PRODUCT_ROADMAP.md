@@ -40,7 +40,7 @@
 
 执行方案：
 - 节点：`sensor_watchdog_node`
-- 输入：`/scan`、`/wheel/odom`、`/base/status`、`/imu/data`、`/ultrasonic/*/range`、`/camera/*/image_raw`
+- 输入：`/scan`、`/wheel/odom`、`/base/status`、`/imu/data`、`/ultrasonic/range_*`、`/camera/*/image_raw`
 - 输出：
   - `/hardware/status` JSON
   - `/system_stop_required` Bool
@@ -73,7 +73,7 @@
   - `wheelchair_bringup/launch/record_bag.launch.py`
   - `wheelchair_bringup/launch/replay_bag.launch.py`
 - 默认录制 topics：
-  - `/xtm60/points`、`/scan`、`/imu/data`、`/ultrasonic/*/range`
+  - `/xtm60/points`、`/scan`、`/imu/data`、`/ultrasonic/range_*`
   - `/camera/front/image_raw`、`/camera/left/image_raw`
   - `/wheel/odom`、`/cmd_vel_nav`、`/cmd_vel_safe`
   - `/safety_state`、`/hardware/status`、`/localization/health`

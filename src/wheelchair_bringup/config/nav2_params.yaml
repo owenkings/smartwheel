@@ -148,12 +148,12 @@ local_costmap:
         plugin: nav2_costmap_2d::RangeSensorLayer
         enabled: true
         topics:
-          - /ultrasonic/0/range
-          - /ultrasonic/1/range
-          - /ultrasonic/2/range
-          - /ultrasonic/3/range
-          - /ultrasonic/4/range
-          - /ultrasonic/5/range
+          - /ultrasonic/range_0
+          - /ultrasonic/range_1
+          - /ultrasonic/range_2
+          - /ultrasonic/range_3
+          - /ultrasonic/range_4
+          - /ultrasonic/range_5
         clear_on_max_reading: true
         no_readings_timeout: 0.5
       inflation_layer:

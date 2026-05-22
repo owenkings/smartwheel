@@ -60,13 +60,13 @@ class SensorWatchdogNode(Node):
             TopicRule("/base/status", float(self.get_parameter("base_timeout_sec").value), True, "base driver"),
             TopicRule("/imu/data", float(self.get_parameter("imu_timeout_sec").value), False, "H30 IMU"),
             TopicRule(
-                "/ultrasonic/0/range",
+                "/ultrasonic/range_0",
                 float(self.get_parameter("ultrasonic_timeout_sec").value),
                 bool(self.get_parameter("ultrasonic_0_critical").value),
                 "ultrasonic 0",
             ),
             TopicRule(
-                "/ultrasonic/1/range",
+                "/ultrasonic/range_1",
                 float(self.get_parameter("ultrasonic_timeout_sec").value),
                 bool(self.get_parameter("ultrasonic_1_critical").value),
                 "ultrasonic 1",
@@ -81,8 +81,8 @@ class SensorWatchdogNode(Node):
             "/wheel/odom": Odometry,
             "/base/status": String,
             "/imu/data": Imu,
-            "/ultrasonic/0/range": Range,
-            "/ultrasonic/1/range": Range,
+            "/ultrasonic/range_0": Range,
+            "/ultrasonic/range_1": Range,
             "/camera/front/image_raw": Image,
             "/xtm60/points": PointCloud2,
         }

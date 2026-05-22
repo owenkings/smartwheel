@@ -61,7 +61,7 @@ class MockSensorNode(Node):
         self.estop_pub = self.create_publisher(Bool, "/emergency_stop_hw", 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel_nav", 10)
         self.range_pubs = [
-            self.create_publisher(Range, f"/ultrasonic/{i}/range", 10) for i in range(6)
+            self.create_publisher(Range, f"/ultrasonic/range_{i}", 10) for i in range(6)
         ]
         self.tf_broadcaster = TransformBroadcaster(self)
 

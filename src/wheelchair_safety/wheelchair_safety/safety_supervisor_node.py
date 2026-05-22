@@ -243,12 +243,12 @@ class SafetySupervisorNode(Node):
         self.declare_parameter(
             "ultrasonic_topics",
             [
-                "/ultrasonic/0/range",
-                "/ultrasonic/1/range",
-                "/ultrasonic/2/range",
-                "/ultrasonic/3/range",
-                "/ultrasonic/4/range",
-                "/ultrasonic/5/range",
+                "/ultrasonic/range_0",
+                "/ultrasonic/range_1",
+                "/ultrasonic/range_2",
+                "/ultrasonic/range_3",
+                "/ultrasonic/range_4",
+                "/ultrasonic/range_5",
             ],
         )
         for field, default in SafetyParams().__dict__.items():

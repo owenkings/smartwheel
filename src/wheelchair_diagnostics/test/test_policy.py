@@ -39,7 +39,7 @@ def test_watchdog_degrades_for_noncritical_topic_only():
 def test_watchdog_blocks_when_critical_ultrasonic_topic_is_stale():
     rules = [
         TopicRule("/scan", 1.0, True, "scan"),
-        TopicRule("/ultrasonic/0/range", 1.0, True, "ultrasonic 0"),
+        TopicRule("/ultrasonic/range_0", 1.0, True, "ultrasonic 0"),
     ]
 
     decision = evaluate_watchdog(rules, {"/scan": 12.0}, now_sec=12.0)
