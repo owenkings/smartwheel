@@ -1,0 +1,45 @@
+zlac8030_driver_node:
+  ros__parameters:
+    mode: real
+    # KeepLINK/USB-RS485 should expose a Linux serial device. Pin this with a
+    # udev rule on the AGX Orin before real driving.
+    serial_port: /dev/ttyUSB2
+    baud_rate: 115200
+    serial_timeout_sec: 0.05
+
+    # Many ZLAC8030 installations use one slave id per wheel. If your KeepLINK
+    # bridge exposes a single dual-axis slave, set single_slave_dual_axis true.
+    left_slave_id: 1
+    right_slave_id: 2
+    single_slave_dual_axis: false
+
+    wheel_radius_m: 0.165
+    wheel_separation_m: 0.58
+    max_linear_mps: 0.4
+    max_angular_rps: 1.0
+    command_timeout_sec: 0.5
+    publish_rate_hz: 50.0
+    publish_tf: true
+    odom_frame_id: odom
+    base_frame_id: base_link
+
+    # Direction depends on motor installation. Confirm on blocks with wheels
+    # off the ground before any loaded test.
+    invert_left: false
+    invert_right: true
+
+    # Register scaling depends on the configured ZLAC8030 speed unit. Start
+    # with 1 register unit = 1 rpm only after the register map is verified.
+    rpm_to_register_scale: 1.0
+    register_to_rpm_scale: 1.0
+
+    # IMPORTANT: these are disabled by default. Fill from the exact ZLAC8030
+    # manual/KeepLINK mode before real motion. With -1, the node publishes
+    # open-loop /wheel/odom but will not send motor speed commands.
+    command_left_register: -1
+    command_right_register: -1
+    feedback_left_register: -1
+    feedback_right_register: -1
+    enable_register: -1
+    enable_value: 1
+    disable_value: 0

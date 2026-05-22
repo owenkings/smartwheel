@@ -1,0 +1,16 @@
+ultrasonic_adapter_node:
+  ros__parameters:
+    mode: real
+    publish_rate_hz: 20.0
+    serial_port: /dev/ttyUSB1
+    baud_rate: 9600
+    serial_timeout_sec: 0.08
+    # FD07-34 commonly exposes actual distance in holding register 0x0001.
+    # If your sensor is configured to use the processed value, change to 0x0002.
+    register: 1
+    sensor_addresses: [1, 2]
+    sensor_indices: [0, 1]
+    enabled_count: 2
+    min_range: 0.03
+    max_range: 3.0
+    field_of_view: 0.45

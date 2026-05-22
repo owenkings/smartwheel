@@ -1,0 +1,47 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+*.egg
+
+# pytest
+.pytest_cache/
+pytest-of-*/
+.coverage
+htmlcov/
+
+# rosbag
+bags/
+*.db3
+*.mcap
+metadata.yaml
+
+# Maps (generated, not source)
+maps/*.pgm
+maps/*.yaml
+maps/*.png
+!maps/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / device config overrides
+*.env
+local_config.yaml

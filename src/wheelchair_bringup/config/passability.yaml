@@ -1,0 +1,10 @@
+passability_analyzer_node:
+  ros__parameters:
+    scan_topic: /scan
+    status_topic: /passability/status
+    wheelchair_width_m: 0.70
+    clearance_margin_m: 0.15
+    warning_margin_m: 0.20
+    lookahead_distance_m: 1.8
+    min_forward_distance_m: 0.25
+    max_side_distance_m: 2.0

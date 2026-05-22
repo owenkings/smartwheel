@@ -1,0 +1,12 @@
+camera_adapter_node:
+  ros__parameters:
+    mode: real
+    publish_rate_hz: 15.0
+    width: 640
+    height: 480
+    fps: 30.0
+    enabled_cameras: [front, left]
+    front_device: "0"
+    left_device: "1"
+    right_device: "2"
+    rear_device: "3"

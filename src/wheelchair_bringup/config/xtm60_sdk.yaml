@@ -1,0 +1,26 @@
+xtm60_adapter_node:
+  ros__parameters:
+    # Set this to the extracted xtsdk_py root on the robot, or export XTSDK_PY_ROOT.
+    # Example on AGX Orin:
+    #   sdk_root: /opt/xtsdk_py-main
+    sdk_root: ""
+    connection_mode: ethernet
+    ip_address: "192.168.0.101"
+    serial_port: ""
+    image_type: 4
+    frame_id: laser_link
+    publish_rate_hz: 10.0
+
+    # Keep 1.0 unless hardware validation proves the SDK build returns mm.
+    point_unit_scale: 1.0
+    range_min: 0.05
+    range_max: 20.0
+    publish_intensity: true
+
+    # Conservative SDK-side filters. Tune with real raw data.
+    enable_sdk_filters: true
+    kalman_factor: 300
+    kalman_threshold: 200
+    kalman_range: 2000
+    median_size: 3
+    edge_threshold: 150

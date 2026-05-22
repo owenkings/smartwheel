@@ -1,0 +1,42 @@
+sensor_watchdog_node:
+  ros__parameters:
+    startup_grace_sec: 8.0
+    publish_rate_hz: 2.0
+    scan_timeout_sec: 0.8
+    odom_timeout_sec: 1.0
+    base_timeout_sec: 1.0
+    imu_timeout_sec: 1.5
+    ultrasonic_timeout_sec: 1.5
+    ultrasonic_0_critical: true
+    ultrasonic_1_critical: true
+    camera_timeout_sec: 3.0
+    points_timeout_sec: 1.5
+
+localization_health_node:
+  ros__parameters:
+    publish_rate_hz: 2.0
+    max_amcl_age_sec: 2.0
+    max_odom_age_sec: 1.0
+    max_scan_age_sec: 1.0
+    max_covariance_xy: 0.50
+    max_covariance_yaw: 0.35
+
+hardware_self_check_node:
+  ros__parameters:
+    run_once: true
+    period_sec: 10.0
+    scan_serial_ports: false
+    h30_port: /dev/ttyUSB0
+    h30_baud_rate: 460800
+    ultrasonic_port: /dev/ttyUSB1
+    ultrasonic_baud_rate: 9600
+    ultrasonic_addresses: [1, 2]
+    ultrasonic_register: 1
+    camera_devices: ["0", "1"]
+    xtm60_sdk_root: ""
+    xtm60_ip_address: 10.55.231.101
+    xtm60_tcp_port: 0
+    zlac_port: /dev/ttyUSB2
+    zlac_baud_rate: 115200
+    zlac_slave_id: 1
+    zlac_probe_register: -1

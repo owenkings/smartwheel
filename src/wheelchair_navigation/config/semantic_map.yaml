@@ -1,0 +1,17 @@
+version: 1
+frame_id: map
+rooms:
+  - name: 示例客厅
+    polygon:
+      - [-1.5, -1.0]
+      - [1.5, -1.0]
+      - [1.5, 1.0]
+      - [-1.5, 1.0]
+    color: "#6aa6ff"
+points_of_interest:
+  - name: 充电点
+    type: charger
+    position: [0.0, 0.0, 0.0]
+no_go_zones: []
+preferred_routes: []
+walls: []

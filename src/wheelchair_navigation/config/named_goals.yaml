@@ -1,0 +1,11 @@
+goals:
+  charging:
+    label: "充电点"
+    frame_id: map
+    position: [0.0, 0.0, 0.0]
+    yaw: 0.0
+  door:
+    label: "门口"
+    frame_id: map
+    position: [1.0, 0.0, 0.0]
+    yaw: 0.0

@@ -1,0 +1,28 @@
+# Same initial estimates as wheelchair_bringup/config/sensor_layout.yaml.
+# The URDF publishes these as fixed joints. Keep this file for quick audits
+# and for any future static transform publisher fallback.
+transforms:
+  - parent: base_link
+    child: laser_link
+    xyz: [0.45, 0.0, 0.65]
+    rpy: [0.0, -0.0873, 0.0]
+  - parent: base_link
+    child: imu_link
+    xyz: [0.0, 0.0, 0.45]
+    rpy: [0.0, 0.0, 0.0]
+  - parent: base_link
+    child: camera_front_link
+    xyz: [0.40, 0.0, 0.80]
+    rpy: [0.0, 0.0, 0.0]
+  - parent: base_link
+    child: camera_left_link
+    xyz: [0.0, 0.32, 0.75]
+    rpy: [0.0, 0.0, 1.5708]
+  - parent: base_link
+    child: camera_right_link
+    xyz: [0.0, -0.32, 0.75]
+    rpy: [0.0, 0.0, -1.5708]
+  - parent: base_link
+    child: camera_rear_link
+    xyz: [-0.45, 0.0, 0.75]
+    rpy: [0.0, 0.0, 3.1416]

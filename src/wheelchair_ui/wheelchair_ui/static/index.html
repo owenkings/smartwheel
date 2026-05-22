@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>室内自动轮椅控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>室内自动轮椅控制台</h1>
+    <div class="status-line">
+      <span id="safety-state">UNKNOWN</span>
+      <span id="nav-status">IDLE</span>
+    </div>
+  </header>
+  <main>
+    <section class="map-panel">
+      <canvas id="map-canvas" width="800" height="520"></canvas>
+      <form id="goal-form">
+        <input id="goal-name" name="name" placeholder="目标名称，如 卫生间" required>
+        <input id="goal-x" name="x" type="number" step="0.01" placeholder="x" required>
+        <input id="goal-y" name="y" type="number" step="0.01" placeholder="y" required>
+        <input id="goal-yaw" name="yaw" type="number" step="0.01" placeholder="yaw" value="0">
+        <button type="submit">保存目标点</button>
+      </form>
+    </section>
+    <aside>
+      <section>
+        <h2>当前状态</h2>
+        <dl>
+          <dt>位姿</dt><dd id="pose">0.00, 0.00, 0.00</dd>
+          <dt>当前目标</dt><dd id="current-goal">无</dd>
+          <dt>传感器</dt><dd id="sensors">等待数据</dd>
+          <dt>硬件诊断</dt><dd id="hardware-status">等待数据</dd>
+          <dt>定位健康</dt><dd id="localization-health">等待数据</dd>
+          <dt>通行性</dt><dd id="passability-status">等待数据</dd>
+        </dl>
+        <div class="actions">
+          <button id="stop-btn" class="danger">停止</button>
+          <button id="resume-btn">继续</button>
+        </div>
+      </section>
+      <section>
+        <h2>命名目标点</h2>
+        <ul id="goal-list"></ul>
+      </section>
+      <section>
+        <h2>语义矢量地图</h2>
+        <form id="room-form" class="stack-form">
+          <input id="room-name" placeholder="房间名称" required>
+          <input id="room-color" type="color" value="#1f6feb" aria-label="房间颜色">
+          <textarea id="room-polygon" placeholder="房间边界: x,y; x,y; x,y" required></textarea>
+          <button type="submit">保存房间</button>
+        </form>
+        <ul id="room-list" class="compact-list"></ul>
+        <form id="zone-form" class="stack-form">
+          <input id="zone-name" placeholder="禁行区名称" required>
+          <textarea id="zone-polygon" placeholder="禁行区: x,y; x,y; x,y" required></textarea>
+          <button type="submit" class="danger">保存禁行区</button>
+        </form>
+        <ul id="zone-list" class="compact-list"></ul>
+      </section>
+      <section>
+        <h2>地图维护</h2>
+        <p>普通导航只更新局部 costmap，不写静态地图。长期障碍候选更新会在维护模式中由用户确认后写入。</p>
+        <button id="maintenance-btn" disabled>维护模式占位</button>
+      </section>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

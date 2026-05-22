@@ -1,0 +1,42 @@
+# Initial sensor extrinsics for the first prototype.
+# These are estimates only. In the real wheelchair, measure them mechanically
+# and verify all axes in RViz before any passenger test.
+frames:
+  base_link:
+    note: "X forward, Y left, Z up. Origin near chassis center or drive axle midpoint."
+  laser_link:
+    xyz: [0.45, 0.0, 0.65]
+    rpy: [0.0, -0.0873, 0.0]
+  imu_link:
+    xyz: [0.0, 0.0, 0.45]
+    rpy: [0.0, 0.0, 0.0]
+  camera_front_link:
+    xyz: [0.40, 0.0, 0.80]
+    rpy: [0.0, 0.0, 0.0]
+  camera_left_link:
+    xyz: [0.0, 0.32, 0.75]
+    rpy: [0.0, 0.0, 1.5708]
+  camera_right_link:
+    xyz: [0.0, -0.32, 0.75]
+    rpy: [0.0, 0.0, -1.5708]
+  camera_rear_link:
+    xyz: [-0.45, 0.0, 0.75]
+    rpy: [0.0, 0.0, 3.1416]
+  ultrasonic_0_link:
+    xyz: [0.45, -0.25, 0.25]
+    rpy: [0.0, 0.0, -0.52]
+  ultrasonic_1_link:
+    xyz: [0.50, 0.0, 0.25]
+    rpy: [0.0, 0.0, 0.0]
+  ultrasonic_2_link:
+    xyz: [0.45, 0.25, 0.25]
+    rpy: [0.0, 0.0, 0.52]
+  ultrasonic_3_link:
+    xyz: [-0.35, 0.25, 0.25]
+    rpy: [0.0, 0.0, 2.62]
+  ultrasonic_4_link:
+    xyz: [-0.45, 0.0, 0.25]
+    rpy: [0.0, 0.0, 3.1416]
+  ultrasonic_5_link:
+    xyz: [-0.35, -0.25, 0.25]
+    rpy: [0.0, 0.0, -2.62]
