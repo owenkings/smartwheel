@@ -1,0 +1,27 @@
+{
+  "map_yaml": "/home/nvidia/smartwheel/maps/versions/map_20260528_003125_20260528_003346.yaml",
+  "verdict": "BAD",
+  "score": 20,
+  "metrics": {
+    "width": 16,
+    "height": 8,
+    "resolution_m": 0.05,
+    "area_m2": 0.32,
+    "known_ratio": 1.0,
+    "free_ratio": 0.8828,
+    "occupied_ratio": 0.1172,
+    "unknown_ratio": 0.0,
+    "free_component_count": 1,
+    "largest_free_component_ratio": 1.0
+  },
+  "reasons": [
+    {
+      "severity": "bad",
+      "message": "地图像素过少：128 < 1000"
+    },
+    {
+      "severity": "bad",
+      "message": "地图面积过小：0.32 m^2"
+    }
+  ]
+}

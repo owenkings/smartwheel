@@ -8,8 +8,8 @@ Usage: scripts/run_real_sensors.sh [options]
 Start the real sensor bringup for:
   - XT-M60 lidar
   - H30 IMU
-  - two ultrasonic sensors
-  - front and left USB cameras
+  - USB-RS485 ultrasonic sensor bus
+  - configured USB cameras
   - pointcloud_to_laserscan
   - Web UI
 
@@ -31,6 +31,7 @@ enable_imu=true
 enable_ui=true
 ui_port=8080
 ros_domain_id=0
+child_pids=()
 
 while (($#)); do
   case "$1" in
@@ -75,13 +76,20 @@ if [[ ! -f /opt/ros/humble/setup.bash ]]; then
 fi
 
 export ROS_DOMAIN_ID="$ros_domain_id"
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 
 if [[ "$run_build" == true ]]; then
   colcon build --symlink-install
 fi
 
+"$workspace_root/scripts/setup_radar_network.sh" --quiet --no-ping || \
+  echo "WARN radar network alias was not applied; run 'sudo $workspace_root/scripts/setup_radar_network.sh --install-service'" >&2
+
+set +u
 source "$workspace_root/install/setup.bash"
+set -u
 
 echo "Workspace: $workspace_root"
 echo "ROS_DOMAIN_ID: $ROS_DOMAIN_ID"
@@ -93,9 +101,7 @@ echo "  /xtm60/points"
 echo "  /scan"
 echo "  /imu/data"
 echo "  /ultrasonic/range_0"
-echo "  /ultrasonic/range_1"
 echo "  /camera/front/image_raw"
-echo "  /camera/left/image_raw"
 echo
 echo "In another terminal, verify with:"
 echo "  cd $workspace_root"
@@ -109,7 +115,31 @@ echo "  ros2 topic echo /ultrasonic/range_0 --once"
 echo
 
 cleanup() {
-  jobs -pr | xargs -r kill
+  local status=$?
+  trap - EXIT INT TERM
+  bash "$workspace_root/scripts/hardware_shutdown.sh" --no-source --quiet || true
+  for pid in "${child_pids[@]}"; do
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -INT "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+  for _ in 1 2 3 4 5 6; do
+    local alive=false
+    for pid in "${child_pids[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        alive=true
+      fi
+    done
+    [[ "$alive" == false ]] && break
+    sleep 0.5
+  done
+  for pid in "${child_pids[@]}"; do
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -TERM "$pid" >/dev/null 2>&1 || true
+    fi
+    wait "$pid" >/dev/null 2>&1 || true
+  done
+  exit "$status"
 }
 trap cleanup EXIT INT TERM
 
@@ -119,11 +149,14 @@ ros2 launch wheelchair_bringup sensors.launch.py \
   enable_imu:="$enable_imu" \
   enable_ultrasonic:=true \
   enable_camera:=true &
+child_pids+=("$!")
 
 ros2 run wheelchair_perception pointcloud_to_laserscan_node &
+child_pids+=("$!")
 
 if [[ "$enable_ui" == true ]]; then
   ros2 run wheelchair_ui wheelchair_ui --host 0.0.0.0 --port "$ui_port" &
+  child_pids+=("$!")
 fi
 
 wait -n

@@ -11,6 +11,8 @@ def generate_launch_description():
     mode = LaunchConfiguration("mode")
     publish_description = LaunchConfiguration("publish_description")
     enable_xtm60 = LaunchConfiguration("enable_xtm60")
+    enable_xtm60_left = LaunchConfiguration("enable_xtm60_left")
+    enable_xtm60_right = LaunchConfiguration("enable_xtm60_right")
     enable_imu = LaunchConfiguration("enable_imu")
     enable_ultrasonic = LaunchConfiguration("enable_ultrasonic")
     enable_camera = LaunchConfiguration("enable_camera")
@@ -44,6 +46,8 @@ def generate_launch_description():
                 description="Start robot_state_publisher for the wheelchair URDF.",
             ),
             DeclareLaunchArgument("enable_xtm60", default_value="true"),
+            DeclareLaunchArgument("enable_xtm60_left", default_value="false"),
+            DeclareLaunchArgument("enable_xtm60_right", default_value="false"),
             DeclareLaunchArgument("enable_imu", default_value="true"),
             DeclareLaunchArgument("enable_ultrasonic", default_value="true"),
             DeclareLaunchArgument("enable_camera", default_value="true"),
@@ -65,6 +69,36 @@ def generate_launch_description():
                     {"mode": mode},
                 ],
                 condition=IfCondition(enable_xtm60),
+            ),
+            Node(
+                package="wheelchair_sensors",
+                executable="xtm60_adapter_node",
+                name="xtm60_left_adapter_node",
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution([bringup_share, "config", "xtm60_left.yaml"]),
+                    {"mode": mode},
+                ],
+                remappings=[
+                    ("/xtm60/points", "/xtm60/left/points"),
+                    ("/xtm60/status", "/xtm60/left/status"),
+                ],
+                condition=IfCondition(enable_xtm60_left),
+            ),
+            Node(
+                package="wheelchair_sensors",
+                executable="xtm60_adapter_node",
+                name="xtm60_right_adapter_node",
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution([bringup_share, "config", "xtm60_right.yaml"]),
+                    {"mode": mode},
+                ],
+                remappings=[
+                    ("/xtm60/points", "/xtm60/right/points"),
+                    ("/xtm60/status", "/xtm60/right/status"),
+                ],
+                condition=IfCondition(enable_xtm60_right),
             ),
             Node(
                 package="wheelchair_sensors",

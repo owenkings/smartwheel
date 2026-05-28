@@ -1,4 +1,5 @@
 import ctypes
+import importlib
 import math
 import os
 import platform
@@ -7,6 +8,38 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
+
+
+def _candidate_libstdcxx_paths() -> List[Path]:
+    candidates: List[Path] = []
+    explicit = os.environ.get("XTSDK_LIBSTDCXX_PATH", "")
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+
+    for prefix in (
+        os.environ.get("CONDA_PREFIX", ""),
+        str(Path.home() / "miniforge3"),
+        str(Path.home() / "miniconda3"),
+        str(Path.home() / "anaconda3"),
+    ):
+        if prefix:
+            candidates.append(Path(prefix).expanduser() / "lib" / "libstdc++.so.6")
+    return candidates
+
+
+def _preload_libstdcxx() -> None:
+    for candidate in _candidate_libstdcxx_paths():
+        if not candidate.exists():
+            continue
+        try:
+            ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
+            return
+        except OSError:
+            continue
+
+
+if platform.system() == "Linux":
+    _preload_libstdcxx()
 
 try:
     import rclpy
@@ -89,6 +122,7 @@ def configure_xtsdk_import_path(sdk_root: Path) -> Path:
         lib_dir = sdk_root / "lib" / "linux" / arch
         shared = lib_dir / "libxtsdk_shared.so"
         if shared.exists():
+            _preload_libstdcxx()
             ctypes.CDLL(str(shared), mode=ctypes.RTLD_GLOBAL)
     else:
         raise RuntimeError(f"unsupported OS for xtsdk_py: {system_name}")
@@ -101,6 +135,34 @@ def configure_xtsdk_import_path(sdk_root: Path) -> Path:
         if text not in sys.path:
             sys.path.insert(0, text)
     return lib_dir
+
+
+def _import_xintan_sdk(sdk_root: Path):
+    if "xintan_sdk" in sys.modules:
+        return sys.modules["xintan_sdk"]
+    import_cwd = sdk_root / "sdk_example"
+    if not import_cwd.is_dir():
+        return importlib.import_module("xintan_sdk")
+
+    cwd = Path.cwd()
+    try:
+        os.chdir(import_cwd)
+        return importlib.import_module("xintan_sdk")
+    finally:
+        os.chdir(cwd)
+
+
+def _with_sdk_example_cwd(sdk_root: Path, func):
+    run_cwd = sdk_root / "sdk_example"
+    if not run_cwd.is_dir():
+        return func()
+
+    cwd = Path.cwd()
+    try:
+        os.chdir(run_cwd)
+        return func()
+    finally:
+        os.chdir(cwd)
 
 
 def extract_xyzi_points(
@@ -187,7 +249,7 @@ class XTM60SdkAdapter:
         self.logger.info(f"XT-M60 SDK lib: {lib_dir}")
 
         try:
-            import xintan_sdk
+            xintan_sdk = _import_xintan_sdk(sdk_root)
         except ImportError as exc:
             self._last_error = str(exc)
             raise RuntimeError(
@@ -195,7 +257,7 @@ class XTM60SdkAdapter:
             ) from exc
 
         self._xintan_sdk = xintan_sdk
-        self._sdk = xintan_sdk.XtSdk()
+        self._sdk = _with_sdk_example_cwd(sdk_root, xintan_sdk.XtSdk)
         self._sdk.setCallback(self._on_event, self._on_frame)
         self._apply_optional_filters()
         self._configure_connection()
@@ -205,17 +267,35 @@ class XTM60SdkAdapter:
     def stop(self) -> None:
         self._measurement_started = False
         self._connected = False
-        if self._sdk is None:
+        sdk = self._sdk
+        self._sdk = None
+        if sdk is None:
             return
         try:
-            self._sdk.stop()
-        except Exception as exc:
+            sdk.stop()
+        except BaseException as exc:
             self.logger.warning(f"XT-M60 SDK stop failed: {exc}")
         try:
-            self._sdk.shutdown()
-        except Exception as exc:
+            sdk.shutdown()
+        except BaseException as exc:
             self.logger.warning(f"XT-M60 SDK shutdown failed: {exc}")
+
+    def stop_and_exit_process(self, code: int = 0) -> None:
+        """Stop the vendor SDK and bypass pybind destructors that can segfault on SIGINT."""
+        self._measurement_started = False
+        self._connected = False
+        sdk = self._sdk
         self._sdk = None
+        if sdk is not None:
+            try:
+                sdk.stop()
+            except BaseException as exc:
+                self.logger.warning(f"XT-M60 SDK stop failed: {exc}")
+            try:
+                sdk.shutdown()
+            except BaseException as exc:
+                self.logger.warning(f"XT-M60 SDK shutdown failed: {exc}")
+        os._exit(code)
 
     def poll(self) -> None:
         if self._sdk is None:
@@ -344,6 +424,7 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("mode", "real")
         self.declare_parameter("frame_id", "laser_link")
         self.declare_parameter("publish_rate_hz", 10.0)
+        self.declare_parameter("use_sdk_timestamps", False)
         self.declare_parameter("sdk_root", "")
         self.declare_parameter("connection_mode", "ethernet")
         self.declare_parameter("ip_address", "192.168.0.101")
@@ -380,8 +461,21 @@ class XTM60AdapterNode(Node):
 
     def destroy_node(self):
         if self.adapter is not None:
-            self.adapter.stop()
-        super().destroy_node()
+            try:
+                self.adapter.stop()
+            except BaseException as exc:
+                self.get_logger().warning(f"XT-M60 adapter cleanup interrupted: {exc}")
+            finally:
+                self.adapter = None
+        try:
+            super().destroy_node()
+        except KeyboardInterrupt:
+            pass
+
+    def exit_process_cleanly(self, code: int = 0) -> None:
+        if self.adapter is not None:
+            self.adapter.stop_and_exit_process(code)
+        os._exit(code)
 
     def tick(self):
         if self.mode == "mock":
@@ -424,7 +518,8 @@ class XTM60AdapterNode(Node):
     def _make_cloud(self, points: Sequence[XYZI], sdk_stamp: Optional[Tuple[int, int]]):
         header = Header()
         header.frame_id = self.frame_id
-        if sdk_stamp is not None and sdk_stamp[0] > 0:
+        use_sdk_timestamps = bool(self.get_parameter("use_sdk_timestamps").value)
+        if use_sdk_timestamps and self._is_plausible_epoch_stamp(sdk_stamp):
             header.stamp.sec = int(sdk_stamp[0])
             header.stamp.nanosec = int(sdk_stamp[1])
         else:
@@ -439,6 +534,13 @@ class XTM60AdapterNode(Node):
             ]
             return point_cloud2.create_cloud(header, fields, list(points))
         return point_cloud2.create_cloud_xyz32(header, [(x, y, z) for x, y, z, _i in points])
+
+    @staticmethod
+    def _is_plausible_epoch_stamp(stamp: Optional[Tuple[int, int]]) -> bool:
+        if stamp is None:
+            return False
+        sec, nsec = stamp
+        return int(sec) >= 1_000_000_000 and 0 <= int(nsec) < 1_000_000_000
 
     def _publish_status(self, text: str):
         msg = String()
@@ -461,11 +563,17 @@ def main(args=None):
         raise RuntimeError("ROS2 Python packages are required to run this node")
     rclpy.init(args=args)
     node = XTM60AdapterNode()
+    interrupted = False
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        interrupted = True
     finally:
+        if interrupted:
+            node.exit_process_cleanly(0)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

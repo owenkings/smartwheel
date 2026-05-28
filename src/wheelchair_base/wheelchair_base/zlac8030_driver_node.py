@@ -208,6 +208,35 @@ class Zlac8030DriverNode(Node):
             self.get_logger().warning(f"ZLAC8030 feedback read failed: {exc}")
             return None
 
+    def _write_enable_state(self, enabled: bool) -> bool:
+        if self.registers.enable_register < 0:
+            return False
+        value = self.registers.enable_value if enabled else self.registers.disable_value
+        try:
+            self.modbus.write_single_register(
+                self.left_slave_id,
+                self.registers.enable_register,
+                value,
+            )
+            if not self.single_slave_dual_axis:
+                self.modbus.write_single_register(
+                    self.right_slave_id,
+                    self.registers.enable_register,
+                    value,
+                )
+        except Exception as exc:
+            state = "enable" if enabled else "disable"
+            self.get_logger().warning(f"ZLAC8030 {state} write failed: {exc}")
+            return False
+        return True
+
+    def _shutdown_hardware(self):
+        if self.mode != "real":
+            return
+        if self.registers.command_enabled:
+            self._write_wheel_commands(0.0, 0.0)
+        self._write_enable_state(False)
+
     def _publish_odom(self, linear: float, angular: float, now):
         msg = Odometry()
         msg.header.stamp = now.to_msg()
@@ -253,8 +282,11 @@ class Zlac8030DriverNode(Node):
         self.status_pub.publish(msg)
 
     def destroy_node(self):
-        self.modbus.close()
-        super().destroy_node()
+        try:
+            self._shutdown_hardware()
+        finally:
+            self.modbus.close()
+            super().destroy_node()
 
 
 def main(args=None):
@@ -264,9 +296,12 @@ def main(args=None):
     node = Zlac8030DriverNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

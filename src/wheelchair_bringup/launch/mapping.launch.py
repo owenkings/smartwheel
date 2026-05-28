@@ -11,8 +11,12 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     use_mock = LaunchConfiguration("use_mock")
     use_rviz = LaunchConfiguration("use_rviz")
+    enable_ui = LaunchConfiguration("enable_ui")
+    enable_native_gui = LaunchConfiguration("enable_native_gui")
+    ui_port = LaunchConfiguration("ui_port")
     bringup_share = FindPackageShare("wheelchair_bringup")
     description_share = FindPackageShare("wheelchair_description")
+    navigation_share = FindPackageShare("wheelchair_navigation")
 
     robot_description = {
         "robot_description": ParameterValue(
@@ -32,6 +36,9 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_mock", default_value="false"),
             DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument("enable_ui", default_value="false"),
+            DeclareLaunchArgument("enable_native_gui", default_value="false"),
+            DeclareLaunchArgument("ui_port", default_value="8080"),
             Node(
                 package="robot_state_publisher",
                 executable="robot_state_publisher",
@@ -92,6 +99,36 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "rviz", "wheelchair_default.rviz"]),
                 ],
                 condition=IfCondition(use_rviz),
+            ),
+            Node(
+                package="wheelchair_ui",
+                executable="wheelchair_ui",
+                name="wheelchair_ui",
+                output="screen",
+                arguments=[
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    ui_port,
+                    "--named-goals-path",
+                    PathJoinSubstitution([navigation_share, "config", "named_goals.yaml"]),
+                    "--semantic-map-path",
+                    PathJoinSubstitution([navigation_share, "config", "semantic_map.yaml"]),
+                ],
+                condition=IfCondition(enable_ui),
+            ),
+            Node(
+                package="wheelchair_ui",
+                executable="wheelchair_native_gui",
+                name="wheelchair_native_gui",
+                output="screen",
+                arguments=[
+                    "--named-goals-path",
+                    PathJoinSubstitution([navigation_share, "config", "named_goals.yaml"]),
+                    "--semantic-map-path",
+                    PathJoinSubstitution([navigation_share, "config", "semantic_map.yaml"]),
+                ],
+                condition=IfCondition(enable_native_gui),
             ),
         ]
     )

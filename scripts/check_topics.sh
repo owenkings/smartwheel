@@ -10,9 +10,7 @@ case "$profile" in
       "/scan"
       "/imu/data"
       "/ultrasonic/range_0"
-      "/ultrasonic/range_1"
       "/camera/front/image_raw"
-      "/camera/left/image_raw"
     )
     ;;
   full)
@@ -21,7 +19,6 @@ case "$profile" in
       "/scan"
       "/imu/data"
       "/ultrasonic/range_0"
-      "/ultrasonic/range_1"
       "/cmd_vel_safe"
       "/safety_state"
       "/goal_pose"
@@ -33,7 +30,25 @@ case "$profile" in
     ;;
 esac
 
-available="$(ros2 topic list)"
+timeout_sec="${CHECK_TOPICS_TIMEOUT_SEC:-8}"
+deadline=$((SECONDS + timeout_sec))
+available=""
+
+while true; do
+  available="$(ros2 topic list)"
+  all_found=1
+  for topic in "${required_topics[@]}"; do
+    if ! grep -qx "$topic" <<< "$available"; then
+      all_found=0
+      break
+    fi
+  done
+  if [[ "$all_found" -eq 1 || "$SECONDS" -ge "$deadline" ]]; then
+    break
+  fi
+  sleep 1
+done
+
 missing=0
 for topic in "${required_topics[@]}"; do
   if grep -qx "$topic" <<< "$available"; then

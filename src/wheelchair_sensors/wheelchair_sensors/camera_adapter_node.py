@@ -39,7 +39,9 @@ class CameraAdapter:
         if cv2 is None:
             raise RuntimeError("opencv-python is required for camera real mode")
         device = int(self.camera.device) if str(self.camera.device).isdigit() else self.camera.device
-        self.capture = cv2.VideoCapture(device)
+        use_v4l2 = isinstance(device, int) or str(device).startswith("/dev/video")
+        backend = getattr(cv2, "CAP_V4L2", 0) if use_v4l2 else 0
+        self.capture = cv2.VideoCapture(device, backend) if backend else cv2.VideoCapture(device)
         if self.width > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height > 0:
@@ -61,6 +63,7 @@ class CameraAdapter:
         self.open()
         ok, frame = self.capture.read()
         if not ok or frame is None:
+            self.close()
             return None
         return frame
 
@@ -86,7 +89,7 @@ class CameraAdapterNode(Node):
         self.declare_parameter("width", 640)
         self.declare_parameter("height", 480)
         self.declare_parameter("fps", 30.0)
-        self.declare_parameter("enabled_cameras", ["front", "left"])
+        self.declare_parameter("enabled_cameras", ["front"])
         self.declare_parameter("front_device", "0")
         self.declare_parameter("left_device", "1")
         self.declare_parameter("right_device", "2")
@@ -139,6 +142,9 @@ class CameraAdapterNode(Node):
                 continue
             if frame is not None:
                 self.pubs[config.name].publish(cv_frame_to_image(frame, stamp, config.frame_id))
+            elif not self.warned.get(config.name):
+                self.get_logger().warning(f"{config.name} camera opened but returned no frame")
+                self.warned[config.name] = True
 
     @staticmethod
     def _mock_image(stamp, frame_id: str):
@@ -165,9 +171,15 @@ def main(args=None):
     node = CameraAdapterNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

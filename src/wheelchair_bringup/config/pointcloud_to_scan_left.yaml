@@ -1,0 +1,19 @@
+pointcloud_to_laserscan_left_node:
+  ros__parameters:
+    input_topic: /xtm60/left/points
+    output_topic: /scan_left
+    marker_topic: /scan_left_projection_markers
+    target_frame: base_link
+    source_frame: xtm60_left_link
+    angle_min: -1.0472
+    angle_max: 1.0472
+    angle_increment: 0.0087
+    range_min: 0.08
+    range_max: 8.0
+    z_min: -0.10
+    z_max: 1.20
+    scan_time: 0.1
+    use_inf: true
+    queue_size: 10
+    publish_debug_markers: true
+    restamp_output: true

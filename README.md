@@ -114,11 +114,28 @@ pip3 install fastapi uvicorn pyyaml pytest pyserial
 sudo usermod -a -G dialout $USER
 ```
 
-3. 配置 XT-M60 网口。假设 Orin 有线网卡是 `eth0`：
+3. 配置 XT-M60 网口。推荐使用脚本自动给有线网口追加雷达专用副地址，不修改 WiFi/互联网默认网关：
 
 ```bash
-sudo ip addr add 10.55.231.100/24 dev eth0
+sudo scripts/setup_radar_network.sh
 ping 10.55.231.101
+```
+
+雷达默认 IP 为 `10.55.231.101`，Orin 默认追加 `10.55.231.100/24`。如果要开机自动配置：
+
+```bash
+sudo scripts/setup_radar_network.sh --install-service
+```
+
+该脚本不会设置默认网关，因此不会影响 WiFi 或其他网络。你提供的网关 `10.55.0.1` 不在 `10.55.231.0/24` 网段内，直连雷达通信不需要使用它。
+
+后续双 XT-M60 布局预留左侧 `192.168.0.101`、右侧 `192.168.0.201`。雷达 IP 改好后，可给 Orin 有线口追加 `192.168.0.100/24`，并一次添加两个雷达的主机路由：
+
+```bash
+sudo scripts/setup_radar_network.sh \
+  --radar-ip 192.168.0.101,192.168.0.201 \
+  --host-cidr 192.168.0.100/24 \
+  --gateway 192.168.0.1
 ```
 
 4. 配置 XTSDK。假设 SDK 放在 `/opt/xtsdk_py-main`：
@@ -301,6 +318,17 @@ AGX Orin + Ubuntu 22.04 通常使用 ROS2 Humble 的 Python 3.10，SDK 需要存
 ros2 launch wheelchair_bringup sensors.launch.py mode:=real
 ros2 topic echo /xtm60/status
 ros2 topic hz /xtm60/points
+```
+
+双雷达调试时保留单雷达默认配置，同时启用左右两个适配器：
+
+```bash
+ros2 launch wheelchair_bringup sensors.launch.py mode:=real \
+  enable_xtm60:=false \
+  enable_xtm60_left:=true \
+  enable_xtm60_right:=true
+ros2 topic hz /xtm60/left/points
+ros2 topic hz /xtm60/right/points
 ```
 
 如果雷达不是默认 IP，修改 `src/wheelchair_bringup/config/xtm60_sdk.yaml` 或直接传参：
@@ -534,6 +562,7 @@ pytest src/wheelchair_sensors/test src/wheelchair_perception/test src/wheelchair
 - 用实际 ZLAC8030/KeepLINK 手册确认寄存器地址、速度单位、使能流程和反馈寄存器
 - 接入物理急停 IO 节点并做硬件断电链路测试
 - 接入电机编码器反馈后启用 EKF 融合 `/wheel/odom` + IMU
+- 补齐建图产品化流程：rosbag 录制、离线建图、地图质量评分、地图版本管理和 GUI 验收状态
 - 用实车数据标定 Nav2 costmap、DWB 局部规划器和安全阈值
 - 完成地图维护模式：长期障碍候选、用户确认、静态地图写入
 - 扩展右/后摄像头与行人/门状态/物体识别

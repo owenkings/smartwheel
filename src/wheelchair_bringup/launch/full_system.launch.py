@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -9,6 +10,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     map_file = LaunchConfiguration("map")
     ui_port = LaunchConfiguration("ui_port")
+    enable_web_ui = LaunchConfiguration("enable_web_ui")
+    enable_native_gui = LaunchConfiguration("enable_native_gui")
 
     bringup_share = FindPackageShare("wheelchair_bringup")
     navigation_share = FindPackageShare("wheelchair_navigation")
@@ -17,6 +20,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("map", default_value=PathJoinSubstitution([bringup_share, "config", "empty_map.yaml"])),
             DeclareLaunchArgument("ui_port", default_value="8080"),
+            DeclareLaunchArgument("enable_web_ui", default_value="true"),
+            DeclareLaunchArgument("enable_native_gui", default_value="false"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([bringup_share, "launch", "sensors.launch.py"])
@@ -70,6 +75,20 @@ def generate_launch_description():
                     "--semantic-map-path",
                     PathJoinSubstitution([navigation_share, "config", "semantic_map.yaml"]),
                 ],
+                condition=IfCondition(enable_web_ui),
+            ),
+            Node(
+                package="wheelchair_ui",
+                executable="wheelchair_native_gui",
+                name="wheelchair_native_gui",
+                output="screen",
+                arguments=[
+                    "--named-goals-path",
+                    PathJoinSubstitution([navigation_share, "config", "named_goals.yaml"]),
+                    "--semantic-map-path",
+                    PathJoinSubstitution([navigation_share, "config", "semantic_map.yaml"]),
+                ],
+                condition=IfCondition(enable_native_gui),
             ),
         ]
     )

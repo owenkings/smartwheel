@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "current": {
+    "map_20260528_003125": "map_20260528_003125_20260528_003346"
+  },
+  "latest": "map_20260528_003125_20260528_003346",
+  "versions": [
+    {
+      "version_id": "map_20260528_003125_20260528_003346",
+      "map_name": "map_20260528_003125",
+      "created_at": "2026-05-28T00:33:48+08:00",
+      "current_yaml": "/home/nvidia/smartwheel/maps/map_20260528_003125.yaml",
+      "version_yaml": "/home/nvidia/smartwheel/maps/versions/map_20260528_003125_20260528_003346.yaml",
+      "quality_report": "/home/nvidia/smartwheel/maps/versions/map_20260528_003125_20260528_003346_quality.json",
+      "quality": {
+        "verdict": "BAD",
+        "score": 20,
+        "reasons": [
+          {
+            "severity": "bad",
+            "message": "地图像素过少：128 < 1000"
+          },
+          {
+            "severity": "bad",
+            "message": "地图面积过小：0.32 m^2"
+          }
+        ]
+      },
+      "log_path": "/home/nvidia/smartwheel/.ros/log/mapping_20260528_003125.log",
+      "source": "gui_online_mapping"
+    }
+  ],
+  "updated_at": "2026-05-28T00:33:48+08:00"
+}

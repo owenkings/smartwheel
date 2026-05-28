@@ -154,7 +154,7 @@ class YesenseParser:
 
 @dataclass
 class H30ImuAdapter:
-    port: str = "/dev/ttyUSB0"
+    port: str = "/dev/smartwheel_h30_imu"
     baud_rate: int = 460800
     timeout_sec: float = 0.01
     parser: YesenseParser = field(default_factory=YesenseParser)
@@ -193,7 +193,7 @@ class ImuAdapterNode(Node):
         self.declare_parameter("mode", "real")
         self.declare_parameter("frame_id", "imu_link")
         self.declare_parameter("publish_rate_hz", 100.0)
-        self.declare_parameter("serial_port", "/dev/ttyUSB0")
+        self.declare_parameter("serial_port", "/dev/smartwheel_h30_imu")
         self.declare_parameter("baud_rate", 460800)
         self.declare_parameter("serial_timeout_sec", 0.01)
         self.declare_parameter("orientation_covariance", [0.05, 0.05, 0.10])
@@ -270,9 +270,15 @@ def main(args=None):
     node = ImuAdapterNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -26,9 +26,51 @@ scripts/run_real_sensors.sh
 
 脚本默认启动 IMU，但不启动 Nav2、底盘驱动和速度控制链路；只用于真实传感器接入验证。临时不接 IMU 时使用 `scripts/run_real_sensors.sh --no-imu`。
 
+XT-M60 雷达网络可用以下脚本配置，不修改默认网关，不影响 WiFi：
+
+```bash
+sudo scripts/setup_radar_network.sh
+sudo scripts/setup_radar_network.sh --install-service
+```
+
+未来双 XT-M60 布局预留：
+
+- 左侧 XT-M60：`192.168.0.101`，topic `/xtm60/left/points`
+- 右侧 XT-M60：`192.168.0.201`，topic `/xtm60/right/points`
+
+雷达 IP 改好后配置有线网段：
+
+```bash
+sudo scripts/setup_radar_network.sh \
+  --radar-ip 192.168.0.101,192.168.0.201 \
+  --host-cidr 192.168.0.100/24 \
+  --gateway 192.168.0.1
+```
+
+只启动双雷达适配器：
+
+```bash
+ros2 launch wheelchair_bringup sensors.launch.py mode:=real \
+  enable_xtm60:=false \
+  enable_xtm60_left:=true \
+  enable_xtm60_right:=true
+```
+
+自动运行和硬件收尾：
+
+```bash
+scripts/install_autostart.sh
+systemctl --user start smartwheel.service
+systemctl --user stop smartwheel.service
+scripts/hardware_shutdown.sh
+```
+
+`smartwheel.service` 默认启动 `full_system.launch.py`，停止服务或脚本退出时会先发布急停和零速命令，再结束 ROS 进程，让各节点释放 XT-M60、串口、摄像头和底盘连接。
+
 关键配置：
 
 - `config/pointcloud_to_scan.yaml`：XT-M60 点云投影参数
+- `config/xtm60_left.yaml`、`config/xtm60_right.yaml`：双 XT-M60 预留 IP、frame 和 SDK 参数
 - `config/h30_imu.yaml`：H30 Yesense 串口参数
 - `config/ultrasonic.yaml`：FD07-34 Modbus RTU 参数
 - `config/camera.yaml`：USB 摄像头参数

@@ -38,6 +38,12 @@ def test_project_points_to_scan_uses_nearest_range_per_angle_bin():
     assert all(math.isinf(value) for index, value in enumerate(ranges) if index not in (center_index, right_index))
 
 
+def test_scan_projection_uses_expected_laserscan_beam_count():
+    config = ScanProjectionConfig()
+
+    assert config.beam_count == 242
+
+
 def pytest_approx(value):
     import pytest
 

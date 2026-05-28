@@ -2,6 +2,7 @@
 build/
 install/
 log/
+.ros/
 
 # Python cache
 __pycache__/
@@ -23,17 +24,18 @@ htmlcov/
 bags/
 *.db3
 *.mcap
-metadata.yaml
 
-# Maps (generated, not source)
+# Maps - keep source configs, ignore generated images
 maps/*.pgm
-maps/*.yaml
 maps/*.png
 !maps/.gitkeep
+!maps/map_versions.json
 
-# IDE
+# IDE / AI agents
 .vscode/
 .idea/
+.agents/
+.codex/
 *.swp
 *.swo
 *~
@@ -45,3 +47,9 @@ Thumbs.db
 # Secrets / device config overrides
 *.env
 local_config.yaml
+
+# Vendor SDK (too large, install separately)
+xtsdk_py/
+
+# XT-M60 logs
+xtlog/
