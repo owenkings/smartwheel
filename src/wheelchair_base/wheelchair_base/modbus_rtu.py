@@ -99,9 +99,16 @@ class ModbusRtuClient:
         with self._lock:
             self._serial.reset_input_buffer()
             self._serial.write(request)
-            response = self._serial.read(response_len)
-        if len(response) != response_len:
-            raise TimeoutError(f"Modbus timeout: expected {response_len} bytes, got {len(response)}")
+            header = self._serial.read(2)
+            if len(header) < 2:
+                raise TimeoutError(f"Modbus timeout: no response header (got {len(header)} bytes)")
+            # An exception reply is function|0x80 + 1 code byte + 2 CRC (5 total).
+            is_exception = bool(header[1] & 0x80)
+            remaining = 3 if is_exception else (response_len - 2)
+            response = header + self._serial.read(remaining)
+        expected = 5 if is_exception else response_len
+        if len(response) != expected:
+            raise TimeoutError(f"Modbus timeout: expected {expected} bytes, got {len(response)}")
         return response
 
     @staticmethod

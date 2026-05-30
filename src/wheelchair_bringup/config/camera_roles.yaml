@@ -1,0 +1,32 @@
+# Camera role assignment for 3D SLAM.
+#
+# Only ONE camera enters the LIVO estimator (main_livo_camera). The other
+# forward camera is aux: recognition / display / texture / semantics only.
+# It does NOT enter the main estimator. The two forward cameras are ~60 cm
+# apart; the blind wedge between them is NOT a free path - middle-path geometry
+# is judged by the XT-M60 point cloud, and near blind spots by the 4 ultrasonic
+# sensors + safety_supervisor.
+#
+# These cameras are NOT a calibrated stereo pair and must not be used as one.
+#
+# camera_adapter_node publishes /camera/{front,left,right,rear}/image_raw. It
+# does NOT publish camera_info; provide it via a calibrated camera_info
+# publisher (see docs/calibration_checklist.md). The *_camera_info_topic names
+# below are where the LIVO backend / colorizer will look for it.
+
+camera_roles:
+  # Selected by launch arg main_camera:=left|right. Default left.
+  default_main_camera: left
+
+  # Stable aliases the LIVO backend and colorizer subscribe to.
+  main_camera_alias_topic: /main_camera/image_raw
+  main_camera_info_alias_topic: /main_camera/camera_info
+
+  left:
+    image_topic: /camera/left/image_raw
+    camera_info_topic: /camera/left/camera_info
+    frame_id: camera_left_link
+  right:
+    image_topic: /camera/right/image_raw
+    camera_info_topic: /camera/right/camera_info
+    frame_id: camera_right_link

@@ -1,0 +1,30 @@
+[Unit]
+Description=SmartWheel ROS2 full system
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WORKSPACE_ROOT@
+Environment=ROS_DOMAIN_ID=0
+Environment=SMARTWHEEL_LAUNCH_FILE=full_system.launch.py
+Environment=SMARTWHEEL_UI_PORT=8080
+Environment=SMARTWHEEL_MODE=real
+# Default to NOT starting the XT-M60 radar at boot. Radar stays in standby
+# (powered, idle, no laser firing). To enable scanning, run:
+#   systemctl --user edit smartwheel.service
+# and add an override:
+#   [Service]
+#   Environment=SMARTWHEEL_ENABLE_XTM60=true
+# Then: systemctl --user daemon-reload && systemctl --user restart smartwheel.service
+Environment=SMARTWHEEL_ENABLE_XTM60=false
+Environment=ROS_LOG_DIR=@WORKSPACE_ROOT@/.ros/log
+ExecStart=@WORKSPACE_ROOT@/scripts/autostart_smartwheel.sh
+ExecStop=@WORKSPACE_ROOT@/scripts/hardware_shutdown.sh
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

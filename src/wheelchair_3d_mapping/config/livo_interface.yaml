@@ -1,0 +1,49 @@
+# LIVO backend interface. Read by livo_3d_mapping.launch.py. This file is the
+# single source of truth for how the external FAST-LIVO2 / R3LIVE backend is
+# wired to the wheelchair topics. Editing this does NOT require touching code.
+
+# Default backend; overridden by the launch arg backend:= .
+backend: none            # fast_livo2 | r3live | none
+
+# Inputs the backend should consume (produced by this repo).
+points_topic: /points_merged
+imu_topic: /imu/data
+image_topic: /main_camera/image_raw
+camera_info_topic: /main_camera/camera_info
+
+# Outputs the rest of the system expects from the backend.
+livo_odom_topic: /livo/odom
+path_topic: /livo/path
+cloud_registered_topic: /livo/cloud_registered
+rgb_cloud_topic: /livo/rgb_cloud_map
+map_cloud_topic: /livo/map_cloud
+
+# Frames.
+map_frame: livo_map      # backend's global frame (kept separate from Nav2 'map')
+base_frame: base_link
+camera_frame: main_camera_link
+lidar_frame: base_link
+
+enable_visual: true
+enable_color_map: true
+# Whether the backend publishes odom->base_link. Keep false unless tf_owner:=livo.
+publish_tf: false
+
+# External package + launch file per backend. Names VARY by how you installed
+# the backend - verify with 'ros2 pkg list' and 'ros2 launch <pkg> <file>' and
+# edit here. See docs/fast_livo2_r3live_integration.md.
+backends:
+  fast_livo2:
+    package: fast_livo
+    launch_file: fast_livo_mapping.launch.py
+  r3live:
+    package: r3live
+    launch_file: r3live_mapping.launch.py
+
+# Optional global remaps applied to the backend's nodes so its internal topic
+# names line up with the names above. Format: list of [from, to] pairs.
+# Example:
+#   external_remappings:
+#     - ["/cloud_registered", "/livo/cloud_registered"]
+#     - ["/aft_mapped_to_init", "/livo/odom"]
+external_remappings: []

@@ -1,0 +1,25 @@
+dual_lidar_cloud_fusion_node:
+  ros__parameters:
+    # XT-M60 left/right point cloud inputs and the frame to merge them into.
+    left_points_topic: /xtm60/left/points
+    right_points_topic: /xtm60/right/points
+    target_frame: base_link
+    output_topic: /points_merged
+    status_topic: /points_merged/status
+
+    # Radial range filter (sensor frame), then height filter (target frame).
+    min_range: 0.05
+    max_range: 20.0
+    z_min: -2.0
+    z_max: 3.0
+
+    # 0.0 disables voxel downsampling. Raise to thin dense clouds before LIVO.
+    voxel_leaf_size: 0.05
+
+    # If only one lidar is fresh, keep publishing from it instead of stopping.
+    allow_single_lidar_fallback: true
+    publish_diagnostics: true
+
+    output_rate_hz: 10.0
+    input_timeout_sec: 0.5
+    tf_timeout_sec: 0.1

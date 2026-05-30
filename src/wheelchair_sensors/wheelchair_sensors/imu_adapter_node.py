@@ -154,7 +154,7 @@ class YesenseParser:
 
 @dataclass
 class H30ImuAdapter:
-    port: str = "/dev/ttyUSB0"
+    port: str = "/dev/smartwheel_h30_imu"
     baud_rate: int = 460800
     timeout_sec: float = 0.01
     parser: YesenseParser = field(default_factory=YesenseParser)
@@ -179,11 +179,14 @@ class H30ImuAdapter:
             self._serial.close()
             self._serial = None
 
-    def read_sample(self) -> Optional[YesenseSample]:
+    def read_samples(self) -> List[YesenseSample]:
         self.open()
         waiting = getattr(self._serial, "in_waiting", 0) or 1
         data = self._serial.read(waiting)
-        samples = self.parser.feed(data)
+        return self.parser.feed(data)
+
+    def read_sample(self) -> Optional[YesenseSample]:
+        samples = self.read_samples()
         return samples[-1] if samples else None
 
 
@@ -193,7 +196,7 @@ class ImuAdapterNode(Node):
         self.declare_parameter("mode", "real")
         self.declare_parameter("frame_id", "imu_link")
         self.declare_parameter("publish_rate_hz", 100.0)
-        self.declare_parameter("serial_port", "/dev/ttyUSB0")
+        self.declare_parameter("serial_port", "/dev/smartwheel_h30_imu")
         self.declare_parameter("baud_rate", 460800)
         self.declare_parameter("serial_timeout_sec", 0.01)
         self.declare_parameter("orientation_covariance", [0.05, 0.05, 0.10])
@@ -223,13 +226,13 @@ class ImuAdapterNode(Node):
             self.pub.publish(msg)
             return
         try:
-            sample = self.adapter.read_sample()
+            samples = self.adapter.read_samples()
         except Exception as exc:
             if not self.warned:
                 self.get_logger().warning(f"H30 IMU serial read failed: {exc}")
                 self.warned = True
             return
-        if sample is not None:
+        for sample in samples:
             self.pub.publish(self._sample_to_msg(sample))
 
     def _sample_to_msg(self, sample: YesenseSample):
@@ -259,8 +262,10 @@ class ImuAdapterNode(Node):
         covariance[8] = float(diagonal[2])
 
     def destroy_node(self):
-        self.adapter.close()
-        super().destroy_node()
+        try:
+            self.adapter.close()
+        finally:
+            super().destroy_node()
 
 
 def main(args=None):
@@ -270,9 +275,15 @@ def main(args=None):
     node = ImuAdapterNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

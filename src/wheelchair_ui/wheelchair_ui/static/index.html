@@ -7,67 +7,182 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header>
-    <h1>室内自动轮椅控制台</h1>
-    <div class="status-line">
-      <span id="safety-state">UNKNOWN</span>
-      <span id="nav-status">IDLE</span>
+  <header class="topbar">
+    <div class="brand-block">
+      <span class="brand-mark">SW</span>
+      <div>
+        <h1>室内自动轮椅控制台</h1>
+        <p id="map-metadata">地图等待中</p>
+      </div>
+    </div>
+    <div class="status-pills">
+      <span id="safety-state" class="pill neutral">UNKNOWN</span>
+      <span id="nav-status" class="pill neutral">IDLE</span>
+      <span id="map-state" class="pill neutral">NO MAP</span>
     </div>
   </header>
-  <main>
+
+  <main class="dashboard">
     <section class="map-panel">
-      <canvas id="map-canvas" width="800" height="520"></canvas>
-      <form id="goal-form">
-        <input id="goal-name" name="name" placeholder="目标名称，如 卫生间" required>
-        <input id="goal-x" name="x" type="number" step="0.01" placeholder="x" required>
-        <input id="goal-y" name="y" type="number" step="0.01" placeholder="y" required>
-        <input id="goal-yaw" name="yaw" type="number" step="0.01" placeholder="yaw" value="0">
+      <div class="panel-header">
+        <h2>导航地图</h2>
+        <div class="map-tools">
+          <button id="refresh-map-btn" type="button">刷新地图</button>
+          <button id="zero-btn" type="button">零速</button>
+        </div>
+      </div>
+      <section class="mapping-wizard" aria-label="建图向导">
+        <div class="mapping-main">
+          <div>
+            <div class="eyebrow">建图向导</div>
+            <h3>推行建图</h3>
+          </div>
+          <span id="mapping-state-chip" class="mini-chip neutral">IDLE</span>
+        </div>
+        <div class="mapping-controls">
+          <label>
+            地图名称
+            <input id="mapping-name" placeholder="home_1f">
+          </label>
+          <button id="mapping-start-btn" type="button">开始建图</button>
+          <button id="mapping-finish-btn" type="button" class="secondary">结束并保存</button>
+          <button id="mapping-cancel-btn" type="button" class="secondary danger-outline">取消</button>
+        </div>
+        <div class="mapping-progress">
+          <i id="mapping-progress-fill"></i>
+        </div>
+        <div id="mapping-reason" class="mapping-reason">等待建图</div>
+        <div id="mapping-preflight" class="mapping-preflight"></div>
+      </section>
+      <div class="map-stage">
+        <canvas id="map-canvas" width="900" height="620"></canvas>
+      </div>
+      <form id="goal-form" class="goal-editor">
+        <label>
+          名称
+          <input id="goal-name" name="name" placeholder="卫生间" required>
+        </label>
+        <label>
+          X
+          <input id="goal-x" name="x" type="number" step="0.01" placeholder="0.00" required>
+        </label>
+        <label>
+          Y
+          <input id="goal-y" name="y" type="number" step="0.01" placeholder="0.00" required>
+        </label>
+        <label>
+          Yaw
+          <input id="goal-yaw" name="yaw" type="number" step="0.01" value="0">
+        </label>
         <button type="submit">保存目标点</button>
       </form>
     </section>
-    <aside>
-      <section>
-        <h2>当前状态</h2>
-        <dl>
+
+    <aside class="side-rail">
+      <section class="command-panel">
+        <button id="stop-btn" class="danger" type="button">停止</button>
+        <button id="resume-btn" type="button">继续</button>
+        <button id="shutdown-btn" class="secondary danger-outline" type="button">关闭硬件</button>
+      </section>
+
+      <section class="info-panel">
+        <div class="panel-header">
+          <h2>运行状态</h2>
+          <span id="last-refresh" class="muted">--</span>
+        </div>
+        <dl class="state-list">
           <dt>位姿</dt><dd id="pose">0.00, 0.00, 0.00</dd>
           <dt>当前目标</dt><dd id="current-goal">无</dd>
-          <dt>传感器</dt><dd id="sensors">等待数据</dd>
           <dt>硬件诊断</dt><dd id="hardware-status">等待数据</dd>
           <dt>定位健康</dt><dd id="localization-health">等待数据</dd>
           <dt>通行性</dt><dd id="passability-status">等待数据</dd>
         </dl>
-        <div class="actions">
-          <button id="stop-btn" class="danger">停止</button>
-          <button id="resume-btn">继续</button>
+      </section>
+
+      <section class="info-panel passability-panel">
+        <div class="panel-header">
+          <h2>通行性</h2>
+          <span id="passability-chip" class="mini-chip neutral">UNKNOWN</span>
+        </div>
+        <div class="passability-body">
+          <div id="passability-orb" class="passability-orb neutral">--</div>
+          <div class="passability-metrics">
+            <span>估计宽度 <b id="passability-width">--</b></span>
+            <span>需要宽度 <b id="passability-required">--</b></span>
+            <small id="passability-reason">等待通行性分析</small>
+          </div>
         </div>
       </section>
-      <section>
-        <h2>命名目标点</h2>
-        <ul id="goal-list"></ul>
+
+      <section class="info-panel bev-panel">
+        <div class="panel-header">
+          <h2>局部鸟瞰</h2>
+          <span class="muted">5m</span>
+        </div>
+        <canvas id="bev-canvas" width="390" height="300"></canvas>
       </section>
-      <section>
-        <h2>语义矢量地图</h2>
+
+      <section class="info-panel">
+        <div class="panel-header">
+          <h2>传感器数据</h2>
+          <span id="sensor-summary" class="muted">等待数据</span>
+        </div>
+        <div id="sensor-grid" class="sensor-grid"></div>
+        <div id="ultrasonic-grid" class="ultrasonic-grid"></div>
+      </section>
+
+      <section class="info-panel camera-panel">
+        <div class="panel-header">
+          <h2>摄像头</h2>
+          <span id="camera-summary" class="muted">等待数据</span>
+        </div>
+        <div id="camera-grid" class="camera-grid"></div>
+      </section>
+
+      <section class="info-panel">
+        <div class="panel-header">
+          <h2>命名目标点</h2>
+          <span id="goal-count" class="muted">0</span>
+        </div>
+        <ul id="goal-list" class="record-list"></ul>
+      </section>
+
+      <section class="info-panel">
+        <div class="panel-header">
+          <h2>语义地图</h2>
+          <span id="semantic-summary" class="muted">--</span>
+        </div>
         <form id="room-form" class="stack-form">
-          <input id="room-name" placeholder="房间名称" required>
-          <input id="room-color" type="color" value="#1f6feb" aria-label="房间颜色">
-          <textarea id="room-polygon" placeholder="房间边界: x,y; x,y; x,y" required></textarea>
+          <div class="form-row">
+            <label>
+              房间
+              <input id="room-name" placeholder="客厅" required>
+            </label>
+            <label>
+              颜色
+              <input id="room-color" type="color" value="#2f80ed" aria-label="房间颜色">
+            </label>
+          </div>
+          <textarea id="room-polygon" placeholder="x,y; x,y; x,y" required></textarea>
           <button type="submit">保存房间</button>
         </form>
         <ul id="room-list" class="compact-list"></ul>
         <form id="zone-form" class="stack-form">
-          <input id="zone-name" placeholder="禁行区名称" required>
-          <textarea id="zone-polygon" placeholder="禁行区: x,y; x,y; x,y" required></textarea>
+          <label>
+            禁行区
+            <input id="zone-name" placeholder="楼梯口" required>
+          </label>
+          <textarea id="zone-polygon" placeholder="x,y; x,y; x,y" required></textarea>
           <button type="submit" class="danger">保存禁行区</button>
         </form>
         <ul id="zone-list" class="compact-list"></ul>
       </section>
-      <section>
-        <h2>地图维护</h2>
-        <p>普通导航只更新局部 costmap，不写静态地图。长期障碍候选更新会在维护模式中由用户确认后写入。</p>
-        <button id="maintenance-btn" disabled>维护模式占位</button>
-      </section>
     </aside>
   </main>
+
+  <footer id="device-strip" class="device-strip"></footer>
+  <div id="notice" class="notice" hidden></div>
+  <script src="/static/gui_widgets.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

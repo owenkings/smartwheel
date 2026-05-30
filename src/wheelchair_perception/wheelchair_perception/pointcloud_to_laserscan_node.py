@@ -42,7 +42,7 @@ class ScanProjectionConfig:
 
     @property
     def beam_count(self) -> int:
-        return int(math.floor((self.angle_max - self.angle_min) / self.angle_increment)) + 1
+        return int(math.ceil((self.angle_max - self.angle_min) / self.angle_increment)) + 1
 
 
 def project_points_to_scan(
@@ -123,6 +123,7 @@ class PointCloudToLaserScanNode(Node):
         self.declare_parameter("use_inf", True)
         self.declare_parameter("queue_size", 10)
         self.declare_parameter("publish_debug_markers", True)
+        self.declare_parameter("restamp_output", True)
 
         self.input_topic = self.get_parameter("input_topic").value
         self.output_topic = self.get_parameter("output_topic").value
@@ -131,6 +132,7 @@ class PointCloudToLaserScanNode(Node):
         self.source_frame = self.get_parameter("source_frame").value
         self.scan_time = float(self.get_parameter("scan_time").value)
         self.publish_debug_markers = bool(self.get_parameter("publish_debug_markers").value)
+        self.restamp_output = bool(self.get_parameter("restamp_output").value)
         self.config = ScanProjectionConfig(
             angle_min=float(self.get_parameter("angle_min").value),
             angle_max=float(self.get_parameter("angle_max").value),
@@ -157,13 +159,11 @@ class PointCloudToLaserScanNode(Node):
         frame_id = msg.header.frame_id or self.source_frame
         try:
             points = list(self._read_points_in_target_frame(msg, frame_id))
-        except Exception as exc:  # Keep the navigation chain alive on TF or data failures.
+        except Exception as exc:  # TF or data failure.
+            # Do NOT republish a restamped stale scan: that hides the stall from
+            # /scan staleness detection (safety_supervisor, SLAM). Skip this
+            # frame so consumers can detect the gap and fail safe.
             self.get_logger().warning(f"point cloud projection skipped: {exc}")
-            if self.last_scan is not None:
-                self.last_scan.header.stamp = self.get_clock().now().to_msg()
-                self.scan_pub.publish(self.last_scan)
-            else:
-                self.scan_pub.publish(self._make_scan(msg.header, []))
             return
 
         if not points:
@@ -190,7 +190,10 @@ class PointCloudToLaserScanNode(Node):
 
     def _make_scan(self, header, ranges: Sequence[float]):
         scan = LaserScan()
-        scan.header.stamp = header.stamp if header.stamp.sec or header.stamp.nanosec else self.get_clock().now().to_msg()
+        if self.restamp_output or not (header.stamp.sec or header.stamp.nanosec):
+            scan.header.stamp = self.get_clock().now().to_msg()
+        else:
+            scan.header.stamp = header.stamp
         scan.header.frame_id = self.target_frame
         scan.angle_min = self.config.angle_min
         scan.angle_max = self.config.angle_max
@@ -237,9 +240,15 @@ def main(args=None):
     node = PointCloudToLaserScanNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

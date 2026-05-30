@@ -1,0 +1,25 @@
+cameras:
+- video_index: 0
+  usb_pos: 1-1
+  snapshot: /home/nvidia/smartwheel/docs/camera_snapshots/cam_video0_usb1-1.png
+  physical: side_left
+  rotation: 90
+  captured: true
+- video_index: 2
+  usb_pos: 1-1
+  snapshot: null
+  physical: skip
+  rotation: 0
+  captured: false
+- video_index: 4
+  usb_pos: 1-4
+  snapshot: /home/nvidia/smartwheel/docs/camera_snapshots/cam_video4_usb1-4.png
+  physical: side_right
+  rotation: 270
+  captured: true
+- video_index: 6
+  usb_pos: 1-4
+  snapshot: null
+  physical: skip
+  rotation: 0
+  captured: false

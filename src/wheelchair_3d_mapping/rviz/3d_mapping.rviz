@@ -1,0 +1,58 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Fixed Frame: livo_map
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: PointsMerged
+      Enabled: true
+      Topic:
+        Value: /points_merged
+        Depth: 5
+        Reliability Policy: Best Effort
+      Size (m): 0.02
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LivoCloudRegistered
+      Enabled: true
+      Topic:
+        Value: /livo/cloud_registered
+        Reliability Policy: Best Effort
+      Size (m): 0.02
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LivoRgbCloudMap
+      Enabled: true
+      Topic:
+        Value: /livo/rgb_cloud_map
+        Reliability Policy: Best Effort
+      Size (m): 0.03
+      Style: Points
+      Color Transformer: RGB8
+    - Class: rviz_default_plugins/Path
+      Name: LivoPath
+      Enabled: true
+      Topic:
+        Value: /livo/path
+    - Class: rviz_default_plugins/Map
+      Name: Map2DFrom3D
+      Enabled: true
+      Topic:
+        Value: /map_2d_from_3d
+        Durability Policy: Transient Local
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 15

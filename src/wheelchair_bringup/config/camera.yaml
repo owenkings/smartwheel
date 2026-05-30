@@ -5,7 +5,10 @@ camera_adapter_node:
     width: 640
     height: 480
     fps: 30.0
-    enabled_cameras: [front, left]
+    # Only the two forward cameras remain working; the LIVO main_camera:=left|right
+    # consumes /camera/left|right/image_raw. Verify /dev/video indices (pin with
+    # udev / /dev/v4l/by-id) since the removed cameras shift the indices.
+    enabled_cameras: [left, right]
     front_device: "0"
     left_device: "1"
     right_device: "2"

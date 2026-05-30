@@ -46,15 +46,16 @@ class HardwareSelfCheckNode(Node):
         self.declare_parameter("run_once", True)
         self.declare_parameter("period_sec", 10.0)
         self.declare_parameter("scan_serial_ports", False)
-        self.declare_parameter("h30_port", "/dev/ttyUSB0")
+        self.declare_parameter("h30_port", "/dev/smartwheel_h30_imu")
         self.declare_parameter("h30_baud_rate", 460800)
-        self.declare_parameter("ultrasonic_port", "/dev/ttyUSB1")
+        self.declare_parameter("ultrasonic_port", "/dev/smartwheel_ultrasonic")
         self.declare_parameter("ultrasonic_baud_rate", 9600)
-        self.declare_parameter("ultrasonic_addresses", [1, 2])
+        self.declare_parameter("ultrasonic_addresses", [1])
         self.declare_parameter("ultrasonic_register", 1)
-        self.declare_parameter("camera_devices", ["0", "1"])
+        self.declare_parameter("camera_devices", ["0"])
         self.declare_parameter("xtm60_sdk_root", "")
-        self.declare_parameter("xtm60_ip_address", "10.55.231.101")
+        self.declare_parameter("xtm60_ip_address", "192.168.1.101")
+        self.declare_parameter("xtm60_ip_addresses", [])
         self.declare_parameter("xtm60_tcp_port", 0)
         self.declare_parameter("zlac_port", "/dev/ttyUSB2")
         self.declare_parameter("zlac_baud_rate", 115200)
@@ -99,6 +100,10 @@ class HardwareSelfCheckNode(Node):
         h30_port = self._pick_port(self.get_parameter("h30_port").value, ports)
         ultra_port = self._pick_port(self.get_parameter("ultrasonic_port").value, ports)
         zlac_port = self._pick_port(self.get_parameter("zlac_port").value, ports)
+        xtm60_ips = [str(item) for item in self.get_parameter("xtm60_ip_addresses").value]
+        if not xtm60_ips:
+            xtm60_ips = [str(self.get_parameter("xtm60_ip_address").value)]
+
         results = [
             ProbeResult("serial_ports", bool(ports) or not bool(self.get_parameter("scan_serial_ports").value), "OK", "serial scan complete", {"ports": ports}),
             probe_h30_port(h30_port, int(self.get_parameter("h30_baud_rate").value)),
@@ -108,11 +113,6 @@ class HardwareSelfCheckNode(Node):
                 self.get_parameter("ultrasonic_addresses").value,
                 int(self.get_parameter("ultrasonic_register").value),
             ),
-            probe_xtm60_sdk(
-                self.get_parameter("xtm60_sdk_root").value,
-                self.get_parameter("xtm60_ip_address").value,
-                int(self.get_parameter("xtm60_tcp_port").value),
-            ),
             probe_zlac_read_register(
                 zlac_port,
                 int(self.get_parameter("zlac_baud_rate").value),
@@ -120,6 +120,14 @@ class HardwareSelfCheckNode(Node):
                 int(self.get_parameter("zlac_probe_register").value),
             ),
         ]
+        for index, ip_address in enumerate(xtm60_ips):
+            result = probe_xtm60_sdk(
+                self.get_parameter("xtm60_sdk_root").value,
+                ip_address,
+                int(self.get_parameter("xtm60_tcp_port").value),
+            )
+            result.name = f"xtm60_{index}_{ip_address}"
+            results.append(result)
         for device in self.get_parameter("camera_devices").value:
             result = probe_camera_device(str(device))
             result.name = f"camera_{device}"
@@ -138,9 +146,12 @@ def main(args=None):
     node = HardwareSelfCheckNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

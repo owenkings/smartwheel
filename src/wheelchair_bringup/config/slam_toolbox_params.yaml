@@ -12,14 +12,23 @@ slam_toolbox:
     transform_publish_period: 0.05
     map_update_interval: 2.0
     throttle_scans: 1
-    transform_timeout: 0.2
+    # transform_timeout was 0.2 originally; bumped to 1.0 because slam_toolbox
+    # was logging "Message Filter dropping message: queue is full" on Orin
+    # during real mapping runs. ZLAC8030 modbus reads block the zlac8030
+    # driver thread for tens of ms occasionally, which delays the
+    # odom -> base_link TF and causes scan messages to time out waiting for
+    # transform. A longer timeout lets the TF arrive late instead of dropping
+    # the scan; the cost is up to ~1s extra latency in the worst case.
+    transform_timeout: 1.0
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
     use_scan_matching: true
     use_scan_barycenter: true
     minimum_travel_distance: 0.05
     minimum_travel_heading: 0.05
-    scan_buffer_size: 10
+    # scan_buffer_size was 10. Bumped to 50 so scans queue up while TF
+    # eventually arrives instead of being silently dropped.
+    scan_buffer_size: 50
     scan_buffer_maximum_scan_distance: 8.0
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5

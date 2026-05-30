@@ -37,10 +37,12 @@ class SensorWatchdogNode(Node):
         self.declare_parameter("base_timeout_sec", 1.0)
         self.declare_parameter("imu_timeout_sec", 1.5)
         self.declare_parameter("ultrasonic_timeout_sec", 1.5)
+        self.declare_parameter("ultrasonic_topics", ["/ultrasonic/range_0"])
         self.declare_parameter("ultrasonic_0_critical", True)
-        self.declare_parameter("ultrasonic_1_critical", True)
+        self.declare_parameter("ultrasonic_1_critical", False)
         self.declare_parameter("camera_timeout_sec", 3.0)
         self.declare_parameter("points_timeout_sec", 1.5)
+        self.declare_parameter("points_topics", ["/xtm60/points"])
 
         self.startup_time = time.monotonic()
         self.last_seen: Dict[str, float] = {}
@@ -54,26 +56,38 @@ class SensorWatchdogNode(Node):
         self.timer = self.create_timer(1.0 / rate, self.tick)
 
     def _make_rules(self):
-        return [
+        rules = [
             TopicRule("/scan", float(self.get_parameter("scan_timeout_sec").value), True, "2D scan"),
             TopicRule("/wheel/odom", float(self.get_parameter("odom_timeout_sec").value), True, "wheel odom"),
             TopicRule("/base/status", float(self.get_parameter("base_timeout_sec").value), True, "base driver"),
             TopicRule("/imu/data", float(self.get_parameter("imu_timeout_sec").value), False, "H30 IMU"),
-            TopicRule(
-                "/ultrasonic/range_0",
-                float(self.get_parameter("ultrasonic_timeout_sec").value),
-                bool(self.get_parameter("ultrasonic_0_critical").value),
-                "ultrasonic 0",
-            ),
-            TopicRule(
-                "/ultrasonic/range_1",
-                float(self.get_parameter("ultrasonic_timeout_sec").value),
-                bool(self.get_parameter("ultrasonic_1_critical").value),
-                "ultrasonic 1",
-            ),
             TopicRule("/camera/front/image_raw", float(self.get_parameter("camera_timeout_sec").value), False, "front camera"),
-            TopicRule("/xtm60/points", float(self.get_parameter("points_timeout_sec").value), False, "XT-M60 points"),
         ]
+        for index, topic in enumerate(self.get_parameter("points_topics").value):
+            rules.append(
+                TopicRule(
+                    str(topic),
+                    float(self.get_parameter("points_timeout_sec").value),
+                    False,
+                    f"XT-M60 points {index}",
+                )
+            )
+        for index, topic in enumerate(self.get_parameter("ultrasonic_topics").value):
+            critical_name = f"ultrasonic_{index}_critical"
+            critical = (
+                bool(self.get_parameter(critical_name).value)
+                if self.has_parameter(critical_name)
+                else index == 0
+            )
+            rules.append(
+                TopicRule(
+                    str(topic),
+                    float(self.get_parameter("ultrasonic_timeout_sec").value),
+                    critical,
+                    f"ultrasonic {index}",
+                )
+            )
+        return rules
 
     def _create_subscriptions(self):
         topic_types = {
@@ -81,11 +95,12 @@ class SensorWatchdogNode(Node):
             "/wheel/odom": Odometry,
             "/base/status": String,
             "/imu/data": Imu,
-            "/ultrasonic/range_0": Range,
-            "/ultrasonic/range_1": Range,
             "/camera/front/image_raw": Image,
-            "/xtm60/points": PointCloud2,
         }
+        for topic in self.get_parameter("points_topics").value:
+            topic_types[str(topic)] = PointCloud2
+        for topic in self.get_parameter("ultrasonic_topics").value:
+            topic_types[str(topic)] = Range
         for topic, msg_type in topic_types.items():
             self.create_subscription(msg_type, topic, lambda _msg, t=topic: self.mark_seen(t), 10)
 
@@ -137,9 +152,12 @@ def main(args=None):
     node = SensorWatchdogNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

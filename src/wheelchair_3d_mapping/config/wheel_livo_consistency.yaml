@@ -1,0 +1,17 @@
+wheel_livo_consistency_monitor:
+  ros__parameters:
+    wheel_odom_topic: /wheel/odom
+    livo_odom_topic: /livo/odom
+    output_status_topic: /livo_wheel/status
+    score_topic: /livo_wheel/consistency_score
+
+    # Comparison window and divergence thresholds. Tune on the real wheelchair:
+    # start loose, then tighten once LIVO and wheel odom agree on a clean run.
+    window_sec: 1.0
+    max_linear_velocity_diff: 0.15
+    max_angular_velocity_diff: 0.30
+    max_distance_diff: 0.20
+    warning_hold_sec: 3.0
+
+    publish_rate_hz: 5.0
+    source_timeout_sec: 1.0

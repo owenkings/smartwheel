@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from wheelchair_navigation.semantic_map_store import default_semantic_map_path
+from wheelchair_ui.mapping_manager import MappingManager
 from wheelchair_ui.ros_bridge import RosBridge, default_named_goals_path
 
 
@@ -31,14 +32,29 @@ class ZonePayload(BaseModel):
     polygon: list[list[float]]
 
 
+class MappingStartPayload(BaseModel):
+    map_name: str | None = None
+    force: bool = False
+
+
+class MappingFinishPayload(BaseModel):
+    map_name: str | None = None
+
+
+class MappingVersionPayload(BaseModel):
+    version_id: str
+
+
 def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> FastAPI:
     app = FastAPI(title="Wheelchair Control UI", version="0.1.0")
     bridge = RosBridge(named_goals_path, semantic_map_path)
+    mapping = MappingManager()
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.on_event("shutdown")
     def shutdown_bridge():
+        mapping.shutdown()
         bridge.shutdown()
 
     @app.get("/")
@@ -51,7 +67,7 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
 
     @app.get("/api/map")
     def map_snapshot():
-        return bridge.node.map_snapshot() or {
+        return bridge.node.map_snapshot() or mapping.map_snapshot() or {
             "frame_id": "map",
             "width": 80,
             "height": 60,
@@ -59,6 +75,30 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
             "origin": {"x": -2.0, "y": -1.5},
             "data": [-1] * (80 * 60),
         }
+
+    @app.get("/api/mapping/status")
+    def mapping_status():
+        return mapping.status(bridge.node.status())
+
+    @app.get("/api/mapping/preflight")
+    def mapping_preflight():
+        return mapping.preflight(bridge.node.status())
+
+    @app.post("/api/mapping/start")
+    def mapping_start(payload: MappingStartPayload):
+        return mapping.start(bridge.node.status(), payload.map_name, payload.force)
+
+    @app.post("/api/mapping/finish")
+    def mapping_finish(payload: MappingFinishPayload):
+        return mapping.finish(payload.map_name)
+
+    @app.post("/api/mapping/cancel")
+    def mapping_cancel():
+        return mapping.cancel()
+
+    @app.post("/api/mapping/version/activate")
+    def mapping_activate_version(payload: MappingVersionPayload):
+        return mapping.activate_version(payload.version_id)
 
     @app.get("/api/goals")
     def goals():
@@ -89,6 +129,15 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
     def resume():
         bridge.node.set_software_stop(False)
         return {"ok": True}
+
+    @app.post("/api/hardware/zero")
+    def zero_velocity():
+        bridge.node.publish_zero_velocity()
+        return {"ok": True}
+
+    @app.post("/api/hardware/shutdown")
+    def hardware_shutdown():
+        return bridge.node.request_hardware_shutdown()
 
     @app.get("/api/semantic-map")
     def semantic_map():

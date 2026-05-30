@@ -16,3 +16,4 @@ pointcloud_to_laserscan_node:
     use_inf: true
     queue_size: 10
     publish_debug_markers: true
+    restamp_output: true

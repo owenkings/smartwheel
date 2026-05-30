@@ -7,10 +7,21 @@ sensor_watchdog_node:
     base_timeout_sec: 1.0
     imu_timeout_sec: 1.5
     ultrasonic_timeout_sec: 1.5
+    ultrasonic_topics:
+      - /ultrasonic/range_0
+      # Future full layout:
+      # - /ultrasonic/range_1
+      # - /ultrasonic/range_2
+      # - /ultrasonic/range_3
     ultrasonic_0_critical: true
-    ultrasonic_1_critical: true
+    ultrasonic_1_critical: false
     camera_timeout_sec: 3.0
     points_timeout_sec: 1.5
+    points_topics:
+      - /xtm60/left/points
+      - /xtm60/right/points
+      # Legacy single-radar topic, used only when enable_dual_xtm60:=false.
+      # - /xtm60/points
 
 localization_health_node:
   ros__parameters:
@@ -26,15 +37,18 @@ hardware_self_check_node:
     run_once: true
     period_sec: 10.0
     scan_serial_ports: false
-    h30_port: /dev/ttyUSB0
+    h30_port: /dev/smartwheel_h30_imu
     h30_baud_rate: 460800
-    ultrasonic_port: /dev/ttyUSB1
+    ultrasonic_port: /dev/smartwheel_ultrasonic
     ultrasonic_baud_rate: 9600
-    ultrasonic_addresses: [1, 2]
+    ultrasonic_addresses: [1]
     ultrasonic_register: 1
-    camera_devices: ["0", "1"]
-    xtm60_sdk_root: ""
-    xtm60_ip_address: 10.55.231.101
+    camera_devices: ["0"]
+    xtm60_sdk_root: "/home/nvidia/smartwheel/xtsdk_py"
+    xtm60_ip_address: 192.168.1.101
+    xtm60_ip_addresses:
+      - 192.168.0.101
+      - 192.168.1.101
     xtm60_tcp_port: 0
     zlac_port: /dev/ttyUSB2
     zlac_baud_rate: 115200

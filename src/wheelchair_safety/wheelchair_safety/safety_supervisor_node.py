@@ -244,11 +244,6 @@ class SafetySupervisorNode(Node):
             "ultrasonic_topics",
             [
                 "/ultrasonic/range_0",
-                "/ultrasonic/range_1",
-                "/ultrasonic/range_2",
-                "/ultrasonic/range_3",
-                "/ultrasonic/range_4",
-                "/ultrasonic/range_5",
             ],
         )
         for field, default in SafetyParams().__dict__.items():
@@ -256,7 +251,10 @@ class SafetySupervisorNode(Node):
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("stale_timeout_sec", 1.0)
         self.declare_parameter("ultrasonic_stale_timeout_sec", 1.5)
-        self.declare_parameter("min_ultrasonic_online", 2)
+        self.declare_parameter("min_ultrasonic_online", 1)
+        self.declare_parameter("cmd_timeout_sec", 0.5)
+        self.declare_parameter("require_emergency_heartbeat", False)
+        self.declare_parameter("emergency_timeout_sec", 1.0)
 
         self.params = SafetyParams(
             **self._load_safety_params()
@@ -266,6 +264,9 @@ class SafetySupervisorNode(Node):
             self.get_parameter("ultrasonic_stale_timeout_sec").value
         )
         self.min_ultrasonic_online = int(self.get_parameter("min_ultrasonic_online").value)
+        self.cmd_timeout_sec = float(self.get_parameter("cmd_timeout_sec").value)
+        self.require_emergency_heartbeat = bool(self.get_parameter("require_emergency_heartbeat").value)
+        self.emergency_timeout_sec = float(self.get_parameter("emergency_timeout_sec").value)
         self.require_localization_healthy = bool(
             self.get_parameter("require_localization_healthy").value
         )
@@ -274,6 +275,8 @@ class SafetySupervisorNode(Node):
         )
 
         self.latest_cmd = (0.0, 0.0)
+        self.latest_cmd_time = self.get_clock().now()
+        self.last_emergency_time = None
         self.latest_scan_distance = math.inf
         self.ultrasonic_ranges: Dict[str, float] = {}
         self.emergency_hw = False
@@ -363,7 +366,12 @@ class SafetySupervisorNode(Node):
         return values
 
     def on_cmd_vel(self, msg):
-        self.latest_cmd = (float(msg.linear.x), float(msg.angular.z))
+        lx, az = float(msg.linear.x), float(msg.angular.z)
+        if not (math.isfinite(lx) and math.isfinite(az)):
+            self.get_logger().warning("ignoring /cmd_vel_nav with non-finite values")
+            return
+        self.latest_cmd = (lx, az)
+        self.latest_cmd_time = self.get_clock().now()
 
     def on_scan(self, msg):
         self.latest_scan_distance = min_front_scan_distance(
@@ -381,9 +389,11 @@ class SafetySupervisorNode(Node):
 
     def on_emergency_hw(self, msg):
         self.emergency_hw = bool(msg.data)
+        self.last_emergency_time = self.get_clock().now()
 
     def on_emergency_sw(self, msg):
         self.emergency_sw = bool(msg.data)
+        self.last_emergency_time = self.get_clock().now()
 
     def on_system_stop_required(self, msg):
         self.system_stop_required = bool(msg.data)
@@ -419,10 +429,18 @@ class SafetySupervisorNode(Node):
         now = self.get_clock().now()
         scan_distance = self.latest_scan_distance
         age = (now - self.last_scan_time).nanoseconds / 1e9
-        stale_reason = ""
         if age > self.stale_timeout_sec:
             self._publish_zero_state(f"SENSOR_FAULT: scan stale for {age:.2f}s")
             return
+
+        if self.require_emergency_heartbeat:
+            if self.last_emergency_time is None:
+                self._publish_zero_state("SENSOR_FAULT: emergency-stop heartbeat missing")
+                return
+            e_age = (now - self.last_emergency_time).nanoseconds / 1e9
+            if e_age > self.emergency_timeout_sec:
+                self._publish_zero_state(f"SENSOR_FAULT: emergency-stop heartbeat stale for {e_age:.2f}s")
+                return
 
         ultrasonic_fault = self._ultrasonic_fault_reason(now)
         if ultrasonic_fault:
@@ -444,9 +462,11 @@ class SafetySupervisorNode(Node):
             self._publish_zero_state(f"STOP: passability blocked; {self.passability_reason}")
             return
 
+        cmd_age = (now - self.latest_cmd_time).nanoseconds / 1e9
+        requested = self.latest_cmd if cmd_age <= self.cmd_timeout_sec else (0.0, 0.0)
         decision = evaluate_safety(
-            self.latest_cmd[0],
-            self.latest_cmd[1],
+            requested[0],
+            requested[1],
             scan_distance,
             self.ultrasonic_ranges.values(),
             self.emergency_hw,
@@ -461,7 +481,7 @@ class SafetySupervisorNode(Node):
 
         state = String()
         state.data = (
-            f"{decision.state}: {stale_reason}{decision.reason}; "
+            f"{decision.state}: {decision.reason}; "
             f"scan={decision.min_scan_distance:.2f}m ultrasonic={decision.min_ultrasonic_distance:.2f}m "
             f"dynamic_stop={decision.dynamic_stop_distance:.2f}m"
         )
@@ -515,9 +535,12 @@ def main(args=None):
     node = SafetySupervisorNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

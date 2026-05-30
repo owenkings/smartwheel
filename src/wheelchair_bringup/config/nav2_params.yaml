@@ -133,7 +133,7 @@ local_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        observation_sources: scan
+        observation_sources: scan xtm60_points xtm60_left_points xtm60_right_points
         scan:
           topic: /scan
           max_obstacle_height: 1.2
@@ -144,6 +144,33 @@ local_costmap:
           raytrace_min_range: 0.08
           obstacle_max_range: 3.0
           obstacle_min_range: 0.08
+        xtm60_points:
+          topic: /xtm60/points
+          max_obstacle_height: 1.2
+          min_obstacle_height: 0.05
+          clearing: false
+          marking: true
+          data_type: PointCloud2
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.08
+        xtm60_left_points:
+          topic: /xtm60/left/points
+          max_obstacle_height: 1.2
+          min_obstacle_height: 0.05
+          clearing: false
+          marking: true
+          data_type: PointCloud2
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.08
+        xtm60_right_points:
+          topic: /xtm60/right/points
+          max_obstacle_height: 1.2
+          min_obstacle_height: 0.05
+          clearing: false
+          marking: true
+          data_type: PointCloud2
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.08
       range_layer:
         plugin: nav2_costmap_2d::RangeSensorLayer
         enabled: true
@@ -152,8 +179,6 @@ local_costmap:
           - /ultrasonic/range_1
           - /ultrasonic/range_2
           - /ultrasonic/range_3
-          - /ultrasonic/range_4
-          - /ultrasonic/range_5
         clear_on_max_reading: true
         no_readings_timeout: 0.5
       inflation_layer:

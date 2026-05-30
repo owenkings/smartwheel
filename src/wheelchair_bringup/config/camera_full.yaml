@@ -1,0 +1,15 @@
+camera_adapter_node:
+  ros__parameters:
+    mode: real
+    publish_rate_hz: 15.0
+    width: 640
+    height: 480
+    fps: 30.0
+
+    # Full stage-1 layout: front and side cameras on the left/right sensor boxes.
+    # Pin /dev/video* with udev or /dev/v4l/by-id before relying on these values.
+    enabled_cameras: [front, left, right, rear]
+    front_device: "0"
+    left_device: "1"
+    right_device: "2"
+    rear_device: "3"

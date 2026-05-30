@@ -83,7 +83,7 @@ class UltrasonicSensor:
 class UltrasonicArrayAdapter:
     def __init__(
         self,
-        port: str = "/dev/ttyUSB1",
+        port: str = "/dev/smartwheel_ultrasonic",
         baud_rate: int = 9600,
         timeout_sec: float = 0.08,
         register: int = 0x0001,
@@ -154,13 +154,13 @@ class UltrasonicAdapterNode(Node):
         super().__init__("ultrasonic_adapter_node")
         self.declare_parameter("mode", "real")
         self.declare_parameter("publish_rate_hz", 20.0)
-        self.declare_parameter("serial_port", "/dev/ttyUSB1")
+        self.declare_parameter("serial_port", "/dev/smartwheel_ultrasonic")
         self.declare_parameter("baud_rate", 9600)
         self.declare_parameter("serial_timeout_sec", 0.08)
         self.declare_parameter("register", 0x0001)
-        self.declare_parameter("sensor_addresses", [1, 2])
-        self.declare_parameter("sensor_indices", [0, 1])
-        self.declare_parameter("enabled_count", 2)
+        self.declare_parameter("sensor_addresses", [1])
+        self.declare_parameter("sensor_indices", [0])
+        self.declare_parameter("enabled_count", 1)
         self.declare_parameter("min_range", 0.03)
         self.declare_parameter("max_range", 3.0)
         self.declare_parameter("field_of_view", 0.45)
@@ -181,15 +181,25 @@ class UltrasonicAdapterNode(Node):
             register=int(self.get_parameter("register").value),
             sensors=self.sensors,
         )
-        self.pubs = [self.create_publisher(Range, f"/ultrasonic/range_{i}", 10) for i in range(6)]
+        self.enabled_sensors = [sensor for sensor in self.sensors if sensor.enabled]
+        self.pubs = {
+            sensor.index: self.create_publisher(Range, f"/ultrasonic/range_{sensor.index}", 10)
+            for sensor in self.enabled_sensors
+        }
         self.warned = False
+        self.get_logger().info(
+            "ultrasonic adapter using "
+            + ", ".join(
+                f"range_{sensor.index}@addr{sensor.address}" for sensor in self.enabled_sensors
+            )
+        )
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter("publish_rate_hz").value), self.tick
         )
 
     def tick(self):
         if self.mode == "mock":
-            values = {i: 2.5 for i in range(6)}
+            values = {sensor.index: 2.5 for sensor in self.enabled_sensors}
         else:
             try:
                 values = self.adapter.read_ranges()
@@ -202,16 +212,21 @@ class UltrasonicAdapterNode(Node):
 
     def _publish_ranges(self, values: Dict[int, float]):
         now = self.get_clock().now().to_msg()
-        for i, pub in enumerate(self.pubs):
+        for sensor in self.enabled_sensors:
+            if sensor.index not in values:
+                # Do NOT fabricate max_range for a failed/missing read: a dead
+                # sensor must never look like "clear". Skipping lets the
+                # safety_supervisor detect staleness instead of masking an obstacle.
+                continue
             msg = Range()
             msg.header.stamp = now
-            msg.header.frame_id = f"ultrasonic_{i}_link"
+            msg.header.frame_id = sensor.frame_id
             msg.radiation_type = Range.ULTRASOUND
             msg.field_of_view = self.field_of_view
             msg.min_range = self.min_range
             msg.max_range = self.max_range
-            msg.range = float(values.get(i, msg.max_range))
-            pub.publish(msg)
+            msg.range = float(values[sensor.index])
+            self.pubs[sensor.index].publish(msg)
 
     def destroy_node(self):
         self.adapter.close()
@@ -225,9 +240,15 @@ def main(args=None):
     node = UltrasonicAdapterNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

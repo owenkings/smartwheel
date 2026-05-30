@@ -11,8 +11,6 @@ safety_supervisor_node:
       - /ultrasonic/range_1
       - /ultrasonic/range_2
       - /ultrasonic/range_3
-      - /ultrasonic/range_4
-      - /ultrasonic/range_5
     max_auto_speed: 0.4
     debug_max_speed: 0.6
     hard_max_speed: 0.8
@@ -33,7 +31,7 @@ safety_supervisor_node:
     publish_rate_hz: 20.0
     stale_timeout_sec: 1.0
     ultrasonic_stale_timeout_sec: 1.5
-    min_ultrasonic_online: 2
+    min_ultrasonic_online: 1
     require_localization_healthy: false
     localization_timeout_sec: 2.5
 

@@ -95,6 +95,7 @@ class ObstacleDetectorNode(Node):
         marker.id = 0
         marker.type = Marker.SPHERE_LIST
         marker.action = Marker.ADD
+        marker.lifetime.sec = 1
         marker.scale.x = 0.18
         marker.scale.y = 0.18
         marker.scale.z = 0.18
@@ -128,9 +129,12 @@ def main(args=None):
     node = ObstacleDetectorNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
