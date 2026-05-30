@@ -7,7 +7,7 @@
 ## 硬件
 
 - 主机：NVIDIA AGX Orin 64G
-- 雷达：XT-M60 固态 Flash 激光雷达，前向约 120 度水平 FOV，第一版使用 `/xtm60/points`
+- 雷达：左右两台 XT-M60 固态 Flash 激光雷达，默认监听 `192.168.0.101` 和 `192.168.0.201`，第一版合并为 `/scan`
 - IMU：H30，只用于姿态、角速度、上下坡、异常晃动检测，不作为长期定位唯一来源
 - 超声波：6 个 topic 预留，当前真实读取默认启用前方 2 个 FD07-34 RS485/Modbus RTU
 - 摄像头：4 路预留，当前真实读取默认启用前向和左向 USB 摄像头
@@ -16,7 +16,7 @@
 ## 架构
 
 ```text
-XT-M60 /xtm60/points --> pointcloud_to_laserscan --> /scan --> slam_toolbox / Nav2 costmap
+XT-M60 /xtm60/{left,right}/points --> pointcloud_to_laserscan --> scan_merger --> /scan --> slam_toolbox / Nav2 costmap
 IMU /imu/data -------------------------------> robot_localization 预留
 Ultrasonic /ultrasonic/range_* -------------> local costmap + safety_supervisor
 Nav2 /cmd_vel_nav ---------------------------> safety_supervisor --> /cmd_vel_safe
@@ -56,7 +56,7 @@ map
 
 | 类型 | Topic | 消息 |
 | --- | --- | --- |
-| 输入 | `/xtm60/points` | `sensor_msgs/PointCloud2` |
+| 输入 | `/xtm60/left/points`、`/xtm60/right/points` | `sensor_msgs/PointCloud2` |
 | 输入 | `/imu/data` | `sensor_msgs/Imu` |
 | 输入 | `/ultrasonic/range_0` 到 `/ultrasonic/range_5` | `sensor_msgs/Range` |
 | 输入 | `/camera/front/image_raw` | `sensor_msgs/Image` |
@@ -114,11 +114,26 @@ pip3 install fastapi uvicorn pyyaml pytest pyserial
 sudo usermod -a -G dialout $USER
 ```
 
-3. 配置 XT-M60 网口。假设 Orin 有线网卡是 `eth0`：
+3. 配置 XT-M60 网口。推荐使用脚本自动给有线网口追加雷达专用副地址，不修改 WiFi/互联网默认网关：
 
 ```bash
-sudo ip addr add 10.55.231.100/24 dev eth0
-ping 10.55.231.101
+sudo scripts/setup_radar_network.sh
+ping 192.168.0.201
+```
+
+当前默认监听双 XT-M60：左侧 `192.168.0.101`、右侧 `192.168.0.201`，Orin 默认追加 `192.168.0.100/24`。现在只接右侧 201 时也可直接运行；后续接入 101 后无需改代码。如果要开机自动配置：
+
+```bash
+sudo scripts/setup_radar_network.sh --install-service
+```
+
+该脚本不会设置默认网关，因此不会影响 WiFi 或其他网络。若需要手动指定双雷达参数：
+
+```bash
+sudo scripts/setup_radar_network.sh \
+  --radar-ip 192.168.0.101,192.168.0.201 \
+  --host-cidr 192.168.0.100/24 \
+  --gateway 192.168.0.1
 ```
 
 4. 配置 XTSDK。假设 SDK 放在 `/opt/xtsdk_py-main`：
@@ -174,7 +189,7 @@ src/wheelchair_bringup/config/diagnostics.yaml
 
 ```bash
 ros2 launch wheelchair_bringup sensors.launch.py mode:=real
-ros2 topic hz /xtm60/points
+ros2 topic hz /xtm60/right/points
 ros2 topic hz /scan
 ros2 topic hz /imu/data
 ros2 topic echo /ultrasonic/range_0
@@ -299,8 +314,19 @@ AGX Orin + Ubuntu 22.04 通常使用 ROS2 Humble 的 Python 3.10，SDK 需要存
 
 ```bash
 ros2 launch wheelchair_bringup sensors.launch.py mode:=real
-ros2 topic echo /xtm60/status
-ros2 topic hz /xtm60/points
+ros2 topic echo /xtm60/right/status
+ros2 topic hz /xtm60/right/points
+```
+
+默认完整系统和建图入口会启用左右两个适配器；单独调试传感器时也可显式启用：
+
+```bash
+ros2 launch wheelchair_bringup sensors.launch.py mode:=real \
+  enable_xtm60:=false \
+  enable_xtm60_left:=true \
+  enable_xtm60_right:=true
+ros2 topic hz /xtm60/left/points
+ros2 topic hz /xtm60/right/points
 ```
 
 如果雷达不是默认 IP，修改 `src/wheelchair_bringup/config/xtm60_sdk.yaml` 或直接传参：
@@ -312,7 +338,7 @@ ros2 run wheelchair_sensors xtm60_adapter_node --ros-args \
   -p ip_address:=192.168.0.101
 ```
 
-`/xtm60/points` 的 frame 为 `laser_link`。`point_unit_scale` 默认 `1.0`，需要用实测标尺确认 SDK 点云单位；若 SDK 输出毫米，则设为 `0.001`。
+左右雷达的 frame 分别为 `xtm60_left_link` 和 `xtm60_right_link`。`point_unit_scale` 默认 `1.0`，需要用实测标尺确认 SDK 点云单位；若 SDK 输出毫米，则设为 `0.001`。
 
 ## H30 IMU / 超声波 / 摄像头真实读取
 
@@ -370,7 +396,7 @@ cd ~/smartwheel
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 bash scripts/check_topics.sh sensors
-ros2 topic hz /xtm60/points
+ros2 topic hz /xtm60/right/points
 ros2 topic hz /scan
 ros2 topic hz /imu/data
 ros2 topic echo /ultrasonic/range_0 --once
@@ -488,7 +514,7 @@ ros2 topic pub --once /voice/text_command std_msgs/msg/String "{data: '去卫生
 
 真实读取代码已落在以下节点：
 
-- `wheelchair_sensors/xtm60_adapter_node.py`：官方 `xtsdk_py`，发布 `/xtm60/points`
+- `wheelchair_sensors/xtm60_adapter_node.py`：官方 `xtsdk_py`，发布 `/xtm60/left/points`、`/xtm60/right/points`
 - `wheelchair_sensors/imu_adapter_node.py`：H30 Yesense 串口协议，发布 `/imu/data`
 - `wheelchair_sensors/ultrasonic_adapter_node.py`：FD07-34 Modbus RTU，发布 `/ultrasonic/range_*`
 - `wheelchair_sensors/camera_adapter_node.py`：OpenCV/V4L2，发布 `/camera/front/image_raw`、`/camera/left/image_raw`
@@ -534,6 +560,7 @@ pytest src/wheelchair_sensors/test src/wheelchair_perception/test src/wheelchair
 - 用实际 ZLAC8030/KeepLINK 手册确认寄存器地址、速度单位、使能流程和反馈寄存器
 - 接入物理急停 IO 节点并做硬件断电链路测试
 - 接入电机编码器反馈后启用 EKF 融合 `/wheel/odom` + IMU
+- 补齐建图产品化流程：rosbag 录制、离线建图、地图质量评分、地图版本管理和 GUI 验收状态
 - 用实车数据标定 Nav2 costmap、DWB 局部规划器和安全阈值
 - 完成地图维护模式：长期障碍候选、用户确认、静态地图写入
 - 扩展右/后摄像头与行人/门状态/物体识别

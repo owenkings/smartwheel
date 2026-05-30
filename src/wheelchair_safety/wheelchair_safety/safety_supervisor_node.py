@@ -244,11 +244,6 @@ class SafetySupervisorNode(Node):
             "ultrasonic_topics",
             [
                 "/ultrasonic/range_0",
-                "/ultrasonic/range_1",
-                "/ultrasonic/range_2",
-                "/ultrasonic/range_3",
-                "/ultrasonic/range_4",
-                "/ultrasonic/range_5",
             ],
         )
         for field, default in SafetyParams().__dict__.items():
@@ -256,7 +251,7 @@ class SafetySupervisorNode(Node):
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("stale_timeout_sec", 1.0)
         self.declare_parameter("ultrasonic_stale_timeout_sec", 1.5)
-        self.declare_parameter("min_ultrasonic_online", 2)
+        self.declare_parameter("min_ultrasonic_online", 1)
 
         self.params = SafetyParams(
             **self._load_safety_params()
@@ -515,9 +510,12 @@ def main(args=None):
     node = SafetySupervisorNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

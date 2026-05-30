@@ -3,21 +3,32 @@ zlac8030_driver_node:
     mode: real
     # KeepLINK/USB-RS485 should expose a Linux serial device. Pin this with a
     # udev rule on the AGX Orin before real driving.
-    serial_port: /dev/ttyUSB2
+    serial_port: /dev/smartwheel_zlac8030
     baud_rate: 115200
-    serial_timeout_sec: 0.05
+    serial_timeout_sec: 0.08
 
     # Many ZLAC8030 installations use one slave id per wheel. If your KeepLINK
     # bridge exposes a single dual-axis slave, set single_slave_dual_axis true.
     left_slave_id: 1
-    right_slave_id: 2
-    single_slave_dual_axis: false
+    right_slave_id: 1
+    single_slave_dual_axis: true
 
     wheel_radius_m: 0.165
     wheel_separation_m: 0.58
     max_linear_mps: 0.4
     max_angular_rps: 1.0
     command_timeout_sec: 0.5
+    # Stage-1 safety default: read feedback odometry, but do not let Nav2 write
+    # non-zero motor commands until ground tests confirm closed-loop behavior.
+    # IMPORTANT: motion_control_enabled=true together with valid command
+    # registers causes the driver to issue drive_enable (control word 8) on
+    # the first /cmd_vel_safe write, which engages the holding brake. After
+    # that the wheels cannot be pushed manually until the ZLAC8030 is power
+    # cycled. Keep this false until you are ready for an autonomous demo
+    # and have hardware E-stop in reach.
+    motion_control_enabled: false
+    write_dual_axis_command_together: true
+    initialize_motion_on_first_command: true
     publish_rate_hz: 50.0
     publish_tf: true
     odom_frame_id: odom
@@ -25,21 +36,48 @@ zlac8030_driver_node:
 
     # Direction depends on motor installation. Confirm on blocks with wheels
     # off the ground before any loaded test.
-    invert_left: false
-    invert_right: true
+    # 2026-05-29: in real push test the driver reported negative x for forward
+    # motion, so flip both invert flags relative to the original guess. Re-test
+    # after this change; if forward push still gives negative x, swap the flags
+    # back and try {invert_left: true, invert_right: true} or both false.
+    invert_left: true
+    invert_right: false
 
     # Register scaling depends on the configured ZLAC8030 speed unit. Start
     # with 1 register unit = 1 rpm only after the register map is verified.
+    # 2026-05-29 calibration log (precise 1.5m push, 7.5 floor tiles × 20cm):
+    #   r2r_scale=1.000 → push 1m(est) gave odom -5.6m (sign also wrong)
+    #   r2r_scale=0.179 → push 1m(est) gave odom 1.47m
+    #   r2r_scale=0.122 → push 1.5m(est) gave odom 1.0m (was wrong estimate)
+    #   r2r_scale=0.183 → push 1.5m(precise) gave odom 2.45m  (over by 1.633)
+    #   r2r_scale=0.112 → expecting 1.5m → odom 1.5m (close to 0.1 rpm/unit)
+    # If a precise push still over/under reports, scale linearly:
+    #   new_scale = current_scale * (real_distance / odom_distance)
     rpm_to_register_scale: 1.0
-    register_to_rpm_scale: 1.0
+    register_to_rpm_scale: 0.112
 
-    # IMPORTANT: these are disabled by default. Fill from the exact ZLAC8030
-    # manual/KeepLINK mode before real motion. With -1, the node publishes
-    # open-loop /wheel/odom but will not send motor speed commands.
+    # ZLAC8030D registers confirmed on the current dual-axis RS485 setup.
+    # Command registers (0x2088 / 0x2089) intentionally left disabled (-1)
+    # so the autonomous driving path is gated. Once you are ready for the
+    # demo, set:
+    #   command_left_register: 8328   # 0x2088
+    #   command_right_register: 8329  # 0x2089
+    #   motion_control_enabled: true
+    # Re-enabling these latches the holding brake on first command write;
+    # power cycle the ZLAC8030 to release it again.
     command_left_register: -1
     command_right_register: -1
-    feedback_left_register: -1
-    feedback_right_register: -1
+    feedback_left_register: 8363   # 0x20AB
+    feedback_right_register: 8364  # 0x20AC
     enable_register: -1
     enable_value: 1
     disable_value: 0
+    control_mode_register: 8205    # 0x200D
+    control_word_register: 8206    # 0x200E
+    async_mode_register: 8207      # 0x200F
+    velocity_mode_value: 3
+    async_mode_value: 0
+    clear_fault_value: 6
+    drive_enable_value: 8
+    stop_value: 7
+    emergency_stop_value: 5

@@ -3,7 +3,7 @@ imu_adapter_node:
     mode: real
     frame_id: imu_link
     publish_rate_hz: 100.0
-    serial_port: /dev/ttyUSB0
+    serial_port: /dev/smartwheel_h30_imu
     baud_rate: 460800
     serial_timeout_sec: 0.01
     orientation_covariance: [0.05, 0.05, 0.10]

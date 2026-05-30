@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "pointcloud_to_laserscan_node = wheelchair_perception.pointcloud_to_laserscan_node:main",
+            "scan_merger_node = wheelchair_perception.scan_merger_node:main",
             "obstacle_detector_node = wheelchair_perception.obstacle_detector_node:main",
             "dynamic_obstacle_layer_node = wheelchair_perception.dynamic_obstacle_layer_node:main",
             "passability_analyzer_node = wheelchair_perception.passability_analyzer_node:main",

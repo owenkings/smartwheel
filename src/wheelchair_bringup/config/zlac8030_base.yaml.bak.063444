@@ -1,0 +1,59 @@
+zlac8030_driver_node:
+  ros__parameters:
+    mode: real
+    # KeepLINK/USB-RS485 should expose a Linux serial device. Pin this with a
+    # udev rule on the AGX Orin before real driving.
+    serial_port: /dev/smartwheel_zlac8030
+    baud_rate: 115200
+    serial_timeout_sec: 0.08
+
+    # Many ZLAC8030 installations use one slave id per wheel. If your KeepLINK
+    # bridge exposes a single dual-axis slave, set single_slave_dual_axis true.
+    left_slave_id: 1
+    right_slave_id: 1
+    single_slave_dual_axis: true
+
+    wheel_radius_m: 0.165
+    wheel_separation_m: 0.58
+    max_linear_mps: 0.4
+    max_angular_rps: 1.0
+    command_timeout_sec: 0.5
+    # Stage-1 safety default: read feedback odometry, but do not let Nav2 write
+    # non-zero motor commands until ground tests confirm closed-loop behavior.
+    motion_control_enabled: false
+    write_dual_axis_command_together: true
+    initialize_motion_on_first_command: true
+    publish_rate_hz: 50.0
+    publish_tf: true
+    odom_frame_id: odom
+    base_frame_id: base_link
+
+    # Direction depends on motor installation. Confirm on blocks with wheels
+    # off the ground before any loaded test.
+    invert_left: false
+    invert_right: true
+
+    # Register scaling depends on the configured ZLAC8030 speed unit. Start
+    # with 1 register unit = 1 rpm only after the register map is verified.
+    rpm_to_register_scale: 1.0
+    register_to_rpm_scale: 1.0
+
+    # ZLAC8030D registers confirmed on the current dual-axis RS485 setup.
+    # Command registers remain disabled for autonomous mode until
+    # motion_control_enabled is deliberately set true after ground validation.
+    command_left_register: -1
+    command_right_register: -1
+    feedback_left_register: 8363   # 0x20AB
+    feedback_right_register: 8364  # 0x20AC
+    enable_register: -1
+    enable_value: 1
+    disable_value: 0
+    control_mode_register: 8205    # 0x200D
+    control_word_register: 8206    # 0x200E
+    async_mode_register: 8207      # 0x200F
+    velocity_mode_value: 3
+    async_mode_value: 0
+    clear_fault_value: 6
+    drive_enable_value: 8
+    stop_value: 7
+    emergency_stop_value: 5

@@ -30,6 +30,15 @@ class ZlacRegisterMap:
     enable_register: int = -1
     enable_value: int = 1
     disable_value: int = 0
+    control_mode_register: int = -1
+    control_word_register: int = -1
+    async_mode_register: int = -1
+    velocity_mode_value: int = 3
+    async_mode_value: int = 0
+    clear_fault_value: int = 6
+    drive_enable_value: int = 8
+    stop_value: int = 7
+    emergency_stop_value: int = 5
 
     @property
     def command_enabled(self) -> bool:
@@ -66,6 +75,9 @@ class Zlac8030DriverNode(Node):
         self.declare_parameter("max_linear_mps", 0.4)
         self.declare_parameter("max_angular_rps", 1.0)
         self.declare_parameter("command_timeout_sec", 0.5)
+        self.declare_parameter("motion_control_enabled", False)
+        self.declare_parameter("write_dual_axis_command_together", False)
+        self.declare_parameter("initialize_motion_on_first_command", True)
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("odom_frame_id", "odom")
@@ -77,6 +89,15 @@ class Zlac8030DriverNode(Node):
         self.declare_parameter("enable_register", -1)
         self.declare_parameter("enable_value", 1)
         self.declare_parameter("disable_value", 0)
+        self.declare_parameter("control_mode_register", -1)
+        self.declare_parameter("control_word_register", -1)
+        self.declare_parameter("async_mode_register", -1)
+        self.declare_parameter("velocity_mode_value", 3)
+        self.declare_parameter("async_mode_value", 0)
+        self.declare_parameter("clear_fault_value", 6)
+        self.declare_parameter("drive_enable_value", 8)
+        self.declare_parameter("stop_value", 7)
+        self.declare_parameter("emergency_stop_value", 5)
 
         self.mode = self.get_parameter("mode").value
         self.left_slave_id = int(self.get_parameter("left_slave_id").value)
@@ -87,6 +108,13 @@ class Zlac8030DriverNode(Node):
         self.invert_left = bool(self.get_parameter("invert_left").value)
         self.invert_right = bool(self.get_parameter("invert_right").value)
         self.command_timeout_sec = float(self.get_parameter("command_timeout_sec").value)
+        self.motion_control_enabled = bool(self.get_parameter("motion_control_enabled").value)
+        self.write_dual_axis_command_together = bool(
+            self.get_parameter("write_dual_axis_command_together").value
+        )
+        self.initialize_motion_on_first_command = bool(
+            self.get_parameter("initialize_motion_on_first_command").value
+        )
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
         self.odom_frame_id = self.get_parameter("odom_frame_id").value
         self.base_frame_id = self.get_parameter("base_frame_id").value
@@ -98,6 +126,15 @@ class Zlac8030DriverNode(Node):
             enable_register=int(self.get_parameter("enable_register").value),
             enable_value=int(self.get_parameter("enable_value").value),
             disable_value=int(self.get_parameter("disable_value").value),
+            control_mode_register=int(self.get_parameter("control_mode_register").value),
+            control_word_register=int(self.get_parameter("control_word_register").value),
+            async_mode_register=int(self.get_parameter("async_mode_register").value),
+            velocity_mode_value=int(self.get_parameter("velocity_mode_value").value),
+            async_mode_value=int(self.get_parameter("async_mode_value").value),
+            clear_fault_value=int(self.get_parameter("clear_fault_value").value),
+            drive_enable_value=int(self.get_parameter("drive_enable_value").value),
+            stop_value=int(self.get_parameter("stop_value").value),
+            emergency_stop_value=int(self.get_parameter("emergency_stop_value").value),
         )
         self.model = DifferentialDriveModel(
             wheel_radius_m=float(self.get_parameter("wheel_radius_m").value),
@@ -118,7 +155,10 @@ class Zlac8030DriverNode(Node):
         self.last_odom_time = self.get_clock().now()
         self.last_wheel_rpm: Tuple[float, float] = (0.0, 0.0)
         self.warned_no_registers = False
+        self.warned_motion_disabled = False
+        self.warned_feedback_read_failed = False
         self.last_command_write_ok = False
+        self.motion_initialized = False
 
         self.odom_pub = self.create_publisher(Odometry, "/wheel/odom", 20)
         self.status_pub = self.create_publisher(String, "/base/status", 10)
@@ -179,12 +219,39 @@ class Zlac8030DriverNode(Node):
                 )
                 self.warned_no_registers = True
             return False
+        if (
+            not self.motion_control_enabled
+            and (abs(left_rpm) > 1e-6 or abs(right_rpm) > 1e-6)
+        ):
+            if not self.warned_motion_disabled:
+                self.get_logger().warning(
+                    "ZLAC8030 motion_control_enabled is false; non-zero wheel commands are blocked"
+                )
+                self.warned_motion_disabled = True
+            return False
         left_value = int(round(left_rpm * self.rpm_to_register_scale))
         right_value = int(round(right_rpm * self.rpm_to_register_scale))
         try:
+            if (
+                self.motion_control_enabled
+                and self.initialize_motion_on_first_command
+                and not self.motion_initialized
+            ):
+                if not self._initialize_motion_mode():
+                    return False
             if self.single_slave_dual_axis:
-                self.modbus.write_single_register(self.left_slave_id, self.registers.command_left_register, left_value)
-                self.modbus.write_single_register(self.left_slave_id, self.registers.command_right_register, right_value)
+                if (
+                    self.write_dual_axis_command_together
+                    and self.registers.command_right_register == self.registers.command_left_register + 1
+                ):
+                    self.modbus.write_multiple_registers(
+                        self.left_slave_id,
+                        self.registers.command_left_register,
+                        [left_value, right_value],
+                    )
+                else:
+                    self.modbus.write_single_register(self.left_slave_id, self.registers.command_left_register, left_value)
+                    self.modbus.write_single_register(self.left_slave_id, self.registers.command_right_register, right_value)
             else:
                 self.modbus.write_single_register(self.left_slave_id, self.registers.command_left_register, left_value)
                 self.modbus.write_single_register(self.right_slave_id, self.registers.command_right_register, right_value)
@@ -203,10 +270,94 @@ class Zlac8030DriverNode(Node):
             else:
                 left_raw = self.modbus.read_holding_registers(self.left_slave_id, self.registers.feedback_left_register, 1)[0]
                 right_raw = self.modbus.read_holding_registers(self.right_slave_id, self.registers.feedback_right_register, 1)[0]
+            self.warned_feedback_read_failed = False
             return from_i16(left_raw) * self.register_to_rpm_scale, from_i16(right_raw) * self.register_to_rpm_scale
         except Exception as exc:
-            self.get_logger().warning(f"ZLAC8030 feedback read failed: {exc}")
+            if not self.warned_feedback_read_failed:
+                self.get_logger().warning(f"ZLAC8030 feedback read failed: {exc}")
+                self.warned_feedback_read_failed = True
             return None
+
+    def _write_if_configured(self, register: int, value: int) -> bool:
+        if register < 0:
+            return False
+        self.modbus.write_single_register(self.left_slave_id, register, value)
+        return True
+
+    def _initialize_motion_mode(self) -> bool:
+        try:
+            self._write_if_configured(
+                self.registers.control_mode_register,
+                self.registers.velocity_mode_value,
+            )
+            self._write_if_configured(
+                self.registers.async_mode_register,
+                self.registers.async_mode_value,
+            )
+            self._write_if_configured(
+                self.registers.control_word_register,
+                self.registers.clear_fault_value,
+            )
+            self._write_if_configured(
+                self.registers.control_word_register,
+                self.registers.drive_enable_value,
+            )
+            self.motion_initialized = True
+            return True
+        except Exception as exc:
+            self.get_logger().warning(f"ZLAC8030 motion initialization failed: {exc}")
+            self.motion_initialized = False
+            return False
+
+    def _write_control_stop(self, emergency: bool = True) -> bool:
+        if self.registers.control_word_register < 0:
+            return False
+        value = (
+            self.registers.emergency_stop_value
+            if emergency
+            else self.registers.stop_value
+        )
+        try:
+            self.modbus.write_single_register(
+                self.left_slave_id,
+                self.registers.control_word_register,
+                value,
+            )
+            self.motion_initialized = False
+            return True
+        except Exception as exc:
+            self.get_logger().warning(f"ZLAC8030 control stop write failed: {exc}")
+            return False
+
+    def _write_enable_state(self, enabled: bool) -> bool:
+        if self.registers.enable_register < 0:
+            return False
+        value = self.registers.enable_value if enabled else self.registers.disable_value
+        try:
+            self.modbus.write_single_register(
+                self.left_slave_id,
+                self.registers.enable_register,
+                value,
+            )
+            if not self.single_slave_dual_axis:
+                self.modbus.write_single_register(
+                    self.right_slave_id,
+                    self.registers.enable_register,
+                    value,
+                )
+        except Exception as exc:
+            state = "enable" if enabled else "disable"
+            self.get_logger().warning(f"ZLAC8030 {state} write failed: {exc}")
+            return False
+        return True
+
+    def _shutdown_hardware(self):
+        if self.mode != "real":
+            return
+        if self.registers.command_enabled:
+            self._write_wheel_commands(0.0, 0.0)
+        if not self._write_control_stop(emergency=True):
+            self._write_enable_state(False)
 
     def _publish_odom(self, linear: float, angular: float, now):
         msg = Odometry()
@@ -242,10 +393,14 @@ class Zlac8030DriverNode(Node):
         msg = String()
         register_state = "configured" if self.registers.command_enabled else "registers_disabled"
         feedback_state = "feedback" if self.registers.feedback_enabled else "open_loop_odom"
-        real_motion_enabled = self.mode != "real" or self.registers.command_enabled
+        real_motion_enabled = (
+            self.mode != "real"
+            or (self.registers.command_enabled and self.motion_control_enabled)
+        )
         msg.data = (
             f"mode={self.mode}; command={register_state}; odom={feedback_state}; "
             f"real_motion_enabled={str(real_motion_enabled).lower()}; "
+            f"motion_control_enabled={str(self.motion_control_enabled).lower()}; "
             f"last_command_write_ok={str(self.last_command_write_ok).lower()}; "
             f"left_rpm={self.last_wheel_rpm[0]:.2f}; right_rpm={self.last_wheel_rpm[1]:.2f}; "
             f"cmd_age={cmd_age:.2f}"
@@ -253,8 +408,11 @@ class Zlac8030DriverNode(Node):
         self.status_pub.publish(msg)
 
     def destroy_node(self):
-        self.modbus.close()
-        super().destroy_node()
+        try:
+            self._shutdown_hardware()
+        finally:
+            self.modbus.close()
+            super().destroy_node()
 
 
 def main(args=None):
@@ -264,9 +422,12 @@ def main(args=None):
     node = Zlac8030DriverNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

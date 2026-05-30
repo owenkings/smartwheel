@@ -3,13 +3,14 @@ xtm60_adapter_node:
     # Set this to the extracted xtsdk_py root on the robot, or export XTSDK_PY_ROOT.
     # Example on AGX Orin:
     #   sdk_root: /opt/xtsdk_py-main
-    sdk_root: ""
+    sdk_root: "/home/nvidia/smartwheel/xtsdk_py"
     connection_mode: ethernet
-    ip_address: "192.168.0.101"
+    ip_address: "192.168.1.101"
     serial_port: ""
     image_type: 4
     frame_id: laser_link
     publish_rate_hz: 10.0
+    use_sdk_timestamps: false
 
     # Keep 1.0 unless hardware validation proves the SDK build returns mm.
     point_unit_scale: 1.0
@@ -24,3 +25,5 @@ xtm60_adapter_node:
     kalman_range: 2000
     median_size: 3
     edge_threshold: 150
+    reconnect_interval_sec: 3.0
+    require_ping_before_start: true

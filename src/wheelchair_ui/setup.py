@@ -23,6 +23,7 @@ setup(
     entry_points={
         "console_scripts": [
             "wheelchair_ui = wheelchair_ui.app:main",
+            "wheelchair_native_gui = wheelchair_ui.native_gui:main",
         ],
     },
 )
