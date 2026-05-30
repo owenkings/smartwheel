@@ -17,6 +17,8 @@
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>robot_localization</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>wheelchair_3d_mapping</exec_depend>
   <exec_depend>wheelchair_description</exec_depend>
   <exec_depend>wheelchair_sensors</exec_depend>
   <exec_depend>wheelchair_perception</exec_depend>

@@ -12,7 +12,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from geometry_msgs.msg import Pose
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import PointCloud2
@@ -45,6 +45,7 @@ class CloudToOccupancyGridNode(Node):
         self.declare_parameter("max_cells", 4000)
         self.declare_parameter("publish_rate_hz", 2.0)
         self.declare_parameter("tf_timeout_sec", 0.1)
+        self.declare_parameter("input_timeout_sec", 1.0)
 
         self.map_frame = self.get_parameter("map_frame").value
         self.res = float(self.get_parameter("resolution").value)
@@ -58,14 +59,19 @@ class CloudToOccupancyGridNode(Node):
         self.margin = float(self.get_parameter("margin_m").value)
         self.max_cells = int(self.get_parameter("max_cells").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
+        self.input_timeout = float(self.get_parameter("input_timeout_sec").value)
 
         self._latest = None
+        self._latest_recv = 0.0
         self._warned = {}
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(PointCloud2, self.get_parameter("input_cloud_topic").value,
                                  self._on_cloud, qos_profile_sensor_data)
-        self.pub = self.create_publisher(OccupancyGrid, self.get_parameter("output_map_topic").value, 1)
+        map_qos = QoSProfile(depth=1)
+        map_qos.reliability = ReliabilityPolicy.RELIABLE
+        map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.pub = self.create_publisher(OccupancyGrid, self.get_parameter("output_map_topic").value, map_qos)
         self.timer = self.create_timer(1.0 / max(0.2, float(self.get_parameter("publish_rate_hz").value)), self._tick)
         self._offsets = self._circle_offsets(self.inflation, self.res)
         self.get_logger().info(f"cloud_to_occupancy_grid: frame={self.map_frame} res={self.res} mode={'rolling' if self.rolling else 'static'}")
@@ -95,6 +101,7 @@ class CloudToOccupancyGridNode(Node):
                 return
             xyz = cloud_utils.apply_transform(xyz, mat)
         self._latest = xyz
+        self._latest_recv = time.monotonic()
 
     def _lookup(self, source):
         try:
@@ -123,6 +130,9 @@ class CloudToOccupancyGridNode(Node):
     def _tick(self):
         xyz = self._latest
         if xyz is None:
+            return
+        if (time.monotonic() - self._latest_recv) > self.input_timeout:
+            self._warn("stale_cloud", "input cloud stale; suppressing 2D map (LIVO backend down?)")
             return
         ox, oy, w, h = self._bounds(xyz)
         grid = np.full((h, w), self.v_unknown, dtype=np.int16)

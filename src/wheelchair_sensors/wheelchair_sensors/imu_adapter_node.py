@@ -202,9 +202,12 @@ class ImuAdapterNode(Node):
         self.declare_parameter("orientation_covariance", [0.05, 0.05, 0.10])
         self.declare_parameter("angular_velocity_covariance", [0.02, 0.02, 0.02])
         self.declare_parameter("linear_acceleration_covariance", [0.05, 0.05, 0.08])
+        self.declare_parameter("use_device_timestamp", False)
 
         self.mode = self.get_parameter("mode").value
         self.frame_id = self.get_parameter("frame_id").value
+        self.use_device_timestamp = bool(self.get_parameter("use_device_timestamp").value)
+        self._clock_offset_ns = None
         self.adapter = H30ImuAdapter(
             port=self.get_parameter("serial_port").value,
             baud_rate=int(self.get_parameter("baud_rate").value),
@@ -237,7 +240,7 @@ class ImuAdapterNode(Node):
 
     def _sample_to_msg(self, sample: YesenseSample):
         msg = Imu()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = self._stamp(sample)
         msg.header.frame_id = self.frame_id
         if sample.quat_xyzw is not None:
             msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = sample.quat_xyzw
@@ -252,6 +255,23 @@ class ImuAdapterNode(Node):
         self._set_diag_covariance(msg.angular_velocity_covariance, self.get_parameter("angular_velocity_covariance").value)
         self._set_diag_covariance(msg.linear_acceleration_covariance, self.get_parameter("linear_acceleration_covariance").value)
         return msg
+
+    def _stamp(self, sample):
+        now = self.get_clock().now().to_msg()
+        if not self.use_device_timestamp or getattr(sample, "sample_timestamp_us", None) is None:
+            return now
+        # Map device uptime (us) to ROS time using a running-min offset (the
+        # sample with least transport delay). Opt-in; assumes small long-run
+        # drift. Without this, host publish time adds jitter that hurts LIVO/EKF.
+        now_ns = now.sec * 1_000_000_000 + now.nanosec
+        dev_ns = int(sample.sample_timestamp_us) * 1000
+        offset = now_ns - dev_ns
+        if self._clock_offset_ns is None or offset < self._clock_offset_ns:
+            self._clock_offset_ns = offset
+        t_ns = dev_ns + self._clock_offset_ns
+        now.sec = int(t_ns // 1_000_000_000)
+        now.nanosec = int(t_ns % 1_000_000_000)
+        return now
 
     @staticmethod
     def _set_diag_covariance(covariance, diagonal):

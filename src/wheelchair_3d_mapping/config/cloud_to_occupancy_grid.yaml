@@ -3,7 +3,7 @@ cloud_to_occupancy_grid_node:
     # Source 3D cloud. /livo/cloud_registered (live) or /livo/map_cloud (full map).
     input_cloud_topic: /livo/cloud_registered
     output_map_topic: /map_2d_from_3d
-    map_frame: map
+    map_frame: livo_map   # match LIVO global frame (livo_interface.yaml) so no map->livo_map TF is needed; set to 'map' once that TF exists
 
     resolution: 0.05
 

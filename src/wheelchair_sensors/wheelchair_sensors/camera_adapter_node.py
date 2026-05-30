@@ -23,6 +23,7 @@ class CameraConfig:
     frame_id: str
     device: str
     enabled: bool = True
+    rotate_deg: int = 0
 
 
 class CameraAdapter:
@@ -68,6 +69,15 @@ class CameraAdapter:
         return frame
 
 
+def rotate_frame(frame, deg: int):
+    """Rotate a frame by 0/90/180/270 deg for a physically mis-mounted camera."""
+    if not deg or cv2 is None:
+        return frame
+    codes = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    code = codes.get(int(deg) % 360)
+    return cv2.rotate(frame, code) if code is not None else frame
+
+
 def cv_frame_to_image(frame, stamp, frame_id: str):
     msg = Image()
     msg.header.stamp = stamp
@@ -94,6 +104,10 @@ class CameraAdapterNode(Node):
         self.declare_parameter("left_device", "1")
         self.declare_parameter("right_device", "2")
         self.declare_parameter("rear_device", "3")
+        self.declare_parameter("front_rotate_deg", 0)
+        self.declare_parameter("left_rotate_deg", 0)
+        self.declare_parameter("right_rotate_deg", 0)
+        self.declare_parameter("rear_rotate_deg", 0)
 
         self.mode = self.get_parameter("mode").value
         enabled = set(self.get_parameter("enabled_cameras").value)
@@ -118,10 +132,10 @@ class CameraAdapterNode(Node):
 
     def _make_camera_configs(self, enabled: Sequence[str]):
         return [
-            CameraConfig("front", "/camera/front/image_raw", "camera_front_link", self.get_parameter("front_device").value, "front" in enabled),
-            CameraConfig("left", "/camera/left/image_raw", "camera_left_link", self.get_parameter("left_device").value, "left" in enabled),
-            CameraConfig("right", "/camera/right/image_raw", "camera_right_link", self.get_parameter("right_device").value, "right" in enabled),
-            CameraConfig("rear", "/camera/rear/image_raw", "camera_rear_link", self.get_parameter("rear_device").value, "rear" in enabled),
+            CameraConfig("front", "/camera/front/image_raw", "camera_front_link", self.get_parameter("front_device").value, "front" in enabled, int(self.get_parameter("front_rotate_deg").value)),
+            CameraConfig("left", "/camera/left/image_raw", "camera_left_link", self.get_parameter("left_device").value, "left" in enabled, int(self.get_parameter("left_rotate_deg").value)),
+            CameraConfig("right", "/camera/right/image_raw", "camera_right_link", self.get_parameter("right_device").value, "right" in enabled, int(self.get_parameter("right_rotate_deg").value)),
+            CameraConfig("rear", "/camera/rear/image_raw", "camera_rear_link", self.get_parameter("rear_device").value, "rear" in enabled, int(self.get_parameter("rear_rotate_deg").value)),
         ]
 
     def tick(self):
@@ -141,6 +155,7 @@ class CameraAdapterNode(Node):
                     self.warned[config.name] = True
                 continue
             if frame is not None:
+                frame = rotate_frame(frame, config.rotate_deg)
                 self.pubs[config.name].publish(cv_frame_to_image(frame, stamp, config.frame_id))
             elif not self.warned.get(config.name):
                 self.get_logger().warning(f"{config.name} camera opened but returned no frame")

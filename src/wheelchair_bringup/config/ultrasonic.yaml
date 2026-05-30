@@ -1,7 +1,13 @@
 ultrasonic_adapter_node:
   ros__parameters:
     mode: real
-    publish_rate_hz: 20.0
+    # 4 sensors share ONE USB-RS485 bus, polled sequentially, so the realistic
+    # rate is limited (~10 Hz), not 20. addr -> index -> position:
+    #   addr 1 -> range_0 = left-front,  addr 2 -> range_1 = left,
+    #   addr 3 -> range_2 = right-front, addr 4 -> range_3 = right.
+    # Read cmd per sensor: <addr> 03 00 01 00 01 + CRC (e.g. 01 03 00 01 00 01 D5 CA).
+    # The 01 06 00 03 00 0X write commands are one-time address provisioning, not runtime.
+    publish_rate_hz: 10.0
     serial_port: /dev/smartwheel_ultrasonic
     baud_rate: 9600
     serial_timeout_sec: 0.08

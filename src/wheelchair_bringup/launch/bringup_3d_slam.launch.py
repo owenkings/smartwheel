@@ -50,12 +50,16 @@ def _setup(context, *args, **kwargs):
     # Resolve main camera physical topic from camera_roles.yaml.
     roles_path = os.path.join(bringup, "config", "camera_roles.yaml")
     image_topic = f"/camera/{main_camera}/image_raw"
+    info_topic = f"/camera/{main_camera}/camera_info"
     alias_topic = "/main_camera/image_raw"
+    alias_info_topic = "/main_camera/camera_info"
     try:
         with open(roles_path) as f:
             roles = (yaml.safe_load(f) or {}).get("camera_roles", {})
         image_topic = roles.get(main_camera, {}).get("image_topic", image_topic)
+        info_topic = roles.get(main_camera, {}).get("camera_info_topic", info_topic)
         alias_topic = roles.get("main_camera_alias_topic", alias_topic)
+        alias_info_topic = roles.get("main_camera_info_alias_topic", alias_info_topic)
     except OSError:
         pass
 
@@ -84,8 +88,15 @@ def _setup(context, *args, **kwargs):
     #    (then point livo_interface.yaml image_topic at the physical topic).
     if _b(context, "provide_main_camera_alias"):
         actions.append(Node(
-            package="topic_tools", executable="relay", name="main_camera_relay",
+            package="topic_tools", executable="relay", name="main_camera_image_relay",
             output="screen", arguments=[image_topic, alias_topic],
+        ))
+        # camera_info alias too. NOTE: camera_adapter_node does NOT publish
+        # camera_info; a calibrated camera_info publisher must provide
+        # /camera/<side>/camera_info or this relay has nothing to forward.
+        actions.append(Node(
+            package="topic_tools", executable="relay", name="main_camera_info_relay",
+            output="screen", arguments=[info_topic, alias_info_topic],
         ))
 
     # 4. External LIVO backend (graceful if not installed / backend:=none).
@@ -122,7 +133,8 @@ def _setup(context, *args, **kwargs):
             package="wheelchair_3d_mapping", executable="rgb_cloud_colorizer_node",
             name="rgb_cloud_colorizer_node", output="screen",
             parameters=[os.path.join(mapping, "config", "rgb_colorizer.yaml"),
-                        {"image_topic": alias_topic, "use_sim_time": use_sim == "true"}],
+                        {"image_topic": alias_topic, "camera_info_topic": alias_info_topic,
+                         "use_sim_time": use_sim == "true"}],
         ))
 
     if tf_owner == "livo":

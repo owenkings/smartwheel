@@ -22,18 +22,18 @@ frames:
   camera_rear_link:
     xyz: [-0.45, 0.0, 0.75]
     rpy: [0.0, 0.0, 3.1416]
-  ultrasonic_0_link:
-    xyz: [0.45, -0.25, 0.25]
-    rpy: [0.0, 0.0, -0.52]
-  ultrasonic_1_link:
-    xyz: [0.50, 0.0, 0.25]
-    rpy: [0.0, 0.0, 0.0]
-  ultrasonic_2_link:
-    xyz: [0.45, 0.25, 0.25]
-    rpy: [0.0, 0.0, 0.52]
-  ultrasonic_3_link:
-    xyz: [-0.35, 0.25, 0.25]
-    rpy: [0.0, 0.0, 2.62]
+  ultrasonic_0_link:   # left-front (range_0, addr 1)
+    xyz: [0.45, 0.22, 0.25]
+    rpy: [0.0, 0.0, 0.35]
+  ultrasonic_1_link:   # left (range_1, addr 2)
+    xyz: [0.15, 0.30, 0.25]
+    rpy: [0.0, 0.0, 1.5708]
+  ultrasonic_2_link:   # right-front (range_2, addr 3)
+    xyz: [0.45, -0.22, 0.25]
+    rpy: [0.0, 0.0, -0.35]
+  ultrasonic_3_link:   # right (range_3, addr 4)
+    xyz: [0.15, -0.30, 0.25]
+    rpy: [0.0, 0.0, -1.5708]
   ultrasonic_4_link:
     xyz: [-0.45, 0.0, 0.25]
     rpy: [0.0, 0.0, 3.1416]

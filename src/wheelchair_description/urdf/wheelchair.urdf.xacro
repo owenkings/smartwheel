@@ -174,10 +174,13 @@
     </joint>
   </xacro:macro>
 
-  <xacro:ultrasonic_link idx="0" xyz="0.45 -0.25 0.25" rpy="0.0 0.0 -0.52"/>
-  <xacro:ultrasonic_link idx="1" xyz="0.50 0.0 0.25" rpy="0.0 0.0 0.0"/>
-  <xacro:ultrasonic_link idx="2" xyz="0.45 0.25 0.25" rpy="0.0 0.0 0.52"/>
-  <xacro:ultrasonic_link idx="3" xyz="-0.35 0.25 0.25" rpy="0.0 0.0 2.62"/>
+  <!-- 4 active RS485 ultrasonics on one bus: range_0=left-front, range_1=left,
+       range_2=right-front, range_3=right. xyz/rpy are estimates - MEASURE on the
+       real chassis. idx 4,5 are reserved/unused. -->
+  <xacro:ultrasonic_link idx="0" xyz="0.45 0.22 0.25" rpy="0.0 0.0 0.35"/>
+  <xacro:ultrasonic_link idx="1" xyz="0.15 0.30 0.25" rpy="0.0 0.0 1.5708"/>
+  <xacro:ultrasonic_link idx="2" xyz="0.45 -0.22 0.25" rpy="0.0 0.0 -0.35"/>
+  <xacro:ultrasonic_link idx="3" xyz="0.15 -0.30 0.25" rpy="0.0 0.0 -1.5708"/>
   <xacro:ultrasonic_link idx="4" xyz="-0.45 0.0 0.25" rpy="0.0 0.0 3.1416"/>
   <xacro:ultrasonic_link idx="5" xyz="-0.35 -0.25 0.25" rpy="0.0 0.0 -2.62"/>
 </robot>

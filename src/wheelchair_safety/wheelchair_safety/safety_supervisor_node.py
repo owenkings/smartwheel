@@ -8,7 +8,7 @@ try:
     from rclpy.node import Node
     from geometry_msgs.msg import Twist
     from sensor_msgs.msg import LaserScan, Range
-    from std_msgs.msg import Bool, String
+    from std_msgs.msg import Bool, Float32, String
 except ImportError:
     rclpy = None
     Node = object
@@ -16,6 +16,7 @@ except ImportError:
     LaserScan = None
     Range = None
     Bool = None
+    Float32 = None
     String = None
 
 
@@ -255,6 +256,9 @@ class SafetySupervisorNode(Node):
         self.declare_parameter("cmd_timeout_sec", 0.5)
         self.declare_parameter("require_emergency_heartbeat", False)
         self.declare_parameter("emergency_timeout_sec", 1.0)
+        self.declare_parameter("consistency_score_topic", "/livo_wheel/consistency_score")
+        self.declare_parameter("min_consistency_score", 0.30)
+        self.declare_parameter("require_consistency_healthy", False)
 
         self.params = SafetyParams(
             **self._load_safety_params()
@@ -267,6 +271,8 @@ class SafetySupervisorNode(Node):
         self.cmd_timeout_sec = float(self.get_parameter("cmd_timeout_sec").value)
         self.require_emergency_heartbeat = bool(self.get_parameter("require_emergency_heartbeat").value)
         self.emergency_timeout_sec = float(self.get_parameter("emergency_timeout_sec").value)
+        self.require_consistency_healthy = bool(self.get_parameter("require_consistency_healthy").value)
+        self.min_consistency_score = float(self.get_parameter("min_consistency_score").value)
         self.require_localization_healthy = bool(
             self.get_parameter("require_localization_healthy").value
         )
@@ -277,6 +283,7 @@ class SafetySupervisorNode(Node):
         self.latest_cmd = (0.0, 0.0)
         self.latest_cmd_time = self.get_clock().now()
         self.last_emergency_time = None
+        self.consistency_score = 1.0
         self.latest_scan_distance = math.inf
         self.ultrasonic_ranges: Dict[str, float] = {}
         self.emergency_hw = False
@@ -355,6 +362,10 @@ class SafetySupervisorNode(Node):
                 Range, topic, lambda msg, t=topic: self.on_ultrasonic(t, msg), 10
             )
 
+        self.create_subscription(
+            Float32, self.get_parameter("consistency_score_topic").value,
+            self.on_consistency_score, 10
+        )
         rate = max(1.0, float(self.get_parameter("publish_rate_hz").value))
         self.timer = self.create_timer(1.0 / rate, self.publish_safe_command)
 
@@ -425,6 +436,9 @@ class SafetySupervisorNode(Node):
             self.localization_reason = msg.data
             self.last_localization_time = self.get_clock().now()
 
+    def on_consistency_score(self, msg):
+        self.consistency_score = float(msg.data)
+
     def publish_safe_command(self):
         now = self.get_clock().now()
         scan_distance = self.latest_scan_distance
@@ -455,6 +469,12 @@ class SafetySupervisorNode(Node):
         if self.system_stop_required:
             self._publish_zero_state(
                 f"SENSOR_FAULT: diagnostic stop required; {self.system_stop_reason}"
+            )
+            return
+
+        if self.require_consistency_healthy and self.consistency_score < self.min_consistency_score:
+            self._publish_zero_state(
+                f"SENSOR_FAULT: wheel/LIVO consistency too low ({self.consistency_score:.2f})"
             )
             return
 

@@ -21,7 +21,7 @@ map_cloud_topic: /livo/map_cloud
 # Frames.
 map_frame: livo_map      # backend's global frame (kept separate from Nav2 'map')
 base_frame: base_link
-camera_frame: main_camera_link
+camera_frame: camera_left_link   # real URDF frame (main_camera:=left default); use camera_right_link for right
 lidar_frame: base_link
 
 enable_visual: true
@@ -42,8 +42,17 @@ backends:
 
 # Optional global remaps applied to the backend's nodes so its internal topic
 # names line up with the names above. Format: list of [from, to] pairs.
-# Example:
+# Example (FILL IN with your installed backend's ACTUAL internal topic names,
+# then uncomment). Left = backend's internal name, right = this repo's name.
 #   external_remappings:
+#     # inputs the backend consumes
+#     - ["/livox/lidar", "/points_merged"]
+#     - ["/livox/imu", "/imu/data"]
+#     - ["/left_camera/image", "/main_camera/image_raw"]
+#     - ["/left_camera/camera_info", "/main_camera/camera_info"]
+#     # outputs the backend produces
 #     - ["/cloud_registered", "/livo/cloud_registered"]
 #     - ["/aft_mapped_to_init", "/livo/odom"]
+#     - ["/path", "/livo/path"]
+#     - ["/rgb_map", "/livo/rgb_cloud_map"]
 external_remappings: []

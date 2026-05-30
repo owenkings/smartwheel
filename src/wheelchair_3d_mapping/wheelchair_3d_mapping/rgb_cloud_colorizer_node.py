@@ -32,6 +32,7 @@ class RgbCloudColorizerNode(Node):
         self.declare_parameter("cam_lidar_quaternion", [0.0, 0.0, 0.0, 1.0])
         self.declare_parameter("default_gray", 128)
         self.declare_parameter("tf_timeout_sec", 0.1)
+        self.declare_parameter("max_image_age_sec", 0.15)
 
         self.lidar_frame = self.get_parameter("lidar_frame").value
         t = list(self.get_parameter("cam_lidar_translation").value)
@@ -40,12 +41,14 @@ class RgbCloudColorizerNode(Node):
         self.t = np.array(t, dtype=np.float64)
         self.gray = int(self.get_parameter("default_gray").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
+        self.max_image_age = float(self.get_parameter("max_image_age_sec").value)
         if np.allclose(self.t, 0.0) and np.allclose(q, [0.0, 0.0, 0.0, 1.0]):
             self.get_logger().warning(
                 "cam_lidar extrinsic is identity - colors WILL be misaligned. "
                 "Set cam_lidar_translation/quaternion from camera-lidar calibration.")
 
         self.image = None
+        self.image_stamp = None
         self.K = None
         self._warned = {}
         self.tf_buffer = Buffer()
@@ -69,6 +72,7 @@ class RgbCloudColorizerNode(Node):
             self._warn("img_decode", f"cannot decode image encoding '{msg.encoding}'")
             return
         self.image = rgb
+        self.image_stamp = msg.header.stamp
 
     def _on_info(self, msg):
         k = msg.k
@@ -82,6 +86,12 @@ class RgbCloudColorizerNode(Node):
         if self.image is None:
             self._warn("no_image", "no image yet; cannot colorize")
             return
+        if self.image_stamp is not None:
+            ct = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            it = self.image_stamp.sec + self.image_stamp.nanosec * 1e-9
+            if abs(ct - it) > self.max_image_age:
+                self._warn("image_age", "image/cloud time delta too large; skipping colorization")
+                return
         xyz, _ = cloud_utils.read_xyz_intensity(msg)
         if xyz.shape[0] == 0:
             return
