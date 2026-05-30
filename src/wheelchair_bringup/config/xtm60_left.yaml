@@ -20,5 +20,8 @@ xtm60_left_adapter_node:
     kalman_range: 2000
     median_size: 3
     edge_threshold: 150
+<<<<<<< HEAD
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b

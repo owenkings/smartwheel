@@ -5,6 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/setup_radar_network.sh [options]
 
+<<<<<<< HEAD
 Configure non-default-route Ethernet aliases for the XT-M60 radar pair.
 
 Defaults:
@@ -14,10 +15,18 @@ Defaults:
 The two radars sit on isolated subnets so the vendor SDK does not see
 broadcast traffic from both at once. The Orin Ethernet interface gets one
 host alias per subnet.
+=======
+Configure a non-default-route Ethernet alias for the XT-M60 radar.
+
+Defaults:
+  radar IPs     10.55.231.101
+  Orin address  10.55.231.100/24
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
 Options:
   --iface IFACE        Ethernet interface, or "auto" to detect. Default: auto.
   --radar-ip IP[,IP]   Radar IP or comma-separated radar IPs.
+<<<<<<< HEAD
                        Default: 192.168.0.101,192.168.1.101.
   --host-cidr CIDR[,CIDR]
                        Orin radar-side address(es), comma-separated when more
@@ -25,6 +34,12 @@ Options:
                        Default: 192.168.0.100/24,192.168.1.100/24.
   --gateway IP         Documented radar gateway. Not installed as default route.
                        Default: 192.168.0.1.
+=======
+                       Default: 10.55.231.101.
+  --host-cidr CIDR     Orin radar-side address. Default: 10.55.231.100/24.
+  --gateway IP         Documented radar gateway. Not installed as default route.
+                       Default: 10.55.0.1.
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   --check-only         Only print current route/address/ping status.
   --dry-run            Print commands without changing the system.
   --no-ping            Do not ping the radar after configuration.
@@ -40,9 +55,15 @@ EOF
 
 workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 iface="${RADAR_IFACE:-auto}"
+<<<<<<< HEAD
 radar_ip="${RADAR_IPS:-${RADAR_IP:-192.168.0.101,192.168.1.101}}"
 host_cidr="${RADAR_HOST_CIDRS:-${RADAR_HOST_CIDR:-192.168.0.100/24,192.168.1.100/24}}"
 radar_gateway="${RADAR_GATEWAY:-192.168.0.1}"
+=======
+radar_ip="${RADAR_IP:-10.55.231.101}"
+host_cidr="${RADAR_HOST_CIDR:-10.55.231.100/24}"
+radar_gateway="${RADAR_GATEWAY:-10.55.0.1}"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 check_only=false
 dry_run=false
 ping_after=true
@@ -135,6 +156,7 @@ split_csv() {
   IFS="$old_ifs"
 }
 
+<<<<<<< HEAD
 split_cidr_csv() {
   local raw="$1"
   local old_ifs="$IFS"
@@ -143,10 +165,13 @@ split_cidr_csv() {
   IFS="$old_ifs"
 }
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 first_radar_ip() {
   printf '%s\n' "${radar_ips[0]}"
 }
 
+<<<<<<< HEAD
 # Pick the host source IP that shares a /24 with the given radar IP.
 # Falls back to the first configured host IP if no /24 matches.
 host_src_for_radar() {
@@ -163,6 +188,8 @@ host_src_for_radar() {
   printf '%s\n' "$cidr_ip"
 }
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 run_root() {
   if [[ "$dry_run" == true ]]; then
     printf '+'
@@ -235,7 +262,11 @@ show_status() {
   local dev="$1"
   log "Radar network status"
   log "  iface:      $dev"
+<<<<<<< HEAD
   log "  host CIDRs: ${host_cidrs[*]}"
+=======
+  log "  host CIDR:  $host_cidr"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   log "  radar IPs:  ${radar_ips[*]}"
   log "  gateway:    $radar_gateway (not installed as default route)"
   if [[ "$quiet" != true ]]; then
@@ -245,6 +276,7 @@ show_status() {
     done
   fi
   if [[ "$ping_after" == true ]]; then
+<<<<<<< HEAD
     local ok_count=0
     for item in "${radar_ips[@]}"; do
       if ping -c 1 -W 1 -I "$dev" "$item" >/dev/null 2>&1; then
@@ -255,24 +287,47 @@ show_status() {
       fi
     done
     [[ "$ok_count" -gt 0 ]]
+=======
+    local failed=false
+    for item in "${radar_ips[@]}"; do
+      if ping -c 1 -W 1 -I "$dev" "$item" >/dev/null 2>&1; then
+        log "  ping $item: OK"
+      else
+        warn "radar ping failed: $item via $dev"
+        failed=true
+      fi
+    done
+    [[ "$failed" == false ]]
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   fi
 }
 
 address_configured() {
   local dev="$1"
+<<<<<<< HEAD
   local cidr
   for cidr in "${host_cidrs[@]}"; do
     ip -4 addr show dev "$dev" 2>/dev/null | grep -Fq " $cidr" || return 1
   done
+=======
+  ip -4 addr show dev "$dev" 2>/dev/null | grep -Fq " $host_cidr"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 }
 
 route_configured() {
   local dev="$1"
+<<<<<<< HEAD
   local item route src
   for item in "${radar_ips[@]}"; do
     route="$(ip route get "$item" 2>/dev/null || true)"
     src="$(host_src_for_radar "$item")"
     [[ "$route" == *" dev $dev "* && "$route" == *" src $src "* ]] || return 1
+=======
+  local item route
+  for item in "${radar_ips[@]}"; do
+    route="$(ip route get "$item" 2>/dev/null || true)"
+    [[ "$route" == *" dev $dev "* && "$route" == *" src $host_ip "* ]] || return 1
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   done
 }
 
@@ -283,11 +338,16 @@ network_ready() {
 
 configure_network() {
   local dev="$1"
+<<<<<<< HEAD
+=======
+  local prefix="${host_cidr#*/}"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   if [[ "$dry_run" != true ]] && network_ready "$dev"; then
     log "Radar network already configured on $dev"
     return 0
   fi
 
+<<<<<<< HEAD
   for cidr in "${host_cidrs[@]}"; do
     local cidr_ip="${cidr%/*}"
     local prefix="${cidr#*/}"
@@ -309,6 +369,22 @@ configure_network() {
   for item in "${radar_ips[@]}"; do
     src="$(host_src_for_radar "$item")"
     run_root ip route replace "$item/32" dev "$dev" src "$src"
+=======
+  if [[ "$prefix" == "24" ]] && ! same_24 "$host_ip" "$radar_gateway"; then
+    warn "gateway $radar_gateway is outside $host_cidr; leaving default gateway unchanged"
+  fi
+
+  log "Configuring radar access on $dev without changing default route"
+  run_root ip link set dev "$dev" up
+  if [[ "$dry_run" == true ]]; then
+    run_root ip addr add "$host_cidr" dev "$dev"
+  elif ! ip -4 addr show dev "$dev" | grep -Fq " $host_cidr"; then
+    run_root ip addr add "$host_cidr" dev "$dev"
+  fi
+  local item
+  for item in "${radar_ips[@]}"; do
+    run_root ip route replace "$item/32" dev "$dev" src "$host_ip"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   done
 }
 
@@ -349,7 +425,10 @@ uninstall_systemd_service() {
 require_cmd ip
 require_cmd awk
 split_csv "$radar_ip"
+<<<<<<< HEAD
 split_cidr_csv "$host_cidr"
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
 if [[ "$uninstall_service" == true ]]; then
   uninstall_systemd_service

@@ -1,3 +1,6 @@
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", GROUP="dialout", MODE="0660", SYMLINK+="smartwheel_ultrasonic"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", GROUP="dialout", MODE="0660", SYMLINK+="smartwheel_h30_imu"
+<<<<<<< HEAD
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", GROUP="dialout", MODE="0660", SYMLINK+="smartwheel_zlac8030"
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b

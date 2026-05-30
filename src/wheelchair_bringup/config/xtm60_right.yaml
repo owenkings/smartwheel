@@ -2,7 +2,11 @@ xtm60_right_adapter_node:
   ros__parameters:
     sdk_root: "/home/nvidia/smartwheel/xtsdk_py"
     connection_mode: ethernet
+<<<<<<< HEAD
     ip_address: "192.168.1.101"
+=======
+    ip_address: "192.168.0.201"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     serial_port: ""
     image_type: 4
     frame_id: xtm60_right_link
@@ -20,5 +24,8 @@ xtm60_right_adapter_node:
     kalman_range: 2000
     median_size: 3
     edge_threshold: 150
+<<<<<<< HEAD
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b

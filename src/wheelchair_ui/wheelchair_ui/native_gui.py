@@ -1,8 +1,11 @@
 import argparse
 import math
 import os
+<<<<<<< HEAD
 import time
 import shlex
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 import signal
 import subprocess
 import sys
@@ -333,6 +336,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace_root = find_workspace_root()
         self.system_process: Optional[QtCore.QProcess] = None
         self.system_pgid: Optional[int] = None
+<<<<<<< HEAD
         self.system_launch_detail = ""
         self.system_log_tail = []
         self.closing = False
@@ -344,6 +348,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # actually running again.
         self._last_explicit_stop_at: float = 0.0
         self._stop_grace_seconds: float = 8.0
+=======
+        self.system_log_tail = []
+        self.closing = False
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         self.latest_status: Dict = {}
         self.latest_goals: Dict = {}
         self.latest_map: Dict = {}
@@ -355,6 +363,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self.refresh_all)
         self.timer.start(1000)
         self.refresh_all()
+<<<<<<< HEAD
         # One-time initial state of the run button: if the systemd service is
         # already up (typical at boot via auto-start), show "已运行" so the
         # button reflects reality. After this, the button only changes when
@@ -368,6 +377,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_run_state("running", "已运行", "")
         else:
             self._set_run_state("idle", "运行", "")
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
     def _build_ui(self):
         root = QtWidgets.QWidget()
@@ -901,6 +912,7 @@ class MainWindow(QtWidgets.QMainWindow):
             and self.system_process.state() != QtCore.QProcess.NotRunning
         )
 
+<<<<<<< HEAD
     def _smartwheel_service_active(self) -> bool:
         """True iff the systemd user unit smartwheel.service is currently running.
 
@@ -950,6 +962,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return False
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     def _status_indicates_system_active(self, status: Dict) -> bool:
         sensors = status.get("sensors") or {}
         if any(
@@ -1045,6 +1059,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def start_system(self):
         runtime_state = self.run_btn.property("runtimeState")
+<<<<<<< HEAD
         # Toggle: if anything looks like the system is already running, stop it.
         # Detection covers our own QProcess, any matching backend PIDs found via
         # ps, ROS nodes visible on the graph, or active sensor topics.
@@ -1053,18 +1068,27 @@ class MainWindow(QtWidgets.QMainWindow):
             runtime_state in ("starting", "running", "stopping")
             or self._system_process_running()
             or service_active
+=======
+        if (
+            runtime_state in ("starting", "running", "stopping")
+            or self._system_process_running()
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             or self._status_indicates_system_active(self.latest_status)
             or self._ros_nodes_running()
         ):
             self.stop_system_process()
+<<<<<<< HEAD
             # Mark this as an explicit user-initiated stop so the periodic
             # status refresh does not flip the button back to "running" on
             # the next tick due to cached topic activity.
             self._last_explicit_stop_at = time.monotonic()
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             self._set_run_state("idle", "运行", "ROS2 后端已关闭")
             self.statusBar().showMessage("ROS2 系统已关闭", 4000)
             return
 
+<<<<<<< HEAD
         # Prefer the systemd user unit when it is installed. It centralises
         # log paths, env (radar enable flag, map path, etc.), and integrates
         # with auto-start. Fall back to a direct QProcess launch only when no
@@ -1083,6 +1107,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage("ROS2 后端启动中 (systemd 管理)", 6000)
             return
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         if not (self.workspace_root / "install" / "setup.bash").exists():
             self._set_run_state("error", "运行失败", "缺少 install/setup.bash")
             QtWidgets.QMessageBox.critical(
@@ -1092,6 +1118,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
+<<<<<<< HEAD
         launch_args = [
             "enable_web_ui:=false",
             "enable_native_gui:=false",
@@ -1105,6 +1132,11 @@ class MainWindow(QtWidgets.QMainWindow):
         launch = (
             "exec ros2 launch wheelchair_bringup full_system.launch.py "
             + " ".join(shlex.quote(arg) for arg in launch_args)
+=======
+        launch = (
+            "exec ros2 launch wheelchair_bringup full_system.launch.py "
+            "enable_web_ui:=false enable_native_gui:=false"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         )
         self.system_process = QtCore.QProcess(self)
         self.system_process.setWorkingDirectory(str(self.workspace_root))
@@ -1125,7 +1157,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.system_pgid = int(self.system_process.processId())
             except Exception:
                 self.system_pgid = None
+<<<<<<< HEAD
         self._set_run_state("running", "运行中", self.system_launch_detail or "full_system.launch.py")
+=======
+        self._set_run_state("running", "运行中", "full_system.launch.py")
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
     def _handle_system_output(self):
         if self.system_process is None:
@@ -1166,6 +1202,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bridge.node.request_hardware_shutdown()
         except Exception:
             pass
+<<<<<<< HEAD
 
         # If systemd is in charge of the backend, stop the unit cleanly.
         # Sending SIGINT to individual ROS nodes will fight with
@@ -1179,6 +1216,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # mapping_manager kicked off, or stale processes from a crashed
         # service). When systemctl already handled the unit, _managed_backend_pids
         # should now be empty so these are no-ops.
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         self._signal_system_group(signal.SIGINT)
         self._signal_pids(self._managed_backend_pids(), signal.SIGINT)
         process = self.system_process
@@ -1195,8 +1234,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 process.waitForFinished(1000)
         self.system_process = None
         self.system_pgid = None
+<<<<<<< HEAD
         if used_systemctl:
             self.statusBar().showMessage("ROS2 已通过 systemd 停止", 4000)
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
     def shutdown_hardware(self):
         try:
@@ -1288,6 +1330,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_status_cards(self):
         status = self.latest_status
+<<<<<<< HEAD
         # The run button is purely a manual toggle. Periodic refresh used to
         # auto-flip it between "运行" and "已运行" based on whether topics
         # appeared online, which created a flicker because cached status
@@ -1296,6 +1339,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # only changed by explicit user actions (start_system,
         # stop_system_process) and by the initial detection at startup.
         # Status info still drives every other card below.
+=======
+        runtime_state = self.run_btn.property("runtimeState")
+        if not self._system_process_running() and runtime_state not in ("starting", "stopping"):
+            if self._status_indicates_system_active(status):
+                self._set_run_state("running", "已运行", status.get("safety_state", ""))
+            elif self.run_btn.property("runtimeState") != "error":
+                self._set_run_state("idle", "运行", "")
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         self.run_btn.setToolTip(f"安全状态：{status.get('safety_state', 'UNKNOWN')}")
         self.nav_pill.set_state(status.get("navigation_status", "IDLE"))
         pose = status.get("pose", {})

@@ -8,6 +8,7 @@ class FakeModbus:
     def write_single_register(self, slave_id, register, value):
         self.writes.append((slave_id, register, value))
 
+<<<<<<< HEAD
     def write_multiple_registers(self, slave_id, register, values):
         self.writes.append((slave_id, register, list(values)))
 
@@ -19,6 +20,8 @@ class FakeLogger:
     def warning(self, message):
         self.messages.append(message)
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 
 def make_node(single_slave_dual_axis=False):
     node = object.__new__(Zlac8030DriverNode)
@@ -27,11 +30,14 @@ def make_node(single_slave_dual_axis=False):
     node.right_slave_id = 2
     node.single_slave_dual_axis = single_slave_dual_axis
     node.rpm_to_register_scale = 1.0
+<<<<<<< HEAD
     node.motion_control_enabled = True
     node.write_dual_axis_command_together = False
     node.initialize_motion_on_first_command = False
     node.motion_initialized = False
     node.warned_motion_disabled = False
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     node.registers = ZlacRegisterMap(
         command_left_register=10,
         command_right_register=11,
@@ -41,7 +47,10 @@ def make_node(single_slave_dual_axis=False):
     )
     node.modbus = FakeModbus()
     node.warned_no_registers = False
+<<<<<<< HEAD
     node.get_logger = lambda: FakeLogger()
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     return node
 
 
@@ -68,6 +77,7 @@ def test_shutdown_single_slave_disables_once():
         (1, 11, 0),
         (1, 20, 0),
     ]
+<<<<<<< HEAD
 
 
 def test_motion_control_disabled_blocks_nonzero_commands():
@@ -84,3 +94,5 @@ def test_single_slave_can_write_dual_axis_command_together():
 
     assert node._write_wheel_commands(10.0, -10.0) is True
     assert node.modbus.writes == [(1, 10, [10, -10])]
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b

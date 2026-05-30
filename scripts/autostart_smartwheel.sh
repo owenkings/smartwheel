@@ -11,12 +11,15 @@ map_file="${SMARTWHEEL_MAP:-}"
 ros_domain_id="${ROS_DOMAIN_ID:-${SMARTWHEEL_ROS_DOMAIN_ID:-0}}"
 build_on_start="${SMARTWHEEL_BUILD_ON_START:-false}"
 setup_radar_network="${SMARTWHEEL_SETUP_RADAR_NETWORK:-true}"
+<<<<<<< HEAD
 # Whether to start the XT-M60 radar adapters at autostart. Default false so
 # the radar stays in standby (powered, not scanning) and only scans on
 # explicit demand. Set SMARTWHEEL_ENABLE_XTM60=true (e.g. via systemctl
 # --user edit smartwheel.service) when mapping or autonomous navigation is
 # needed.
 enable_xtm60_radar="${SMARTWHEEL_ENABLE_XTM60:-false}"
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 launch_pid=""
 
 cleanup() {
@@ -77,6 +80,7 @@ launch_args=()
 case "$launch_file" in
   full_system.launch.py)
     launch_args+=("ui_port:=$ui_port")
+<<<<<<< HEAD
     # Normalize SMARTWHEEL_ENABLE_XTM60 (true|false|1|0|yes|no) to the
     # lowercase "true"/"false" that ROS launch IfCondition accepts. Anything
     # else falls back to false to keep the radar in standby by default.
@@ -85,6 +89,8 @@ case "$launch_file" in
       *)              enable_xtm60_radar=false ;;
     esac
     launch_args+=("enable_xtm60_radar:=$enable_xtm60_radar")
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     if [[ -n "$map_file" ]]; then
       launch_args+=("map:=$map_file")
     fi

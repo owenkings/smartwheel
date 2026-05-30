@@ -4,8 +4,13 @@ set -uo pipefail
 workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$workspace_root"
 
+<<<<<<< HEAD
 radar_ip="${RADAR_IPS:-${RADAR_IP:-192.168.0.101,192.168.1.101}}"
 radar_host_cidr="${RADAR_HOST_CIDR:-192.168.0.100/24}"
+=======
+radar_ip="${RADAR_IP:-10.55.231.101}"
+radar_host_cidr="${RADAR_HOST_CIDR:-10.55.231.100/24}"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 ultra_port="${ULTRASONIC_PORT:-/dev/smartwheel_ultrasonic}"
 imu_port="${IMU_PORT:-/dev/smartwheel_h30_imu}"
 radar_iface="${RADAR_IFACE:-auto}"
@@ -27,6 +32,7 @@ source_ros() {
   set -u
 }
 
+<<<<<<< HEAD
 split_csv() {
   local raw="$1"
   local old_ifs="$IFS"
@@ -35,6 +41,8 @@ split_csv() {
   IFS="$old_ifs"
 }
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 topic_exists() {
   ros2 topic list 2>/dev/null | grep -qx "$1"
 }
@@ -57,6 +65,7 @@ topic_hz() {
   fi
 }
 
+<<<<<<< HEAD
 topic_hz_optional() {
   local topic="$1"
   local seconds="${2:-6}"
@@ -77,12 +86,15 @@ topic_hz_optional() {
 
 split_csv "$radar_ip"
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 echo "== Network =="
 if scripts/setup_radar_network.sh --iface "$radar_iface" --radar-ip "$radar_ip" --host-cidr "$radar_host_cidr" --check-only --no-ping --quiet; then
   ok "radar route/address check completed"
 else
   warn "radar route/address check failed"
 fi
+<<<<<<< HEAD
 radar_ping_ok=0
 for item in "${radar_ips[@]}"; do
   ip route get "$item" 2>/dev/null || true
@@ -95,6 +107,13 @@ for item in "${radar_ips[@]}"; do
 done
 if [[ "$radar_ping_ok" -eq 0 ]]; then
   fail "no radar responded"
+=======
+ip route get "$radar_ip" 2>/dev/null || true
+if ping -c 1 -W 1 "$radar_ip" >/dev/null 2>&1; then
+  ok "radar ping $radar_ip"
+else
+  fail "radar ping $radar_ip"
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
 fi
 
 echo
@@ -126,11 +145,17 @@ if source_ros; then
   if topic_exists /xtm60/status; then
     timeout 4s ros2 topic echo /xtm60/status --once 2>/dev/null | sed 's/^/  /'
   else
+<<<<<<< HEAD
     warn "/xtm60/status missing; dual mode uses /xtm60/left/status and /xtm60/right/status"
   fi
   topic_hz_optional /xtm60/left/points 6
   topic_hz /xtm60/right/points 6
   topic_hz_optional /xtm60/points 6
+=======
+    fail "/xtm60/status missing"
+  fi
+  topic_hz /xtm60/points 6
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
   topic_hz /scan 6
   topic_hz /camera/front/image_raw 6
   topic_hz /ultrasonic/range_0 4

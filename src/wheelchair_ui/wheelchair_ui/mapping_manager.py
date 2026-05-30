@@ -75,7 +75,10 @@ class MappingManager:
         self.quality_status: Optional[Dict[str, Any]] = None
         self.last_map_version: Optional[Dict[str, Any]] = None
         self.external_slam = False
+<<<<<<< HEAD
         self.smartwheel_service_was_running = False
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
         self._load_last_saved_map()
 
     def status(self, ros_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -178,6 +181,7 @@ class MappingManager:
                 self.reason = "当前处于定位/导航模式，不能直接建图；请切换到 mapping.launch.py。冲突节点：" + ", ".join(conflicts)
                 return self.status(ros_status)
 
+<<<<<<< HEAD
             # smartwheel.service runs the same hardware nodes (zlac8030_driver_node,
             # xtm60 adapter, imu, ...) as mapping.launch.py. If it stays running
             # while we launch mapping, both processes open the same serial ports
@@ -188,6 +192,8 @@ class MappingManager:
             if self.smartwheel_service_was_running:
                 self._stop_smartwheel_service()
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             self.map_dir.mkdir(parents=True, exist_ok=True)
             self.log_dir.mkdir(parents=True, exist_ok=True)
             log_path = self.log_dir / f"mapping_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -200,6 +206,7 @@ class MappingManager:
                 "mapping.launch.py",
                 "use_mock:=false",
                 "use_rviz:=false",
+<<<<<<< HEAD
                 "enable_dual_xtm60:=false",
                 # Enable robot_localization EKF so slam_toolbox gets a
                 # /wheel/odom + /imu/data fused odom->base_link TF. This is
@@ -209,6 +216,8 @@ class MappingManager:
                 # collapses. With IMU-fused yaw the prior is good enough
                 # for scan match to work even at corners.
                 "use_ekf:=true",
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             ]
             self.process = subprocess.Popen(
                 command,
@@ -261,13 +270,19 @@ class MappingManager:
             self.started_at = None
             if not self.external_slam:
                 self._stop_process_locked()
+<<<<<<< HEAD
                 self._restart_smartwheel_if_was_running()
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             return self.status({})
 
     def cancel(self) -> Dict[str, Any]:
         with self.lock:
             self._stop_process_locked()
+<<<<<<< HEAD
             self._restart_smartwheel_if_was_running()
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
             self.state = "IDLE"
             self.reason = "建图已取消"
             self.started_at = None
@@ -680,6 +695,7 @@ class MappingManager:
             return set()
         return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
+<<<<<<< HEAD
     def _smartwheel_service_active(self) -> bool:
         """Return True iff the user smartwheel.service is currently running.
 
@@ -731,6 +747,8 @@ class MappingManager:
         except Exception:
             pass
 
+=======
+>>>>>>> 8a8e91d227314564f506195666f0b3386fa7353b
     def _refresh_process_locked(self):
         if self.process is None:
             return
