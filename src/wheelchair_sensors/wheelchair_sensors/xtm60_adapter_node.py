@@ -82,6 +82,9 @@ class XTM60SdkConfig:
     edge_threshold: int = 150
     reconnect_interval_sec: float = 3.0
     require_ping_before_start: bool = True
+    frame_timeout_sec: float = 8.0
+    udp_dest_ip: str = ""
+    udp_dest_port: int = 0
 
 
 def _candidate_sdk_roots(configured_root: str) -> List[Path]:
@@ -232,6 +235,8 @@ class XTM60SdkAdapter:
         self._measurement_started = False
         self._last_connect_attempt = 0.0
         self._last_error = ""
+        self._last_frame_time = 0.0
+        self._last_restart_time = 0.0
 
     @property
     def connected(self) -> bool:
@@ -304,13 +309,35 @@ class XTM60SdkAdapter:
         if self._sdk is None:
             return
         try:
-            self._connected = bool(self._sdk.isconnect())
-            if self._connected and not self._measurement_started:
-                self._start_measurement()
+            connected = bool(self._sdk.isconnect())
         except Exception as exc:
             self._last_error = str(exc)
             self.logger.warning(f"XT-M60 SDK poll failed: {exc}")
             self._connected = False
+            self._measurement_started = False
+            return
+        self._connected = connected
+        if not connected:
+            # Let the SDK self-reconnect (TCP re-handshake + UDP reopen, ~5-15s).
+            # Do NOT destroy the SDK here; just re-issue start() once it is back.
+            self._measurement_started = False
+            return
+        if not self._measurement_started:
+            self._start_measurement()
+            return
+        # Connected and measuring but the UDP stream stalled: gently re-issue
+        # start() (NOT a destroy) to kick it. Rate-limited and generous so we
+        # never interfere with the SDK's own recovery.
+        timeout = float(self.config.frame_timeout_sec)
+        if timeout > 0:
+            now = self._now()
+            if (self._last_frame_time > 0.0
+                    and now - self._last_frame_time > timeout
+                    and now - self._last_restart_time > timeout):
+                self.logger.warning(
+                    f"XT-M60 connected but no frames for {now - self._last_frame_time:.1f}s; re-issuing start()")
+                self._last_restart_time = now
+                self._start_measurement()
 
     def take_latest_points(self) -> Tuple[Optional[List[XYZI]], Optional[Tuple[int, int]]]:
         with self._lock:
@@ -326,6 +353,17 @@ class XTM60SdkAdapter:
             ok = self._sdk.setConnectIpaddress(self.config.ip_address)
             if not ok:
                 self.logger.warning(f"XT-M60 setConnectIpaddress returned false: {self.config.ip_address}")
+            if self.config.udp_dest_port > 0:
+                # Give each radar its own UDP dest port so two radars on one host
+                # do not collide on the default 7687.
+                setter = getattr(self._sdk, "setUdpDestIp", None)
+                if setter is not None:
+                    try:
+                        setter(self.config.udp_dest_ip, int(self.config.udp_dest_port))
+                        self.logger.info(
+                            f"XT-M60 UDP dest set to {self.config.udp_dest_ip}:{self.config.udp_dest_port}")
+                    except Exception as exc:
+                        self.logger.warning(f"XT-M60 setUdpDestIp failed: {exc}")
         elif mode == "usb":
             if not self.config.serial_port:
                 raise ValueError("serial_port is required when connection_mode is usb")
@@ -383,15 +421,22 @@ class XTM60SdkAdapter:
     def _on_event(self, event) -> None:
         event_name = str(getattr(event, "eventstr", ""))
         cmd_id = getattr(event, "cmdid", None)
-        if event_name == "sdkState":
+        if cmd_id == 0xFF:            # TCP disconnected; SDK will self-reconnect
+            self._connected = False
+            self._measurement_started = False
+            self.logger.warning("XT-M60 SDK disconnected (cmdid=0xFF); waiting for self-reconnect")
+        elif cmd_id == 0xFE:          # (re)connected / handshake done -> restart measurement
+            self._connected = True
+            self._measurement_started = False
+            self.logger.info("XT-M60 SDK connected (cmdid=0xFE); will (re)start measurement")
+        elif event_name == "sdkState":
             try:
                 self._connected = bool(self._sdk is not None and self._sdk.isconnect())
             except Exception:
                 self._connected = False
-            if self._connected:
-                self.logger.info(f"XT-M60 SDK connected event cmdid={cmd_id}")
 
     def _on_frame(self, frame) -> None:
+        self._last_frame_time = self._now()
         points = extract_xyzi_points(
             frame,
             unit_scale=self.config.point_unit_scale,
@@ -445,6 +490,9 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("edge_threshold", 150)
         self.declare_parameter("reconnect_interval_sec", 3.0)
         self.declare_parameter("require_ping_before_start", True)
+        self.declare_parameter("frame_timeout_sec", 8.0)
+        self.declare_parameter("udp_dest_ip", "")
+        self.declare_parameter("udp_dest_port", 0)
 
         self.mode = self.get_parameter("mode").value
         self.frame_id = self.get_parameter("frame_id").value
@@ -519,6 +567,9 @@ class XTM60AdapterNode(Node):
             edge_threshold=int(self.get_parameter("edge_threshold").value),
             reconnect_interval_sec=float(self.get_parameter("reconnect_interval_sec").value),
             require_ping_before_start=bool(self.get_parameter("require_ping_before_start").value),
+            frame_timeout_sec=float(self.get_parameter("frame_timeout_sec").value),
+            udp_dest_ip=str(self.get_parameter("udp_dest_ip").value),
+            udp_dest_port=int(self.get_parameter("udp_dest_port").value),
         )
 
     def _maybe_start_adapter(self, force: bool = False):

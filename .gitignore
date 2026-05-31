@@ -63,3 +63,9 @@ xtlog/
 # doc
 docs/camera_snapshots
 docs/*.png
+
+# Vendor host program (XT-Toffuture) - large, not source
+tools/
+
+# raw calibration captures (keep the .yaml, not the image tarball)
+calib/*.tar.gz

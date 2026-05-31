@@ -22,3 +22,8 @@ xtm60_right_adapter_node:
     edge_threshold: 150
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
+    frame_timeout_sec: 8.0
+    # Dual-radar UDP separation (default OFF). See xtm60_left.yaml note. For the
+    # right radar use: udp_dest_ip: "192.168.1.100"  udp_dest_port: 7688
+    udp_dest_ip: ""
+    udp_dest_port: 0
