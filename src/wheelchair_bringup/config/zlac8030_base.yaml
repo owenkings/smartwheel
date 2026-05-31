@@ -53,7 +53,7 @@ zlac8030_driver_node:
     #   r2r_scale=0.112 → expecting 1.5m → odom 1.5m (close to 0.1 rpm/unit)
     # If a precise push still over/under reports, scale linearly:
     #   new_scale = current_scale * (real_distance / odom_distance)
-    rpm_to_register_scale: 1.0
+    rpm_to_register_scale: 8.9
     register_to_rpm_scale: 0.112
 
     # ZLAC8030D registers confirmed on the current dual-axis RS485 setup.
