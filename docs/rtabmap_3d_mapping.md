@@ -86,6 +86,9 @@ ros2 launch wheelchair_3d_mapping kiss_icp_mapping.launch.py bringup_sensors:=tr
 
 输出 `/kiss/odom`、`/kiss/path`、`/kiss/map_cloud`（`deskew` 默认 false：flash ToF 无 per-point 时间）。
 
+> 说明：`/kiss/map_cloud` 是 KISS-ICP 的**滚动局部地图**（local map，按距离裁剪、有界），用于快速
+> 确认 3D 几何，**不是**全局累计点云图。需要全局 3D 图请用 RTAB-Map 主线（`/rtabmap/cloud_map`）。
+
 ## 验收
 
 ```bash
@@ -108,6 +111,29 @@ RViz：`Fixed Frame=map`，加 `PointCloud2 /rtabmap/cloud_map`、`Odometry /rta
 
 > `rtabmap-export` 需要**移动过的**会话（≥2 关键帧）。纯静止只有 1 帧会报 `no odometry poses`
 > 并跳过导出——此时用 `--live-pcd` 直接落盘 `/rtabmap/cloud_map`。
+
+## 领导验收流程（标准）
+
+1. 清运行态并确认无重复节点：
+   ```bash
+   systemctl --user stop smartwheel.service
+   scripts/check_3d_mapping_runtime.sh
+   ```
+2. 启动建图（自带传感器+融合，开 RViz）：
+   ```bash
+   ros2 launch wheelchair_3d_mapping rtabmap_3d_mapping.launch.py bringup_sensors:=true rviz:=true
+   ```
+3. **人工慢速推动**轮椅绕场地走一到两圈（电机全程不动；XT-M60 仅前向约 120° FOV，慢速转向）。
+4. 确认 3D 点云地图在增长：
+   ```bash
+   scripts/check_3d_mapping_runtime.sh        # /rtabmap/cloud_map present + 频率
+   ```
+   RViz 中 `/rtabmap/cloud_map`（Reliability=Best Effort）应随移动不断扩展。
+5. 保存 3D 地图：
+   ```bash
+   scripts/save_rtabmap_3d_map.sh             # 导出 maps/rtabmap_<时间>/rtabmap_cloud.ply
+   ```
+6. 在 RViz 截图（点云 + `/rtabmap/odom` 轨迹 + grid），连同 `.ply` 一起作为验收证据归档。
 
 ## TF 归属（单一发布者）
 

@@ -1,6 +1,13 @@
 // LD_PRELOAD shim: rewrite INADDR_ANY (0.0.0.0) bind() to the IP in $XT_BIND_IP.
 // Lets two XT-M60 SDK processes bind the same UDP port on different host IPs,
 // so the kernel routes each radar's stream to the correct socket.
+//
+// Build:  gcc -shared -fPIC -o xt_bindshim.so xt_bindshim.c -ldl
+// Use:    XT_BIND_IP=192.168.0.100 XT_BIND_PORT=7687 \
+//         LD_PRELOAD=$PWD/scripts/xt_bindshim.so <command>
+// Note:   Optional/manual. The default dual-radar path uses the SDK setUdpDestIp
+//         (distinct ports 7687/7688), so this shim is not wired into any launch.
+//         The compiled .so is intentionally NOT committed; rebuild from this source.
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <netinet/in.h>

@@ -3,10 +3,12 @@
   <name>wheelchair_3d_mapping</name>
   <version>0.1.0</version>
   <description>
-    LiDAR-Visual-Inertial-Wheel 3D SLAM integration layer for the autonomous
-    wheelchair: dual XT-M60 point cloud fusion, an external FAST-LIVO2 / R3LIVE
-    backend interface, wheel/LIVO consistency monitoring, 3D-to-2D occupancy
-    projection for Nav2, and an optional RGB point cloud colorizer.
+    LiDAR-Visual-Inertial-Wheel 3D mapping layer for the autonomous wheelchair.
+    Current 3D main line: RTAB-Map (rtabmap_slam/rtabmap + rtabmap_odom/icp_odometry)
+    builds a 3D point-cloud map from the fused dual-XT-M60 cloud; KISS-ICP is the
+    LiDAR-only fallback. Also provides dual XT-M60 cloud fusion, 3D-to-2D occupancy
+    projection for Nav2, an optional RGB colorizer, and wheel/LIVO consistency
+    monitoring. FAST-LIVO2 / R3LIVE remain only as a paused external-backend interface.
   </description>
   <maintainer email="todo@example.com">wheelchair team</maintainer>
   <license>Apache-2.0</license>
@@ -25,6 +27,12 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+
+  <!-- 3D mapping main line: RTAB-Map (apt: ros-humble-rtabmap-ros). -->
+  <exec_depend>rtabmap_slam</exec_depend>
+  <exec_depend>rtabmap_odom</exec_depend>
+  <!-- KISS-ICP fallback uses the pip package 'kiss-icp' (no rosdep key);
+       install with: pip install --user kiss-icp -->
 
   <!-- Optional: used only by the bringup main-camera alias relay. The package
        still builds and the core nodes still run if topic_tools is absent. -->

@@ -26,13 +26,14 @@ bags/
 *.db3
 *.mcap
 
-# Maps - keep source configs, ignore generated images
-maps
-maps/*.pgm
-maps/*.png
+# Maps - ignore generated maps/artifacts; keep dir placeholder + version manifest
+maps/*
 !maps/.gitkeep
 !maps/map_versions.json
-!maps/map_versions.json
+
+# Backups and compiled shared objects (rebuild from source; never commit blobs)
+*.bak*
+*.so
 
 # IDE / AI agents
 # IDE / AI agents
@@ -65,7 +66,9 @@ docs/camera_snapshots
 docs/*.png
 
 # Vendor host program (XT-Toffuture) - large, not source
-tools/
+tools/*
+# ...but keep version-controlled off-ground hardware test scripts
+!tools/hardware_bringup/
 
 # raw calibration captures (keep the .yaml, not the image tarball)
 calib/*.tar.gz

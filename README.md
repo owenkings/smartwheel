@@ -2,6 +2,12 @@
 
 本工程面向室内低速自动轮椅，目标是先跑通可构建、可运行、可扩展的第一版算法链路：传感器接入、TF、点云转二维激光、SLAM 建图、定位、Nav2 导航、安全限速、Web UI 命名目标点，以及语音/图像模型接口占位。
 
+> **当前建图主线（2026-06）**：3D 建图主线为 **RTAB-Map**（直接从 XT-M60 三维点云构建 3D 点云地图，
+> 输出 `/rtabmap/cloud_map` + 可保存 PCD/PLY），保底为 **KISS-ICP**；详见 `docs/rtabmap_3d_mapping.md`。
+> 下文的 **2D `pointcloud_to_laserscan` + `scan_merger` + `slam_toolbox`（`/scan`）** 链路已降级为
+> **导航/保底链路**——为 Nav2 提供 2D 定位与代价地图栅格，不再是最终建图成果。
+> FAST-LIVO2/R3LIVE 为暂停的后续高级 LIVO 方向。
+
 默认目标环境：Ubuntu 22.04 + ROS2 Humble + NVIDIA AGX Orin。Foxy/Galactic 可参考相同包结构适配，但 Nav2、slam_toolbox、robot_localization 的参数名和插件名可能需要按对应发行版调整。
 
 ## 硬件

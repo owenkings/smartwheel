@@ -78,8 +78,13 @@ def _setup(context, *args, **kwargs):
                                       "topic_queue_size": qsize, "sync_queue_size": qsize}],
             remappings=[("scan_cloud", points), ("imu", imu), ("odom", odom)]))
     else:
-        actions.append(LogInfo(msg=f"[rtabmap_3d_mapping] odom_mode=external: using {odom} as odometry; "
-                                   f"that node must own odom->base_link (icp_odometry NOT started)."))
+        if odom == "/rtabmap/odom":
+            actions.append(LogInfo(msg="[rtabmap_3d_mapping] ERROR: odom_mode=external but odom_topic is still the "
+                                       "icp default '/rtabmap/odom', which has NO publisher in external mode. Pass a "
+                                       "real external odom, e.g. odom_topic:=/wheel/odom or odom_topic:=/odometry/filtered."))
+        else:
+            actions.append(LogInfo(msg=f"[rtabmap_3d_mapping] odom_mode=external: using {odom} as odometry; that node "
+                                       f"must own odom->base_link and actually publish (icp_odometry NOT started)."))
 
     # rtabmap -> 3D cloud map + graph + projected 2D grid.
     rtab_params = [cfg, common, {

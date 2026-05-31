@@ -1,9 +1,10 @@
 """Minimal KISS-ICP fallback 3D mapping node.
 
 Subscribes /points_merged (XYZI, base_link, best-effort QoS), runs KISS-ICP
-point-cloud odometry, and publishes /kiss/odom, /kiss/path, /kiss/map_cloud and
-TF odom->base_link. This is the fallback for when RTAB-Map is blocked: it gets a
-usable 3D point-cloud map from LiDAR alone (no camera, no per-point time).
+point-cloud odometry, and publishes /kiss/odom, /kiss/path, and /kiss/map_cloud
+(KISS-ICP's rolling LOCAL map - bounded, NOT a global accumulation) plus TF
+odom->base_link. Fallback for when RTAB-Map is blocked: a quick 3D geometry
+check from LiDAR alone (no camera, no per-point time).
 
 Requires the kiss-icp core: `pip install --user kiss-icp`.
 """
