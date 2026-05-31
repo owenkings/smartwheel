@@ -1,5 +1,8 @@
 # LiDAR-Visual-Inertial-Wheel 3D SLAM 架构
 
+> **状态（2026-06）**：3D 建图主线已改为 **RTAB-Map**（见 `docs/rtabmap_3d_mapping.md`），KISS-ICP 为保底。
+> 本文描述的 FAST-LIVO2/R3LIVE 为**暂停**的后续高级 LIVO 方向，不作为当前交付；`backend:=none` 时本链路仍可用。
+
 本文件描述 `wheelchair_3d_mapping` 包与外部 LIVO 后端组成的 3D 建图系统。
 该系统在现有 2D `/scan`、Nav2、安全层、ZLAC8030D 之上叠加，不替换它们。
 

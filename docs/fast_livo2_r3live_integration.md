@@ -1,5 +1,9 @@
 # FAST-LIVO2 / R3LIVE 外部后端集成
 
+> **状态（2026-06）**：FAST-LIVO2/R3LIVE 当前**暂停**，仅作后续高级 LIVO 方向保留。
+> 当前 3D 建图主线是 **RTAB-Map**（见 `docs/rtabmap_3d_mapping.md`），保底是 KISS-ICP。
+> 下文接口层（`livo_interface.yaml` + `livo_3d_mapping.launch.py`）仍在，未安装后端时 `backend:=none` 可跑全链路。
+
 本仓库**不实现** LIVO 算法主体，而是以外部 ROS2 包的形式集成。`wheelchair_3d_mapping`
 通过 `livo_3d_mapping.launch.py` + `config/livo_interface.yaml` 把外部后端接到轮椅话题上。
 未安装外部后端时，本仓库仍可 `colcon build`，且 `backend:=none` 可运行除算法外的全部链路。

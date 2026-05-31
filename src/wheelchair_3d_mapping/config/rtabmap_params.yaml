@@ -1,0 +1,67 @@
+# RTAB-Map 3D mapping params for the wheelchair (LiDAR-primary).
+# Consumed by rtabmap_3d_mapping.launch.py. Two nodes, matched by name:
+#   icp_odometry (rtabmap_odom) -> owns odom->base_link from /points_merged
+#   rtabmap      (rtabmap_slam) -> 3D cloud map + graph + projected 2D grid
+# /points_merged is best-effort QoS, so qos_scan: 2 (BEST_EFFORT) is required.
+# XT-M60 is a flash ToF (whole-frame capture) -> deskewing off, no per-point time.
+# Input is XYZI, ~10Hz, already in base_link, range/height filtered + voxel ~0.05
+# (NOT raw Livox). frame_id / queue / sync are set by the launch and override here.
+# Params tagged [site] usually need on-site tuning (room scale, ceiling, speed).
+
+icp_odometry:
+  ros__parameters:
+    frame_id: base_link
+    odom_frame_id: odom
+    publish_tf: true
+    wait_for_transform: 0.2
+    qos_scan: 2          # /points_merged is BEST_EFFORT
+    qos_imu: 1           # /imu/data is RELIABLE
+    deskewing: false     # flash ToF: no intra-frame distortion, no per-point time
+    expected_update_rate: 0.0
+    Icp/VoxelSize: "0.1"
+    Icp/PointToPlane: "true"
+    Icp/PointToPlaneK: "10"
+    Icp/MaxCorrespondenceDistance: "1.0"
+    Icp/Iterations: "10"
+    Icp/Epsilon: "0.001"
+    Icp/MaxTranslation: "2.0"
+    Icp/CorrespondenceRatio: "0.2"
+    Odom/Strategy: "0"        # 0=Frame-to-Map
+    Odom/GuessMotion: "true"
+    Odom/ScanKeyFrameThr: "0.7"
+    OdomF2M/ScanMaxSize: "15000"
+
+rtabmap:
+  ros__parameters:
+    frame_id: base_link
+    subscribe_depth: false
+    subscribe_scan_cloud: true
+    approx_sync: true
+    wait_for_transform: 0.2
+    qos_scan: 2
+    # Registration / map building from the LiDAR scan cloud (no visual features by default).
+    Reg/Strategy: "1"          # 1=ICP
+    Reg/Force3DoF: "false"     # keep full 6-DoF 3D
+    Mem/IncrementalMemory: "true"
+    Mem/STMSize: "30"
+    RGBD/ProximityBySpace: "true"
+    RGBD/AngularUpdate: "0.05"   # [site] new keyframe after this much rotation (rad)
+    RGBD/LinearUpdate: "0.05"    # [site] new keyframe after this much translation (m)
+    RGBD/OptimizeMaxError: "3.0"
+    Rtabmap/DetectionRate: "1.0"
+    Icp/VoxelSize: "0.1"
+    Icp/PointToPlane: "true"
+    Icp/MaxCorrespondenceDistance: "1.0"
+    Icp/Iterations: "10"
+    Icp/CorrespondenceRatio: "0.2"
+    # 2D occupancy grid (/rtabmap/grid_map) PROJECTED from the 3D scan cloud, for Nav2.
+    Grid/Sensor: "0"           # 0=laser scan / point cloud (0.22 replaced Grid/FromDepth)
+    Grid/3D: "false"           # 2D projection (cloud projected to xy plane)
+    Grid/NormalsSegmentation: "false"  # ground/obstacle split by height (robust for sparse cloud)
+    Grid/CellSize: "0.05"
+    Grid/RangeMax: "20.0"
+    Grid/MaxGroundHeight: "0.15"    # [site] points below this are ground (floor flatness)
+    Grid/MaxObstacleHeight: "1.8"   # [site] ceiling / usable-height cutoff
+    Grid/GroundIsObstacle: "false"
+    Grid/RayTracing: "true"
+    GridGlobal/MinSize: "20.0"

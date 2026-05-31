@@ -1,5 +1,9 @@
 # 3D SLAM 运行命令与排查
 
+> **状态（2026-06）**：当前 3D 建图主线是 **RTAB-Map**，运行/验收/保存命令见
+> `docs/rtabmap_3d_mapping.md`，保底是 KISS-ICP。下文 `backend:=fast_livo2` 等为**暂停**的
+> FAST-LIVO2/R3LIVE 方向；`backend:=none` 仍可跑除算法外的传感器/融合/EKF/投影链路。
+
 ## 构建
 
 ```bash
