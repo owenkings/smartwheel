@@ -76,6 +76,10 @@ class MappingManager:
         self.last_map_version: Optional[Dict[str, Any]] = None
         self.external_slam = False
         self.smartwheel_service_was_running = False
+        # Mapping backend: rtabmap (3D, default main line) | slam_toolbox (2D fallback).
+        self.backend = (os.environ.get("SMARTWHEEL_MAP_BACKEND", "rtabmap").strip().lower() or "rtabmap")
+        self.grid_topic = "/rtabmap/grid_map" if self.backend == "rtabmap" else "/map"
+        self.last_map_3d: Optional[Path] = None
         self._load_last_saved_map()
 
     def status(self, ros_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -92,7 +96,9 @@ class MappingManager:
                 "progress": progress,
                 "running": self.state in ("MAPPING", "SAVING"),
                 "external_slam": self.external_slam,
+                "backend": self.backend,
                 "saved_map": str(self.last_map_yaml) if self.last_map_yaml else None,
+                "saved_map_3d": str(self.last_map_3d) if self.last_map_3d else None,
                 "log_path": str(self.log_path) if self.log_path else None,
                 "quality_report": str(self.quality_report_path) if self.quality_report_path else None,
                 "quality_status": self.quality_status,
@@ -153,18 +159,25 @@ class MappingManager:
     def _check(key: str, label: str, ok: bool, required: bool, detail: str) -> Dict[str, Any]:
         return {"key": key, "label": label, "ok": bool(ok), "required": required, "detail": detail}
 
-    def start(self, ros_status: Dict[str, Any], map_name: Optional[str], force: bool = False) -> Dict[str, Any]:
+    def start(self, ros_status: Dict[str, Any], map_name: Optional[str], force: bool = False,
+              backend: Optional[str] = None) -> Dict[str, Any]:
         with self.lock:
             self._refresh_process_locked()
             if self.state in ("MAPPING", "SAVING"):
                 return self.status(ros_status)
 
+            be = (backend or self.backend or "rtabmap").strip().lower()
+            self.backend = be
+            self.grid_topic = "/rtabmap/grid_map" if be == "rtabmap" else "/map"
+            engine = "RTAB-Map 3D" if be == "rtabmap" else "slam_toolbox 2D"
+            ext_node = "/rtabmap" if be == "rtabmap" else "/slam_toolbox"
+
             node_names = self._ros_node_names()
-            if "/slam_toolbox" in node_names:
+            if ext_node in node_names:
                 self.state = "MAPPING"
                 preflight = self.preflight(ros_status)
                 suffix = "" if preflight["can_start"] else "，等待必要话题上线：" + ", ".join(preflight["required_failed"])
-                self.reason = "已接入正在运行的 slam_toolbox，请推动轮椅完成闭环" + suffix
+                self.reason = f"已接入正在运行的 {engine} 建图，请推动轮椅完成闭环" + suffix
                 self.started_at = time.monotonic()
                 self.map_name = safe_map_name(map_name)
                 self.quality_report_path = None
@@ -175,15 +188,12 @@ class MappingManager:
             conflicts = sorted(CONFLICTING_NAV_NODES.intersection(node_names))
             if conflicts:
                 self.state = "ERROR"
-                self.reason = "当前处于定位/导航模式，不能直接建图；请切换到 mapping.launch.py。冲突节点：" + ", ".join(conflicts)
+                self.reason = "当前处于定位/导航模式，不能直接建图。冲突节点：" + ", ".join(conflicts)
                 return self.status(ros_status)
 
-            # smartwheel.service runs the same hardware nodes (zlac8030_driver_node,
-            # xtm60 adapter, imu, ...) as mapping.launch.py. If it stays running
-            # while we launch mapping, both processes open the same serial ports
-            # and DDS topics and produce Modbus collisions, unstable TF, and
-            # unreliable /map. Stop the service first; we restart it on
-            # cancel/finish via _restart_smartwheel_if_was_running().
+            # smartwheel.service runs the same hardware nodes (serial ports, DDS
+            # topics) as the mapping launch; stop it first to avoid Modbus/TF
+            # collisions and unreliable maps, restart on cancel/finish.
             self.smartwheel_service_was_running = self._smartwheel_service_active()
             if self.smartwheel_service_was_running:
                 self._stop_smartwheel_service()
@@ -193,23 +203,23 @@ class MappingManager:
             log_path = self.log_dir / f"mapping_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
             self.log_path = log_path
             self.log_handle = log_path.open("a", encoding="utf-8")
-            command = [
-                "ros2",
-                "launch",
-                "wheelchair_bringup",
-                "mapping.launch.py",
-                "use_mock:=false",
-                "use_rviz:=false",
-                "enable_dual_xtm60:=false",
-                # Enable robot_localization EKF so slam_toolbox gets a
-                # /wheel/odom + /imu/data fused odom->base_link TF. This is
-                # essential for the single-radar 120 deg FOV setup: pure
-                # wheel odom drifts in yaw on every pivot, scan matching
-                # cannot recover (no overlapping geometry), and the map
-                # collapses. With IMU-fused yaw the prior is good enough
-                # for scan match to work even at corners.
-                "use_ekf:=true",
-            ]
+            if be == "rtabmap":
+                # RTAB-Map 3D main line: 3D cloud_map is the primary product;
+                # /rtabmap/grid_map is the projected 2D grid saved for Nav2.
+                command = [
+                    "ros2", "launch", "wheelchair_3d_mapping",
+                    "rtabmap_3d_mapping.launch.py", "bringup_sensors:=true",
+                ]
+                self.reason = "RTAB-Map 3D 建图已启动（3D 点云为主成果，同时投影 2D 导航底图），等待传感器上线"
+            else:
+                command = [
+                    "ros2", "launch", "wheelchair_bringup", "mapping.launch.py",
+                    "use_mock:=false", "use_rviz:=false", "enable_dual_xtm60:=false",
+                    # EKF fuses /wheel/odom + /imu so slam_toolbox gets a good
+                    # odom->base_link yaw prior for the 120-deg-FOV single radar.
+                    "use_ekf:=true",
+                ]
+                self.reason = "slam_toolbox 2D 保底建图已启动，等待传感器和里程计上线"
             self.process = subprocess.Popen(
                 command,
                 cwd=str(self.workspace_root),
@@ -220,7 +230,6 @@ class MappingManager:
                 text=True,
             )
             self.state = "MAPPING"
-            self.reason = "建图进程已启动，等待传感器和里程计上线"
             self.started_at = time.monotonic()
             self.map_name = safe_map_name(map_name)
             self.quality_report_path = None
@@ -247,6 +256,7 @@ class MappingManager:
                 self.reason = str(exc)
                 return self.status({})
 
+        map_3d = self._save_map_3d(save_result.version_id) if self.backend == "rtabmap" else None
         quality_status, quality_report_path = self._run_quality_check(save_result.version_yaml)
         map_version = self._record_map_version(save_result, quality_status, quality_report_path)
 
@@ -255,9 +265,14 @@ class MappingManager:
             self.quality_status = quality_status
             self.quality_report_path = quality_report_path
             self.last_map_version = map_version
+            self.last_map_3d = map_3d
             self.state = "MAP_READY"
             quality_text = self._quality_reason_text(quality_status)
-            self.reason = f"地图已保存：{save_result.current_yaml}；版本：{save_result.version_id}{quality_text}"
+            if self.backend == "rtabmap":
+                p3d = f"3D 主地图 {map_3d}" if map_3d else "3D 主地图导出跳过（需移动建图≥2关键帧，或用 --live-pcd）"
+                self.reason = f"{p3d}；2D 导航投影 {save_result.current_yaml}；版本 {save_result.version_id}{quality_text}"
+            else:
+                self.reason = f"2D 地图已保存：{save_result.current_yaml}；版本：{save_result.version_id}{quality_text}"
             self.started_at = None
             if not self.external_slam:
                 self._stop_process_locked()
@@ -440,6 +455,8 @@ class MappingManager:
             "run",
             "nav2_map_server",
             "map_saver_cli",
+            "-t",
+            self.grid_topic,
             "-f",
             str(output_prefix),
             "--ros-args",
@@ -492,6 +509,27 @@ class MappingManager:
             "请确认建图日志中不再出现 Message Filter dropping message，并让雷达完成一段有效扫描后再保存。\n"
             + "\n".join(details)
         )
+
+    def _save_map_3d(self, version_id: str) -> Optional[Path]:
+        """Export the RTAB-Map 3D cloud (PLY) - the primary mapping product.
+
+        Best-effort: a stationary single-keyframe DB has no odometry poses to
+        export, so this returns None while the 2D nav projection still succeeds.
+        """
+        script = self.workspace_root / "scripts" / "save_rtabmap_3d_map.sh"
+        if not script.exists():
+            return None
+        out_dir = self.version_dir / f"{version_id}_3d"
+        try:
+            subprocess.run(
+                ["bash", str(script), "-o", str(out_dir)],
+                cwd=str(self.workspace_root), env=self._env(),
+                capture_output=True, text=True, timeout=90,
+            )
+        except Exception:
+            return None
+        ply = out_dir / "rtabmap_cloud.ply"
+        return ply if ply.exists() else None
 
     @staticmethod
     def _timeout_text(value: Any) -> str:

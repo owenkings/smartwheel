@@ -35,6 +35,7 @@ class ZonePayload(BaseModel):
 class MappingStartPayload(BaseModel):
     map_name: str | None = None
     force: bool = False
+    backend: str | None = None  # "rtabmap" (3D, default) | "slam_toolbox" (2D fallback)
 
 
 class MappingFinishPayload(BaseModel):
@@ -86,7 +87,7 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
 
     @app.post("/api/mapping/start")
     def mapping_start(payload: MappingStartPayload):
-        return mapping.start(bridge.node.status(), payload.map_name, payload.force)
+        return mapping.start(bridge.node.status(), payload.map_name, payload.force, payload.backend)
 
     @app.post("/api/mapping/finish")
     def mapping_finish(payload: MappingFinishPayload):

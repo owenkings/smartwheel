@@ -33,6 +33,7 @@ COLORS = {
 MANAGED_BACKEND_PATTERNS = (
     "ros2 launch wheelchair_bringup full_system.launch.py",
     "ros2 launch wheelchair_bringup mapping.launch.py",
+    "ros2 launch wheelchair_3d_mapping rtabmap_3d_mapping.launch.py",
     "/robot_state_publisher/robot_state_publisher",
     "/wheelchair_sensors/xtm60_adapter_node",
     "/wheelchair_sensors/imu_adapter_node",

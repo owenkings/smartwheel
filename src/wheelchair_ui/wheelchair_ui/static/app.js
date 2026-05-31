@@ -657,7 +657,13 @@ document.getElementById("mapping-finish-btn").onclick = async () => {
   });
   renderMapping(result);
   await refreshMap();
-  showNotice(result.saved_map ? `地图已保存：${result.saved_map}` : "地图已保存");
+  if (result.backend === "rtabmap") {
+    const m3d = result.saved_map_3d ? `3D 主地图：${result.saved_map_3d}` : "3D 主地图：导出跳过（需移动建图）";
+    const m2d = result.saved_map ? `；2D 导航投影：${result.saved_map}` : "";
+    showNotice(`${m3d}${m2d}`);
+  } else {
+    showNotice(result.saved_map ? `2D 地图已保存：${result.saved_map}` : "地图已保存");
+  }
 };
 document.getElementById("mapping-cancel-btn").onclick = async () => {
   const result = await api("/api/mapping/cancel", {method: "POST"});

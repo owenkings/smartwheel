@@ -2,6 +2,11 @@
 
 集中放置 launch 和全局 YAML 参数。
 
+> **3D 建图主线（2026-06）**：3D 点云建图主线为 **RTAB-Map**
+> （`ros2 launch wheelchair_3d_mapping rtabmap_3d_mapping.launch.py bringup_sensors:=true`，详见
+> `docs/rtabmap_3d_mapping.md`）。下面的 `mapping.launch.py`（slam_toolbox `/scan` 2D SLAM）是
+> **导航用 2D 栅格 / 保底链路**——为 Nav2 提供 2D 定位与代价地图，不是最终 3D 建图成果。
+
 常用入口：
 
 ```bash
