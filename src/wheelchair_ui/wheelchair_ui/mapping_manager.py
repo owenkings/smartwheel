@@ -115,9 +115,12 @@ class MappingManager:
         ultrasonic = sensors.get("ultrasonic") or []
         scan_online = bool((sensors.get("scan") or {}).get("online"))
         laser_online = bool((sensors.get("laser") or {}).get("online"))
+        two_d = self.backend != "rtabmap"  # RTAB-Map 3D uses /points_merged + icp odom, not /scan + /wheel/odom
         checks = [
-            self._check("scan", "雷达/scan", scan_online or laser_online, True, "建图需要 XT-M60 点云或 /scan"),
-            self._check("odom", "轮速里程计", bool((sensors.get("odom") or {}).get("online")), True, "建图需要连续 /wheel/odom"),
+            self._check("scan", "雷达/scan(2D保底)", scan_online or laser_online, two_d,
+                        "2D 保底建图需要 /scan；RTAB-Map 3D 用 /points_merged（建图启动后自带），可忽略"),
+            self._check("odom", "轮速里程计", bool((sensors.get("odom") or {}).get("online")), two_d,
+                        "2D 建图需要 /wheel/odom；RTAB-Map 3D 用 icp 里程计，可忽略"),
             self._check("imu", "H30 IMU", bool((sensors.get("imu") or {}).get("online")), False, "建议开启 IMU 记录姿态"),
             self._check(
                 "ultrasonic",
