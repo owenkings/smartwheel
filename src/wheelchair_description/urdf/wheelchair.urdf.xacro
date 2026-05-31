@@ -96,7 +96,10 @@
   <joint name="xtm60_left_fixed_joint" type="fixed">
     <parent link="base_link"/>
     <child link="xtm60_left_link"/>
-    <origin xyz="0.45 0.24 0.65" rpy="0.0 -0.0873 0.0"/>
+    <!-- XT-M60 (ToF camera) publishes points in OPTICAL convention (z forward,
+         x right, y down). This rpy makes the link an optical frame so optical-z
+         maps to base_link +x (forward). -->
+    <origin xyz="0.45 0.24 0.65" rpy="-1.5708 0.0 -1.5708"/>
   </joint>
 
   <link name="xtm60_right_link">
@@ -111,7 +114,8 @@
   <joint name="xtm60_right_fixed_joint" type="fixed">
     <parent link="base_link"/>
     <child link="xtm60_right_link"/>
-    <origin xyz="0.45 -0.24 0.65" rpy="0.0 -0.0873 0.0"/>
+    <!-- optical frame: z forward -> base_link +x (see left joint note) -->
+    <origin xyz="0.45 -0.24 0.65" rpy="-1.5708 0.0 -1.5708"/>
   </joint>
 
   <link name="imu_link">

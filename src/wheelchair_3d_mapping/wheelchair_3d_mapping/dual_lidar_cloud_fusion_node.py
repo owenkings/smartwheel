@@ -114,12 +114,21 @@ class DualLidarCloudFusionNode(Node):
                        f"no TF {self.target_frame}<-{msg.header.frame_id}; skipping frame")
             return
         state.tf_ok = True
-
-        xyz, inten = cloud_utils.filter_by_range(xyz, inten, self.min_range, self.max_range)
-        xyz = cloud_utils.apply_transform(xyz, mat)
-        xyz, inten = cloud_utils.filter_by_height(xyz, inten, self.z_min, self.z_max)
-        xyz, inten = cloud_utils.voxel_downsample(xyz, inten, self.voxel)
-        state.xyz, state.inten, state.stamp = xyz, inten, msg.header.stamp
+        try:
+            xyz, inten = cloud_utils.filter_by_range(xyz, inten, self.min_range, self.max_range)
+            n_range = xyz.shape[0]
+            xyz = cloud_utils.apply_transform(xyz, mat)
+            zlo = float(xyz[:, 2].min()) if xyz.shape[0] else 0.0
+            zhi = float(xyz[:, 2].max()) if xyz.shape[0] else 0.0
+            xyz, inten = cloud_utils.filter_by_height(xyz, inten, self.z_min, self.z_max)
+            n_height = xyz.shape[0]
+            xyz, inten = cloud_utils.voxel_downsample(xyz, inten, self.voxel)
+            state.xyz, state.inten, state.stamp = xyz, inten, msg.header.stamp
+            self._warn(f"stage_{msg.header.frame_id}",
+                       f"{msg.header.frame_id}: raw={state.raw_points} after_range={n_range} "
+                       f"base_z=[{zlo:.2f},{zhi:.2f}] after_height={n_height} after_voxel={xyz.shape[0]}", 3.0)
+        except Exception as exc:
+            self._warn(f"flt_{msg.header.frame_id}", f"filter pipeline error: {exc}")
 
     def _lookup(self, source_frame: str):
         if not source_frame:

@@ -9,11 +9,12 @@ except ImportError:
 try:
     import rclpy
     from rclpy.node import Node
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CameraInfo, Image
 except ImportError:
     rclpy = None
     Node = object
     Image = None
+    CameraInfo = None
 
 
 @dataclass
@@ -27,11 +28,12 @@ class CameraConfig:
 
 
 class CameraAdapter:
-    def __init__(self, camera: CameraConfig, width: int, height: int, fps: float):
+    def __init__(self, camera: CameraConfig, width: int, height: int, fps: float, fourcc: str = "MJPG"):
         self.camera = camera
         self.width = width
         self.height = height
         self.fps = fps
+        self.fourcc = fourcc
         self.capture = None
 
     def open(self):
@@ -43,6 +45,10 @@ class CameraAdapter:
         use_v4l2 = isinstance(device, int) or str(device).startswith("/dev/video")
         backend = getattr(cv2, "CAP_V4L2", 0) if use_v4l2 else 0
         self.capture = cv2.VideoCapture(device, backend) if backend else cv2.VideoCapture(device)
+        if self.fourcc:
+            # Compressed (MJPG) uses ~1/7-1/10 the USB bandwidth of YUYV, which
+            # is what lets multiple USB cameras share bus/hub bandwidth.
+            self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.fourcc))
         if self.width > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height > 0:
@@ -91,6 +97,22 @@ def cv_frame_to_image(frame, stamp, frame_id: str):
     return msg
 
 
+def load_camera_info(path: str):
+    """Load a ROS camera-calibration YAML (from cameracalibrator) into CameraInfo."""
+    import yaml
+    with open(path) as f:
+        d = yaml.safe_load(f) or {}
+    info = CameraInfo()
+    info.width = int(d["image_width"])
+    info.height = int(d["image_height"])
+    info.distortion_model = str(d.get("distortion_model", "plumb_bob"))
+    info.k = [float(x) for x in d["camera_matrix"]["data"]]
+    info.d = [float(x) for x in d["distortion_coefficients"]["data"]]
+    info.r = [float(x) for x in d["rectification_matrix"]["data"]]
+    info.p = [float(x) for x in d["projection_matrix"]["data"]]
+    return info
+
+
 class CameraAdapterNode(Node):
     def __init__(self):
         super().__init__("camera_adapter_node")
@@ -99,6 +121,7 @@ class CameraAdapterNode(Node):
         self.declare_parameter("width", 640)
         self.declare_parameter("height", 480)
         self.declare_parameter("fps", 30.0)
+        self.declare_parameter("fourcc", "MJPG")
         self.declare_parameter("enabled_cameras", ["front"])
         self.declare_parameter("front_device", "0")
         self.declare_parameter("left_device", "1")
@@ -108,6 +131,10 @@ class CameraAdapterNode(Node):
         self.declare_parameter("left_rotate_deg", 0)
         self.declare_parameter("right_rotate_deg", 0)
         self.declare_parameter("rear_rotate_deg", 0)
+        self.declare_parameter("front_camera_info_url", "")
+        self.declare_parameter("left_camera_info_url", "")
+        self.declare_parameter("right_camera_info_url", "")
+        self.declare_parameter("rear_camera_info_url", "")
 
         self.mode = self.get_parameter("mode").value
         enabled = set(self.get_parameter("enabled_cameras").value)
@@ -115,8 +142,9 @@ class CameraAdapterNode(Node):
         width = int(self.get_parameter("width").value)
         height = int(self.get_parameter("height").value)
         fps = float(self.get_parameter("fps").value)
+        fourcc = str(self.get_parameter("fourcc").value)
         self.adapters = {
-            cfg.name: CameraAdapter(cfg, width, height, fps)
+            cfg.name: CameraAdapter(cfg, width, height, fps, fourcc)
             for cfg in self.camera_configs
             if cfg.enabled
         }
@@ -125,6 +153,19 @@ class CameraAdapterNode(Node):
             for cfg in self.camera_configs
             if cfg.enabled
         }
+        self.info_pubs = {}
+        self.cam_infos = {}
+        for cfg in self.camera_configs:
+            if not cfg.enabled:
+                continue
+            self.info_pubs[cfg.name] = self.create_publisher(CameraInfo, f"/camera/{cfg.name}/camera_info", 10)
+            url = str(self.get_parameter(f"{cfg.name}_camera_info_url").value).strip()
+            if url:
+                try:
+                    self.cam_infos[cfg.name] = load_camera_info(url)
+                    self.get_logger().info(f"{cfg.name} camera_info loaded from {url}")
+                except Exception as exc:
+                    self.get_logger().warning(f"{cfg.name} camera_info_url failed ({url}): {exc}")
         self.warned: Dict[str, bool] = {}
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter("publish_rate_hz").value), self.tick
@@ -146,6 +187,7 @@ class CameraAdapterNode(Node):
             if self.mode == "mock":
                 msg = self._mock_image(stamp, config.frame_id)
                 self.pubs[config.name].publish(msg)
+                self._publish_info(config.name, config.frame_id, stamp)
                 continue
             try:
                 frame = self.adapters[config.name].read_image()
@@ -157,9 +199,18 @@ class CameraAdapterNode(Node):
             if frame is not None:
                 frame = rotate_frame(frame, config.rotate_deg)
                 self.pubs[config.name].publish(cv_frame_to_image(frame, stamp, config.frame_id))
+                self._publish_info(config.name, config.frame_id, stamp)
             elif not self.warned.get(config.name):
                 self.get_logger().warning(f"{config.name} camera opened but returned no frame")
                 self.warned[config.name] = True
+
+    def _publish_info(self, name, frame_id, stamp):
+        info = self.cam_infos.get(name)
+        if info is None:
+            return
+        info.header.stamp = stamp
+        info.header.frame_id = frame_id
+        self.info_pubs[name].publish(info)
 
     @staticmethod
     def _mock_image(stamp, frame_id: str):

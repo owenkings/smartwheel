@@ -1,21 +1,23 @@
 rgb_cloud_colorizer_node:
   ros__parameters:
     input_cloud_topic: /points_merged
-    image_topic: /main_camera/image_raw
-    camera_info_topic: /main_camera/camera_info
     output_topic: /rgb_cloud_map
-
-    # Frame the extrinsic below is expressed against. The node TF-transforms the
-    # incoming cloud into this frame before applying the extrinsic.
     lidar_frame: base_link
-
-    # T_camera_optical_from_lidar: maps a point in lidar_frame into the camera
-    # OPTICAL frame (z forward, x right, y down). MUST come from a real
-    # camera<->lidar calibration. Identity (below) gives wrong colors and the
-    # node will warn until you set real values.
-    # See docs/calibration_checklist.md.
-    cam_lidar_translation: [0.0, 0.0, 0.0]
-    cam_lidar_quaternion: [0.0, 0.0, 0.0, 1.0]   # x, y, z, w
-
     default_gray: 128
     tf_timeout_sec: 0.1
+    max_image_age_sec: 0.15
+
+    # Main (left) camera. Physical topics so it works without the alias relay.
+    image_topic: /camera/left/image_raw
+    camera_info_topic: /camera/left/camera_info
+    # APPROXIMATE forward-camera extrinsic (T_camera_optical_from_base_link),
+    # NOT calibrated - assumes camera at ~(0.40,0.10,0.80) looking forward.
+    # Colors are roughly placed; refine with PnP (scripts/solve_cam_lidar_extrinsic.py) later.
+    cam_lidar_translation: [0.10, 0.80, -0.40]
+    cam_lidar_quaternion: [0.5, -0.5, 0.5, 0.5]
+
+    # Aux (right) camera - colorization only, also approximate.
+    aux_image_topic: /camera/right/image_raw
+    aux_camera_info_topic: /camera/right/camera_info
+    aux_cam_lidar_translation: [-0.10, 0.80, -0.40]
+    aux_cam_lidar_quaternion: [0.5, -0.5, 0.5, 0.5]

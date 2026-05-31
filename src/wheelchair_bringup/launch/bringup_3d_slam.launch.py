@@ -16,7 +16,7 @@ so NO motor commands are written. Autonomous motion stays gated.
 import os
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -86,18 +86,25 @@ def _setup(context, *args, **kwargs):
     # 3. Main-camera alias /camera/<side>/image_raw -> /main_camera/image_raw.
     #    Uses topic_tools relay; disable with provide_main_camera_alias:=false
     #    (then point livo_interface.yaml image_topic at the physical topic).
-    if _b(context, "provide_main_camera_alias"):
+    try:
+        get_package_share_directory("topic_tools")
+        have_topic_tools = True
+    except PackageNotFoundError:
+        have_topic_tools = False
+    if _b(context, "provide_main_camera_alias") and have_topic_tools:
         actions.append(Node(
             package="topic_tools", executable="relay", name="main_camera_image_relay",
             output="screen", arguments=[image_topic, alias_topic],
         ))
-        # camera_info alias too. NOTE: camera_adapter_node does NOT publish
-        # camera_info; a calibrated camera_info publisher must provide
-        # /camera/<side>/camera_info or this relay has nothing to forward.
+        # camera_info alias too (camera_adapter publishes camera_info only after calibration).
         actions.append(Node(
             package="topic_tools", executable="relay", name="main_camera_info_relay",
             output="screen", arguments=[info_topic, alias_info_topic],
         ))
+    elif _b(context, "provide_main_camera_alias"):
+        actions.append(LogInfo(msg="[bringup_3d_slam] topic_tools not installed; skipping /main_camera "
+                                   "alias. Install ros-humble-topic-tools, or point the LIVO/colorizer "
+                                   "image_topic at /camera/<side>/image_raw directly."))
 
     # 4. External LIVO backend (graceful if not installed / backend:=none).
     actions.append(IncludeLaunchDescription(
@@ -129,11 +136,14 @@ def _setup(context, *args, **kwargs):
 
     # 8. Optional fallback RGB colorizer (only if backend doesn't already color).
     if _b(context, "use_colorizer"):
+        aux_camera = "right" if main_camera == "left" else "left"
         actions.append(Node(
             package="wheelchair_3d_mapping", executable="rgb_cloud_colorizer_node",
             name="rgb_cloud_colorizer_node", output="screen",
             parameters=[os.path.join(mapping, "config", "rgb_colorizer.yaml"),
                         {"image_topic": alias_topic, "camera_info_topic": alias_info_topic,
+                         "aux_image_topic": f"/camera/{aux_camera}/image_raw",
+                         "aux_camera_info_topic": f"/camera/{aux_camera}/camera_info",
                          "use_sim_time": use_sim == "true"}],
         ))
 
