@@ -28,5 +28,5 @@ xtm60_left_adapter_node:
     # each radar's subnet, then restart:
     #   left:  udp_dest_ip: "192.168.0.100"  udp_dest_port: 7687
     #   right: udp_dest_ip: "192.168.1.100"  udp_dest_port: 7688
-    udp_dest_ip: ""
-    udp_dest_port: 0
+    udp_dest_ip: "192.168.0.100"
+    udp_dest_port: 7687
