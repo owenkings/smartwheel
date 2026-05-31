@@ -32,7 +32,7 @@
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>rtabmap_odom</exec_depend>
   <!-- KISS-ICP fallback uses the pip package 'kiss-icp' (no rosdep key);
-       install with: pip install --user kiss-icp -->
+       install it with pip (see docs/rtabmap_3d_mapping.md). -->
 
   <!-- Optional: used only by the bringup main-camera alias relay. The package
        still builds and the core nodes still run if topic_tools is absent. -->
