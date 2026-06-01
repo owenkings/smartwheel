@@ -99,6 +99,7 @@ class FrontierExplorerNode(Node):
         p("exploration_timeout_sec", 600.0)
         p("stop_on_safety_warning", True)
         p("stop_on_safety_emergency", True)
+        p("safety_timeout_sec", 2.0)
         p("period_sec", 2.0)
 
         g = lambda n: self.get_parameter(n).value
@@ -115,9 +116,11 @@ class FrontierExplorerNode(Node):
         self.exploration_timeout_sec = float(g("exploration_timeout_sec"))
         self.stop_on_safety_warning = bool(g("stop_on_safety_warning"))
         self.stop_on_safety_emergency = bool(g("stop_on_safety_emergency"))
+        self.safety_timeout_sec = float(g("safety_timeout_sec"))
 
         self.grid = None
         self.safety_state = "UNKNOWN"
+        self.safety_last = None
         self.goal_handle = None
         self.goal_sent_at = None
         self.current_goal_xy = None
@@ -143,17 +146,27 @@ class FrontierExplorerNode(Node):
 
     def _on_safety(self, msg):
         self.safety_state = (msg.data.split(":", 1)[0] or "UNKNOWN").strip().upper()
+        self.safety_last = self.now()
 
     def _publish_status(self, text):
         self.status_pub.publish(String(data=text))
 
-    def _safety_blocks(self):
+    def _safety_reason(self):
+        """Return (kind, text) when exploration must be blocked, else None.
+        Strict whitelist: only explore on a FRESH, explicitly-safe state."""
+        if self.safety_last is None or self.now() - self.safety_last > self.safety_timeout_sec:
+            return ("block", f"safety stale/no message ({self.safety_state})")
         s = self.safety_state
-        if self.stop_on_safety_emergency and ("EMERGENCY" in s or s == "SENSOR_FAULT"):
-            return "emergency"
-        if self.stop_on_safety_warning and s == "STOP":
-            return "stop"
-        return ""
+        if s in ("", "UNKNOWN", "UNINITIALIZED"):
+            return ("block", f"safety={s or 'EMPTY'}")
+        if "EMERGENCY" in s or s == "SENSOR_FAULT":
+            return ("emergency", f"safety={s}")
+        allow = {"CLEAR", "OK", "ACTIVE", "IDLE"}
+        if not self.stop_on_safety_warning:
+            allow |= {"WARNING", "WARN", "SLOWDOWN", "STOP"}
+        if s in allow:
+            return None
+        return ("block", f"safety={s}")
 
     def _cancel_goal(self):
         if self.goal_handle is not None:
@@ -173,12 +186,13 @@ class FrontierExplorerNode(Node):
             self._publish_status("DONE: exploration timeout reached")
             return
 
-        blocked = self._safety_blocks()
-        if blocked:
+        reason = self._safety_reason()
+        if reason is not None:
+            kind, text = reason
             self._cancel_goal()
-            if blocked == "emergency":
+            if kind == "emergency" and self.stop_on_safety_emergency:
                 self.estop_pub.publish(String(data="stop"))
-            self._publish_status(f"BLOCKED: safety={self.safety_state}")
+            self._publish_status("BLOCKED: " + text)
             return
         if self.grid is None:
             self._publish_status("BLOCKED: no map on " + self.map_topic)

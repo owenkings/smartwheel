@@ -96,11 +96,14 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # F. Base driver. Motion writes ONLY when enable_motion:=true.
+    # F. Base driver. Motion writes ONLY when enable_motion:=true. publish_tf=false
+    # because icp_odometry (RTAB-Map) is the sole odom->base_link TF owner in this
+    # mode; the base still publishes /wheel/odom and /base/status.
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "base.launch.py")),
         launch_arguments={
             "mode": "real",
+            "publish_tf": "false",
             "motion_control_enabled": "true" if enable_motion else "false",
             "hold_zero_before_motion_init": "true" if enable_motion else "false",
         }.items(),

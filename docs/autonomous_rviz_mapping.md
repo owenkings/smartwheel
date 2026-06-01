@@ -10,6 +10,8 @@
 - **frontier_explorer_node** 选未知区域边界，经 Nav2 `NavigateToPose` 发目标（自己不发 `/cmd_vel`）。
 - **RViz** 只负责可视化。
 
+> TF 所有权：本模式由 **RTAB-Map ICP（icp_odometry）作为唯一 `odom->base_link` TF 发布者**；底盘节点的 TF 被禁用（`base.launch.py publish_tf:=false`），仅发布 `/wheel/odom`、`/base/status`，避免 TF 双发布/抖动。（`full_system` 普通导航模式仍由底盘发布 TF，不受影响。）
+
 > 安全：默认不动。**只有同时 `enable_motion:=true` 且 `autonomous_exploration:=true` 才会自动行驶。**
 
 ## 2. 怎么运行
