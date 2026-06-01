@@ -11,10 +11,10 @@ safety_supervisor_node:
       - /ultrasonic/range_1
       - /ultrasonic/range_2
       - /ultrasonic/range_3
-    max_auto_speed: 0.4
-    debug_max_speed: 0.6
-    hard_max_speed: 0.8
-    max_angular_speed: 0.8
+    max_auto_speed: 0.25
+    debug_max_speed: 0.35
+    hard_max_speed: 0.5
+    max_angular_speed: 0.6
     allow_reverse_motion: false
     max_reverse_speed: 0.15
     rotate_in_place_angular_threshold: 0.2
@@ -31,7 +31,10 @@ safety_supervisor_node:
     publish_rate_hz: 20.0
     stale_timeout_sec: 1.0
     ultrasonic_stale_timeout_sec: 1.5
-    min_ultrasonic_online: 1
+    # Ultrasonic is useful close-range redundancy, but the current autonomous
+    # baseline must still run with radar/scan-only safety when the RS485
+    # ultrasonic chain is absent or under repair.
+    min_ultrasonic_online: 0
     require_localization_healthy: false
     localization_timeout_sec: 2.5
 
@@ -39,8 +42,8 @@ velocity_limiter_node:
   ros__parameters:
     input_topic: /cmd_vel_nav
     output_topic: /cmd_vel_limited
-    max_linear_x: 0.4
-    max_angular_z: 0.8
+    max_linear_x: 0.25
+    max_angular_z: 0.6
 
 emergency_stop_node:
   ros__parameters:

@@ -114,3 +114,72 @@ def test_save_map_retries_with_volatile_qos(tmp_path, monkeypatch):
     assert len(calls) == 2
     assert "map_subscribe_transient_local:=true" in calls[0]
     assert "map_subscribe_transient_local:=false" in calls[1]
+
+
+def test_map_version_records_3d_ply(tmp_path):
+    workspace = tmp_path / "workspace"
+    version_dir = workspace / "maps" / "versions"
+    version_dir.mkdir(parents=True)
+
+    version_id = "demo_20260527_130000"
+    version_pgm = version_dir / f"{version_id}.pgm"
+    version_yaml = version_dir / f"{version_id}.yaml"
+    map_3d = version_dir / f"{version_id}_3d" / "rtabmap_cloud.ply"
+    map_3d.parent.mkdir(parents=True)
+    version_pgm.write_bytes(b"P5\n2 2\n255\n" + bytes([0, 255, 255, 0]))
+    map_3d.write_bytes(b"ply\n")
+    version_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "image": version_pgm.name,
+                "resolution": 0.05,
+                "origin": [0.0, 0.0, 0.0],
+                "negate": 0,
+                "occupied_thresh": 0.65,
+                "free_thresh": 0.196,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    manager = MappingManager(workspace)
+    current_yaml = manager._publish_current_map_alias(version_yaml, "demo")
+    entry = manager._record_map_version(
+        MapSaveResult(
+            map_name="demo",
+            version_id=version_id,
+            version_yaml=version_yaml,
+            current_yaml=current_yaml,
+        ),
+        None,
+        None,
+        map_3d,
+        "Wrote rtabmap_cloud.ply",
+    )
+
+    manifest = json.loads((workspace / "maps" / "map_versions.json").read_text(encoding="utf-8"))
+
+    assert entry["map_3d_ply"] == str(map_3d)
+    assert manifest["versions"][0]["map_3d_status"] == "Wrote rtabmap_cloud.ply"
+
+
+def test_3d_only_version_cannot_activate_nav_map(tmp_path):
+    workspace = tmp_path / "workspace"
+    map_3d = workspace / "maps" / "versions" / "demo_3d" / "rtabmap_cloud.ply"
+    map_3d.parent.mkdir(parents=True)
+    map_3d.write_bytes(b"ply\n")
+
+    manager = MappingManager(workspace)
+    entry = manager._record_3d_only_map_version(
+        "demo",
+        "demo_20260527_140000",
+        map_3d,
+        "grid map unavailable",
+        "Wrote rtabmap_cloud.ply",
+    )
+
+    status = manager.activate_version(entry["version_id"])
+
+    assert status["state"] == "ERROR"
+    assert "没有 2D 导航投影" in status["reason"]

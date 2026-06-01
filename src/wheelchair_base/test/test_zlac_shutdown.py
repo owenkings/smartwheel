@@ -30,8 +30,11 @@ def make_node(single_slave_dual_axis=False):
     node.motion_control_enabled = True
     node.write_dual_axis_command_together = False
     node.initialize_motion_on_first_command = False
+    node.release_motion_after_zero_sec = -1.0
     node.motion_initialized = False
+    node.last_nonzero_command_monotonic = 0.0
     node.warned_motion_disabled = False
+    node.warned_zero_before_motion_init = False
     node.registers = ZlacRegisterMap(
         command_left_register=10,
         command_right_register=11,
@@ -84,3 +87,60 @@ def test_single_slave_can_write_dual_axis_command_together():
 
     assert node._write_wheel_commands(10.0, -10.0) is True
     assert node.modbus.writes == [(1, 10, [10, -10])]
+
+
+def test_zero_command_before_motion_init_does_not_drive_enable():
+    node = make_node(single_slave_dual_axis=True)
+    node.initialize_motion_on_first_command = True
+    node.registers.control_word_register = 30
+
+    assert node._write_wheel_commands(0.0, 0.0) is True
+
+    assert node.motion_initialized is False
+    assert node.modbus.writes == []
+
+
+def test_nonzero_command_initializes_motion_then_writes_speed():
+    node = make_node(single_slave_dual_axis=True)
+    node.initialize_motion_on_first_command = True
+    node.registers.control_mode_register = 28
+    node.registers.async_mode_register = 29
+    node.registers.control_word_register = 30
+
+    assert node._write_wheel_commands(10.0, -10.0) is True
+
+    assert node.motion_initialized is True
+    assert node.modbus.writes == [
+        (1, 28, 3),
+        (1, 29, 0),
+        (1, 30, 6),
+        (1, 30, 8),
+        (1, 10, 10),
+        (1, 11, -10),
+    ]
+
+
+def test_zero_command_after_idle_releases_motion_enable():
+    node = make_node(single_slave_dual_axis=True)
+    node.motion_initialized = True
+    node.release_motion_after_zero_sec = 0.0
+    node.registers.control_word_register = 30
+
+    assert node._write_wheel_commands(0.0, 0.0) is True
+
+    assert node.motion_initialized is False
+    assert node.modbus.writes == [(1, 30, 7)]
+
+
+def test_zero_command_holds_servo_when_release_disabled():
+    # release disabled (-1) => autonomous stop must HOLD the wheels (抱死), i.e.
+    # keep the servo ENABLED at zero speed, never send a stop/disable control word.
+    node = make_node(single_slave_dual_axis=True)
+    node.motion_initialized = True
+    node.release_motion_after_zero_sec = -1.0
+    node.registers.control_word_register = 30
+
+    assert node._write_wheel_commands(0.0, 0.0) is True
+
+    assert node.motion_initialized is True
+    assert node.modbus.writes == [(1, 10, 0), (1, 11, 0)]

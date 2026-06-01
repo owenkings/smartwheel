@@ -1,11 +1,33 @@
 goals:
   charging:
-    label: "充电点"
     frame_id: map
-    position: [0.0, 0.0, 0.0]
+    label: 充电点
+    position:
+    - 0.0
+    - 0.0
+    - 0.0
     yaw: 0.0
   door:
-    label: "门口"
     frame_id: map
-    position: [1.0, 0.0, 0.0]
+    label: 门口
+    position:
+    - 1.0
+    - 0.0
+    - 0.0
+    yaw: 0.0
+  lty了:
+    frame_id: map
+    label: lty了
+    position:
+    - -1.195
+    - 0.034
+    - 0.0
+    yaw: 0.0
+  wxy:
+    frame_id: map
+    label: wxy
+    position:
+    - -2.719
+    - 0.158
+    - 0.0
     yaw: 0.0

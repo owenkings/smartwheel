@@ -14,8 +14,10 @@ odom_mode:
   external      -> use an existing odom (odom_topic, e.g. /wheel/odom or
                    /odometry/filtered); that node owns odom->base_link, no icp.
 
-Camera is OPTIONAL (subscribe_rgb:=true): texture / visual loop closure only; 3D
-geometry never depends on camera<->LiDAR extrinsics.
+Camera is enabled by default for the site profile: one RGB camera is synchronized
+into RTAB-Map for image keyframes / visual loop-closure data, while the optional
+rgb_cloud_colorizer_node uses both forward cameras to publish /rgb_cloud_map.
+3D geometry remains LiDAR-primary and never depends on camera<->LiDAR extrinsics.
 
 Real raw XT-M60 topics are /xtm60/left/points and /xtm60/right/points; they are
 fused into points_topic by dual_lidar_cloud_fusion_node. Requires
@@ -49,6 +51,7 @@ def _setup(context, *args, **kwargs):
     odom_mode = s("odom_mode").lower()
     frame_id = s("frame_id")
     subscribe_rgb = flag("subscribe_rgb")
+    use_colorizer = flag("use_colorizer")
     localization = flag("localization")
     use_sim = s("use_sim_time")
     qsize = int(s("queue_size"))
@@ -63,8 +66,9 @@ def _setup(context, *args, **kwargs):
             launch_arguments={
                 "mode": "real", "enable_xtm60": "false",
                 "enable_xtm60_left": "true", "enable_xtm60_right": "true",
-                "enable_imu": "true", "enable_ultrasonic": "false",
-                "enable_camera": "true" if subscribe_rgb else "false",
+                "enable_imu": "true",
+                "enable_ultrasonic": "true" if flag("enable_ultrasonic") else "false",
+                "enable_camera": "true" if (subscribe_rgb or use_colorizer) else "false",
             }.items()))
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(mapping, "launch", "dual_lidar_fusion.launch.py")),
@@ -105,6 +109,16 @@ def _setup(context, *args, **kwargs):
         package="rtabmap_slam", executable="rtabmap", name="rtabmap", output="screen",
         parameters=rtab_params, remappings=rtab_remaps, arguments=["-d"] if delete else []))
 
+    if use_colorizer:
+        actions.append(Node(
+            package="wheelchair_3d_mapping", executable="rgb_cloud_colorizer_node",
+            name="rgb_cloud_colorizer_node", output="screen",
+            parameters=[
+                os.path.join(mapping, "config", "rgb_colorizer.yaml"),
+                {"use_sim_time": use_sim == "true"},
+            ],
+        ))
+
     if flag("rviz"):
         actions.append(Node(
             package="rtabmap_viz", executable="rtabmap_viz", name="rtabmap_viz", output="screen",
@@ -124,10 +138,14 @@ def generate_launch_description():
                               description="icp mode: icp_odometry output; external mode: existing odom e.g. /wheel/odom."),
         DeclareLaunchArgument("odom_mode", default_value="icp", description="icp | external"),
         DeclareLaunchArgument("frame_id", default_value="base_link"),
-        DeclareLaunchArgument("subscribe_rgb", default_value="false",
-                              description="Optional camera RGB for texture/visual loop closure; geometry independent of it."),
+        DeclareLaunchArgument("subscribe_rgb", default_value="true",
+                              description="Use one RGB camera in RTAB-Map for visual keyframes/loop-closure data."),
         DeclareLaunchArgument("rgb_topic", default_value="/camera/left/image_raw"),
         DeclareLaunchArgument("camera_info_topic", default_value="/camera/left/camera_info"),
+        DeclareLaunchArgument("use_colorizer", default_value="true",
+                              description="Publish /rgb_cloud_map using the two forward cameras for map coloring."),
+        DeclareLaunchArgument("enable_ultrasonic", default_value="true",
+                              description="Start ultrasonic adapter when bringup_sensors is true."),
         DeclareLaunchArgument("subscribe_scan_cloud", default_value="true"),
         DeclareLaunchArgument("approx_sync", default_value="true"),
         DeclareLaunchArgument("queue_size", default_value="10"),

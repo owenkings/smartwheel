@@ -34,6 +34,12 @@ class MapSaveResult:
     current_yaml: Path
 
 
+@dataclass(frozen=True)
+class Map3DSaveResult:
+    ply_path: Optional[Path]
+    message: str
+
+
 def find_workspace_root() -> Path:
     configured = os.environ.get("SMARTWHEEL_WORKSPACE")
     if configured:
@@ -85,7 +91,9 @@ class MappingManager:
     def status(self, ros_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self.lock:
             self._refresh_process_locked()
-            preflight = self.preflight(ros_status or {})
+            ros_status = ros_status or {}
+            self._refresh_runtime_reason_locked(ros_status)
+            preflight = self.preflight(ros_status)
             elapsed = None if self.started_at is None else max(0.0, time.monotonic() - self.started_at)
             progress = self._progress_locked(elapsed)
             return {
@@ -112,15 +120,74 @@ class MappingManager:
         sensors = ros_status.get("sensors") or {}
         hardware = ros_status.get("hardware_status") or {}
         localization = ros_status.get("localization_health") or {}
+        mapping_3d = ros_status.get("mapping_3d") or {}
         ultrasonic = sensors.get("ultrasonic") or []
         scan_online = bool((sensors.get("scan") or {}).get("online"))
         laser_online = bool((sensors.get("laser") or {}).get("online"))
+        left_camera_online = bool((sensors.get("camera_left") or {}).get("online"))
+        right_camera_online = bool((sensors.get("camera_right") or {}).get("online"))
+        front_camera_online = bool((sensors.get("camera_front") or {}).get("online"))
         two_d = self.backend != "rtabmap"  # RTAB-Map 3D uses /points_merged + icp odom, not /scan + /wheel/odom
-        checks = [
-            self._check("scan", "雷达/scan(2D保底)", scan_online or laser_online, two_d,
+        checks = []
+        if self.backend == "rtabmap":
+            checks.extend([
+                self._check(
+                    "points_merged",
+                    "3D融合点云 /points_merged",
+                    self._mapping_online(mapping_3d, "points_merged"),
+                    False,
+                    "RTAB-Map 3D 的主输入；开始建图后应变为 OK",
+                ),
+                self._check(
+                    "rtabmap_odom",
+                    "RTAB-Map ICP里程计",
+                    self._mapping_online(mapping_3d, "rtabmap_odom"),
+                    False,
+                    "开始建图后 /rtabmap/odom 应持续发布",
+                ),
+                self._check(
+                    "rtabmap_cloud_map",
+                    "3D主地图 /rtabmap/cloud_map",
+                    self._mapping_online(mapping_3d, "rtabmap_cloud_map"),
+                    False,
+                    "移动建图后应发布 3D 点云地图",
+                ),
+                self._check(
+                    "rtabmap_grid_map",
+                    "2D导航投影 /rtabmap/grid_map",
+                    self._mapping_online(mapping_3d, "rtabmap_grid_map"),
+                    False,
+                    "供 Nav2 保存和导航使用；不是主建图成果",
+                ),
+                self._check(
+                    "camera_left",
+                    "SLAM主相机 /camera/left",
+                    left_camera_online,
+                    False,
+                    "左相机进入 RTAB-Map RGB 同步，用于图像关键帧/回环数据",
+                ),
+                self._check(
+                    "camera_right",
+                    "上色辅助相机 /camera/right",
+                    right_camera_online,
+                    False,
+                    "右相机不进主估计，只参与 /rgb_cloud_map 地图上色",
+                ),
+                self._check(
+                    "rgb_cloud_map",
+                    "双相机上色 /rgb_cloud_map",
+                    self._mapping_online(mapping_3d, "rgb_cloud_map"),
+                    False,
+                    "需要左右相机图像、camera_info 和点云同步后才会发布",
+                ),
+            ])
+        checks.extend([
+            self._check("scan", "雷达/scan（3D不需要）" if self.backend == "rtabmap" else "雷达/scan(2D保底)",
+                        scan_online or laser_online, two_d,
                         "2D 保底建图需要 /scan；RTAB-Map 3D 用 /points_merged（建图启动后自带），可忽略"),
-            self._check("odom", "轮速里程计", bool((sensors.get("odom") or {}).get("online")), two_d,
-                        "2D 建图需要 /wheel/odom；RTAB-Map 3D 用 icp 里程计，可忽略"),
+            self._check("odom", "轮速里程计（3D不需要）" if self.backend == "rtabmap" else "轮速里程计",
+                        bool((sensors.get("odom") or {}).get("online")), two_d,
+                        "2D 建图需要 /wheel/odom；RTAB-Map 3D 用雷达点云 ICP 里程计，无需轮速，可忽略"),
             self._check("imu", "H30 IMU", bool((sensors.get("imu") or {}).get("online")), False, "建议开启 IMU 记录姿态"),
             self._check(
                 "ultrasonic",
@@ -130,11 +197,11 @@ class MappingManager:
                 "用于近距离安全冗余",
             ),
             self._check(
-                "camera_front",
-                "前摄像头",
-                bool((sensors.get("camera_front") or {}).get("online")),
+                "camera",
+                "摄像头",
+                left_camera_online or right_camera_online or front_camera_online,
                 False,
-                "用于远程观察现场",
+                "RTAB-Map 3D 默认使用左/右双摄；front 仅保留给旧配置/观察",
             ),
             self._check(
                 "hardware",
@@ -150,7 +217,7 @@ class MappingManager:
                 False,
                 localization.get("reason", "建图阶段定位可为空"),
             ),
-        ]
+        ])
         required_failed = [item for item in checks if item["required"] and not item["ok"]]
         return {
             "can_start": not required_failed,
@@ -161,6 +228,52 @@ class MappingManager:
     @staticmethod
     def _check(key: str, label: str, ok: bool, required: bool, detail: str) -> Dict[str, Any]:
         return {"key": key, "label": label, "ok": bool(ok), "required": required, "detail": detail}
+
+    @staticmethod
+    def _mapping_online(mapping_3d: Dict[str, Any], key: str) -> bool:
+        return bool((mapping_3d.get(key) or {}).get("online"))
+
+    def _refresh_runtime_reason_locked(self, ros_status: Dict[str, Any]):
+        if self.state != "MAPPING" or self.backend != "rtabmap":
+            return
+        mapping_3d = ros_status.get("mapping_3d") or {}
+        points = self._mapping_online(mapping_3d, "points_merged")
+        odom = self._mapping_online(mapping_3d, "rtabmap_odom")
+        cloud = self._mapping_online(mapping_3d, "rtabmap_cloud_map")
+        grid = self._mapping_online(mapping_3d, "rtabmap_grid_map")
+        rgb = self._mapping_online(mapping_3d, "rgb_cloud_map")
+        if points and odom and cloud and grid and rgb:
+            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计、3D主地图、2D导航投影和双相机上色均在线，请继续慢速推行闭环"
+        elif points and odom and cloud and grid:
+            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计、3D主地图和2D导航投影均在线，等待双相机上色输出"
+        elif points and odom and cloud:
+            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计和3D主地图已在线，等待2D导航投影稳定"
+        elif points and odom:
+            self.reason = "RTAB-Map 3D 已收到融合点云和ICP里程计，等待 /rtabmap/cloud_map 与 /rtabmap/grid_map 输出"
+        elif points:
+            self.reason = "RTAB-Map 3D 已收到 /points_merged，等待 ICP 里程计和地图输出"
+        else:
+            self.reason = "RTAB-Map 3D 建图已启动，等待 /points_merged 融合点云上线"
+
+    def _free_motor_for_manual_push(self) -> str:
+        """Disable the ZLAC servo so the chair can be pushed during mapping.
+        Mapping never runs the base driver, so a servo left ENABLED (held) by a
+        prior autonomous/jog session keeps the wheels locked. Release + verify."""
+        script = self.workspace_root / "scripts" / "zlac8030_release.py"
+        if not script.exists():
+            return ""
+        try:
+            result = subprocess.run(
+                ["python3", str(script)],
+                cwd=str(self.workspace_root), env=self._env(),
+                capture_output=True, text=True, timeout=6,
+            )
+        except Exception as exc:
+            return f"；底盘电机释放异常：{exc}"
+        if result.returncode == 0:
+            return "；已释放底盘电机抱闸，可手动推行"
+        tail = (result.stderr or result.stdout or "").strip().splitlines()
+        return f"；底盘电机释放未确认（如仍抱死请断电重启底盘）：{tail[-1] if tail else ''}"
 
     def start(self, ros_status: Dict[str, Any], map_name: Optional[str], force: bool = False,
               backend: Optional[str] = None) -> Dict[str, Any]:
@@ -180,7 +293,7 @@ class MappingManager:
                 self.state = "MAPPING"
                 preflight = self.preflight(ros_status)
                 suffix = "" if preflight["can_start"] else "，等待必要话题上线：" + ", ".join(preflight["required_failed"])
-                self.reason = f"已接入正在运行的 {engine} 建图，请推动轮椅完成闭环" + suffix
+                self.reason = f"已接入正在运行的 {engine} 建图，请推动轮椅完成闭环" + suffix + self._free_motor_for_manual_push()
                 self.started_at = time.monotonic()
                 self.map_name = safe_map_name(map_name)
                 self.quality_report_path = None
@@ -192,6 +305,16 @@ class MappingManager:
             if conflicts:
                 self.state = "ERROR"
                 self.reason = "当前处于定位/导航模式，不能直接建图。冲突节点：" + ", ".join(conflicts)
+                return self.status(ros_status)
+
+            missing_packages = self._missing_packages_for_backend(be)
+            if missing_packages:
+                self.state = "ERROR"
+                if "wheelchair_3d_mapping" in missing_packages:
+                    hint = "请先运行：colcon build --symlink-install，然后重新执行 bash scripts/run_native_gui.sh。"
+                else:
+                    hint = "请安装缺失依赖，例如：sudo apt install ros-humble-rtabmap-ros。"
+                self.reason = "建图后端依赖缺失：" + ", ".join(missing_packages) + "。" + hint
                 return self.status(ros_status)
 
             # smartwheel.service runs the same hardware nodes (serial ports, DDS
@@ -212,6 +335,9 @@ class MappingManager:
                 command = [
                     "ros2", "launch", "wheelchair_3d_mapping",
                     "rtabmap_3d_mapping.launch.py", "bringup_sensors:=true",
+                    "subscribe_rgb:=true", "rgb_topic:=/camera/left/image_raw",
+                    "camera_info_topic:=/camera/left/camera_info",
+                    "use_colorizer:=true", "enable_ultrasonic:=true",
                 ]
                 self.reason = "RTAB-Map 3D 建图已启动（3D 点云为主成果，同时投影 2D 导航底图），等待传感器上线"
             else:
@@ -223,6 +349,7 @@ class MappingManager:
                     "use_ekf:=true",
                 ]
                 self.reason = "slam_toolbox 2D 保底建图已启动，等待传感器和里程计上线"
+            self.reason = self.reason + self._free_motor_for_manual_push()
             self.process = subprocess.Popen(
                 command,
                 cwd=str(self.workspace_root),
@@ -251,6 +378,9 @@ class MappingManager:
             target_name = safe_map_name(map_name or self.map_name)
             self.map_name = target_name
 
+        if self.backend == "rtabmap":
+            return self._finish_rtabmap(target_name)
+
         try:
             save_result = self._save_map(target_name)
         except Exception as exc:
@@ -259,9 +389,84 @@ class MappingManager:
                 self.reason = str(exc)
                 return self.status({})
 
-        map_3d = self._save_map_3d(save_result.version_id) if self.backend == "rtabmap" else None
         quality_status, quality_report_path = self._run_quality_check(save_result.version_yaml)
         map_version = self._record_map_version(save_result, quality_status, quality_report_path)
+
+        with self.lock:
+            self.last_map_yaml = save_result.current_yaml
+            self.quality_status = quality_status
+            self.quality_report_path = quality_report_path
+            self.last_map_version = map_version
+            self.state = "MAP_READY"
+            quality_text = self._quality_reason_text(quality_status)
+            self.reason = f"2D 地图已保存：{save_result.current_yaml}；版本：{save_result.version_id}{quality_text}"
+            self.started_at = None
+            if not self.external_slam:
+                self._stop_process_locked()
+                self._restart_smartwheel_if_was_running()
+            return self.status({})
+
+    def _finish_rtabmap(self, target_name: str) -> Dict[str, Any]:
+        self.version_dir.mkdir(parents=True, exist_ok=True)
+        version_id = self._new_version_id(target_name)
+        save_result: Optional[MapSaveResult] = None
+        projection_error: Optional[str] = None
+
+        try:
+            save_result = self._save_map(target_name, version_id)
+        except Exception as exc:
+            projection_error = str(exc)
+
+        # RTAB-Map writes the final optimized database during shutdown. Save the
+        # live 2D grid first, then stop the launch so rtabmap-export sees a
+        # flushed database for the primary 3D PLY export.
+        if not self.external_slam:
+            with self.lock:
+                self._stop_process_locked()
+                self._restart_smartwheel_if_was_running()
+
+        map_3d_result = self._save_map_3d(version_id)
+        map_3d = map_3d_result.ply_path
+
+        if save_result is None:
+            if map_3d:
+                map_version = self._record_3d_only_map_version(
+                    target_name,
+                    version_id,
+                    map_3d,
+                    projection_error or "2D 导航投影保存失败",
+                    map_3d_result.message,
+                )
+                with self.lock:
+                    self.last_map_3d = map_3d
+                    self.last_map_version = map_version
+                    self.quality_status = map_version.get("quality")
+                    self.quality_report_path = None
+                    self.state = "ERROR"
+                    self.reason = (
+                        f"3D 主地图已保存：{map_3d}；但 2D 导航投影保存失败，"
+                        f"暂不能用于 Nav2 规划/导航。{projection_error or ''}"
+                    ).strip()
+                    self.started_at = None
+                    return self.status({})
+
+            with self.lock:
+                self.state = "ERROR"
+                self.reason = (
+                    "地图保存失败：3D 主地图未导出，2D 导航投影也未保存。"
+                    f"{projection_error or ''} 3D 导出信息：{map_3d_result.message}"
+                ).strip()
+                self.started_at = None
+                return self.status({})
+
+        quality_status, quality_report_path = self._run_quality_check(save_result.version_yaml)
+        map_version = self._record_map_version(
+            save_result,
+            quality_status,
+            quality_report_path,
+            map_3d,
+            map_3d_result.message,
+        )
 
         with self.lock:
             self.last_map_yaml = save_result.current_yaml
@@ -271,15 +476,9 @@ class MappingManager:
             self.last_map_3d = map_3d
             self.state = "MAP_READY"
             quality_text = self._quality_reason_text(quality_status)
-            if self.backend == "rtabmap":
-                p3d = f"3D 主地图 {map_3d}" if map_3d else "3D 主地图导出跳过（需移动建图≥2关键帧，或用 --live-pcd）"
-                self.reason = f"{p3d}；2D 导航投影 {save_result.current_yaml}；版本 {save_result.version_id}{quality_text}"
-            else:
-                self.reason = f"2D 地图已保存：{save_result.current_yaml}；版本：{save_result.version_id}{quality_text}"
+            p3d = f"3D 主地图 {map_3d}" if map_3d else f"3D 主地图导出跳过（{map_3d_result.message}）"
+            self.reason = f"{p3d}；2D 导航投影 {save_result.current_yaml}；版本 {save_result.version_id}{quality_text}"
             self.started_at = None
-            if not self.external_slam:
-                self._stop_process_locked()
-                self._restart_smartwheel_if_was_running()
             return self.status({})
 
     def cancel(self) -> Dict[str, Any]:
@@ -396,7 +595,10 @@ class MappingManager:
                 return self.status({})
 
         try:
-            version_yaml = Path(entry["version_yaml"])
+            yaml_value = entry.get("version_yaml") or entry.get("current_yaml")
+            if not yaml_value:
+                raise RuntimeError("该版本只有 3D 主地图，没有 2D 导航投影，不能设为 Nav2 当前地图")
+            version_yaml = Path(yaml_value)
             current_yaml = self._publish_current_map_alias(version_yaml, entry["map_name"])
             manifest = self._load_version_manifest()
             manifest.setdefault("current", {})[entry["map_name"]] = version_id
@@ -427,10 +629,10 @@ class MappingManager:
             self.reason = f"已切换到地图版本：{version_id}"
             return self.status({})
 
-    def _save_map(self, map_name: str) -> MapSaveResult:
+    def _save_map(self, map_name: str, version_id: Optional[str] = None) -> MapSaveResult:
         self.map_dir.mkdir(parents=True, exist_ok=True)
         self.version_dir.mkdir(parents=True, exist_ok=True)
-        version_id = self._new_version_id(map_name)
+        version_id = version_id or self._new_version_id(map_name)
         output_prefix = self.version_dir / version_id
         version_yaml = Path(f"{output_prefix}.yaml")
         attempts = []
@@ -507,13 +709,16 @@ class MappingManager:
             else:
                 prefix = f"{attempt['qos']} 返回码 {attempt.get('returncode')}"
             details.append(f"{prefix}: {output[-900:]}")
+        if self.backend == "rtabmap":
+            hint = "请确认 RTAB-Map 已发布 /rtabmap/grid_map，并让雷达完成一段有效扫描后再保存。"
+        else:
+            hint = "请确认 slam_toolbox 已发布 /map，并让雷达和里程计完成一段有效扫描后再保存。"
         return (
-            "地图保存失败：map_saver_cli 没有从 /map 收到可保存地图。"
-            "请确认建图日志中不再出现 Message Filter dropping message，并让雷达完成一段有效扫描后再保存。\n"
-            + "\n".join(details)
+            f"地图保存失败：map_saver_cli 没有从 {self.grid_topic} 收到可保存地图。"
+            f"{hint}\n" + "\n".join(details)
         )
 
-    def _save_map_3d(self, version_id: str) -> Optional[Path]:
+    def _save_map_3d(self, version_id: str) -> Map3DSaveResult:
         """Export the RTAB-Map 3D cloud (PLY) - the primary mapping product.
 
         Best-effort: a stationary single-keyframe DB has no odometry poses to
@@ -521,18 +726,20 @@ class MappingManager:
         """
         script = self.workspace_root / "scripts" / "save_rtabmap_3d_map.sh"
         if not script.exists():
-            return None
+            return Map3DSaveResult(None, "未找到 scripts/save_rtabmap_3d_map.sh")
         out_dir = self.version_dir / f"{version_id}_3d"
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["bash", str(script), "-o", str(out_dir)],
                 cwd=str(self.workspace_root), env=self._env(),
                 capture_output=True, text=True, timeout=90,
             )
-        except Exception:
-            return None
+        except Exception as exc:
+            return Map3DSaveResult(None, f"3D 导出命令异常：{exc}")
         ply = out_dir / "rtabmap_cloud.ply"
-        return ply if ply.exists() else None
+        output = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+        message = output[-900:] if output else f"返回码 {result.returncode}"
+        return Map3DSaveResult(ply if ply.exists() else None, message)
 
     @staticmethod
     def _timeout_text(value: Any) -> str:
@@ -590,6 +797,8 @@ class MappingManager:
         save_result: MapSaveResult,
         quality_status: Optional[Dict[str, Any]],
         quality_report_path: Optional[Path],
+        map_3d_path: Optional[Path] = None,
+        map_3d_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         manifest = self._load_version_manifest()
         entry = {
@@ -602,6 +811,8 @@ class MappingManager:
             "quality": self._quality_summary(quality_status),
             "log_path": str(self.log_path) if self.log_path else None,
             "source": "gui_online_mapping",
+            "map_3d_ply": str(map_3d_path) if map_3d_path else None,
+            "map_3d_status": map_3d_message,
         }
         versions = manifest.setdefault("versions", [])
         versions[:] = [item for item in versions if item.get("version_id") != save_result.version_id]
@@ -612,15 +823,61 @@ class MappingManager:
         self._write_version_manifest(manifest)
         return entry
 
+    def _record_3d_only_map_version(
+        self,
+        map_name: str,
+        version_id: str,
+        map_3d_path: Path,
+        projection_error: str,
+        map_3d_message: Optional[str],
+    ) -> Dict[str, Any]:
+        manifest = self._load_version_manifest()
+        quality = {
+            "verdict": "WARNING",
+            "score": 0,
+            "reasons": [
+                {
+                    "severity": "warning",
+                    "message": "仅保存了 3D 主地图；2D 导航投影保存失败，不能直接用于 Nav2。",
+                }
+            ],
+        }
+        entry = {
+            "version_id": version_id,
+            "map_name": map_name,
+            "created_at": self._now_iso(),
+            "current_yaml": None,
+            "version_yaml": None,
+            "quality_report": None,
+            "quality": quality,
+            "log_path": str(self.log_path) if self.log_path else None,
+            "source": "gui_online_mapping",
+            "map_3d_ply": str(map_3d_path),
+            "map_3d_status": map_3d_message,
+            "nav_projection_error": projection_error,
+        }
+        versions = manifest.setdefault("versions", [])
+        versions[:] = [item for item in versions if item.get("version_id") != version_id]
+        versions.append(entry)
+        manifest["latest"] = version_id
+        manifest["updated_at"] = self._now_iso()
+        self._write_version_manifest(manifest)
+        return entry
+
     def _load_last_saved_map(self):
         latest = self._latest_map_version()
         if not latest:
             return
-        yaml_value = latest.get("current_yaml") or latest.get("version_yaml")
-        if yaml_value:
-            yaml_path = Path(yaml_value)
-            if yaml_path.exists():
-                self.last_map_yaml = yaml_path
+        map_3d = latest.get("map_3d_ply")
+        if map_3d and Path(map_3d).exists():
+            self.last_map_3d = Path(map_3d)
+        for candidate in self._version_entries_newest_first():
+            yaml_value = candidate.get("current_yaml") or candidate.get("version_yaml")
+            if yaml_value:
+                yaml_path = Path(yaml_value)
+                if yaml_path.exists():
+                    self.last_map_yaml = yaml_path
+                    break
         quality_report = latest.get("quality_report")
         if quality_report:
             report_path = Path(quality_report)
@@ -630,6 +887,11 @@ class MappingManager:
         if self.quality_status is None and latest.get("quality"):
             self.quality_status = latest["quality"]
         self.last_map_version = latest
+
+    def _version_entries_newest_first(self) -> list[Dict[str, Any]]:
+        manifest = self._load_version_manifest()
+        versions = manifest.get("versions") or []
+        return [dict(item) for item in reversed(versions)]
 
     def _load_quality_status(self, report_path: Path) -> Optional[Dict[str, Any]]:
         try:
@@ -704,6 +966,27 @@ class MappingManager:
         env.setdefault("ROS_DOMAIN_ID", os.environ.get("SMARTWHEEL_ROS_DOMAIN_ID", "0"))
         env.setdefault("ROS_LOG_DIR", str(self.log_dir))
         return env
+
+    def _missing_packages_for_backend(self, backend: str) -> list[str]:
+        if backend == "rtabmap":
+            packages = ("wheelchair_3d_mapping", "rtabmap_slam", "rtabmap_odom", "nav2_map_server")
+        else:
+            packages = ("wheelchair_bringup", "slam_toolbox", "nav2_map_server")
+        return [package for package in packages if not self._ros_package_available(package)]
+
+    def _ros_package_available(self, package: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["ros2", "pkg", "prefix", package],
+                cwd=str(self.workspace_root),
+                env=self._env(),
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return False
+        return result.returncode == 0
 
     def _ros_node_names(self) -> set[str]:
         try:
@@ -782,7 +1065,9 @@ class MappingManager:
         self.process = None
         if self.state in ("MAPPING", "SAVING"):
             self.state = "ERROR"
-            self.reason = f"建图进程已退出，返回码 {code}"
+            detail = self._log_tail_excerpt()
+            suffix = f"；日志尾部：{detail}" if detail else ""
+            self.reason = f"建图进程已退出，返回码 {code}{suffix}"
             self.started_at = None
 
     def _stop_process_locked(self):
@@ -812,6 +1097,21 @@ class MappingManager:
         if self.log_handle is not None:
             self.log_handle.close()
             self.log_handle = None
+
+    def _log_tail_excerpt(self, max_chars: int = 900) -> str:
+        if not self.log_path or not self.log_path.exists():
+            return ""
+        try:
+            lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return ""
+        interesting = [
+            line.strip()
+            for line in lines[-40:]
+            if line.strip() and not line.lstrip().startswith("[INFO]")
+        ]
+        text = " | ".join(interesting[-8:])
+        return text[-max_chars:]
 
     def _progress_locked(self, elapsed: Optional[float]) -> int:
         if self.state == "IDLE":

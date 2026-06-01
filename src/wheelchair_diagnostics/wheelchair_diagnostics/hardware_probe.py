@@ -59,7 +59,7 @@ def probe_ultrasonic_port(
     baud_rate: int = 9600,
     addresses: Iterable[int] = (1, 2),
     register: int = 0x0001,
-    timeout_sec: float = 0.08,
+    timeout_sec: float = 0.2,
 ) -> ProbeResult:
     if serial is None:
         return ProbeResult("ultrasonic", False, "ERROR", "pyserial not installed", {"port": port})

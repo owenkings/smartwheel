@@ -58,7 +58,14 @@ if [[ ! -f "$DB" ]]; then
 fi
 
 echo "Exporting assembled 3D cloud via rtabmap-export ..."
-if rtabmap-export --cloud --output rtabmap_cloud --output_dir "$OUT_DIR" "$DB" \
+# --scan: build the cloud from the LiDAR laser scans stored in each node. Without
+# it, rtabmap-export tries to assemble from depth/stereo images (which this
+# LiDAR-primary map does not have) and every node yields an empty cloud
+# ("Node N doesn't have depth or stereo data ... use --scan option").
+# --output rtabmap (NOT rtabmap_cloud): rtabmap-export appends "_cloud" for
+# --cloud, so the file becomes rtabmap_cloud.ply, which this script and the GUI
+# (_save_map_3d) look for.
+if rtabmap-export --cloud --scan --output rtabmap --output_dir "$OUT_DIR" "$DB" \
    && ls "$OUT_DIR"/rtabmap_cloud.ply >/dev/null 2>&1; then
   echo "Wrote $OUT_DIR/rtabmap_cloud.ply"
 else

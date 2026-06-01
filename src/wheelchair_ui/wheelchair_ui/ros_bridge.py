@@ -8,19 +8,22 @@ from typing import Any, Dict, List, Optional
 try:
     import rclpy
     from ament_index_python.packages import get_package_share_directory
-    from geometry_msgs.msg import PoseStamped, Twist
+    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
     from nav_msgs.msg import OccupancyGrid, Odometry
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image, Imu, LaserScan, PointCloud2, Range
     from std_msgs.msg import Bool, String
 except ImportError:
     rclpy = None
     get_package_share_directory = None
     PoseStamped = None
+    PoseWithCovarianceStamped = None
     Twist = None
     OccupancyGrid = None
     Odometry = None
     Node = object
+    qos_profile_sensor_data = 10
     Image = None
     Imu = None
     LaserScan = None
@@ -93,7 +96,7 @@ class WheelchairUiRosNode(Node):
         self.current_goal: Optional[Dict] = None
         self.map_info: Optional[Dict] = None
         self.declare_parameter("ultrasonic_indices", [0])
-        self.declare_parameter("enabled_cameras", ["front"])
+        self.declare_parameter("enabled_cameras", ["left", "right"])
         self.ultrasonic_indices = [
             int(index) for index in self.get_parameter("ultrasonic_indices").value
         ]
@@ -113,6 +116,7 @@ class WheelchairUiRosNode(Node):
         self.sensor_details: Dict[str, Dict[str, Any]] = {}
 
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.initialpose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.named_goal_command_pub = self.create_publisher(String, "/named_goal_command", 10)
         self.emergency_stop_pub = self.create_publisher(Bool, "/emergency_stop_sw", 10)
         self.emergency_command_pub = self.create_publisher(String, "/emergency_stop_command", 10)
@@ -127,19 +131,44 @@ class WheelchairUiRosNode(Node):
         self.create_subscription(String, "/passability/status", self.on_passability_status, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, 10)
         self.create_subscription(OccupancyGrid, "/map", self.on_map, 10)
+        self.create_subscription(OccupancyGrid, "/rtabmap/grid_map", self.on_rtabmap_grid_map, 10)
         self.create_subscription(Odometry, "/wheel/odom", self.on_odom, 10)
-        self.create_subscription(PointCloud2, "/xtm60/points", self.on_xtm60_points, 10)
+        self.create_subscription(
+            Odometry,
+            "/rtabmap/odom",
+            lambda msg: self.on_mapping_odom("/rtabmap/odom", msg),
+            10,
+        )
+        self.create_subscription(
+            PointCloud2,
+            "/points_merged",
+            lambda msg: self.on_mapping_cloud("/points_merged", "points_merged", msg),
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            PointCloud2,
+            "/rtabmap/cloud_map",
+            lambda msg: self.on_mapping_cloud("/rtabmap/cloud_map", "rtabmap_cloud_map", msg),
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            PointCloud2,
+            "/rgb_cloud_map",
+            lambda msg: self.on_mapping_cloud("/rgb_cloud_map", "rgb_cloud_map", msg),
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(PointCloud2, "/xtm60/points", self.on_xtm60_points, qos_profile_sensor_data)
         self.create_subscription(
             PointCloud2,
             "/xtm60/left/points",
             lambda msg: self.on_xtm60_points_topic("/xtm60/left/points", msg),
-            10,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             PointCloud2,
             "/xtm60/right/points",
             lambda msg: self.on_xtm60_points_topic("/xtm60/right/points", msg),
-            10,
+            qos_profile_sensor_data,
         )
         self.create_subscription(LaserScan, "/scan", self.on_scan, 10)
         self.create_subscription(Imu, "/imu/data", self.on_imu, 10)
@@ -239,6 +268,16 @@ class WheelchairUiRosNode(Node):
             self.sensor_status[key] = sensors[key]["online"]
         return sensors
 
+    def _mapping_3d_snapshot(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        return {
+            "points_merged": self._sensor_entry("points_merged", now),
+            "rtabmap_odom": self._sensor_entry("rtabmap_odom", now),
+            "rtabmap_cloud_map": self._sensor_entry("rtabmap_cloud_map", now),
+            "rtabmap_grid_map": self._sensor_entry("rtabmap_grid_map", now),
+            "rgb_cloud_map": self._sensor_entry("rgb_cloud_map", now),
+        }
+
     def on_goal_pose(self, msg):
         self.current_goal = {
             "frame_id": msg.header.frame_id,
@@ -247,6 +286,29 @@ class WheelchairUiRosNode(Node):
         }
 
     def on_map(self, msg):
+        self.map_info = {
+            "frame_id": msg.header.frame_id,
+            "width": msg.info.width,
+            "height": msg.info.height,
+            "resolution": msg.info.resolution,
+            "origin": {
+                "x": msg.info.origin.position.x,
+                "y": msg.info.origin.position.y,
+            },
+            "data": list(msg.data),
+        }
+
+    def on_rtabmap_grid_map(self, msg):
+        self._mark_sensor(
+            "rtabmap_grid_map",
+            {
+                "topic": "/rtabmap/grid_map",
+                "frame_id": msg.header.frame_id,
+                "width": int(msg.info.width),
+                "height": int(msg.info.height),
+                "resolution": msg.info.resolution,
+            },
+        )
         self.map_info = {
             "frame_id": msg.header.frame_id,
             "width": msg.info.width,
@@ -279,6 +341,28 @@ class WheelchairUiRosNode(Node):
                 "frame_id": msg.header.frame_id,
                 "linear_x": msg.twist.twist.linear.x,
                 "angular_z": msg.twist.twist.angular.z,
+            },
+        )
+
+    def on_mapping_odom(self, topic: str, msg):
+        self._mark_sensor(
+            "rtabmap_odom",
+            {
+                "topic": topic,
+                "frame_id": msg.header.frame_id,
+                "child_frame_id": msg.child_frame_id,
+                "linear_x": msg.twist.twist.linear.x,
+                "angular_z": msg.twist.twist.angular.z,
+            },
+        )
+
+    def on_mapping_cloud(self, topic: str, key: str, msg):
+        self._mark_sensor(
+            key,
+            {
+                "topic": topic,
+                "frame_id": msg.header.frame_id,
+                "points": int(msg.width) * int(msg.height),
             },
         )
 
@@ -383,6 +467,7 @@ class WheelchairUiRosNode(Node):
             "hardware_status": self.hardware_status,
             "localization_health": self.localization_health,
             "passability_status": self.passability_status,
+            "mapping_3d": self._mapping_3d_snapshot(),
             "map_available": self.map_info is not None,
         }
 
@@ -443,6 +528,43 @@ class WheelchairUiRosNode(Node):
             {"action": "navigate_to", "goal_name": name}, ensure_ascii=False
         )
         self.named_goal_command_pub.publish(command)
+        return True
+
+    def send_goal_pose(self, x: float, y: float, yaw: float = 0.0) -> bool:
+        """Publish an ad-hoc /goal_pose (e.g. a point clicked on the map) so the
+        user can test navigation without pre-saved named goals."""
+        pose = PoseStamped()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.header.frame_id = "map"
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        q = yaw_to_quaternion(float(yaw))
+        pose.pose.orientation.x = q["x"]
+        pose.pose.orientation.y = q["y"]
+        pose.pose.orientation.z = q["z"]
+        pose.pose.orientation.w = q["w"]
+        self.goal_pub.publish(pose)
+        return True
+
+    def set_initial_pose(self, x: float, y: float, yaw: float = 0.0) -> bool:
+        """Publish /initialpose so AMCL localizes. Without this AMCL never
+        converges, localization stays unhealthy, and safety zeroes /cmd_vel_safe."""
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.pose.pose.position.x = float(x)
+        msg.pose.pose.position.y = float(y)
+        q = yaw_to_quaternion(float(yaw))
+        msg.pose.pose.orientation.x = q["x"]
+        msg.pose.pose.orientation.y = q["y"]
+        msg.pose.pose.orientation.z = q["z"]
+        msg.pose.pose.orientation.w = q["w"]
+        cov = [0.0] * 36
+        cov[0] = 0.25      # x variance
+        cov[7] = 0.25      # y variance
+        cov[35] = 0.0685   # yaw variance (~15 deg)
+        msg.pose.covariance = cov
+        self.initialpose_pub.publish(msg)
         return True
 
     def set_software_stop(self, active: bool):

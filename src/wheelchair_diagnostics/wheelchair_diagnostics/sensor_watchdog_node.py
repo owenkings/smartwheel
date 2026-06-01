@@ -41,6 +41,7 @@ class SensorWatchdogNode(Node):
         self.declare_parameter("ultrasonic_0_critical", True)
         self.declare_parameter("ultrasonic_1_critical", False)
         self.declare_parameter("camera_timeout_sec", 3.0)
+        self.declare_parameter("camera_topics", ["/camera/left/image_raw", "/camera/right/image_raw"])
         self.declare_parameter("points_timeout_sec", 1.5)
         self.declare_parameter("points_topics", ["/xtm60/points"])
 
@@ -61,8 +62,16 @@ class SensorWatchdogNode(Node):
             TopicRule("/wheel/odom", float(self.get_parameter("odom_timeout_sec").value), True, "wheel odom"),
             TopicRule("/base/status", float(self.get_parameter("base_timeout_sec").value), True, "base driver"),
             TopicRule("/imu/data", float(self.get_parameter("imu_timeout_sec").value), False, "H30 IMU"),
-            TopicRule("/camera/front/image_raw", float(self.get_parameter("camera_timeout_sec").value), False, "front camera"),
         ]
+        for index, topic in enumerate(self.get_parameter("camera_topics").value):
+            rules.append(
+                TopicRule(
+                    str(topic),
+                    float(self.get_parameter("camera_timeout_sec").value),
+                    False,
+                    f"camera {index}",
+                )
+            )
         for index, topic in enumerate(self.get_parameter("points_topics").value):
             rules.append(
                 TopicRule(
@@ -95,8 +104,9 @@ class SensorWatchdogNode(Node):
             "/wheel/odom": Odometry,
             "/base/status": String,
             "/imu/data": Imu,
-            "/camera/front/image_raw": Image,
         }
+        for topic in self.get_parameter("camera_topics").value:
+            topic_types[str(topic)] = Image
         for topic in self.get_parameter("points_topics").value:
             topic_types[str(topic)] = PointCloud2
         for topic in self.get_parameter("ultrasonic_topics").value:

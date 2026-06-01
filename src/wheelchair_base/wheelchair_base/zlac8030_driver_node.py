@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -79,6 +80,7 @@ class Zlac8030DriverNode(Node):
         self.declare_parameter("motion_control_enabled", False)
         self.declare_parameter("write_dual_axis_command_together", False)
         self.declare_parameter("initialize_motion_on_first_command", True)
+        self.declare_parameter("release_motion_after_zero_sec", 0.75)
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("odom_frame_id", "odom")
@@ -115,6 +117,9 @@ class Zlac8030DriverNode(Node):
         )
         self.initialize_motion_on_first_command = bool(
             self.get_parameter("initialize_motion_on_first_command").value
+        )
+        self.release_motion_after_zero_sec = float(
+            self.get_parameter("release_motion_after_zero_sec").value
         )
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
         self.odom_frame_id = self.get_parameter("odom_frame_id").value
@@ -157,9 +162,11 @@ class Zlac8030DriverNode(Node):
         self.last_wheel_rpm: Tuple[float, float] = (0.0, 0.0)
         self.warned_no_registers = False
         self.warned_motion_disabled = False
+        self.warned_zero_before_motion_init = False
         self.warned_feedback_read_failed = False
         self.last_command_write_ok = False
         self.motion_initialized = False
+        self.last_nonzero_command_monotonic = time.monotonic()
 
         self.odom_pub = self.create_publisher(Odometry, "/wheel/odom", 20)
         self.status_pub = self.create_publisher(String, "/base/status", 10)
@@ -220,6 +227,10 @@ class Zlac8030DriverNode(Node):
         return (-left_rpm if self.invert_left else left_rpm, -right_rpm if self.invert_right else right_rpm)
 
     def _write_wheel_commands(self, left_rpm: float, right_rpm: float) -> bool:
+        command_is_zero = abs(left_rpm) <= 1e-6 and abs(right_rpm) <= 1e-6
+        now_monotonic = time.monotonic()
+        if not command_is_zero:
+            self.last_nonzero_command_monotonic = now_monotonic
         if not self.registers.command_enabled:
             if not self.warned_no_registers:
                 self.get_logger().warning(
@@ -237,6 +248,27 @@ class Zlac8030DriverNode(Node):
                 )
                 self.warned_motion_disabled = True
             return False
+        if (
+            self.motion_control_enabled
+            and self.initialize_motion_on_first_command
+            and not self.motion_initialized
+            and command_is_zero
+        ):
+            if not self.warned_zero_before_motion_init:
+                self.get_logger().warning(
+                    "ZLAC8030 zero command received before motion initialization; "
+                    "skipping drive_enable to avoid engaging the holding brake while idle"
+                )
+                self.warned_zero_before_motion_init = True
+            return True
+        if (
+            self.motion_control_enabled
+            and self.motion_initialized
+            and command_is_zero
+            and self.release_motion_after_zero_sec >= 0.0
+            and now_monotonic - self.last_nonzero_command_monotonic >= self.release_motion_after_zero_sec
+        ):
+            return self._write_control_stop(emergency=False)
         left_value = int(round(left_rpm * self.rpm_to_register_scale))
         right_value = int(round(right_rpm * self.rpm_to_register_scale))
         try:
@@ -425,6 +457,7 @@ class Zlac8030DriverNode(Node):
             f"mode={self.mode}; command={register_state}; odom={feedback_state}; "
             f"real_motion_enabled={str(real_motion_enabled).lower()}; "
             f"motion_control_enabled={str(self.motion_control_enabled).lower()}; "
+            f"motion_initialized={str(self.motion_initialized).lower()}; "
             f"last_command_write_ok={str(self.last_command_write_ok).lower()}; "
             f"left_rpm={self.last_wheel_rpm[0]:.2f}; right_rpm={self.last_wheel_rpm[1]:.2f}; "
             f"cmd_age={cmd_age:.2f}"

@@ -28,4 +28,16 @@ source /opt/ros/humble/setup.bash
 source "$workspace_root/install/setup.bash"
 set -u
 
+if ! ros2 pkg prefix wheelchair_3d_mapping >/dev/null 2>&1; then
+  echo "ERROR: wheelchair_3d_mapping is not in install/setup.bash." >&2
+  echo "Run: colcon build --symlink-install" >&2
+  exit 1
+fi
+
+for pkg in rtabmap_slam rtabmap_odom nav2_map_server; do
+  if ! ros2 pkg prefix "$pkg" >/dev/null 2>&1; then
+    echo "WARN: ROS package '$pkg' is missing; RTAB-Map 3D mapping/Nav2 map saving will fail until installed." >&2
+  fi
+done
+
 exec ros2 run wheelchair_ui wheelchair_native_gui "$@"

@@ -9,7 +9,8 @@ case "$profile" in
       "/scan"
       "/imu/data"
       "/ultrasonic/range_0"
-      "/camera/front/image_raw"
+      "/camera/left/image_raw"
+      "/camera/right/image_raw"
     )
     alternative_groups=(
       "/xtm60/right/points|/xtm60/points"

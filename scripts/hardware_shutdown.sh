@@ -12,6 +12,8 @@ commands are published so each node can release its hardware handle.
 Options:
   --no-source   Assume ROS has already been sourced by the parent shell.
   --quiet       Suppress informational output.
+  --no-direct-zlac-release
+               Skip the direct Modbus stop fallback for ZLAC8030.
   -h, --help    Show this help.
 EOF
 }
@@ -19,6 +21,7 @@ EOF
 workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_ros=true
 quiet=false
+direct_zlac_release=true
 
 while (($#)); do
   case "$1" in
@@ -28,6 +31,10 @@ while (($#)); do
       ;;
     --quiet)
       quiet=true
+      shift
+      ;;
+    --no-direct-zlac-release)
+      direct_zlac_release=false
       shift
       ;;
     -h|--help)
@@ -89,6 +96,23 @@ publish_stop_commands() {
     "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 }
 
+publish_direct_zlac_release() {
+  if [[ "$direct_zlac_release" != true ]]; then
+    return 0
+  fi
+  if [[ ! -x "$workspace_root/scripts/zlac8030_release.py" ]]; then
+    return 0
+  fi
+  if [[ ! -e /dev/smartwheel_zlac8030 ]]; then
+    log "ZLAC8030 serial device not found; skip direct release"
+    return 0
+  fi
+  log "Writing direct ZLAC8030 stop command"
+  "$workspace_root/scripts/zlac8030_release.py" >/dev/null 2>&1 || \
+    log "WARN direct ZLAC8030 stop failed; ROS base may own the serial port"
+}
+
 cd "$workspace_root" || exit 1
 source_ros_setup || true
 publish_stop_commands
+publish_direct_zlac_release

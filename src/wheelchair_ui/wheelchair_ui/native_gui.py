@@ -501,7 +501,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mapping_progress = QtWidgets.QProgressBar()
         self.mapping_progress.setRange(0, 100)
         self.mapping_progress.setFormat("保存进度 %p%")
-        self.mapping_checks_label = QtWidgets.QLabel("设备检查")
+        self.mapping_checks_label = QtWidgets.QLabel("RTAB-Map 3D 设备检查")
         self.mapping_checks_label.setObjectName("mappingSubTitle")
         self.preflight_list = QtWidgets.QListWidget()
         self.preflight_list.setObjectName("mappingLogList")
@@ -517,7 +517,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QScroller.grabGesture(
             self.preflight_list.viewport(), QtWidgets.QScroller.TouchGesture
         )
-        start = QtWidgets.QPushButton("开始建图")
+        start = QtWidgets.QPushButton("开始3D建图")
         finish = QtWidgets.QPushButton("结束并保存")
         cancel = QtWidgets.QPushButton("取消建图")
         cancel.setObjectName("outlineDangerButton")
@@ -569,10 +569,14 @@ class MainWindow(QtWidgets.QMainWindow):
         save = QtWidgets.QPushButton("保存目标点")
         delete = QtWidgets.QPushButton("删除选中目标")
         delete.setObjectName("outlineDangerButton")
-        for button in (save, delete):
+        init_pose = QtWidgets.QPushButton("设置初始位姿(点地图填X/Y)")
+        nav_point = QtWidgets.QPushButton("导航到此点")
+        for button in (save, delete, init_pose, nav_point):
             button.setMinimumHeight(50)
         save.clicked.connect(self.save_goal)
         delete.clicked.connect(self.delete_selected_goal)
+        init_pose.clicked.connect(self.set_initial_pose)
+        nav_point.clicked.connect(self.navigate_to_point)
 
         def add_goal_row(row: int, text: str, widget: QtWidgets.QWidget):
             label = QtWidgets.QLabel(text)
@@ -586,9 +590,11 @@ class MainWindow(QtWidgets.QMainWindow):
         add_goal_row(1, "X", self.goal_x)
         add_goal_row(2, "Y", self.goal_y)
         add_goal_row(3, "Yaw", self.goal_yaw)
-        layout.addWidget(save, 4, 0, 1, 2)
-        layout.addWidget(delete, 5, 0, 1, 2)
-        layout.setRowStretch(6, 1)
+        layout.addWidget(init_pose, 4, 0, 1, 2)
+        layout.addWidget(nav_point, 5, 0, 1, 2)
+        layout.addWidget(save, 6, 0, 1, 2)
+        layout.addWidget(delete, 7, 0, 1, 2)
+        layout.setRowStretch(8, 1)
         return page
 
     def _system_tab(self):
@@ -951,11 +957,26 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return False
 
+    @staticmethod
+    def _use_systemd_backend() -> bool:
+        return os.environ.get("SMARTWHEEL_GUI_USE_SYSTEMD", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     def _status_indicates_system_active(self, status: Dict) -> bool:
         sensors = status.get("sensors") or {}
         if any(
             bool((sensors.get(key) or {}).get("online"))
-            for key in ("scan", "laser", "imu", "odom", "base", "camera_front")
+            for key in ("scan", "laser", "imu", "odom", "base")
+        ):
+            return True
+        if any(
+            bool((value or {}).get("online"))
+            for key, value in sensors.items()
+            if str(key).startswith("camera_")
         ):
             return True
         ultrasonic = sensors.get("ultrasonic") or []
@@ -1044,6 +1065,21 @@ class MainWindow(QtWidgets.QMainWindow):
         except PermissionError:
             pass
 
+    def _run_hardware_shutdown_script(self):
+        script = self.workspace_root / "scripts" / "hardware_shutdown.sh"
+        if not script.exists():
+            return
+        try:
+            subprocess.run(
+                [str(script), "--no-source", "--quiet"],
+                cwd=str(self.workspace_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=4,
+            )
+        except Exception:
+            pass
+
     def start_system(self):
         runtime_state = self.run_btn.property("runtimeState")
         # Toggle: if anything looks like the system is already running, stop it.
@@ -1066,11 +1102,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage("ROS2 系统已关闭", 4000)
             return
 
-        # Prefer the systemd user unit when it is installed. It centralises
-        # log paths, env (radar enable flag, map path, etc.), and integrates
-        # with auto-start. Fall back to a direct QProcess launch only when no
-        # unit is present (e.g., developer tree without install_autostart.sh).
-        if self._smartwheel_service_unit_present():
+        # Native GUI is an interactive mapping/navigation session, so it starts
+        # full_system directly with radar enabled. The user unit remains an
+        # opt-in boot/background path via SMARTWHEEL_GUI_USE_SYSTEMD=true.
+        if self._use_systemd_backend() and self._smartwheel_service_unit_present():
             self._set_run_state("starting", "启动中", "通过 systemd 启动 smartwheel.service")
             self.system_launch_detail = "smartwheel.service (full_system.launch.py)"
             ok = self._systemctl_user("start", timeout=15)
@@ -1096,13 +1131,15 @@ class MainWindow(QtWidgets.QMainWindow):
         launch_args = [
             "enable_web_ui:=false",
             "enable_native_gui:=false",
+            "enable_xtm60_radar:=true",
+            "enable_dual_xtm60:=true",
         ]
         map_path = self.mapping.last_map_yaml
         if map_path and Path(map_path).exists():
             launch_args.append(f"map:={map_path}")
-            self.system_launch_detail = f"full_system.launch.py，地图：{map_path.name}"
+            self.system_launch_detail = f"full_system.launch.py，双雷达导航，地图：{map_path.name}"
         else:
-            self.system_launch_detail = "full_system.launch.py，默认空地图"
+            self.system_launch_detail = "full_system.launch.py，双雷达导航，默认空地图"
         launch = (
             "exec ros2 launch wheelchair_bringup full_system.launch.py "
             + " ".join(shlex.quote(arg) for arg in launch_args)
@@ -1196,6 +1233,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 process.waitForFinished(1000)
         self.system_process = None
         self.system_pgid = None
+        self._run_hardware_shutdown_script()
         if used_systemctl:
             self.statusBar().showMessage("ROS2 已通过 systemd 停止", 4000)
 
@@ -1305,9 +1343,16 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         sensors = status.get("sensors", {})
         online = []
-        for key, label in (("scan", "scan"), ("imu", "imu"), ("camera_front", "cam"), ("odom", "odom")):
+        camera_online = any(
+            bool((value or {}).get("online"))
+            for key, value in sensors.items()
+            if str(key).startswith("camera_")
+        )
+        for key, label in (("scan", "scan"), ("imu", "imu"), ("odom", "odom")):
             if (sensors.get(key) or {}).get("online"):
                 online.append(label)
+        if camera_online:
+            online.append("cam")
         self.sensor_card.set_value(" / ".join(online) if online else "--")
         ultrasonic = sensors.get("ultrasonic") or []
         if ultrasonic:
@@ -1416,11 +1461,45 @@ class MainWindow(QtWidgets.QMainWindow):
         item = self.goal_list.currentItem()
         return item.data(QtCore.Qt.UserRole) if item else None
 
+    def _nav_precondition_ok(self) -> bool:
+        if not (self._system_process_running() or self._status_indicates_system_active(self.latest_status)):
+            QtWidgets.QMessageBox.warning(self, "导航后端未运行", "请先点击\"运行\"启动导航后端，再发送目标。")
+            return False
+        loc = self.latest_status.get("localization_health") or {}
+        if not (bool(loc.get("healthy")) or loc.get("state") == "GOOD"):
+            QtWidgets.QMessageBox.warning(
+                self, "定位未就绪",
+                f"定位状态：{loc.get('state', 'UNKNOWN')}。\n"
+                "请先在地图上点轮椅当前位置→设好 Yaw→点\"设置初始位姿\"，待定位变 GOOD 再导航。",
+            )
+            return False
+        return True
+
     def navigate_selected_goal(self):
         key = self.selected_goal_key()
         if not key:
             return
+        if not self._nav_precondition_ok():
+            return
         self.bridge.node.send_named_goal(key)
+
+    def navigate_to_point(self):
+        if not self._nav_precondition_ok():
+            return
+        self.bridge.node.send_goal_pose(self.goal_x.value(), self.goal_y.value(), self.goal_yaw.value())
+        self.statusBar().showMessage(
+            f"已发送目标 x={self.goal_x.value():.2f} y={self.goal_y.value():.2f}，"
+            "若 Nav2 aborted 多为目标在墙里/不可达，请点更空旷的点", 6000
+        )
+
+    def set_initial_pose(self):
+        self.bridge.node.set_initial_pose(
+            self.goal_x.value(), self.goal_y.value(), self.goal_yaw.value()
+        )
+        self.statusBar().showMessage(
+            f"已发送初始位姿 x={self.goal_x.value():.2f} y={self.goal_y.value():.2f} "
+            f"yaw={self.goal_yaw.value():.2f}，等待 AMCL 收敛后再导航", 6000
+        )
 
     def save_goal(self):
         name = self.goal_name.text().strip()

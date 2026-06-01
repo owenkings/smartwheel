@@ -10,7 +10,10 @@ ultrasonic_adapter_node:
     publish_rate_hz: 10.0
     serial_port: /dev/smartwheel_ultrasonic
     baud_rate: 9600
-    serial_timeout_sec: 0.08
+    # The FD07-34 bus responds reliably around 0.2s on the current RS485
+    # adapter; 0.08s caused intermittent stale WARN even though the sensors
+    # answered direct probes.
+    serial_timeout_sec: 0.2
     # FD07-34 commonly exposes actual distance in holding register 0x0001.
     # If your sensor is configured to use the processed value, change to 0x0002.
     register: 1

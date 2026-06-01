@@ -114,10 +114,12 @@ if [[ -e "$imu_port" ]]; then
 else
   warn "IMU serial port missing: $imu_port"
 fi
-if [[ -e /dev/video0 ]]; then
-  ok "front camera device exists: /dev/video0"
+if [[ -e /dev/video0 && -e /dev/video2 ]]; then
+  ok "left/right camera devices exist: /dev/video0 and /dev/video2"
+elif [[ -e /dev/video0 ]]; then
+  warn "only one camera capture device found: /dev/video0"
 else
-  fail "front camera device missing: /dev/video0"
+  fail "camera capture device missing: /dev/video0"
 fi
 
 echo
@@ -132,7 +134,8 @@ if source_ros; then
   topic_hz /xtm60/right/points 6
   topic_hz_optional /xtm60/points 6
   topic_hz /scan 6
-  topic_hz /camera/front/image_raw 6
+  topic_hz /camera/left/image_raw 6
+  topic_hz /camera/right/image_raw 6
   topic_hz /ultrasonic/range_0 4
   if [[ ! -e "$ultra_port" ]]; then
     warn "/ultrasonic/range_* may be max-range placeholder because $ultra_port is missing"

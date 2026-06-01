@@ -16,6 +16,9 @@ sensor_watchdog_node:
     ultrasonic_0_critical: true
     ultrasonic_1_critical: false
     camera_timeout_sec: 3.0
+    camera_topics:
+      - /camera/left/image_raw
+      - /camera/right/image_raw
     points_timeout_sec: 1.5
     points_topics:
       - /xtm60/left/points
@@ -26,7 +29,12 @@ sensor_watchdog_node:
 localization_health_node:
   ros__parameters:
     publish_rate_hz: 2.0
-    max_amcl_age_sec: 2.0
+    # AMCL only republishes /amcl_pose after the robot MOVES; when stationary it
+    # holds the pose via the map->odom TF. A short age here falsely flags a
+    # parked-but-localized robot as LOST -> safety zeroes /cmd_vel_safe -> it can
+    # never start moving (chicken-and-egg). Covariance + scan + odom freshness
+    # remain the real "am I localized / are sensors alive" gates.
+    max_amcl_age_sec: 1000000.0
     max_odom_age_sec: 1.0
     max_scan_age_sec: 1.0
     max_covariance_xy: 0.50
@@ -41,9 +49,9 @@ hardware_self_check_node:
     h30_baud_rate: 460800
     ultrasonic_port: /dev/smartwheel_ultrasonic
     ultrasonic_baud_rate: 9600
-    ultrasonic_addresses: [1]
+    ultrasonic_addresses: [1, 2, 3, 4]
     ultrasonic_register: 1
-    camera_devices: ["0"]
+    camera_devices: ["0", "2"]
     xtm60_sdk_root: "/home/nvidia/smartwheel/xtsdk_py"
     xtm60_ip_address: 192.168.1.101
     xtm60_ip_addresses:
