@@ -38,6 +38,10 @@ class SafetyParams:
     d_margin: float = 0.25
     front_angle_min_deg: float = -35.0
     front_angle_max_deg: float = 35.0
+    # Front ultrasonics are mounted ~0.5 m BEHIND the chair's front edge, so any
+    # reading below this is the chair's own footrest/frame, not a real obstacle.
+    # Discard it (0.0 = keep all).
+    ultrasonic_min_valid_m: float = 0.0
 
 
 @dataclass
@@ -108,7 +112,10 @@ def evaluate_safety(
     if abs(capped_linear) > params.hard_max_speed:
         capped_linear = math.copysign(params.hard_max_speed, capped_linear)
 
-    valid_ultra = [d for d in ultrasonic_distances if math.isfinite(d) and d > 0.0]
+    valid_ultra = [
+        d for d in ultrasonic_distances
+        if math.isfinite(d) and d > 0.0 and d >= params.ultrasonic_min_valid_m
+    ]
     min_ultra = min(valid_ultra, default=math.inf)
     dynamic_stop = compute_dynamic_stop_distance(
         capped_linear, params.t_delay, params.a_brake, params.d_margin

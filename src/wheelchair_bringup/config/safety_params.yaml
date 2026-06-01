@@ -31,6 +31,10 @@ safety_supervisor_node:
     publish_rate_hz: 20.0
     stale_timeout_sec: 1.0
     ultrasonic_stale_timeout_sec: 1.5
+    # Front ultrasonics sit ~0.5 m behind the chair's front edge; readings below
+    # this are the chair's own footrest/frame (false positives) and are discarded.
+    # The LiDAR front-cone scan-distance stop remains the real collision guard.
+    ultrasonic_min_valid_m: 0.50
     # Ultrasonic is useful close-range redundancy, but the current autonomous
     # baseline must still run with radar/scan-only safety when the RS485
     # ultrasonic chain is absent or under repair.
