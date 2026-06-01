@@ -10,7 +10,7 @@
 - **frontier_explorer_node** 选未知区域边界，经 Nav2 `NavigateToPose` 发目标（自己不发 `/cmd_vel`）。
 - **RViz** 只负责可视化。
 
-> TF 所有权：本模式由 **RTAB-Map ICP（icp_odometry）作为唯一 `odom->base_link` TF 发布者**；底盘节点的 TF 被禁用（`base.launch.py publish_tf:=false`），仅发布 `/wheel/odom`、`/base/status`，避免 TF 双发布/抖动。（`full_system` 普通导航模式仍由底盘发布 TF，不受影响。）
+> TF 所有权：本模式由**底盘轮速里程计作为 `odom->base_link` 的唯一发布者**（`base.launch.py publish_tf:=true`），**RTAB-Map 发布 `map->odom`**。**不运行 icp_odometry**（XT-M60 是 120° 闪光雷达，点云稀疏/重叠低，ICP 里程计不可靠，实测 ratio<阈值导致 odom 丢失）；因此也不存在 TF 双发布。RTAB-Map 用 `odom_mode:=external odom_topic:=/wheel/odom` 把轮速里程计作为运动先验，再用激光做建图与回环校正。（`full_system` 普通导航模式不受影响。）
 
 > 安全：默认不动。**只有同时 `enable_motion:=true` 且 `autonomous_exploration:=true` 才会自动行驶。**
 

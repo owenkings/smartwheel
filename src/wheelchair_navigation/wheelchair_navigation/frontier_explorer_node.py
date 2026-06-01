@@ -14,6 +14,7 @@ try:
     import rclpy
     from rclpy.action import ActionClient
     from rclpy.node import Node
+    from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
     from geometry_msgs.msg import PoseStamped, Point
     from nav_msgs.msg import OccupancyGrid
     from std_msgs.msg import String
@@ -131,7 +132,7 @@ class FrontierExplorerNode(Node):
         self.goal_viz_pub = self.create_publisher(PoseStamped, "/exploration/selected_goal", 1)
         self.status_pub = self.create_publisher(String, "/exploration/status", 1)
         self.estop_pub = self.create_publisher(String, "/emergency_stop_command", 1)
-        self.create_subscription(OccupancyGrid, self.map_topic, self._on_map, 1)
+        self.create_subscription(OccupancyGrid, self.map_topic, self._on_map, self._map_qos())
         self.create_subscription(String, "/safety_state", self._on_safety, 10)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -140,6 +141,15 @@ class FrontierExplorerNode(Node):
 
     def now(self):
         return self.get_clock().now().nanoseconds / 1e9
+
+    @staticmethod
+    def _map_qos():
+        # RTAB-Map publishes /rtabmap/grid_map RELIABLE + TRANSIENT_LOCAL (latched);
+        # match it so we receive the last map even when it is not republished.
+        q = QoSProfile(depth=1)
+        q.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        q.reliability = ReliabilityPolicy.RELIABLE
+        return q
 
     def _on_map(self, msg):
         self.grid = msg

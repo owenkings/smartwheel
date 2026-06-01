@@ -58,8 +58,11 @@ def _setup(context, *args, **kwargs):
             "bringup_sensors": "true",
             "points_topic": "/points_merged",
             "imu_topic": "/imu/data",
-            "odom_mode": "icp",
-            "odom_topic": "/rtabmap/odom",
+            # Wheel odometry is the odom->base_link source (reliable on this wheeled
+            # base). icp_odometry is NOT run: the 120-deg flash-LiDAR cloud is too
+            # sparse/low-overlap for reliable ICP odometry (ratio < threshold).
+            "odom_mode": "external",
+            "odom_topic": "/wheel/odom",
             "subscribe_scan_cloud": "true",
             "subscribe_rgb": "false",          # camera not in geometry SLAM
             "use_colorizer": "true" if use_colorizer else "false",
@@ -96,14 +99,14 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # F. Base driver. Motion writes ONLY when enable_motion:=true. publish_tf=false
-    # because icp_odometry (RTAB-Map) is the sole odom->base_link TF owner in this
-    # mode; the base still publishes /wheel/odom and /base/status.
+    # F. Base driver. Motion writes ONLY when enable_motion:=true. publish_tf=true:
+    # the base owns odom->base_link from wheel odometry (icp_odometry is not run in
+    # this mode, so there is no TF double-publish). RTAB-Map owns map->odom.
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "base.launch.py")),
         launch_arguments={
             "mode": "real",
-            "publish_tf": "false",
+            "publish_tf": "true",
             "motion_control_enabled": "true" if enable_motion else "false",
             "hold_zero_before_motion_init": "true" if enable_motion else "false",
         }.items(),

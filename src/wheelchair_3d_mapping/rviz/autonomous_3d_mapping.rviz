@@ -48,7 +48,7 @@ Visualization Manager:
       Name: RTAB-Map Odometry
       Enabled: true
       Topic:
-        Value: /rtabmap/odom
+        Value: /wheel/odom
       Keep: 100
       Shape: Arrow
       Covariance:

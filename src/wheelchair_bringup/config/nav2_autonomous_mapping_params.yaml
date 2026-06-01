@@ -10,7 +10,7 @@ bt_navigator:
     use_sim_time: false
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: /rtabmap/odom
+    odom_topic: /wheel/odom
     bt_loop_duration: 10
     default_server_timeout: 20
     plugin_lib_names:
@@ -249,7 +249,7 @@ velocity_smoother:
     min_velocity: [0.0, 0.0, -0.25]
     max_accel: [0.20, 0.0, 0.5]
     max_decel: [-0.30, 0.0, -0.5]
-    odom_topic: /rtabmap/odom
+    odom_topic: /wheel/odom
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
