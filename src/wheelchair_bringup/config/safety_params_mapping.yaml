@@ -1,0 +1,43 @@
+safety_supervisor_node:
+  ros__parameters:
+    # UNMANNED autonomous-mapping safety profile (low speed 0.10 m/s, no passenger).
+    # Thresholds are reduced vs the manned profile (safety_params.yaml) so the chair
+    # can actually move and approach walls to map them, while keeping a REAL
+    # collision floor. The LiDAR front-cone scan-distance stop is the primary guard.
+    cmd_vel_nav_topic: /cmd_vel_nav
+    cmd_vel_safe_topic: /cmd_vel_safe
+    scan_topic: /scan
+    safety_state_topic: /safety_state
+    emergency_stop_hw_topic: /emergency_stop_hw
+    emergency_stop_sw_topic: /emergency_stop_sw
+    ultrasonic_topics:
+      - /ultrasonic/range_0
+      - /ultrasonic/range_1
+      - /ultrasonic/range_2
+      - /ultrasonic/range_3
+    max_auto_speed: 0.10
+    debug_max_speed: 0.12
+    hard_max_speed: 0.20
+    max_angular_speed: 0.25
+    allow_reverse_motion: false
+    max_reverse_speed: 0.10
+    rotate_in_place_angular_threshold: 0.2
+    rotation_stop_distance: 0.35
+    warning_distance: 0.70
+    slowdown_distance: 0.45
+    stop_distance: 0.30
+    emergency_distance: 0.20
+    t_delay: 0.35
+    a_brake: 0.8
+    d_margin: 0.10
+    front_angle_min_deg: -35.0
+    front_angle_max_deg: 35.0
+    publish_rate_hz: 20.0
+    stale_timeout_sec: 1.0
+    ultrasonic_stale_timeout_sec: 1.5
+    # Front ultrasonics sit ~0.5 m behind the chair front; readings below this are
+    # the chair's own footrest/frame (false positives) and are discarded.
+    ultrasonic_min_valid_m: 0.50
+    min_ultrasonic_online: 0
+    require_localization_healthy: false
+    localization_timeout_sec: 2.5

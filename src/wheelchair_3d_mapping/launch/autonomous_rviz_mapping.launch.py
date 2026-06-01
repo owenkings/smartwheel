@@ -97,6 +97,7 @@ def _setup(context, *args, **kwargs):
             "params_file": os.path.join(bringup, "config", "nav2_autonomous_mapping_params.yaml"),
             "require_localization_healthy": "false",
             "enable_passability": "false",
+            "safety_params_file": os.path.join(bringup, "config", "safety_params_mapping.yaml"),
         }.items(),
     ))
 
@@ -151,7 +152,9 @@ def generate_launch_description():
         DeclareLaunchArgument("min_frontier_size", default_value="8"),
         DeclareLaunchArgument("goal_timeout_sec", default_value="45.0"),
         DeclareLaunchArgument("exploration_timeout_sec", default_value="600.0"),
-        DeclareLaunchArgument("stop_on_safety_warning", default_value="true"),
+        DeclareLaunchArgument("stop_on_safety_warning", default_value="false",
+                              description="false: explorer keeps sending goals during WARNING/SLOWDOWN "
+                                          "(safety still slows/zeros speed; explorer halts on STOP/EMERGENCY)."),
         DeclareLaunchArgument("stop_on_safety_emergency", default_value="true"),
         DeclareLaunchArgument("rviz", default_value="true"),
         OpaqueFunction(function=_setup),

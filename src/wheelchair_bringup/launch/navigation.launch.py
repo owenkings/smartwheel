@@ -11,6 +11,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     require_localization_healthy = LaunchConfiguration("require_localization_healthy")
     enable_passability = LaunchConfiguration("enable_passability")
+    safety_params_file = LaunchConfiguration("safety_params_file")
     bringup_share = FindPackageShare("wheelchair_bringup")
     navigation_share = FindPackageShare("wheelchair_navigation")
 
@@ -37,6 +38,11 @@ def generate_launch_description():
                 description="Run the scan corridor passability analyzer (hard-stops safety on BLOCKED). "
                             "Set false for the dual flash-LiDAR autonomous mapping mode where it mis-fires; "
                             "Nav2 costmap + safety scan-distance stop remain the obstacle guards.",
+            ),
+            DeclareLaunchArgument(
+                "safety_params_file",
+                default_value=PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
+                description="Safety profile. Manned default; pass safety_params_mapping.yaml for unmanned low-speed mapping.",
             ),
             GroupAction(
                 [
@@ -68,7 +74,7 @@ def generate_launch_description():
                 name="safety_supervisor_node",
                 output="screen",
                 parameters=[
-                    PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
+                    safety_params_file,
                     {"require_localization_healthy": require_localization_healthy},
                 ],
             ),
