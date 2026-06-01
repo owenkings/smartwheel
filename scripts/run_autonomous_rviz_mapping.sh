@@ -3,15 +3,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-source /opt/ros/humble/setup.bash
 if [[ ! -f install/setup.bash ]]; then
   echo "ERROR: install/setup.bash missing. Run: colcon build --symlink-install" >&2
   exit 1
 fi
+# ROS setup files reference unset vars; relax -u only while sourcing.
+set +u
+# shellcheck disable=SC1091
+source /opt/ros/humble/setup.bash
+# shellcheck disable=SC1091
 source install/setup.bash
+set -u
 
-# Avoid duplicate hardware nodes from the autostart service.
-sudo systemctl stop smartwheel.service 2>/dev/null || systemctl --user stop smartwheel.service 2>/dev/null || true
+# Avoid duplicate hardware nodes from the autostart service (non-interactive).
+sudo -n systemctl stop smartwheel.service 2>/dev/null || systemctl --user stop smartwheel.service 2>/dev/null || true
 
 cat >&2 <<'WARN'
 *********************************************************************

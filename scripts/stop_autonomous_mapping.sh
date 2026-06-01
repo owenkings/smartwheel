@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop autonomous exploration motion NOW. Does NOT delete map data.
-set -uo pipefail
+set -o pipefail
 cd "$(dirname "$0")/.."
 source /opt/ros/humble/setup.bash 2>/dev/null || true
 source install/setup.bash 2>/dev/null || true

@@ -4,7 +4,7 @@
 #   READY_TO_MOVE  - additionally /cmd_vel_nav and /cmd_vel_safe carry data
 #                    (only expected AFTER the first exploration goal is sent).
 # Missing /cmd_vel_* before the first goal is a WARN, not a BLOCKER.
-set -uo pipefail
+set -o pipefail
 cd "$(dirname "$0")/.."
 source /opt/ros/humble/setup.bash 2>/dev/null || true
 source install/setup.bash 2>/dev/null || true
