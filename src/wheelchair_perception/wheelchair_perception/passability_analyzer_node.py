@@ -23,6 +23,11 @@ class PassabilityConfig:
     lookahead_distance_m: float = 1.8
     min_forward_distance_m: float = 0.25
     max_side_distance_m: float = 2.0
+    # Only HARD-block (zero speed) when an obstacle is imminently in front within
+    # this range. Farther obstacles are left to the Nav2 costmap + the safety
+    # supervisor's scan-distance stop, so the chair can still rotate/approach a
+    # clear path instead of freezing for anything within lookahead.
+    block_forward_distance_m: float = 0.6
 
 
 @dataclass
@@ -69,7 +74,7 @@ def analyze_passability(points: Iterable[Tuple[float, float]], config: Passabili
             continue
         if abs(y) > config.max_side_distance_m:
             continue
-        if abs(y) < required * 0.5:
+        if abs(y) < required * 0.5 and x <= config.block_forward_distance_m:
             front_blocked = True
         if y > 0.0:
             left_boundary = min(left_boundary, y)
@@ -102,6 +107,7 @@ class PassabilityAnalyzerNode(Node):
         self.declare_parameter("lookahead_distance_m", 1.8)
         self.declare_parameter("min_forward_distance_m", 0.25)
         self.declare_parameter("max_side_distance_m", 2.0)
+        self.declare_parameter("block_forward_distance_m", 0.6)
 
         self.config = PassabilityConfig(
             wheelchair_width_m=float(self.get_parameter("wheelchair_width_m").value),
@@ -110,6 +116,7 @@ class PassabilityAnalyzerNode(Node):
             lookahead_distance_m=float(self.get_parameter("lookahead_distance_m").value),
             min_forward_distance_m=float(self.get_parameter("min_forward_distance_m").value),
             max_side_distance_m=float(self.get_parameter("max_side_distance_m").value),
+            block_forward_distance_m=float(self.get_parameter("block_forward_distance_m").value),
         )
         self.pub = self.create_publisher(String, self.get_parameter("status_topic").value, 10)
         self.create_subscription(LaserScan, self.get_parameter("scan_topic").value, self.on_scan, 10)

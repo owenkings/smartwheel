@@ -8,3 +8,7 @@ passability_analyzer_node:
     lookahead_distance_m: 1.8
     min_forward_distance_m: 0.25
     max_side_distance_m: 2.0
+    # Hard-block only for obstacles imminently in front within this range; the
+    # Nav2 costmap + safety scan-distance stop handle farther avoidance so the
+    # chair is not frozen for anything within lookahead.
+    block_forward_distance_m: 0.6

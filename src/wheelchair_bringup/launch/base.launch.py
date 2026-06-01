@@ -13,6 +13,7 @@ def generate_launch_description():
     # EKF will publish odom -> base_link and TF will end up jittering.
     publish_tf = LaunchConfiguration("publish_tf")
     hold_zero_before_motion_init = LaunchConfiguration("hold_zero_before_motion_init")
+    motion_control_enabled = LaunchConfiguration("motion_control_enabled")
     bringup_share = FindPackageShare("wheelchair_bringup")
 
     return LaunchDescription(
@@ -21,6 +22,11 @@ def generate_launch_description():
                 "mode",
                 default_value="real",
                 description="real uses configured Modbus registers; mock publishes open-loop odometry only.",
+            ),
+            DeclareLaunchArgument(
+                "motion_control_enabled",
+                default_value="false",
+                description="HIGH RISK. true lets /cmd_vel_safe write real motor speeds. Default false = safe (no motor writes).",
             ),
             DeclareLaunchArgument(
                 "publish_tf",
@@ -43,6 +49,7 @@ def generate_launch_description():
                         "mode": mode,
                         "publish_tf": publish_tf,
                         "hold_zero_before_motion_init": hold_zero_before_motion_init,
+                        "motion_control_enabled": motion_control_enabled,
                     },
                 ],
             ),

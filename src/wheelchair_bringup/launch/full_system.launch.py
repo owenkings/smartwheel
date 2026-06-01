@@ -138,6 +138,7 @@ def generate_launch_description():
                 launch_arguments={
                     "mode": "real",
                     "hold_zero_before_motion_init": "true",
+                    "motion_control_enabled": "true",
                 }.items(),
             ),
             Node(

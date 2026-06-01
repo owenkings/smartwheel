@@ -1,0 +1,124 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 40
+      Cell Size: 0.5
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.6
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Merged XT-M60 Cloud
+      Enabled: true
+      Topic:
+        Value: /points_merged
+        Depth: 5
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: Intensity
+    - Class: rviz_default_plugins/PointCloud2
+      Name: RTAB-Map 3D Cloud Map
+      Enabled: true
+      Topic:
+        Value: /rtabmap/cloud_map
+        Depth: 5
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+    - Class: rviz_default_plugins/Map
+      Name: Projected 2D Grid Map
+      Enabled: true
+      Topic:
+        Value: /rtabmap/grid_map
+        Durability Policy: Transient Local
+      Color Scheme: map
+    - Class: rviz_default_plugins/Odometry
+      Name: RTAB-Map Odometry
+      Enabled: true
+      Topic:
+        Value: /rtabmap/odom
+      Keep: 100
+      Shape: Arrow
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan (nav obstacles)
+      Enabled: true
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (Pixels): 3
+      Color: 255; 80; 80
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Frontiers
+      Enabled: true
+      Topic:
+        Value: /exploration/frontiers
+    - Class: rviz_default_plugins/Pose
+      Name: Selected Goal
+      Enabled: true
+      Topic:
+        Value: /exploration/selected_goal
+      Shape: Arrow
+      Color: 0; 255; 0
+    - Class: rviz_default_plugins/Pose
+      Name: Manual Goal
+      Enabled: true
+      Topic:
+        Value: /goal_pose
+      Shape: Arrow
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 Global Plan
+      Enabled: true
+      Topic:
+        Value: /plan
+      Color: 0; 170; 255
+    - Class: rviz_default_plugins/Map
+      Name: Global Costmap
+      Enabled: false
+      Topic:
+        Value: /global_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+    - Class: rviz_default_plugins/Map
+      Name: Local Costmap
+      Enabled: false
+      Topic:
+        Value: /local_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: TopDown
+      Scale: 60
+      Target Frame: base_link
+    Saved:
+      - Class: rviz_default_plugins/Orbit
+        Name: Orbit3D
+        Distance: 12
+        Target Frame: base_link
+Window Geometry:
+  Height: 900
+  Width: 1400

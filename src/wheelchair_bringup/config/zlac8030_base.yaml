@@ -18,12 +18,13 @@ zlac8030_driver_node:
     max_linear_mps: 0.25
     max_angular_rps: 0.6
     command_timeout_sec: 0.5
-    # Autonomous demo profile: allow Nav2's /cmd_vel_safe path to write low
-    # speed commands to the confirmed ZLAC8030D dual-axis speed registers.
-    # Keep the hardware E-stop in reach. The first non-zero command issues
-    # drive_enable (control word 8), engaging the holding brake until a stop
-    # control word is sent by the driver or scripts/hardware_shutdown.sh.
-    motion_control_enabled: true
+    # SAFE DEFAULT: false in the shared YAML so merely starting the driver (or a
+    # standalone/base-only / mapping session) never writes motor speeds. Motion
+    # is enabled explicitly per launch: full_system.launch.py and the autonomous
+    # mapping launch pass motion_control_enabled:=true only when the operator opts
+    # in. The first non-zero command issues drive_enable (control word 8) and
+    # engages the holding brake until a stop word is sent (driver / hardware_shutdown.sh).
+    motion_control_enabled: false
     write_dual_axis_command_together: true
     initialize_motion_on_first_command: true
     # false in the shared YAML so standalone/base-only tests do not lock the

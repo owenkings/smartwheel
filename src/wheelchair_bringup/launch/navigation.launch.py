@@ -8,6 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
+    require_localization_healthy = LaunchConfiguration("require_localization_healthy")
     bringup_share = FindPackageShare("wheelchair_bringup")
     navigation_share = FindPackageShare("wheelchair_navigation")
 
@@ -22,6 +23,11 @@ def generate_launch_description():
                 default_value=PathJoinSubstitution(
                     [bringup_share, "config", "nav2_params.yaml"]
                 ),
+            ),
+            DeclareLaunchArgument(
+                "require_localization_healthy",
+                default_value="true",
+                description="AMCL nav: true. RTAB-Map mapping-while-navigating: false (map->odom comes from SLAM, not AMCL).",
             ),
             GroupAction(
                 [
@@ -53,7 +59,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
-                    {"require_localization_healthy": True},
+                    {"require_localization_healthy": require_localization_healthy},
                 ],
             ),
             Node(
