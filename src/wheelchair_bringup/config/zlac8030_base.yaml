@@ -26,6 +26,10 @@ zlac8030_driver_node:
     motion_control_enabled: true
     write_dual_axis_command_together: true
     initialize_motion_on_first_command: true
+    # false in the shared YAML so standalone/base-only tests do not lock the
+    # wheels just by starting the driver. full_system.launch.py overrides this
+    # to true for navigation mode, where a stopped autonomous chair should hold.
+    hold_zero_before_motion_init: false
     # -1 = when /cmd_vel_safe falls to zero during autonomous driving (waypoint,
     # obstacle stop, e-stop), KEEP the servo ENABLED at zero speed so the wheels
     # are HELD (抱死) and the chair cannot roll on a slope. The servo is freed for

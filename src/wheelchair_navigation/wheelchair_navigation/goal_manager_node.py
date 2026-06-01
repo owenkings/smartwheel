@@ -4,14 +4,22 @@ from pathlib import Path
 try:
     import rclpy
     from ament_index_python.packages import get_package_share_directory
+    from action_msgs.msg import GoalStatus
     from rclpy.node import Node
+    from rclpy.action import ActionClient
     from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Path as NavPath
+    from nav2_msgs.action import ComputePathToPose
     from std_msgs.msg import Bool, String
 except ImportError:
     rclpy = None
     get_package_share_directory = None
+    GoalStatus = None
+    ActionClient = None
     Node = object
     PoseStamped = None
+    NavPath = None
+    ComputePathToPose = None
     Bool = None
     String = None
 
@@ -39,11 +47,65 @@ class GoalManagerNode(Node):
             self.get_parameter("voice_confidence_threshold").value
         )
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.path_pub = self.create_publisher(NavPath, "/navigation/preview_path", 10)
         self.status_pub = self.create_publisher(String, "/navigation/goal_status", 10)
         self.stop_cmd_pub = self.create_publisher(String, "/emergency_stop_command", 10)
         self.stop_bool_pub = self.create_publisher(Bool, "/emergency_stop_sw", 10)
+        self.path_client = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
+        self._last_preview_goal_stamp = 0.0
+        self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, 10)
         self.create_subscription(String, "/named_goal_command", self.on_named_goal_command, 10)
         self.create_subscription(String, "/voice/intent", self.on_voice_intent, 10)
+
+    def on_goal_pose(self, msg):
+        """Ask Nav2 for a preview path so the GUI can draw the route.
+
+        Nav2's /goal_pose topic is enough to start navigation, but it does not
+        itself provide a user-visible route. The ComputePathToPose action gives
+        us an explicit Path when planner_server is active; failures are reported
+        on /navigation/goal_status instead of failing silently in the UI.
+        """
+        if ComputePathToPose is None:
+            return
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_preview_goal_stamp < 0.2:
+            return
+        self._last_preview_goal_stamp = now
+        if not self.path_client.server_is_ready():
+            self.publish_status("PLANNING_WAIT: planner action server not ready")
+            return
+        goal = ComputePathToPose.Goal()
+        goal.goal = msg
+        goal.planner_id = ""
+        goal.use_start = False
+        self.publish_status("PLANNING: computing route preview")
+        future = self.path_client.send_goal_async(goal)
+        future.add_done_callback(self._on_path_goal_response)
+
+    def _on_path_goal_response(self, future):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.publish_status(f"ERROR: route preview request failed: {exc}")
+            return
+        if not handle.accepted:
+            self.publish_status("ERROR: route preview rejected by planner")
+            return
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(self._on_path_result)
+
+    def _on_path_result(self, future):
+        try:
+            wrapped = future.result()
+        except Exception as exc:
+            self.publish_status(f"ERROR: route preview failed: {exc}")
+            return
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            self.publish_status(f"ERROR: route preview status {wrapped.status}")
+            return
+        path = wrapped.result.path
+        self.path_pub.publish(path)
+        self.publish_status(f"PATH_READY: {len(path.poses)} poses")
 
     def on_named_goal_command(self, msg):
         try:

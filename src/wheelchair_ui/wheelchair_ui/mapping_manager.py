@@ -161,10 +161,10 @@ class MappingManager:
                 ),
                 self._check(
                     "camera_left",
-                    "SLAM主相机 /camera/left",
+                    "上色主相机 /camera/left",
                     left_camera_online,
                     False,
-                    "左相机进入 RTAB-Map RGB 同步，用于图像关键帧/回环数据",
+                    "左相机用于 /rgb_cloud_map 上色；默认不阻塞 RTAB-Map 几何建图",
                 ),
                 self._check(
                     "camera_right",
@@ -335,7 +335,7 @@ class MappingManager:
                 command = [
                     "ros2", "launch", "wheelchair_3d_mapping",
                     "rtabmap_3d_mapping.launch.py", "bringup_sensors:=true",
-                    "subscribe_rgb:=true", "rgb_topic:=/camera/left/image_raw",
+                    "subscribe_rgb:=false", "rgb_topic:=/camera/left/image_raw",
                     "camera_info_topic:=/camera/left/camera_info",
                     "use_colorizer:=true", "enable_ultrasonic:=true",
                 ]

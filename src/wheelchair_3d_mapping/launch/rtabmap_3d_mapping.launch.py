@@ -14,10 +14,13 @@ odom_mode:
   external      -> use an existing odom (odom_topic, e.g. /wheel/odom or
                    /odometry/filtered); that node owns odom->base_link, no icp.
 
-Camera is enabled by default for the site profile: one RGB camera is synchronized
-into RTAB-Map for image keyframes / visual loop-closure data, while the optional
-rgb_cloud_colorizer_node uses both forward cameras to publish /rgb_cloud_map.
-3D geometry remains LiDAR-primary and never depends on camera<->LiDAR extrinsics.
+Camera adapters are enabled by default for the site profile, but they are kept
+out of RTAB-Map's required synchronization path unless subscribe_rgb:=true is
+explicitly requested. This keeps /rtabmap/cloud_map driven by LiDAR + ICP even
+when USB camera timestamps or frame rates jitter. The optional
+rgb_cloud_colorizer_node uses both forward cameras to publish /rgb_cloud_map for
+user-facing color inspection. 3D geometry remains LiDAR-primary and never
+depends on camera<->LiDAR extrinsics.
 
 Real raw XT-M60 topics are /xtm60/left/points and /xtm60/right/points; they are
 fused into points_topic by dual_lidar_cloud_fusion_node. Requires
@@ -138,8 +141,8 @@ def generate_launch_description():
                               description="icp mode: icp_odometry output; external mode: existing odom e.g. /wheel/odom."),
         DeclareLaunchArgument("odom_mode", default_value="icp", description="icp | external"),
         DeclareLaunchArgument("frame_id", default_value="base_link"),
-        DeclareLaunchArgument("subscribe_rgb", default_value="true",
-                              description="Use one RGB camera in RTAB-Map for visual keyframes/loop-closure data."),
+        DeclareLaunchArgument("subscribe_rgb", default_value="false",
+                              description="Experimental: synchronize one RGB camera into RTAB-Map. Keep false for robust LiDAR 3D mapping."),
         DeclareLaunchArgument("rgb_topic", default_value="/camera/left/image_raw"),
         DeclareLaunchArgument("camera_info_topic", default_value="/camera/left/camera_info"),
         DeclareLaunchArgument("use_colorizer", default_value="true",

@@ -12,6 +12,7 @@ def generate_launch_description():
     # MUST set this to false, otherwise both the wheel-only driver and the
     # EKF will publish odom -> base_link and TF will end up jittering.
     publish_tf = LaunchConfiguration("publish_tf")
+    hold_zero_before_motion_init = LaunchConfiguration("hold_zero_before_motion_init")
     bringup_share = FindPackageShare("wheelchair_bringup")
 
     return LaunchDescription(
@@ -26,6 +27,11 @@ def generate_launch_description():
                 default_value="true",
                 description="Whether zlac8030_driver_node publishes odom->base_link TF. Set to false when robot_localization EKF is the TF publisher.",
             ),
+            DeclareLaunchArgument(
+                "hold_zero_before_motion_init",
+                default_value="false",
+                description="If true, a zero command in navigation mode initializes servo hold before any non-zero command.",
+            ),
             Node(
                 package="wheelchair_base",
                 executable="zlac8030_driver_node",
@@ -33,7 +39,11 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     PathJoinSubstitution([bringup_share, "config", "zlac8030_base.yaml"]),
-                    {"mode": mode, "publish_tf": publish_tf},
+                    {
+                        "mode": mode,
+                        "publish_tf": publish_tf,
+                        "hold_zero_before_motion_init": hold_zero_before_motion_init,
+                    },
                 ],
             ),
         ]

@@ -168,6 +168,7 @@ class MapCanvas(QtWidgets.QWidget):
         self.goals: Dict = {}
         self.semantic: Dict = {}
         self.pose: Dict = {"x": 0.0, "y": 0.0, "yaw": 0.0}
+        self.route_path: Dict = {}
         self._image: Optional[QtGui.QImage] = None
         self._layout: Optional[Tuple[float, float, float]] = None
 
@@ -186,6 +187,10 @@ class MapCanvas(QtWidgets.QWidget):
 
     def set_pose(self, pose: Dict):
         self.pose = pose or {}
+        self.update()
+
+    def set_route_path(self, route_path: Dict):
+        self.route_path = route_path or {}
         self.update()
 
     def _make_map_image(self, data: Dict) -> QtGui.QImage:
@@ -264,6 +269,7 @@ class MapCanvas(QtWidgets.QWidget):
         painter.drawRect(target)
 
         self._draw_semantic(painter)
+        self._draw_route(painter)
         self._draw_goals(painter)
         self._draw_pose(painter)
 
@@ -305,6 +311,21 @@ class MapCanvas(QtWidgets.QWidget):
             painter.drawEllipse(point, 6, 6)
             painter.setPen(QtGui.QColor(COLORS["ink"]))
             painter.drawText(point + QtCore.QPointF(8, -8), goal.get("label", key))
+
+    def _draw_route(self, painter: QtGui.QPainter):
+        points = self.route_path.get("points") or []
+        if len(points) < 2:
+            return
+        pixels = [self.world_to_canvas(float(x), float(y)) for x, y in points]
+        pixels = [point for point in pixels if point is not None]
+        if len(pixels) < 2:
+            return
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#f2994a"), 4, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+        path = QtGui.QPainterPath(pixels[0])
+        for point in pixels[1:]:
+            path.lineTo(point)
+        painter.drawPath(path)
 
     def _draw_pose(self, painter: QtGui.QPainter):
         x = float(self.pose.get("x", 0.0))
@@ -1321,6 +1342,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.map_canvas.set_goals(self.latest_goals)
         self.map_canvas.set_semantic(semantic)
         self.map_canvas.set_pose(self.latest_status.get("pose", {}))
+        self.map_canvas.set_route_path(self.latest_status.get("route_path", {}))
         self._update_status_cards()
         self._update_goals()
         self._update_mapping(mapping_status)

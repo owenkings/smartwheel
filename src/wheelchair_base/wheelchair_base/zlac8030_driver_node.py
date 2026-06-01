@@ -80,6 +80,7 @@ class Zlac8030DriverNode(Node):
         self.declare_parameter("motion_control_enabled", False)
         self.declare_parameter("write_dual_axis_command_together", False)
         self.declare_parameter("initialize_motion_on_first_command", True)
+        self.declare_parameter("hold_zero_before_motion_init", False)
         self.declare_parameter("release_motion_after_zero_sec", 0.75)
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("publish_tf", True)
@@ -117,6 +118,9 @@ class Zlac8030DriverNode(Node):
         )
         self.initialize_motion_on_first_command = bool(
             self.get_parameter("initialize_motion_on_first_command").value
+        )
+        self.hold_zero_before_motion_init = bool(
+            self.get_parameter("hold_zero_before_motion_init").value
         )
         self.release_motion_after_zero_sec = float(
             self.get_parameter("release_motion_after_zero_sec").value
@@ -253,6 +257,7 @@ class Zlac8030DriverNode(Node):
             and self.initialize_motion_on_first_command
             and not self.motion_initialized
             and command_is_zero
+            and not self.hold_zero_before_motion_init
         ):
             if not self.warned_zero_before_motion_init:
                 self.get_logger().warning(

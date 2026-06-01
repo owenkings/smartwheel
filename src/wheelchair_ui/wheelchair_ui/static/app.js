@@ -201,10 +201,19 @@ function drawVectorLayers() {
   Object.entries(latestGoals || {}).forEach(([key, goal]) => {
     drawPoint(goal.position?.[0], goal.position?.[1], "#168a56", goal.label || key);
   });
+  if (latestStatus?.route_path) {
+    drawRoute(latestStatus.route_path);
+  }
   if (latestStatus?.pose) {
     drawUltrasonicRays(latestStatus.pose, latestStatus.sensors?.ultrasonic || []);
     drawPose(latestStatus.pose);
   }
+}
+
+function drawRoute(route) {
+  const points = route.points || [];
+  if (points.length < 2) return;
+  drawPolyline(points, "#f2994a", 4);
 }
 
 function drawPolyline(points, color, width) {

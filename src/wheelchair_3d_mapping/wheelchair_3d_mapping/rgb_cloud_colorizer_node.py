@@ -139,8 +139,13 @@ class RgbCloudColorizerNode(Node):
             return
         if cam.image_stamp is not None:
             it = cam.image_stamp.sec + cam.image_stamp.nanosec * 1e-9
-            if abs(cloud_t - it) > self.max_image_age:
-                self._warn(f"age_{cam.name}", f"{cam.name}: image/cloud time delta too large; skipping")
+            delta = abs(cloud_t - it)
+            if self.max_image_age > 0.0 and delta > self.max_image_age:
+                self._warn(
+                    f"age_{cam.name}",
+                    f"{cam.name}: image/cloud time delta {delta:.3f}s > "
+                    f"{self.max_image_age:.3f}s; skipping",
+                )
                 return
         fx, fy, cx, cy = cam.K
         h, w = cam.image.shape[:2]

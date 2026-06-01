@@ -9,7 +9,7 @@ try:
     import rclpy
     from ament_index_python.packages import get_package_share_directory
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-    from nav_msgs.msg import OccupancyGrid, Odometry
+    from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image, Imu, LaserScan, PointCloud2, Range
@@ -22,6 +22,7 @@ except ImportError:
     Twist = None
     OccupancyGrid = None
     Odometry = None
+    NavPath = None
     Node = object
     qos_profile_sensor_data = 10
     Image = None
@@ -93,7 +94,11 @@ class WheelchairUiRosNode(Node):
         self.localization_health = {"state": "UNKNOWN", "reason": "waiting for localization health"}
         self.passability_status = {"state": "UNKNOWN", "reason": "waiting for passability analyzer"}
         self.pose = {"x": 0.0, "y": 0.0, "yaw": 0.0, "frame_id": "odom"}
+        self.pose_last_seen = 0.0
+        self.pose_source = "odom"
         self.current_goal: Optional[Dict] = None
+        self.route_path: Dict[str, Any] = {"frame_id": "map", "points": [], "age_sec": None}
+        self.route_last_seen = 0.0
         self.map_info: Optional[Dict] = None
         self.declare_parameter("ultrasonic_indices", [0])
         self.declare_parameter("enabled_cameras", ["left", "right"])
@@ -133,6 +138,14 @@ class WheelchairUiRosNode(Node):
         self.create_subscription(OccupancyGrid, "/map", self.on_map, 10)
         self.create_subscription(OccupancyGrid, "/rtabmap/grid_map", self.on_rtabmap_grid_map, 10)
         self.create_subscription(Odometry, "/wheel/odom", self.on_odom, 10)
+        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self.on_amcl_pose, 10)
+        for topic in ("/navigation/preview_path", "/plan", "/global_plan", "/received_global_plan"):
+            self.create_subscription(
+                NavPath,
+                topic,
+                lambda msg, t=topic: self.on_route_path(t, msg),
+                10,
+            )
         self.create_subscription(
             Odometry,
             "/rtabmap/odom",
@@ -322,18 +335,18 @@ class WheelchairUiRosNode(Node):
         }
 
     def on_odom(self, msg):
-        q = msg.pose.pose.orientation
-        yaw = 0.0
-        if q.w or q.z:
-            import math
-
-            yaw = math.atan2(2.0 * q.w * q.z, 1.0 - 2.0 * q.z * q.z)
-        self.pose = {
-            "x": msg.pose.pose.position.x,
-            "y": msg.pose.pose.position.y,
-            "yaw": yaw,
-            "frame_id": msg.header.frame_id,
-        }
+        if self.pose_source == "amcl" and time.monotonic() - self.pose_last_seen <= self.sensor_timeout_sec:
+            pass
+        else:
+            self.pose = {
+                "x": msg.pose.pose.position.x,
+                "y": msg.pose.pose.position.y,
+                "yaw": self._yaw_from_orientation(msg.pose.pose.orientation),
+                "frame_id": msg.header.frame_id,
+                "source": "wheel_odom",
+            }
+            self.pose_last_seen = time.monotonic()
+            self.pose_source = "odom"
         self._mark_sensor(
             "odom",
             {
@@ -343,6 +356,44 @@ class WheelchairUiRosNode(Node):
                 "angular_z": msg.twist.twist.angular.z,
             },
         )
+
+    def on_amcl_pose(self, msg):
+        self.pose = {
+            "x": msg.pose.pose.position.x,
+            "y": msg.pose.pose.position.y,
+            "yaw": self._yaw_from_orientation(msg.pose.pose.orientation),
+            "frame_id": msg.header.frame_id,
+            "source": "amcl",
+        }
+        self.pose_last_seen = time.monotonic()
+        self.pose_source = "amcl"
+
+    @staticmethod
+    def _yaw_from_orientation(q) -> float:
+        if not (q.w or q.x or q.y or q.z):
+            return 0.0
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+
+    def on_route_path(self, topic: str, msg):
+        points = []
+        poses = list(msg.poses)
+        if len(poses) > 600:
+            stride = max(1, len(poses) // 600)
+            poses = poses[::stride]
+        for pose_stamped in poses:
+            p = pose_stamped.pose.position
+            points.append([float(p.x), float(p.y)])
+        self.route_path = {
+            "topic": topic,
+            "frame_id": msg.header.frame_id or "map",
+            "points": points,
+            "poses": len(msg.poses),
+            "age_sec": 0.0,
+        }
+        self.route_last_seen = time.monotonic()
 
     def on_mapping_odom(self, topic: str, msg):
         self._mark_sensor(
@@ -453,11 +504,15 @@ class WheelchairUiRosNode(Node):
 
     def status(self) -> Dict:
         sensors = self._sensor_snapshot()
+        route = dict(self.route_path)
+        if self.route_last_seen:
+            route["age_sec"] = max(0.0, time.monotonic() - self.route_last_seen)
         return {
             "safety_state": self.safety_state,
             "navigation_status": self.navigation_status,
             "pose": self.pose,
             "current_goal": self.current_goal,
+            "route_path": route,
             "sensor_status": self.sensor_status,
             "sensors": sensors,
             "hardware_config": {

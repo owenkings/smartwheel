@@ -135,7 +135,10 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([bringup_share, "launch", "base.launch.py"])
                 ),
-                launch_arguments={"mode": "real"}.items(),
+                launch_arguments={
+                    "mode": "real",
+                    "hold_zero_before_motion_init": "true",
+                }.items(),
             ),
             Node(
                 package="wheelchair_ui",

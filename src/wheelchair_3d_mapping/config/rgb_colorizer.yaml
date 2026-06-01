@@ -5,7 +5,10 @@ rgb_cloud_colorizer_node:
     lidar_frame: base_link
     default_gray: 128
     tf_timeout_sec: 0.1
-    max_image_age_sec: 0.15
+    # USB camera timestamps are not phase-locked to the XT-M60 packets on this
+    # platform. Real mapping showed ~0.8 s image/cloud skew, and this is only a
+    # user-facing color overlay, so keep a wider visual-only tolerance here.
+    max_image_age_sec: 1.25
 
     # Main (left) camera. Physical topics so it works without the alias relay.
     image_topic: /camera/left/image_raw

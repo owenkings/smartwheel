@@ -30,6 +30,7 @@ def make_node(single_slave_dual_axis=False):
     node.motion_control_enabled = True
     node.write_dual_axis_command_together = False
     node.initialize_motion_on_first_command = False
+    node.hold_zero_before_motion_init = False
     node.release_motion_after_zero_sec = -1.0
     node.motion_initialized = False
     node.last_nonzero_command_monotonic = 0.0
@@ -98,6 +99,27 @@ def test_zero_command_before_motion_init_does_not_drive_enable():
 
     assert node.motion_initialized is False
     assert node.modbus.writes == []
+
+
+def test_zero_command_before_motion_init_can_hold_for_navigation_mode():
+    node = make_node(single_slave_dual_axis=True)
+    node.initialize_motion_on_first_command = True
+    node.hold_zero_before_motion_init = True
+    node.registers.control_mode_register = 28
+    node.registers.async_mode_register = 29
+    node.registers.control_word_register = 30
+
+    assert node._write_wheel_commands(0.0, 0.0) is True
+
+    assert node.motion_initialized is True
+    assert node.modbus.writes == [
+        (1, 28, 3),
+        (1, 29, 0),
+        (1, 30, 6),
+        (1, 30, 8),
+        (1, 10, 0),
+        (1, 11, 0),
+    ]
 
 
 def test_nonzero_command_initializes_motion_then_writes_speed():
