@@ -96,6 +96,7 @@ def _setup(context, *args, **kwargs):
         launch_arguments={
             "params_file": os.path.join(bringup, "config", "nav2_autonomous_mapping_params.yaml"),
             "require_localization_healthy": "false",
+            "enable_passability": "false",
         }.items(),
     ))
 

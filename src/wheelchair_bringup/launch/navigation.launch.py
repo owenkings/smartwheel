@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node, SetRemap
@@ -9,6 +10,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     require_localization_healthy = LaunchConfiguration("require_localization_healthy")
+    enable_passability = LaunchConfiguration("enable_passability")
     bringup_share = FindPackageShare("wheelchair_bringup")
     navigation_share = FindPackageShare("wheelchair_navigation")
 
@@ -28,6 +30,13 @@ def generate_launch_description():
                 "require_localization_healthy",
                 default_value="true",
                 description="AMCL nav: true. RTAB-Map mapping-while-navigating: false (map->odom comes from SLAM, not AMCL).",
+            ),
+            DeclareLaunchArgument(
+                "enable_passability",
+                default_value="true",
+                description="Run the scan corridor passability analyzer (hard-stops safety on BLOCKED). "
+                            "Set false for the dual flash-LiDAR autonomous mapping mode where it mis-fires; "
+                            "Nav2 costmap + safety scan-distance stop remain the obstacle guards.",
             ),
             GroupAction(
                 [
@@ -51,6 +60,7 @@ def generate_launch_description():
                 parameters=[
                     PathJoinSubstitution([bringup_share, "config", "passability.yaml"])
                 ],
+                condition=IfCondition(enable_passability),
             ),
             Node(
                 package="wheelchair_safety",
