@@ -24,6 +24,7 @@ setup(
             "goal_manager_node = wheelchair_navigation.goal_manager_node:main",
             "navigation_status_node = wheelchair_navigation.navigation_status_node:main",
             "frontier_explorer_node = wheelchair_navigation.frontier_explorer_node:main",
+            "reactive_explorer_node = wheelchair_navigation.reactive_explorer_node:main",
         ],
     },
 )

@@ -13,9 +13,15 @@ from wheelchair_sensors.ultrasonic_adapter_node import (  # noqa: E402
 
 
 def test_modbus_read_command_vector():
-    assert build_read_holding_registers(1, register=0x0001, count=1) == bytes.fromhex(
-        "01 03 00 01 00 01 d5 ca"
-    )
+    assert {
+        address: build_read_holding_registers(address, register=0x0001, count=1)
+        for address in (1, 2, 3, 4)
+    } == {
+        1: bytes.fromhex("01 03 00 01 00 01 d5 ca"),
+        2: bytes.fromhex("02 03 00 01 00 01 d5 f9"),
+        3: bytes.fromhex("03 03 00 01 00 01 d4 28"),
+        4: bytes.fromhex("04 03 00 01 00 01 d5 9f"),
+    }
 
 
 def test_parse_ultrasonic_distance_register_response():

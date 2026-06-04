@@ -9,7 +9,7 @@ try:
     from rclpy.action import ActionClient
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Path as NavPath
-    from nav2_msgs.action import ComputePathToPose
+    from nav2_msgs.action import ComputePathToPose, NavigateToPose
     from std_msgs.msg import Bool, String
 except ImportError:
     rclpy = None
@@ -20,6 +20,7 @@ except ImportError:
     PoseStamped = None
     NavPath = None
     ComputePathToPose = None
+    NavigateToPose = None
     Bool = None
     String = None
 
@@ -52,8 +53,10 @@ class GoalManagerNode(Node):
         self.stop_cmd_pub = self.create_publisher(String, "/emergency_stop_command", 10)
         self.stop_bool_pub = self.create_publisher(Bool, "/emergency_stop_sw", 10)
         self.path_client = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
+        self.nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self._last_preview_goal_stamp = 0.0
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, 10)
+        self.create_subscription(PoseStamped, "/navigation/preview_goal", self.on_goal_pose, 10)
         self.create_subscription(String, "/named_goal_command", self.on_named_goal_command, 10)
         self.create_subscription(String, "/voice/intent", self.on_voice_intent, 10)
 
@@ -173,7 +176,46 @@ class GoalManagerNode(Node):
         pose.pose.orientation.z = q["z"]
         pose.pose.orientation.w = q["w"]
         self.goal_pub.publish(pose)
-        self.publish_status(f"GOAL_SENT: {goal.get('label', name)}")
+        self.send_navigate_goal(pose, goal.get("label", name))
+
+    def send_navigate_goal(self, pose, label: str):
+        if NavigateToPose is None:
+            self.publish_status("ERROR: NavigateToPose action unavailable")
+            return
+        if not self.nav_client.server_is_ready():
+            self.publish_status("ERROR: /navigate_to_pose action server not ready")
+            return
+        goal = NavigateToPose.Goal()
+        goal.pose = pose
+        self.publish_status(f"GOAL_SENT: {label}")
+        future = self.nav_client.send_goal_async(goal)
+        future.add_done_callback(lambda fut, text=label: self._on_nav_goal_response(fut, text))
+
+    def _on_nav_goal_response(self, future, label: str):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.publish_status(f"ERROR: NavigateToPose request failed: {exc}")
+            return
+        if not handle.accepted:
+            self.publish_status(f"ERROR: NavigateToPose rejected: {label}")
+            return
+        self.publish_status(f"NAV2_ACCEPTED: {label}")
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda fut, text=label: self._on_nav_result(fut, text))
+
+    def _on_nav_result(self, future, label: str):
+        try:
+            wrapped = future.result()
+        except Exception as exc:
+            self.publish_status(f"ERROR: NavigateToPose result failed: {exc}")
+            return
+        status_name = {
+            GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+            GoalStatus.STATUS_ABORTED: "ABORTED",
+            GoalStatus.STATUS_CANCELED: "CANCELED",
+        }.get(int(wrapped.status), f"STATUS_{wrapped.status}")
+        self.publish_status(f"NAV2_{status_name}: {label}")
 
     def publish_stop_command(self, command: str):
         msg = String()

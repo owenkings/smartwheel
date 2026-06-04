@@ -136,11 +136,15 @@ if source_ros; then
   topic_hz /scan 6
   topic_hz /camera/left/image_raw 6
   topic_hz /camera/right/image_raw 6
-  topic_hz /ultrasonic/range_0 4
+  for index in 0 1 2 3; do
+    topic_hz "/ultrasonic/range_${index}" 4
+  done
   if [[ ! -e "$ultra_port" ]]; then
     warn "/ultrasonic/range_* may be max-range placeholder because $ultra_port is missing"
   else
-    timeout 4s ros2 topic echo /ultrasonic/range_0 --once 2>/dev/null | sed 's/^/  /'
+    for index in 0 1 2 3; do
+      timeout 4s ros2 topic echo "/ultrasonic/range_${index}" --once 2>/dev/null | sed "s/^/  range_${index}: /"
+    done
   fi
   if topic_exists /imu/data; then
     topic_hz /imu/data 4

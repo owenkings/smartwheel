@@ -1,7 +1,7 @@
 import json
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Sequence
 
 try:
     import rclpy
@@ -26,6 +26,7 @@ class SafetyParams:
     hard_max_speed: float = 0.8
     max_angular_speed: float = 0.8
     allow_reverse_motion: bool = False
+    allow_rotation_when_blocked: bool = False
     max_reverse_speed: float = 0.15
     rotate_in_place_angular_threshold: float = 0.2
     rotation_stop_distance: float = 0.7
@@ -38,10 +39,16 @@ class SafetyParams:
     d_margin: float = 0.25
     front_angle_min_deg: float = -35.0
     front_angle_max_deg: float = 35.0
-    # Front ultrasonics are mounted ~0.5 m BEHIND the chair's front edge, so any
-    # reading below this is the chair's own footrest/frame, not a real obstacle.
-    # Discard it (0.0 = keep all).
+    # Keep close-range ultrasonic readings by default. Directional stop thresholds
+    # below account for front sensors mounted behind the footrest and side sensors
+    # mounted near the wheelchair body.
     ultrasonic_min_valid_m: float = 0.0
+    front_ultrasonic_stop_distance: float = 0.30
+    front_ultrasonic_slowdown_distance: float = 0.40
+    front_ultrasonic_emergency_distance: float = 0.35
+    side_ultrasonic_stop_distance: float = 0.10
+    side_ultrasonic_warning_distance: float = 0.20
+    side_ultrasonic_emergency_distance: float = 0.35
 
 
 @dataclass
@@ -87,6 +94,17 @@ def min_front_scan_distance(
     return nearest
 
 
+def valid_ultrasonic_distances(
+    distances: Iterable[float],
+    min_valid_m: float = 0.0,
+) -> list[float]:
+    return [
+        float(distance)
+        for distance in distances
+        if math.isfinite(float(distance)) and float(distance) > 0.0 and float(distance) >= min_valid_m
+    ]
+
+
 def evaluate_safety(
     requested_linear_x: float,
     requested_angular_z: float,
@@ -95,6 +113,8 @@ def evaluate_safety(
     emergency_hw: bool,
     emergency_sw: bool,
     params: SafetyParams,
+    front_ultrasonic_distances: Optional[Iterable[float]] = None,
+    side_ultrasonic_distances: Optional[Iterable[float]] = None,
 ) -> SafetyDecision:
     min_linear = -min(params.max_auto_speed, params.max_reverse_speed)
     if not params.allow_reverse_motion:
@@ -112,15 +132,33 @@ def evaluate_safety(
     if abs(capped_linear) > params.hard_max_speed:
         capped_linear = math.copysign(params.hard_max_speed, capped_linear)
 
-    valid_ultra = [
-        d for d in ultrasonic_distances
-        if math.isfinite(d) and d > 0.0 and d >= params.ultrasonic_min_valid_m
-    ]
+    valid_ultra = valid_ultrasonic_distances(ultrasonic_distances, params.ultrasonic_min_valid_m)
     min_ultra = min(valid_ultra, default=math.inf)
+    directional_ultrasonic = (
+        front_ultrasonic_distances is not None or side_ultrasonic_distances is not None
+    )
+    if directional_ultrasonic:
+        valid_front_ultra = valid_ultrasonic_distances(
+            front_ultrasonic_distances or [], params.ultrasonic_min_valid_m
+        )
+        valid_side_ultra = valid_ultrasonic_distances(
+            side_ultrasonic_distances or [], params.ultrasonic_min_valid_m
+        )
+    else:
+        # Backward-compatible behavior for tests and older profiles: an
+        # unclassified ultrasonic reading is treated as a front obstacle.
+        valid_front_ultra = list(valid_ultra)
+        valid_side_ultra = []
+    min_front_ultra = min(valid_front_ultra, default=math.inf)
+    min_side_ultra = min(valid_side_ultra, default=math.inf)
     dynamic_stop = compute_dynamic_stop_distance(
         capped_linear, params.t_delay, params.a_brake, params.d_margin
     )
     stop_threshold = max(params.stop_distance, dynamic_stop)
+    front_stop_threshold = max(params.front_ultrasonic_stop_distance, dynamic_stop)
+    front_slowdown_threshold = max(params.front_ultrasonic_slowdown_distance, front_stop_threshold)
+    front_emergency_threshold = min(params.front_ultrasonic_emergency_distance, params.emergency_distance)
+    side_emergency_threshold = min(params.side_ultrasonic_emergency_distance, params.emergency_distance)
 
     if emergency_hw:
         return SafetyDecision(
@@ -152,10 +190,20 @@ def evaluate_safety(
             min_ultra,
             dynamic_stop,
         )
-    if min_ultra < params.emergency_distance:
+    if min_front_ultra < front_emergency_threshold:
         return SafetyDecision(
             "EMERGENCY_STOP",
-            f"ultrasonic distance {min_ultra:.2f} m below emergency threshold",
+            f"front ultrasonic distance {min_front_ultra:.2f} m below emergency threshold",
+            0.0,
+            0.0,
+            scan_distance,
+            min_ultra,
+            dynamic_stop,
+        )
+    if min_side_ultra < side_emergency_threshold:
+        return SafetyDecision(
+            "EMERGENCY_STOP",
+            f"side ultrasonic distance {min_side_ultra:.2f} m below emergency threshold",
             0.0,
             0.0,
             scan_distance,
@@ -186,18 +234,64 @@ def evaluate_safety(
             min_ultra,
             dynamic_stop,
         )
-    if scan_distance < stop_threshold or min_ultra < params.stop_distance:
+    front_blocked = scan_distance < stop_threshold or min_front_ultra < front_stop_threshold
+    side_blocked = min_side_ultra < params.side_ultrasonic_stop_distance
+    generic_ultra_blocked = (not directional_ultrasonic) and min_ultra < params.stop_distance
+    if front_blocked or side_blocked or generic_ultra_blocked:
+        if (
+            params.allow_rotation_when_blocked
+            and abs(capped_angular) >= params.rotate_in_place_angular_threshold
+            and abs(capped_linear) < 0.02
+            and scan_distance >= params.emergency_distance
+            and min_ultra >= params.rotation_stop_distance
+            and min_side_ultra >= params.side_ultrasonic_stop_distance
+        ):
+            nearest = min(scan_distance, min_front_ultra, min_side_ultra, min_ultra)
+            return SafetyDecision(
+                "WARNING",
+                f"rotating away from blocked zone at {nearest:.2f} m",
+                0.0,
+                capped_angular,
+                scan_distance,
+                min_ultra,
+                dynamic_stop,
+            )
         return SafetyDecision(
             "STOP",
-            f"obstacle within stop threshold {stop_threshold:.2f} m",
+            (
+                f"obstacle within stop threshold scan={stop_threshold:.2f}m "
+                f"front_ultra={front_stop_threshold:.2f}m side_ultra={params.side_ultrasonic_stop_distance:.2f}m"
+            ),
             0.0,
             0.0,
             scan_distance,
             min_ultra,
             dynamic_stop,
         )
-    if scan_distance < params.slowdown_distance or min_ultra < params.slowdown_distance:
-        nearest = min(scan_distance, min_ultra)
+    if (
+        scan_distance < params.slowdown_distance
+        or min_front_ultra < front_slowdown_threshold
+        or ((not directional_ultrasonic) and min_ultra < params.slowdown_distance)
+        or min_side_ultra < params.side_ultrasonic_warning_distance
+    ):
+        nearest = min(scan_distance, min_front_ultra, min_side_ultra, min_ultra)
+        if (
+            params.allow_rotation_when_blocked
+            and abs(capped_angular) >= params.rotate_in_place_angular_threshold
+            and abs(capped_linear) < 0.02
+            and scan_distance >= params.emergency_distance
+            and min_ultra >= params.rotation_stop_distance
+            and min_side_ultra >= params.side_ultrasonic_stop_distance
+        ):
+            return SafetyDecision(
+                "WARNING",
+                f"rotating away from obstacle in slowdown zone at {nearest:.2f} m",
+                0.0,
+                capped_angular,
+                scan_distance,
+                min_ultra,
+                dynamic_stop,
+            )
         span = max(0.01, params.slowdown_distance - stop_threshold)
         scale = clamp((nearest - stop_threshold) / span, 0.15, 0.6)
         return SafetyDecision(
@@ -209,8 +303,13 @@ def evaluate_safety(
             min_ultra,
             dynamic_stop,
         )
-    if scan_distance < params.warning_distance or min_ultra < params.warning_distance:
-        nearest = min(scan_distance, min_ultra)
+    if (
+        scan_distance < params.warning_distance
+        or min_front_ultra < params.warning_distance
+        or ((not directional_ultrasonic) and min_ultra < params.warning_distance)
+        or min_side_ultra < params.side_ultrasonic_warning_distance
+    ):
+        nearest = min(scan_distance, min_front_ultra, min_side_ultra, min_ultra)
         return SafetyDecision(
             "WARNING",
             f"obstacle within warning zone at {nearest:.2f} m",
@@ -254,6 +353,8 @@ class SafetySupervisorNode(Node):
                 "/ultrasonic/range_0",
             ],
         )
+        self.declare_parameter("front_ultrasonic_topics", ["/ultrasonic/range_0", "/ultrasonic/range_2"])
+        self.declare_parameter("side_ultrasonic_topics", ["/ultrasonic/range_1", "/ultrasonic/range_3"])
         for field, default in SafetyParams().__dict__.items():
             self.declare_parameter(field, default)
         self.declare_parameter("publish_rate_hz", 20.0)
@@ -286,6 +387,15 @@ class SafetySupervisorNode(Node):
         self.localization_timeout_sec = float(
             self.get_parameter("localization_timeout_sec").value
         )
+        self.ultrasonic_topics = [
+            str(topic) for topic in self.get_parameter("ultrasonic_topics").value
+        ]
+        self.front_ultrasonic_topics = [
+            str(topic) for topic in self.get_parameter("front_ultrasonic_topics").value
+        ]
+        self.side_ultrasonic_topics = [
+            str(topic) for topic in self.get_parameter("side_ultrasonic_topics").value
+        ]
 
         self.latest_cmd = (0.0, 0.0)
         self.latest_cmd_time = self.get_clock().now()
@@ -362,7 +472,7 @@ class SafetySupervisorNode(Node):
             self.on_localization_health,
             10,
         )
-        for topic in self.get_parameter("ultrasonic_topics").value:
+        for topic in self._all_ultrasonic_topics():
             self.ultrasonic_ranges[topic] = math.inf
             self.ultrasonic_seen_at[topic] = None
             self.create_subscription(
@@ -375,6 +485,27 @@ class SafetySupervisorNode(Node):
         )
         rate = max(1.0, float(self.get_parameter("publish_rate_hz").value))
         self.timer = self.create_timer(1.0 / rate, self.publish_safe_command)
+
+    def _all_ultrasonic_topics(self) -> list[str]:
+        topics: list[str] = []
+        for topic in (
+            self.ultrasonic_topics
+            + self.front_ultrasonic_topics
+            + self.side_ultrasonic_topics
+        ):
+            if topic not in topics:
+                topics.append(topic)
+        return topics
+
+    def _ultrasonic_values(self, topics: Sequence[str]) -> list[float]:
+        return [self.ultrasonic_ranges.get(topic, math.inf) for topic in topics]
+
+    def _min_ultrasonic_for_topics(self, topics: Sequence[str]) -> float:
+        values = valid_ultrasonic_distances(
+            self._ultrasonic_values(topics),
+            self.params.ultrasonic_min_valid_m,
+        )
+        return min(values, default=math.inf)
 
     def _load_safety_params(self):
         values = {}
@@ -499,6 +630,14 @@ class SafetySupervisorNode(Node):
             self.emergency_hw,
             self.emergency_sw,
             self.params,
+            front_ultrasonic_distances=(
+                self._ultrasonic_values(self.front_ultrasonic_topics)
+                if self.front_ultrasonic_topics else None
+            ),
+            side_ultrasonic_distances=(
+                self._ultrasonic_values(self.side_ultrasonic_topics)
+                if self.side_ultrasonic_topics else None
+            ),
         )
 
         cmd = Twist()
@@ -507,9 +646,12 @@ class SafetySupervisorNode(Node):
         self.cmd_pub.publish(cmd)
 
         state = String()
+        front_ultra = self._min_ultrasonic_for_topics(self.front_ultrasonic_topics)
+        side_ultra = self._min_ultrasonic_for_topics(self.side_ultrasonic_topics)
         state.data = (
             f"{decision.state}: {decision.reason}; "
             f"scan={decision.min_scan_distance:.2f}m ultrasonic={decision.min_ultrasonic_distance:.2f}m "
+            f"front_ultra={front_ultra:.2f}m side_ultra={side_ultra:.2f}m "
             f"dynamic_stop={decision.dynamic_stop_distance:.2f}m"
         )
         self.state_pub.publish(state)

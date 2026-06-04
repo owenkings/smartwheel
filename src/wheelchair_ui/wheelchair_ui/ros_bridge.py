@@ -7,23 +7,34 @@ from typing import Any, Dict, List, Optional
 
 try:
     import rclpy
+    from action_msgs.msg import GoalStatus
     from ament_index_python.packages import get_package_share_directory
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+    from nav2_msgs.action import NavigateToPose
     from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
+    from nav_msgs.srv import GetMap
+    from rclpy.action import ActionClient
     from rclpy.node import Node
-    from rclpy.qos import qos_profile_sensor_data
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
     from sensor_msgs.msg import Image, Imu, LaserScan, PointCloud2, Range
     from std_msgs.msg import Bool, String
 except ImportError:
     rclpy = None
+    GoalStatus = None
     get_package_share_directory = None
     PoseStamped = None
     PoseWithCovarianceStamped = None
     Twist = None
+    NavigateToPose = None
     OccupancyGrid = None
     Odometry = None
     NavPath = None
+    GetMap = None
+    ActionClient = None
     Node = object
+    DurabilityPolicy = None
+    QoSProfile = None
+    ReliabilityPolicy = None
     qos_profile_sensor_data = 10
     Image = None
     Imu = None
@@ -77,6 +88,86 @@ def parse_key_value_status(data: str) -> Dict[str, Any]:
     return result
 
 
+def map_point_to_cell(map_info: Optional[Dict[str, Any]], x: float, y: float) -> Optional[tuple[int, int]]:
+    if not map_info:
+        return None
+    resolution = float(map_info.get("resolution") or 0.0)
+    if resolution <= 0.0:
+        return None
+    origin = map_info.get("origin") or {}
+    origin_x = float(origin.get("x", 0.0))
+    origin_y = float(origin.get("y", 0.0))
+    return (
+        int(math.floor((float(x) - origin_x) / resolution)),
+        int(math.floor((float(y) - origin_y) / resolution)),
+    )
+
+
+def is_map_point_navigable(
+    map_info: Optional[Dict[str, Any]],
+    x: float,
+    y: float,
+    clearance_m: float = 0.40,
+    occupied_threshold: int = 50,
+) -> tuple[bool, str]:
+    """Return whether a clicked map point is usable as a navigation goal."""
+    if not map_info:
+        return False, "地图尚未加载，不能发送导航目标"
+    width = int(map_info.get("width") or 0)
+    height = int(map_info.get("height") or 0)
+    data = map_info.get("data") or []
+    cell = map_point_to_cell(map_info, x, y)
+    if width <= 0 or height <= 0 or len(data) < width * height or cell is None:
+        return False, "地图数据无效，不能发送导航目标"
+    mx, my = cell
+    if not (0 <= mx < width and 0 <= my < height):
+        return False, "目标点在地图范围外"
+
+    resolution = float(map_info.get("resolution") or 0.0)
+    radius_cells = max(0, int(math.ceil(float(clearance_m) / resolution)))
+    blocked_seen = False
+    unknown_seen = False
+    radius_sq = radius_cells * radius_cells
+    for dy in range(-radius_cells, radius_cells + 1):
+        for dx in range(-radius_cells, radius_cells + 1):
+            if dx * dx + dy * dy > radius_sq:
+                continue
+            cx = mx + dx
+            cy = my + dy
+            if not (0 <= cx < width and 0 <= cy < height):
+                unknown_seen = True
+                continue
+            value = int(data[cy * width + cx])
+            if value < 0:
+                unknown_seen = True
+            elif value >= occupied_threshold:
+                blocked_seen = True
+    if blocked_seen:
+        return False, f"目标点离障碍物小于 {clearance_m:.2f}m"
+    if unknown_seen:
+        return False, f"目标点周围 {clearance_m:.2f}m 内有未知区域"
+    return True, "目标点可导航"
+
+
+def normalize_angle(angle: float) -> float:
+    return math.atan2(math.sin(float(angle)), math.cos(float(angle)))
+
+
+def pose_delta(
+    pose: Optional[Dict[str, Any]],
+    x: float,
+    y: float,
+    yaw: Optional[float] = None,
+) -> tuple[float, Optional[float]]:
+    if not pose:
+        return float("inf"), None
+    distance = math.hypot(float(pose.get("x", 0.0)) - float(x), float(pose.get("y", 0.0)) - float(y))
+    if yaw is None:
+        return distance, None
+    yaw_error = abs(normalize_angle(float(pose.get("yaw", 0.0)) - float(yaw)))
+    return distance, yaw_error
+
+
 class WheelchairUiRosNode(Node):
     def __init__(
         self,
@@ -87,7 +178,7 @@ class WheelchairUiRosNode(Node):
         super().__init__(node_name)
         self.store = NamedGoalStore(named_goals_path)
         self.semantic_store = SemanticMapStore(semantic_map_path or default_semantic_map_path())
-        self.sensor_timeout_sec = 3.0
+        self.sensor_timeout_sec = 5.0
         self.safety_state = "UNKNOWN"
         self.navigation_status = "IDLE"
         self.hardware_status = {"state": "UNKNOWN", "reason": "waiting for watchdog"}
@@ -96,15 +187,32 @@ class WheelchairUiRosNode(Node):
         self.pose = {"x": 0.0, "y": 0.0, "yaw": 0.0, "frame_id": "odom"}
         self.pose_last_seen = 0.0
         self.pose_source = "odom"
+        self.initial_pose_target: Optional[Dict[str, float]] = None
+        self.initial_pose_requested_at = 0.0
         self.current_goal: Optional[Dict] = None
+        self.goal_clearance_m = 0.40
+        self.last_goal_error: Optional[str] = None
         self.route_path: Dict[str, Any] = {"frame_id": "map", "points": [], "age_sec": None}
         self.route_last_seen = 0.0
         self.map_info: Optional[Dict] = None
-        self.declare_parameter("ultrasonic_indices", [0])
+        self._map_request_in_flight = False
+        self.declare_parameter("ultrasonic_indices", [0, 1, 2, 3])
         self.declare_parameter("enabled_cameras", ["left", "right"])
+        self.declare_parameter("initial_pose_ack_tolerance_m", 0.75)
+        self.declare_parameter("initial_pose_ack_tolerance_yaw", 1.0)
+        self.declare_parameter("initial_pose_ack_timeout_sec", 4.0)
         self.ultrasonic_indices = [
             int(index) for index in self.get_parameter("ultrasonic_indices").value
         ]
+        self.initial_pose_ack_tolerance_m = float(
+            self.get_parameter("initial_pose_ack_tolerance_m").value
+        )
+        self.initial_pose_ack_tolerance_yaw = float(
+            self.get_parameter("initial_pose_ack_tolerance_yaw").value
+        )
+        self.initial_pose_ack_timeout_sec = float(
+            self.get_parameter("initial_pose_ack_timeout_sec").value
+        )
         enabled_cameras = set(self.get_parameter("enabled_cameras").value)
         self.camera_topics = self._camera_topics(enabled_cameras)
         self.sensor_status = {
@@ -121,22 +229,36 @@ class WheelchairUiRosNode(Node):
         self.sensor_details: Dict[str, Dict[str, Any]] = {}
 
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.preview_goal_pub = self.create_publisher(PoseStamped, "/navigation/preview_goal", 10)
         self.initialpose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.named_goal_command_pub = self.create_publisher(String, "/named_goal_command", 10)
+        self.goal_status_pub = self.create_publisher(String, "/navigation/goal_status", 10)
         self.emergency_stop_pub = self.create_publisher(Bool, "/emergency_stop_sw", 10)
         self.emergency_command_pub = self.create_publisher(String, "/emergency_stop_command", 10)
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.cmd_vel_safe_pub = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        self.nav_client = (
+            ActionClient(self, NavigateToPose, "/navigate_to_pose")
+            if ActionClient is not None and NavigateToPose is not None
+            else None
+        )
+        self.map_client = (
+            self.create_client(GetMap, "/map_server/map")
+            if GetMap is not None
+            else None
+        )
 
+        map_qos = self._latched_map_qos()
         self.create_subscription(String, "/safety_state", self.on_safety_state, 10)
         self.create_subscription(String, "/navigation/status", self.on_navigation_status, 10)
         self.create_subscription(String, "/navigation/goal_status", self.on_navigation_status, 10)
+        self.create_subscription(String, "/exploration/status", self.on_navigation_status, 10)
         self.create_subscription(String, "/hardware/status", self.on_hardware_status, 10)
         self.create_subscription(String, "/localization/health", self.on_localization_health, 10)
         self.create_subscription(String, "/passability/status", self.on_passability_status, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, 10)
-        self.create_subscription(OccupancyGrid, "/map", self.on_map, 10)
-        self.create_subscription(OccupancyGrid, "/rtabmap/grid_map", self.on_rtabmap_grid_map, 10)
+        self.create_subscription(OccupancyGrid, "/map", self.on_map, map_qos)
+        self.create_subscription(OccupancyGrid, "/rtabmap/grid_map", self.on_rtabmap_grid_map, map_qos)
         self.create_subscription(Odometry, "/wheel/odom", self.on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self.on_amcl_pose, 10)
         for topic in ("/navigation/preview_path", "/plan", "/global_plan", "/received_global_plan"):
@@ -197,6 +319,17 @@ class WheelchairUiRosNode(Node):
                 lambda msg, i=index: self.on_ultrasonic(i, msg),
                 10,
             )
+        self.create_timer(1.0, self._fetch_map_if_missing)
+
+    @staticmethod
+    def _latched_map_qos():
+        if QoSProfile is None:
+            return 10
+        return QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
 
     @staticmethod
     def _camera_topics(enabled_cameras: set) -> Dict[str, str]:
@@ -298,7 +431,25 @@ class WheelchairUiRosNode(Node):
             "y": msg.pose.position.y,
         }
 
-    def on_map(self, msg):
+    def _fetch_map_if_missing(self):
+        if self.map_info is not None or self._map_request_in_flight or self.map_client is None:
+            return
+        if not self.map_client.service_is_ready():
+            return
+        self._map_request_in_flight = True
+        future = self.map_client.call_async(GetMap.Request())
+        future.add_done_callback(self._on_map_service_response)
+
+    def _on_map_service_response(self, future):
+        self._map_request_in_flight = False
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().warning(f"map service request failed: {exc}")
+            return
+        self.on_map(response.map)
+
+    def _store_map(self, msg):
         self.map_info = {
             "frame_id": msg.header.frame_id,
             "width": msg.info.width,
@@ -311,6 +462,9 @@ class WheelchairUiRosNode(Node):
             "data": list(msg.data),
         }
 
+    def on_map(self, msg):
+        self._store_map(msg)
+
     def on_rtabmap_grid_map(self, msg):
         self._mark_sensor(
             "rtabmap_grid_map",
@@ -322,17 +476,7 @@ class WheelchairUiRosNode(Node):
                 "resolution": msg.info.resolution,
             },
         )
-        self.map_info = {
-            "frame_id": msg.header.frame_id,
-            "width": msg.info.width,
-            "height": msg.info.height,
-            "resolution": msg.info.resolution,
-            "origin": {
-                "x": msg.info.origin.position.x,
-                "y": msg.info.origin.position.y,
-            },
-            "data": list(msg.data),
-        }
+        self._store_map(msg)
 
     def on_odom(self, msg):
         if self.pose_source == "amcl" and time.monotonic() - self.pose_last_seen <= self.sensor_timeout_sec:
@@ -524,6 +668,7 @@ class WheelchairUiRosNode(Node):
             "passability_status": self.passability_status,
             "mapping_3d": self._mapping_3d_snapshot(),
             "map_available": self.map_info is not None,
+            "initial_pose": self.initial_pose_status(),
         }
 
     def list_goals(self) -> Dict:
@@ -564,6 +709,20 @@ class WheelchairUiRosNode(Node):
     def send_named_goal(self, name: str) -> bool:
         goal = self.store.get_goal(name)
         if goal is None:
+            self.last_goal_error = f"目标点不存在：{name}"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+            return False
+        if not self._ensure_localized_for_goal():
+            return False
+        ok, reason = is_map_point_navigable(
+            self.map_info,
+            float(goal["position"][0]),
+            float(goal["position"][1]),
+            self.goal_clearance_m,
+        )
+        if not ok:
+            self.last_goal_error = f"{goal.get('label', name)}：{reason}"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
             return False
         pose = PoseStamped()
         pose.header.stamp = self.get_clock().now().to_msg()
@@ -576,18 +735,22 @@ class WheelchairUiRosNode(Node):
         pose.pose.orientation.y = q["y"]
         pose.pose.orientation.z = q["z"]
         pose.pose.orientation.w = q["w"]
-        self.goal_pub.publish(pose)
-
-        command = String()
-        command.data = json.dumps(
-            {"action": "navigate_to", "goal_name": name}, ensure_ascii=False
-        )
-        self.named_goal_command_pub.publish(command)
+        self.on_goal_pose(pose)
+        self.preview_goal_pub.publish(pose)
+        if not self._send_navigate_goal(pose, goal.get("label", name)):
+            return False
+        self.last_goal_error = None
         return True
 
     def send_goal_pose(self, x: float, y: float, yaw: float = 0.0) -> bool:
-        """Publish an ad-hoc /goal_pose (e.g. a point clicked on the map) so the
-        user can test navigation without pre-saved named goals."""
+        """Send an ad-hoc clicked map point to Nav2 after validating clearance."""
+        if not self._ensure_localized_for_goal():
+            return False
+        ok, reason = is_map_point_navigable(self.map_info, x, y, self.goal_clearance_m)
+        if not ok:
+            self.last_goal_error = reason
+            self._publish_goal_status(f"GOAL_REJECTED: {reason}")
+            return False
         pose = PoseStamped()
         pose.header.stamp = self.get_clock().now().to_msg()
         pose.header.frame_id = "map"
@@ -598,14 +761,85 @@ class WheelchairUiRosNode(Node):
         pose.pose.orientation.y = q["y"]
         pose.pose.orientation.z = q["z"]
         pose.pose.orientation.w = q["w"]
-        self.goal_pub.publish(pose)
+        self.on_goal_pose(pose)
+        self.preview_goal_pub.publish(pose)
+        if not self._send_navigate_goal(pose, f"x={float(x):.2f}, y={float(y):.2f}"):
+            return False
+        self.last_goal_error = None
         return True
 
-    def set_initial_pose(self, x: float, y: float, yaw: float = 0.0) -> bool:
-        """Publish /initialpose so AMCL localizes. Without this AMCL never
-        converges, localization stays unhealthy, and safety zeroes /cmd_vel_safe."""
+    def _ensure_localized_for_goal(self) -> bool:
+        if self.initial_pose_target is not None and not self.wait_for_initial_pose(
+            self.initial_pose_ack_timeout_sec
+        ):
+            self.last_goal_error = "初始位姿尚未被 AMCL 确认，已拒绝导航以避免从错误位置行驶"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+            return False
+        if self.pose_source == "amcl" and time.monotonic() - self.pose_last_seen <= self.sensor_timeout_sec:
+            return True
+        healthy = bool(self.localization_health.get("healthy")) or self.localization_health.get("state") == "GOOD"
+        if healthy:
+            return True
+        self.last_goal_error = "AMCL 定位未就绪，请先设置初始位姿或等待定位恢复"
+        self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+        return False
+
+    def _publish_goal_status(self, text: str):
+        msg = String()
+        msg.data = text
+        self.goal_status_pub.publish(msg)
+
+    def _send_navigate_goal(self, pose: PoseStamped, label: str) -> bool:
+        if self.nav_client is None:
+            self.last_goal_error = "Nav2 NavigateToPose action client 不可用"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+            return False
+        try:
+            ready = self.nav_client.server_is_ready() or self.nav_client.wait_for_server(timeout_sec=0.5)
+        except Exception as exc:
+            self.last_goal_error = f"Nav2 action server 检查失败：{exc}"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+            return False
+        if not ready:
+            self.last_goal_error = "Nav2 /navigate_to_pose action server 未就绪"
+            self._publish_goal_status(f"GOAL_REJECTED: {self.last_goal_error}")
+            return False
+        goal = NavigateToPose.Goal()
+        goal.pose = pose
+        self._publish_goal_status(f"GOAL_SENT: {label}")
+        future = self.nav_client.send_goal_async(goal)
+        future.add_done_callback(lambda fut, text=label: self._on_nav_goal_response(fut, text))
+        return True
+
+    def _on_nav_goal_response(self, future, label: str):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self._publish_goal_status(f"ERROR: NavigateToPose request failed: {exc}")
+            return
+        if not handle.accepted:
+            self._publish_goal_status(f"ERROR: NavigateToPose rejected: {label}")
+            return
+        self._publish_goal_status(f"NAV2_ACCEPTED: {label}")
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda fut, text=label: self._on_nav_result(fut, text))
+
+    def _on_nav_result(self, future, label: str):
+        try:
+            wrapped = future.result()
+        except Exception as exc:
+            self._publish_goal_status(f"ERROR: NavigateToPose result failed: {exc}")
+            return
+        status = int(wrapped.status)
+        status_name = {
+            GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+            GoalStatus.STATUS_ABORTED: "ABORTED",
+            GoalStatus.STATUS_CANCELED: "CANCELED",
+        }.get(status, f"STATUS_{status}")
+        self._publish_goal_status(f"NAV2_{status_name}: {label}")
+
+    def _initial_pose_message(self, x: float, y: float, yaw: float) -> PoseWithCovarianceStamped:
         msg = PoseWithCovarianceStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
         msg.pose.pose.position.x = float(x)
         msg.pose.pose.position.y = float(y)
@@ -619,8 +853,63 @@ class WheelchairUiRosNode(Node):
         cov[7] = 0.25      # y variance
         cov[35] = 0.0685   # yaw variance (~15 deg)
         msg.pose.covariance = cov
+        return msg
+
+    def set_initial_pose(self, x: float, y: float, yaw: float = 0.0) -> bool:
+        """Publish /initialpose so AMCL localizes before Nav2 drives."""
+        self.initial_pose_target = {"x": float(x), "y": float(y), "yaw": float(yaw)}
+        self.initial_pose_requested_at = time.monotonic()
+        msg = self._initial_pose_message(x, y, yaw)
         self.initialpose_pub.publish(msg)
         return True
+
+    def initial_pose_acknowledged(self) -> bool:
+        if self.initial_pose_target is None:
+            return self.pose_source == "amcl" and time.monotonic() - self.pose_last_seen <= self.sensor_timeout_sec
+        if self.pose_source != "amcl" or self.pose_last_seen < self.initial_pose_requested_at:
+            return False
+        distance, yaw_error = pose_delta(
+            self.pose,
+            self.initial_pose_target["x"],
+            self.initial_pose_target["y"],
+            self.initial_pose_target["yaw"],
+        )
+        return (
+            distance <= self.initial_pose_ack_tolerance_m
+            and yaw_error is not None
+            and yaw_error <= self.initial_pose_ack_tolerance_yaw
+        )
+
+    def wait_for_initial_pose(self, timeout_sec: Optional[float] = None) -> bool:
+        timeout = self.initial_pose_ack_timeout_sec if timeout_sec is None else float(timeout_sec)
+        deadline = time.monotonic() + max(0.0, timeout)
+        next_republish = 0.0
+        while time.monotonic() <= deadline:
+            if self.initial_pose_acknowledged():
+                return True
+            if self.initial_pose_target is not None and time.monotonic() >= next_republish:
+                target = self.initial_pose_target
+                self.initialpose_pub.publish(
+                    self._initial_pose_message(target["x"], target["y"], target["yaw"])
+                )
+                next_republish = time.monotonic() + 0.5
+            time.sleep(0.05)
+        return self.initial_pose_acknowledged()
+
+    def initial_pose_status(self) -> Dict[str, Any]:
+        target = dict(self.initial_pose_target) if self.initial_pose_target else None
+        distance = None
+        yaw_error = None
+        if target:
+            distance, yaw_error = pose_delta(self.pose, target["x"], target["y"], target["yaw"])
+        return {
+            "target": target,
+            "acknowledged": self.initial_pose_acknowledged(),
+            "pose_source": self.pose_source,
+            "pose_age_sec": None if not self.pose_last_seen else max(0.0, time.monotonic() - self.pose_last_seen),
+            "distance_m": distance,
+            "yaw_error_rad": yaw_error,
+        }
 
     def set_software_stop(self, active: bool):
         msg = Bool()

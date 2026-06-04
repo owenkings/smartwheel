@@ -3,9 +3,10 @@
 The chair drives itself at very low speed, choosing unexplored frontiers and
 building a 3D map, with everything visualized in RViz. Composition:
   RTAB-Map  -> builds the map (/rtabmap/cloud_map 3D, /rtabmap/grid_map 2D)
-  Nav2      -> plans + controls (low-speed autonomous params)
+  Nav2      -> available for frontier mode and route preview/control
   safety_supervisor -> /cmd_vel_nav -> /cmd_vel_safe (never bypassed)
-  frontier_explorer_node -> picks unknown-region goals via NavigateToPose
+  reactive_explorer_node -> vacuum-like first-pass motion from /scan
+  frontier_explorer_node -> optional frontier goals via NavigateToPose
   RViz      -> visualization only
 
 SAFETY: nothing moves by default. The wheelchair only moves when BOTH
@@ -36,6 +37,7 @@ def _setup(context, *args, **kwargs):
     enable_motion = flag("enable_motion")
     autonomous = flag("autonomous_exploration")
     use_colorizer = flag("use_colorizer")
+    exploration_mode = s("exploration_mode").lower()
     explore_active = enable_motion and autonomous
 
     actions = []
@@ -114,20 +116,40 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # G. Frontier explorer. auto_start only when motion + exploration are both on.
-    actions.append(Node(
-        package="wheelchair_navigation", executable="frontier_explorer_node",
-        name="frontier_explorer_node", output="screen",
-        parameters=[{
-            "auto_start": explore_active,
-            "map_topic": "/rtabmap/grid_map",
-            "min_frontier_size": int(s("min_frontier_size")),
-            "goal_timeout_sec": float(s("goal_timeout_sec")),
-            "exploration_timeout_sec": float(s("exploration_timeout_sec")),
-            "stop_on_safety_warning": flag("stop_on_safety_warning"),
-            "stop_on_safety_emergency": flag("stop_on_safety_emergency"),
-        }],
-    ))
+    # G. Explorer. Reactive mode is the default first-pass "vacuum" behavior:
+    # it starts moving as soon as /scan is available, without waiting for a
+    # mature map/frontier graph. Frontier mode remains available for experiments.
+    if exploration_mode == "frontier":
+        actions.append(Node(
+            package="wheelchair_navigation", executable="frontier_explorer_node",
+            name="frontier_explorer_node", output="screen",
+            parameters=[{
+                "auto_start": explore_active,
+                "map_topic": "/rtabmap/grid_map",
+                "min_frontier_size": int(s("min_frontier_size")),
+                "goal_timeout_sec": float(s("goal_timeout_sec")),
+                "exploration_timeout_sec": float(s("exploration_timeout_sec")),
+                "stop_on_safety_warning": flag("stop_on_safety_warning"),
+                "stop_on_safety_emergency": flag("stop_on_safety_emergency"),
+            }],
+        ))
+    else:
+        actions.append(Node(
+            package="wheelchair_navigation", executable="reactive_explorer_node",
+            name="reactive_explorer_node", output="screen",
+            parameters=[{
+                "auto_start": explore_active,
+                "forward_speed": float(s("max_linear_speed")),
+                "turn_speed": float(s("max_angular_speed")),
+                "hard_stop_distance": 0.10,
+                "turn_trigger_distance": float(s("turn_trigger_distance")),
+                "side_trigger_distance": 0.10,
+                "ultrasonic_stale_timeout_sec": 1.0,
+                "ultrasonic_min_valid_m": 0.03,
+                "corridor_half_width_m": 0.45,
+                "corridor_lookahead_m": 1.20,
+            }],
+        ))
 
     return actions
 
@@ -147,8 +169,12 @@ def generate_launch_description():
                               description="Colorize the cloud with the cameras (visual only)."),
         # Enforced low-speed caps live in nav2_autonomous_mapping_params.yaml (Nav2)
         # and safety_params.yaml (safety layer). These are advisory/record.
-        DeclareLaunchArgument("max_linear_speed", default_value="0.10"),
-        DeclareLaunchArgument("max_angular_speed", default_value="0.25"),
+        DeclareLaunchArgument("max_linear_speed", default_value="0.05"),
+        DeclareLaunchArgument("max_angular_speed", default_value="0.22"),
+        DeclareLaunchArgument("exploration_mode", default_value="reactive",
+                              description="reactive | frontier. reactive is the first-pass vacuum-like mode."),
+        DeclareLaunchArgument("turn_trigger_distance", default_value="0.30",
+                              description="Reactive explorer starts turning when front scan/ultrasonic is closer than this."),
         DeclareLaunchArgument("min_frontier_size", default_value="8"),
         DeclareLaunchArgument("goal_timeout_sec", default_value="45.0"),
         DeclareLaunchArgument("exploration_timeout_sec", default_value="600.0"),

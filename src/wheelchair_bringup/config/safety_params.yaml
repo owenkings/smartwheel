@@ -11,6 +11,12 @@ safety_supervisor_node:
       - /ultrasonic/range_1
       - /ultrasonic/range_2
       - /ultrasonic/range_3
+    front_ultrasonic_topics:
+      - /ultrasonic/range_0
+      - /ultrasonic/range_2
+    side_ultrasonic_topics:
+      - /ultrasonic/range_1
+      - /ultrasonic/range_3
     max_auto_speed: 0.25
     debug_max_speed: 0.35
     hard_max_speed: 0.5
@@ -19,10 +25,16 @@ safety_supervisor_node:
     max_reverse_speed: 0.15
     rotate_in_place_angular_threshold: 0.2
     rotation_stop_distance: 0.7
-    warning_distance: 1.5
-    slowdown_distance: 1.0
-    stop_distance: 0.6
-    emergency_distance: 0.35
+    warning_distance: 0.80
+    slowdown_distance: 0.40
+    stop_distance: 0.30
+    emergency_distance: 0.10
+    front_ultrasonic_stop_distance: 0.30
+    front_ultrasonic_slowdown_distance: 0.40
+    front_ultrasonic_emergency_distance: 0.10
+    side_ultrasonic_stop_distance: 0.10
+    side_ultrasonic_warning_distance: 0.20
+    side_ultrasonic_emergency_distance: 0.05
     t_delay: 0.35
     a_brake: 0.8
     d_margin: 0.25
@@ -31,13 +43,13 @@ safety_supervisor_node:
     publish_rate_hz: 20.0
     stale_timeout_sec: 1.0
     ultrasonic_stale_timeout_sec: 1.5
-    # Front ultrasonics sit ~0.5 m behind the chair's front edge; readings below
-    # this are the chair's own footrest/frame (false positives) and are discarded.
-    # The LiDAR front-cone scan-distance stop remains the real collision guard.
-    ultrasonic_min_valid_m: 0.50
-    # Ultrasonic is useful close-range redundancy, but the current autonomous
-    # baseline must still run with radar/scan-only safety when the RS485
-    # ultrasonic chain is absent or under repair.
+    # Keep real close-range values. Front stop is 0.30 m for the current
+    # unmanned test profile; 0.50 m caused the chair to rotate in place before
+    # it could start moving in normal rooms. Side stop remains 0.10 m.
+    ultrasonic_min_valid_m: 0.03
+    # Ultrasonic is optional for the current unmanned test path. If the four
+    # RS485 topics publish, they are used; if they are silent, radar /scan still
+    # drives the 30 cm front stop.
     min_ultrasonic_online: 0
     require_localization_healthy: false
     localization_timeout_sec: 2.5

@@ -40,6 +40,8 @@ class SensorWatchdogNode(Node):
         self.declare_parameter("ultrasonic_topics", ["/ultrasonic/range_0"])
         self.declare_parameter("ultrasonic_0_critical", True)
         self.declare_parameter("ultrasonic_1_critical", False)
+        self.declare_parameter("ultrasonic_2_critical", False)
+        self.declare_parameter("ultrasonic_3_critical", False)
         self.declare_parameter("camera_timeout_sec", 3.0)
         self.declare_parameter("camera_topics", ["/camera/left/image_raw", "/camera/right/image_raw"])
         self.declare_parameter("points_timeout_sec", 1.5)

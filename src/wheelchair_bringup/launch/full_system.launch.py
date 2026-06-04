@@ -13,6 +13,11 @@ def generate_launch_description():
     enable_web_ui = LaunchConfiguration("enable_web_ui")
     enable_native_gui = LaunchConfiguration("enable_native_gui")
     enable_dual_xtm60 = LaunchConfiguration("enable_dual_xtm60")
+    nav_params_file = LaunchConfiguration("nav_params_file")
+    safety_params_file = LaunchConfiguration("safety_params_file")
+    enable_passability = LaunchConfiguration("enable_passability")
+    require_localization_healthy = LaunchConfiguration("require_localization_healthy")
+    motion_control_enabled = LaunchConfiguration("motion_control_enabled")
     # Top-level switch for whether ANY XT-M60 radar adapter starts. When false,
     # neither the single-radar adapter nor the dual left/right adapters run,
     # nor do the pointcloud_to_laserscan / scan_merger downstream nodes. The
@@ -43,6 +48,31 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_web_ui", default_value="true"),
             DeclareLaunchArgument("enable_native_gui", default_value="false"),
             DeclareLaunchArgument("enable_dual_xtm60", default_value="true"),
+            DeclareLaunchArgument(
+                "nav_params_file",
+                default_value=PathJoinSubstitution([bringup_share, "config", "nav2_params.yaml"]),
+                description="Nav2 parameter file. Use nav2_autonomous_mapping_params.yaml for unmanned demo mode.",
+            ),
+            DeclareLaunchArgument(
+                "safety_params_file",
+                default_value=PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
+                description="Safety supervisor parameter file.",
+            ),
+            DeclareLaunchArgument(
+                "enable_passability",
+                default_value="true",
+                description="Enable passability corridor hard-stop analyzer.",
+            ),
+            DeclareLaunchArgument(
+                "require_localization_healthy",
+                default_value="false",
+                description="Whether safety_supervisor blocks motion when localization health is not GOOD.",
+            ),
+            DeclareLaunchArgument(
+                "motion_control_enabled",
+                default_value="true",
+                description="true lets /cmd_vel_safe write real motor speeds; false runs navigation read-only.",
+            ),
             DeclareLaunchArgument(
                 "enable_xtm60_radar",
                 default_value="false",
@@ -123,7 +153,13 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([bringup_share, "launch", "navigation.launch.py"])
-                )
+                ),
+                launch_arguments={
+                    "params_file": nav_params_file,
+                    "safety_params_file": safety_params_file,
+                    "enable_passability": enable_passability,
+                    "require_localization_healthy": require_localization_healthy,
+                }.items(),
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -138,7 +174,7 @@ def generate_launch_description():
                 launch_arguments={
                     "mode": "real",
                     "hold_zero_before_motion_init": "true",
-                    "motion_control_enabled": "true",
+                    "motion_control_enabled": motion_control_enabled,
                 }.items(),
             ),
             Node(

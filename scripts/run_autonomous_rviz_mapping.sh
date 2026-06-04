@@ -30,15 +30,19 @@ cat >&2 <<'WARN'
 *********************************************************************
 WARN
 
-read -r -p "Type I_UNDERSTAND_AUTONOMOUS_MAPPING_RISK to continue: " ans
-if [[ "$ans" != "I_UNDERSTAND_AUTONOMOUS_MAPPING_RISK" ]]; then
-  echo "Confirmation mismatch. Aborted." >&2
-  exit 1
+if [[ "${SMARTWHEEL_ASSUME_AUTONOMOUS_RISK:-false}" != "true" ]]; then
+  read -r -p "Type I_UNDERSTAND_AUTONOMOUS_MAPPING_RISK to continue: " ans
+  if [[ "$ans" != "I_UNDERSTAND_AUTONOMOUS_MAPPING_RISK" ]]; then
+    echo "Confirmation mismatch. Aborted." >&2
+    exit 1
+  fi
 fi
 
 exec ros2 launch wheelchair_3d_mapping autonomous_rviz_mapping.launch.py \
   enable_motion:=true \
   autonomous_exploration:=true \
-  max_linear_speed:=0.10 \
-  max_angular_speed:=0.25 \
+  exploration_mode:=reactive \
+  max_linear_speed:=0.05 \
+  max_angular_speed:=0.22 \
+  turn_trigger_distance:=0.30 \
   rviz:=true "$@"

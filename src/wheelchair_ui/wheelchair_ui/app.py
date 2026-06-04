@@ -118,7 +118,9 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
     @app.post("/api/navigate/{name}")
     def navigate(name: str):
         if not bridge.node.send_named_goal(name):
-            raise HTTPException(status_code=404, detail="goal not found")
+            detail = bridge.node.last_goal_error or "goal not found"
+            status_code = 404 if "不存在" in detail or "not found" in detail else 400
+            raise HTTPException(status_code=status_code, detail=detail)
         return {"ok": True}
 
     @app.post("/api/stop")

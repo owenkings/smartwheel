@@ -34,6 +34,7 @@ MANAGED_BACKEND_PATTERNS = (
     "ros2 launch wheelchair_bringup full_system.launch.py",
     "ros2 launch wheelchair_bringup mapping.launch.py",
     "ros2 launch wheelchair_3d_mapping rtabmap_3d_mapping.launch.py",
+    "ros2 launch wheelchair_3d_mapping autonomous_rviz_mapping.launch.py",
     "/robot_state_publisher/robot_state_publisher",
     "/wheelchair_sensors/xtm60_adapter_node",
     "/wheelchair_sensors/imu_adapter_node",
@@ -46,6 +47,8 @@ MANAGED_BACKEND_PATTERNS = (
     "/wheelchair_diagnostics/sensor_watchdog_node",
     "/wheelchair_navigation/goal_manager_node",
     "/wheelchair_navigation/navigation_status_node",
+    "/wheelchair_navigation/frontier_explorer_node",
+    "/wheelchair_navigation/reactive_explorer_node",
     "/wheelchair_base/zlac8030_driver_node",
     "/nav2_map_server/map_server",
     "/nav2_amcl/amcl",
@@ -89,6 +92,8 @@ KNOWN_BACKEND_NODES = {
     "/localization_health_node",
     "/goal_manager_node",
     "/navigation_status_node",
+    "/frontier_explorer_node",
+    "/reactive_explorer_node",
     "/slam_toolbox",
     "/rviz2",
 }
@@ -1149,18 +1154,22 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
+        safety_profile = self.workspace_root / "src" / "wheelchair_bringup" / "config" / "safety_params_mapping.yaml"
         launch_args = [
             "enable_web_ui:=false",
             "enable_native_gui:=false",
             "enable_xtm60_radar:=true",
             "enable_dual_xtm60:=true",
+            "enable_passability:=false",
+            "require_localization_healthy:=false",
+            f"safety_params_file:={safety_profile}",
         ]
         map_path = self.mapping.last_map_yaml
         if map_path and Path(map_path).exists():
             launch_args.append(f"map:={map_path}")
-            self.system_launch_detail = f"full_system.launch.py，双雷达导航，地图：{map_path.name}"
+            self.system_launch_detail = f"full_system.launch.py，无人低速导航，地图：{map_path.name}"
         else:
-            self.system_launch_detail = "full_system.launch.py，双雷达导航，默认空地图"
+            self.system_launch_detail = "full_system.launch.py，无人低速导航，默认空地图"
         launch = (
             "exec ros2 launch wheelchair_bringup full_system.launch.py "
             + " ".join(shlex.quote(arg) for arg in launch_args)
@@ -1378,11 +1387,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sensor_card.set_value(" / ".join(online) if online else "--")
         ultrasonic = sensors.get("ultrasonic") or []
         if ultrasonic:
-            item = ultrasonic[0]
-            mm = item.get("range_mm")
-            if mm is None and item.get("range_m") is not None:
-                mm = round(float(item["range_m"]) * 1000.0)
-            self.ultra_card.set_value(f"{mm} mm" if mm is not None else "--")
+            labels = {0: "左前", 1: "左侧", 2: "右前", 3: "右侧"}
+            parts = []
+            for item in ultrasonic:
+                mm = item.get("range_mm")
+                if mm is None and item.get("range_m") is not None:
+                    mm = round(float(item["range_m"]) * 1000.0)
+                if mm is None:
+                    continue
+                parts.append(f"{labels.get(item.get('index'), item.get('index'))}:{mm}")
+            self.ultra_card.set_value(" ".join(parts) if parts else "--")
         else:
             self.ultra_card.set_value("--")
         if self.latest_map:
@@ -1489,12 +1503,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         loc = self.latest_status.get("localization_health") or {}
         if not (bool(loc.get("healthy")) or loc.get("state") == "GOOD"):
-            QtWidgets.QMessageBox.warning(
-                self, "定位未就绪",
-                f"定位状态：{loc.get('state', 'UNKNOWN')}。\n"
-                "请先在地图上点轮椅当前位置→设好 Yaw→点\"设置初始位姿\"，待定位变 GOOD 再导航。",
+            self.statusBar().showMessage(
+                f"定位状态 {loc.get('state', 'UNKNOWN')}，无人初版模式仍发送目标；"
+                "如路线明显不对，请点当前位置并设置初始位姿。",
+                6000,
             )
-            return False
         return True
 
     def navigate_selected_goal(self):
@@ -1503,12 +1516,25 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self._nav_precondition_ok():
             return
-        self.bridge.node.send_named_goal(key)
+        if not self.bridge.node.send_named_goal(key):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "目标不可导航",
+                self.bridge.node.last_goal_error or "目标点不在可通行区域内。",
+            )
 
     def navigate_to_point(self):
         if not self._nav_precondition_ok():
             return
-        self.bridge.node.send_goal_pose(self.goal_x.value(), self.goal_y.value(), self.goal_yaw.value())
+        if not self.bridge.node.send_goal_pose(
+            self.goal_x.value(), self.goal_y.value(), self.goal_yaw.value()
+        ):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "目标不可导航",
+                self.bridge.node.last_goal_error or "目标点不在可通行区域内。",
+            )
+            return
         self.statusBar().showMessage(
             f"已发送目标 x={self.goal_x.value():.2f} y={self.goal_y.value():.2f}，"
             "若 Nav2 aborted 多为目标在墙里/不可达，请点更空旷的点", 6000
@@ -1518,9 +1544,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bridge.node.set_initial_pose(
             self.goal_x.value(), self.goal_y.value(), self.goal_yaw.value()
         )
+        confirmed = self.bridge.node.wait_for_initial_pose()
+        if not confirmed:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "初始位姿未确认",
+                "已发送初始位姿，但 AMCL 尚未回到该位置附近。请确认 /scan、/wheel/odom、/amcl_pose 在线后再导航。",
+            )
+            return
         self.statusBar().showMessage(
-            f"已发送初始位姿 x={self.goal_x.value():.2f} y={self.goal_y.value():.2f} "
-            f"yaw={self.goal_yaw.value():.2f}，等待 AMCL 收敛后再导航", 6000
+            f"初始位姿已确认 x={self.goal_x.value():.2f} y={self.goal_y.value():.2f} "
+            f"yaw={self.goal_yaw.value():.2f}", 6000
         )
 
     def save_goal(self):

@@ -84,6 +84,10 @@ class MappingManager:
         self.smartwheel_service_was_running = False
         # Mapping backend: rtabmap (3D, default main line) | slam_toolbox (2D fallback).
         self.backend = (os.environ.get("SMARTWHEEL_MAP_BACKEND", "rtabmap").strip().lower() or "rtabmap")
+        self.autonomous_mapping = (
+            os.environ.get("SMARTWHEEL_AUTONOMOUS_MAPPING", "true").strip().lower()
+            not in ("0", "false", "no", "off")
+        )
         self.grid_topic = "/rtabmap/grid_map" if self.backend == "rtabmap" else "/map"
         self.last_map_3d: Optional[Path] = None
         self._load_last_saved_map()
@@ -140,10 +144,11 @@ class MappingManager:
                 ),
                 self._check(
                     "rtabmap_odom",
-                    "RTAB-Map ICP里程计",
-                    self._mapping_online(mapping_3d, "rtabmap_odom"),
+                    "建图里程计",
+                    self._mapping_online(mapping_3d, "rtabmap_odom")
+                    or bool((sensors.get("odom") or {}).get("online")),
                     False,
-                    "开始建图后 /rtabmap/odom 应持续发布",
+                    "自主建图使用 /wheel/odom；纯手推建图使用 /rtabmap/odom",
                 ),
                 self._check(
                     "rtabmap_cloud_map",
@@ -238,20 +243,23 @@ class MappingManager:
             return
         mapping_3d = ros_status.get("mapping_3d") or {}
         points = self._mapping_online(mapping_3d, "points_merged")
-        odom = self._mapping_online(mapping_3d, "rtabmap_odom")
+        sensors = ros_status.get("sensors") or {}
+        odom = self._mapping_online(mapping_3d, "rtabmap_odom") or bool((sensors.get("odom") or {}).get("online"))
         cloud = self._mapping_online(mapping_3d, "rtabmap_cloud_map")
         grid = self._mapping_online(mapping_3d, "rtabmap_grid_map")
         rgb = self._mapping_online(mapping_3d, "rgb_cloud_map")
+        nav = str(ros_status.get("navigation_status") or "")
+        prefix = "RTAB-Map 3D 无人自主建图" if self.autonomous_mapping else "RTAB-Map 3D 正在建图"
         if points and odom and cloud and grid and rgb:
-            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计、3D主地图、2D导航投影和双相机上色均在线，请继续慢速推行闭环"
+            self.reason = f"{prefix}：3D点云、里程计、3D主地图、2D导航投影和双相机上色均在线；{nav}"
         elif points and odom and cloud and grid:
-            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计、3D主地图和2D导航投影均在线，等待双相机上色输出"
+            self.reason = f"{prefix}：3D点云、里程计、3D主地图和2D导航投影均在线；{nav or '等待双相机上色输出'}"
         elif points and odom and cloud:
-            self.reason = "RTAB-Map 3D 正在建图：3D点云、ICP里程计和3D主地图已在线，等待2D导航投影稳定"
+            self.reason = f"{prefix}：3D点云、里程计和3D主地图已在线，等待2D导航投影稳定"
         elif points and odom:
-            self.reason = "RTAB-Map 3D 已收到融合点云和ICP里程计，等待 /rtabmap/cloud_map 与 /rtabmap/grid_map 输出"
+            self.reason = "RTAB-Map 3D 已收到融合点云和里程计，等待 /rtabmap/cloud_map 与 /rtabmap/grid_map 输出"
         elif points:
-            self.reason = "RTAB-Map 3D 已收到 /points_merged，等待 ICP 里程计和地图输出"
+            self.reason = "RTAB-Map 3D 已收到 /points_merged，等待里程计和地图输出"
         else:
             self.reason = "RTAB-Map 3D 建图已启动，等待 /points_merged 融合点云上线"
 
@@ -329,7 +337,25 @@ class MappingManager:
             log_path = self.log_dir / f"mapping_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
             self.log_path = log_path
             self.log_handle = log_path.open("a", encoding="utf-8")
-            if be == "rtabmap":
+            if be == "rtabmap" and self.autonomous_mapping:
+                command = [
+                    "ros2", "launch", "wheelchair_3d_mapping",
+                    "autonomous_rviz_mapping.launch.py",
+                    "enable_motion:=true",
+                    "autonomous_exploration:=true",
+                    "exploration_mode:=reactive",
+                    "use_colorizer:=true",
+                    "rviz:=false",
+                    "max_linear_speed:=0.05",
+                    "max_angular_speed:=0.22",
+                    "turn_trigger_distance:=0.30",
+                    "exploration_timeout_sec:=900",
+                ]
+                self.reason = (
+                    "RTAB-Map 3D 无人自主建图已启动：轮椅会低速前进、遇障碍自动转向/掉头；"
+                    "3D 点云为主成果，同时生成 2D 导航底图"
+                )
+            elif be == "rtabmap":
                 # RTAB-Map 3D main line: 3D cloud_map is the primary product;
                 # /rtabmap/grid_map is the projected 2D grid saved for Nav2.
                 command = [
@@ -349,7 +375,8 @@ class MappingManager:
                     "use_ekf:=true",
                 ]
                 self.reason = "slam_toolbox 2D 保底建图已启动，等待传感器和里程计上线"
-            self.reason = self.reason + self._free_motor_for_manual_push()
+            if be != "rtabmap" or not self.autonomous_mapping:
+                self.reason = self.reason + self._free_motor_for_manual_push()
             self.process = subprocess.Popen(
                 command,
                 cwd=str(self.workspace_root),
@@ -420,9 +447,12 @@ class MappingManager:
         # RTAB-Map writes the final optimized database during shutdown. Save the
         # live 2D grid first, then stop the launch so rtabmap-export sees a
         # flushed database for the primary 3D PLY export.
+        release_suffix = ""
         if not self.external_slam:
             with self.lock:
                 self._stop_process_locked()
+                if self.autonomous_mapping:
+                    release_suffix = self._free_motor_for_manual_push()
                 self._restart_smartwheel_if_was_running()
 
         map_3d_result = self._save_map_3d(version_id)
@@ -477,7 +507,7 @@ class MappingManager:
             self.state = "MAP_READY"
             quality_text = self._quality_reason_text(quality_status)
             p3d = f"3D 主地图 {map_3d}" if map_3d else f"3D 主地图导出跳过（{map_3d_result.message}）"
-            self.reason = f"{p3d}；2D 导航投影 {save_result.current_yaml}；版本 {save_result.version_id}{quality_text}"
+            self.reason = f"{p3d}；2D 导航投影 {save_result.current_yaml}；版本 {save_result.version_id}{quality_text}{release_suffix}"
             self.started_at = None
             return self.status({})
 

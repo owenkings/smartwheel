@@ -17,7 +17,8 @@ have_tf()  { timeout 4 ros2 run tf2_ros tf2_echo "$1" "$2" >/dev/null 2>&1; }
 
 # A. Hard prerequisites -> READY_TO_PLAN
 for t in /xtm60/left/points /xtm60/right/points /points_merged /imu/data \
-         /rtabmap/odom /rtabmap/cloud_map /rtabmap/grid_map /scan \
+         /ultrasonic/range_0 /ultrasonic/range_1 /ultrasonic/range_2 /ultrasonic/range_3 \
+         /wheel/odom /rtabmap/cloud_map /rtabmap/grid_map /scan \
          /safety_state /exploration/status; do
   if have_msg "$t" 4; then echo "OK   $t"; else echo "MISS $t"; reasons+=("no data on $t"); fi
 done
@@ -27,7 +28,7 @@ else
   echo "MISS /navigate_to_pose action server"; reasons+=("/navigate_to_pose action server not available")
 fi
 if have_tf map odom; then echo "OK   TF map->odom"; else echo "MISS TF map->odom"; reasons+=("TF map->odom missing (RTAB-Map not localized)"); fi
-if have_tf odom base_link; then echo "OK   TF odom->base_link"; else echo "MISS TF odom->base_link"; reasons+=("TF odom->base_link missing (icp_odometry)"); fi
+if have_tf odom base_link; then echo "OK   TF odom->base_link"; else echo "MISS TF odom->base_link"; reasons+=("TF odom->base_link missing (wheel odom/base driver)"); fi
 
 # B. Motion evidence -> READY_TO_MOVE (WARN-only before first goal)
 move_ready=true

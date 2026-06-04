@@ -9,7 +9,7 @@ amcl:
     max_particles: 1200
     laser_min_range: 0.08
     laser_max_range: 8.0
-    set_initial_pose: true
+    set_initial_pose: false
     initial_pose:
       x: 0.0
       y: 0.0
@@ -104,18 +104,18 @@ controller_server:
       debug_trajectory_details: false
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.25
+      max_vel_x: 0.08
       max_vel_y: 0.0
-      max_vel_theta: 0.6
+      max_vel_theta: 0.25
       min_speed_xy: 0.0
-      max_speed_xy: 0.25
+      max_speed_xy: 0.08
       min_speed_theta: 0.0
-      acc_lim_x: 0.25
+      acc_lim_x: 0.20
       acc_lim_y: 0.0
-      acc_lim_theta: 0.8
-      decel_lim_x: -0.5
+      acc_lim_theta: 0.5
+      decel_lim_x: -0.30
       decel_lim_y: 0.0
-      decel_lim_theta: -0.8
+      decel_lim_theta: -0.5
       vx_samples: 12
       vy_samples: 1
       vtheta_samples: 20
@@ -128,7 +128,7 @@ controller_server:
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
-      BaseObstacle.scale: 0.04
+      BaseObstacle.scale: 0.12
       PathAlign.scale: 16.0
       PathAlign.forward_point_distance: 0.325
       GoalAlign.scale: 12.0
@@ -151,8 +151,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      robot_radius: 0.45
-      plugins: [obstacle_layer, range_layer, inflation_layer]
+      robot_radius: 0.35
+      plugins: [obstacle_layer, inflation_layer]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -207,7 +207,7 @@ local_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.65
+        inflation_radius: 0.40
       always_send_full_costmap: true
 
 global_costmap:
@@ -218,7 +218,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.45
+      robot_radius: 0.35
       resolution: 0.05
       track_unknown_space: true
       plugins: [static_layer, obstacle_layer, inflation_layer]
@@ -240,7 +240,7 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.75
+        inflation_radius: 0.40
       always_send_full_costmap: true
 
 map_server:
@@ -296,9 +296,9 @@ behavior_server:
     transform_tolerance: 0.2
     use_sim_time: false
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.6
-    min_rotational_vel: 0.2
-    rotational_acc_lim: 1.0
+    max_rotational_vel: 0.25
+    min_rotational_vel: 0.10
+    rotational_acc_lim: 0.5
 
 waypoint_follower:
   ros__parameters:
@@ -317,10 +317,10 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.25, 0.0, 0.6]
-    min_velocity: [0.0, 0.0, -0.6]
-    max_accel: [0.25, 0.0, 0.8]
-    max_decel: [-0.5, 0.0, -0.8]
+    max_velocity: [0.08, 0.0, 0.25]
+    min_velocity: [0.0, 0.0, -0.25]
+    max_accel: [0.20, 0.0, 0.5]
+    max_decel: [-0.30, 0.0, -0.5]
     odom_topic: /wheel/odom
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

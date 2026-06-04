@@ -451,8 +451,12 @@ async function refreshGoals() {
       const go = document.createElement("button");
       go.textContent = "导航";
       go.onclick = async () => {
-        await api(`/api/navigate/${encodeURIComponent(key)}`, {method: "POST"});
-        refreshStatus();
+        try {
+          await api(`/api/navigate/${encodeURIComponent(key)}`, {method: "POST"});
+          refreshStatus();
+        } catch (error) {
+          showNotice(`目标不可导航: ${error.message}`, true);
+        }
       };
       const del = document.createElement("button");
       del.textContent = "删除";
@@ -588,10 +592,14 @@ document.getElementById("goal-form").addEventListener("submit", async (event) =>
     yaw: Number(document.getElementById("goal-yaw").value || 0),
     frame_id: "map",
   };
-  await api("/api/goals", {method: "POST", body: JSON.stringify(payload)});
-  event.target.reset();
-  document.getElementById("goal-yaw").value = 0;
-  refreshGoals();
+  try {
+    await api("/api/goals", {method: "POST", body: JSON.stringify(payload)});
+    event.target.reset();
+    document.getElementById("goal-yaw").value = 0;
+    refreshGoals();
+  } catch (error) {
+    showNotice(`目标点保存失败: ${error.message}`, true);
+  }
 });
 
 document.getElementById("room-form").addEventListener("submit", async (event) => {

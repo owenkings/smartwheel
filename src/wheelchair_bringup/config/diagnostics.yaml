@@ -9,13 +9,14 @@ sensor_watchdog_node:
     ultrasonic_timeout_sec: 1.5
     ultrasonic_topics:
       - /ultrasonic/range_0
-      # Future full layout:
-      # - /ultrasonic/range_1
-      # - /ultrasonic/range_2
-      # - /ultrasonic/range_3
+      - /ultrasonic/range_1
+      - /ultrasonic/range_2
+      - /ultrasonic/range_3
     ultrasonic_0_critical: true
-    ultrasonic_1_critical: false
-    camera_timeout_sec: 3.0
+    ultrasonic_1_critical: true
+    ultrasonic_2_critical: true
+    ultrasonic_3_critical: true
+    camera_timeout_sec: 5.0
     camera_topics:
       - /camera/left/image_raw
       - /camera/right/image_raw
