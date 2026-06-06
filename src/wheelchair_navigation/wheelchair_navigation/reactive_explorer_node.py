@@ -18,11 +18,11 @@ try:
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from sensor_msgs.msg import LaserScan, Range
-    from std_msgs.msg import String
+    from std_msgs.msg import Bool, String
 except ImportError:  # allow unit tests / py_compile without ROS installed
     rclpy = None
     Node = object
-    Twist = LaserScan = Range = Odometry = String = None
+    Twist = LaserScan = Range = Odometry = Bool = String = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +157,8 @@ class ReactiveExplorerNode(Node):
         super().__init__("reactive_explorer_node")
         p = self.declare_parameter
         p("auto_start", True)
+        p("require_enable_signal", False)
+        p("enable_topic", "/autonomy/enable")
         p("scan_topic", "/scan")
         p("odom_topic", "/wheel/odom")
         p("cmd_vel_topic", "/cmd_vel_nav")
@@ -187,6 +189,8 @@ class ReactiveExplorerNode(Node):
         p("publish_rate_hz", 10.0)
 
         self.auto_start = bool(self.get_parameter("auto_start").value)
+        self.require_enable_signal = bool(self.get_parameter("require_enable_signal").value)
+        self.enable_received = not self.require_enable_signal
         self.config = ReactiveExplorerConfig(
             forward_speed=float(self.get_parameter("forward_speed").value),
             turn_speed=float(self.get_parameter("turn_speed").value),
@@ -229,6 +233,12 @@ class ReactiveExplorerNode(Node):
         self.status_pub = self.create_publisher(String, self.get_parameter("status_topic").value, 10)
         self.create_subscription(LaserScan, self.get_parameter("scan_topic").value, self.on_scan, 10)
         self.create_subscription(Odometry, self.get_parameter("odom_topic").value, self.on_odom, 10)
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter("enable_topic").value),
+            self.on_enable,
+            10,
+        )
         for topic in dict.fromkeys(self.ultrasonic_roles.values()):
             if topic:
                 self.create_subscription(Range, topic, lambda msg, t=topic: self.on_ultrasonic(t, msg), 10)
@@ -249,6 +259,9 @@ class ReactiveExplorerNode(Node):
     def on_ultrasonic(self, topic: str, msg):
         self.ultrasonic_ranges[topic] = float(msg.range)
         self.ultrasonic_seen_at[topic] = self.now()
+
+    def on_enable(self, msg):
+        self.enable_received = bool(msg.data)
 
     def _ultrasonic(self, role: str, now: float) -> float:
         topic = self.ultrasonic_roles.get(role, "")
@@ -294,6 +307,10 @@ class ReactiveExplorerNode(Node):
         now = self.now()
         if not self.auto_start:
             self.status_pub.publish(String(data="IDLE: reactive exploration disabled"))
+            return
+        if not self.enable_received:
+            self._clear_forward_window()
+            self._publish(0.0, 0.0, "IDLE: waiting for explicit autonomy enable")
             return
         if self.latest_scan is None or self.last_scan_time is None:
             self._publish(0.0, 0.0, "BLOCKED: waiting for /scan")

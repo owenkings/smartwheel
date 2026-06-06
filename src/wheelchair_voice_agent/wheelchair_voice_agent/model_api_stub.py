@@ -29,8 +29,19 @@ class TextCommandModelStub:
             return ModelIntent(intent="stop", confidence=0.98)
         if command in ("继续", "恢复", "接着走"):
             return ModelIntent(intent="continue", confidence=0.95)
-        if command in ("当前位置", "我在哪", "现在位置"):
+        if command in ("当前位置", "我在哪", "我现在在哪", "现在位置", "这是哪里"):
             return ModelIntent(intent="query_pose", confidence=0.9)
+        if command in (
+            "回去充电",
+            "回充",
+            "回充电位",
+            "返回充电位",
+            "回到充电位",
+            "去充电",
+        ):
+            return ModelIntent(
+                intent="navigate_to", goal_name="充电点", confidence=0.97
+            )
 
         prefixes = ("去", "到", "导航到", "带我去")
         for prefix in prefixes:

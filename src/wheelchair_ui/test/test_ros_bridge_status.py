@@ -1,4 +1,7 @@
+import time
+
 from wheelchair_ui.ros_bridge import (
+    WheelchairUiRosNode,
     is_map_point_navigable,
     map_point_to_cell,
     normalize_angle,
@@ -67,3 +70,38 @@ def test_is_map_point_navigable_rejects_unknown_and_near_obstacle():
     ok, reason = is_map_point_navigable(info, 0.2, 0.2, clearance_m=0.05)
     assert ok is False
     assert "未知区域" in reason
+
+
+def test_map_snapshot_prefers_fresh_rtabmap_then_falls_back_to_map():
+    node = WheelchairUiRosNode.__new__(WheelchairUiRosNode)
+    now = time.monotonic()
+    node.primary_map_timeout_sec = 5.0
+    node._map_candidates = {
+        "/rtabmap/grid_map": {
+            "ok": True,
+            "source_topic": "/rtabmap/grid_map",
+            "_received_at": now,
+            "frame_id": "map",
+            "width": 2,
+            "height": 2,
+            "resolution": 0.1,
+            "origin": {"x": 0.0, "y": 0.0},
+            "data": [0, 0, 0, 0],
+        },
+        "/map": {
+            "ok": True,
+            "source_topic": "/map",
+            "_received_at": now,
+            "frame_id": "map",
+            "width": 1,
+            "height": 1,
+            "resolution": 1.0,
+            "origin": {"x": 0.0, "y": 0.0},
+            "data": [0],
+        },
+    }
+
+    assert node.map_snapshot()["source_topic"] == "/rtabmap/grid_map"
+
+    node._map_candidates["/rtabmap/grid_map"]["_received_at"] = now - 10.0
+    assert node.map_snapshot()["source_topic"] == "/map"

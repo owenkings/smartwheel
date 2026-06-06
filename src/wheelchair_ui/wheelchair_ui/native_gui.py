@@ -424,7 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_btn = QtWidgets.QPushButton("停止")
         self.stop_btn.setObjectName("dangerButton")
         self.resume_btn = QtWidgets.QPushButton("继续")
-        self.zero_btn = QtWidgets.QPushButton("零速")
+        self.zero_btn = QtWidgets.QPushButton("软急停")
         self.shutdown_btn = QtWidgets.QPushButton("关闭硬件")
         self.shutdown_btn.setObjectName("outlineDangerButton")
         for button in (self.stop_btn, self.resume_btn, self.zero_btn, self.shutdown_btn):
@@ -433,7 +433,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addLayout(commands)
         self.stop_btn.clicked.connect(lambda: self.bridge.node.set_software_stop(True))
         self.resume_btn.clicked.connect(lambda: self.bridge.node.set_software_stop(False))
-        self.zero_btn.clicked.connect(self.bridge.node.publish_zero_velocity)
+        self.zero_btn.clicked.connect(lambda: self.bridge.node.set_software_stop(True))
         self.shutdown_btn.clicked.connect(self.shutdown_hardware)
 
         body = QtWidgets.QHBoxLayout()
@@ -1229,7 +1229,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.system_process = None
 
     def stop_system_process(self):
-        self._set_run_state("stopping", "关闭中", "正在发布急停和零速")
+        self._set_run_state("stopping", "关闭中", "正在发布软件急停")
         try:
             self.bridge.node.request_hardware_shutdown()
         except Exception:

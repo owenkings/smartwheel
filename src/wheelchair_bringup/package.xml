@@ -27,6 +27,7 @@
   <exec_depend>wheelchair_navigation</exec_depend>
   <exec_depend>wheelchair_base</exec_depend>
   <exec_depend>wheelchair_ui</exec_depend>
+  <exec_depend>wheelchair_voice_agent</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -5,9 +5,9 @@
 // Build:  gcc -shared -fPIC -o xt_bindshim.so xt_bindshim.c -ldl
 // Use:    XT_BIND_IP=192.168.0.100 XT_BIND_PORT=7687 \
 //         LD_PRELOAD=$PWD/scripts/xt_bindshim.so <command>
-// Note:   Optional/manual. The default dual-radar path uses the SDK setUdpDestIp
-//         (distinct ports 7687/7688), so this shim is not wired into any launch.
-//         The compiled .so is intentionally NOT committed; rebuild from this source.
+// Note:   The production copy is src/wheelchair_bringup/src/xt_bindshim.c and is
+//         built automatically as libxt_bindshim.so. This copy remains useful for
+//         standalone SDK diagnostics.
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <netinet/in.h>

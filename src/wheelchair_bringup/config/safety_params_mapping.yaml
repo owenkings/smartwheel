@@ -1,9 +1,8 @@
 safety_supervisor_node:
   ros__parameters:
-    # UNMANNED first-pass autonomy profile (no passenger, clear test area).
-    # This keeps the unmanned demo much looser than the manned profile, but the
-    # collision test showed that a pure 10 cm trigger is too late. 10 cm remains
-    # the hard floor; slowdown/stop happen earlier so the chair can turn away.
+    # UNMANNED autonomy profile (no passenger, clear test area).
+    # Distance policy: >=1.5 m normal, 0.5-1.5 m slowdown, <0.5 m stop,
+    # <0.3 m emergency stop. Threshold comparisons are strict in the supervisor.
     cmd_vel_nav_topic: /cmd_vel_nav
     cmd_vel_safe_topic: /cmd_vel_safe
     scan_topic: /scan
@@ -32,17 +31,17 @@ safety_supervisor_node:
     allow_rotation_when_blocked: true
     max_reverse_speed: 0.10
     rotate_in_place_angular_threshold: 0.05
-    rotation_stop_distance: 0.12
-    warning_distance: 0.60
-    slowdown_distance: 0.40
-    stop_distance: 0.30
-    emergency_distance: 0.10
-    front_ultrasonic_stop_distance: 0.30
-    front_ultrasonic_slowdown_distance: 0.40
-    front_ultrasonic_emergency_distance: 0.10
-    side_ultrasonic_stop_distance: 0.10
-    side_ultrasonic_warning_distance: 0.18
-    side_ultrasonic_emergency_distance: 0.05
+    rotation_stop_distance: 0.50
+    warning_distance: 1.50
+    slowdown_distance: 1.50
+    stop_distance: 0.50
+    emergency_distance: 0.30
+    front_ultrasonic_stop_distance: 0.50
+    front_ultrasonic_slowdown_distance: 1.50
+    front_ultrasonic_emergency_distance: 0.30
+    side_ultrasonic_stop_distance: 0.50
+    side_ultrasonic_warning_distance: 1.50
+    side_ultrasonic_emergency_distance: 0.30
     t_delay: 0.35
     a_brake: 0.8
     d_margin: 0.08
@@ -52,9 +51,7 @@ safety_supervisor_node:
     stale_timeout_sec: 1.0
     ultrasonic_stale_timeout_sec: 1.5
     ultrasonic_min_valid_m: 0.03
-    # Current RS485 ultrasonic chain is unstable/no-message on the bench.
-    # Do not block the unmanned first-pass run just because ultrasonic topics
-    # are stale; when messages are present, they still participate in stop logic.
-    min_ultrasonic_online: 0
+    # Autonomous motion fails closed unless every installed ultrasonic is fresh.
+    min_ultrasonic_online: 4
     require_localization_healthy: false
     localization_timeout_sec: 2.5

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>室内自动轮椅控制台</title>
+  <title>SmartWheel 室内导航</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,14 +11,16 @@
     <div class="brand-block">
       <span class="brand-mark">SW</span>
       <div>
-        <h1>室内自动轮椅控制台</h1>
+        <h1>SmartWheel 室内导航</h1>
         <p id="map-metadata">地图等待中</p>
       </div>
     </div>
     <div class="status-pills">
       <span id="safety-state" class="pill neutral">UNKNOWN</span>
       <span id="nav-status" class="pill neutral">IDLE</span>
+      <span id="localization-state" class="pill neutral">定位等待</span>
       <span id="map-state" class="pill neutral">NO MAP</span>
+      <span id="mode-state" class="pill neutral">临时目标</span>
     </div>
   </header>
 
@@ -28,7 +30,21 @@
         <h2>导航地图</h2>
         <div class="map-tools">
           <button id="refresh-map-btn" type="button">刷新地图</button>
-          <button id="zero-btn" type="button">零速</button>
+        </div>
+      </div>
+      <div class="map-operation-bar">
+        <div class="mode-tabs" role="tablist" aria-label="地图操作模式">
+          <button type="button" class="mode-tab active" data-map-mode="goal">临时目标</button>
+          <button type="button" class="mode-tab secondary" data-map-mode="poi">保存 POI</button>
+          <button type="button" class="mode-tab secondary" data-map-mode="initial">初始位姿</button>
+          <button type="button" class="mode-tab secondary" data-map-mode="room">房间</button>
+          <button type="button" class="mode-tab secondary" data-map-mode="zone">禁行区</button>
+        </div>
+        <div class="selection-actions">
+          <span id="selected-point" class="selection-value">未选点</span>
+          <button id="send-click-goal-btn" type="button" disabled>发送目标</button>
+          <button id="set-initial-pose-btn" type="button" class="secondary" disabled>设置初始位姿</button>
+          <button id="clear-draft-btn" type="button" class="secondary">清除选点</button>
         </div>
       </div>
       <section class="mapping-wizard" aria-label="建图向导">
@@ -56,6 +72,17 @@
       </section>
       <div class="map-stage">
         <canvas id="map-canvas" width="900" height="620"></canvas>
+        <div id="map-empty-state" class="map-empty-state">
+          <strong>地图未就绪</strong>
+          <span>等待 /rtabmap/grid_map 或 /map</span>
+        </div>
+      </div>
+      <div class="map-legend" aria-label="地图图例">
+        <span><i class="legend-pose"></i>轮椅</span>
+        <span><i class="legend-path"></i>路径</span>
+        <span><i class="legend-goal"></i>目标</span>
+        <span><i class="legend-room"></i>房间</span>
+        <span><i class="legend-zone"></i>禁行区</span>
       </div>
       <form id="goal-form" class="goal-editor">
         <label>
@@ -80,9 +107,8 @@
 
     <aside class="side-rail">
       <section class="command-panel">
-        <button id="stop-btn" class="danger" type="button">停止</button>
-        <button id="resume-btn" type="button">继续</button>
-        <button id="shutdown-btn" class="secondary danger-outline" type="button">关闭硬件</button>
+        <button id="stop-btn" class="danger" type="button">软急停</button>
+        <button id="resume-btn" type="button">解除急停</button>
       </section>
 
       <section class="info-panel">
@@ -92,6 +118,8 @@
         </div>
         <dl class="state-list">
           <dt>位姿</dt><dd id="pose">0.00, 0.00, 0.00</dd>
+          <dt>定位来源</dt><dd id="pose-source">等待数据</dd>
+          <dt>地图来源</dt><dd id="map-source">等待数据</dd>
           <dt>当前目标</dt><dd id="current-goal">无</dd>
           <dt>硬件诊断</dt><dd id="hardware-status">等待数据</dd>
           <dt>定位健康</dt><dd id="localization-health">等待数据</dd>

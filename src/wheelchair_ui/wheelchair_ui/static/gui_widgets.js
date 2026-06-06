@@ -2,9 +2,12 @@ class DeviceStrip {
   constructor(root) {
     this.root = root;
     this.devices = [
-      ["XT-M60", "laser"],
+      ["Left XT-M60", "xtm60_left"],
+      ["Right XT-M60", "xtm60_right"],
+      ["Merged", "points_merged"],
       ["Scan", "scan"],
       ["IMU", "imu"],
+      ["RGB Cloud", "rgb_cloud_map"],
       ["Base", "base"],
       ["Odom", "odom"],
     ];
@@ -19,9 +22,9 @@ class DeviceStrip {
   update(sensors = {}) {
     this.root.innerHTML = "";
     const devices = [
-      ...this.devices.slice(0, 3),
+      ...this.devices.slice(0, 5),
       ...this.cameraLabels.filter(([, key]) => key in sensors),
-      ...this.devices.slice(3),
+      ...this.devices.slice(5),
     ];
     devices.forEach(([label, key]) => {
       const item = document.createElement("span");

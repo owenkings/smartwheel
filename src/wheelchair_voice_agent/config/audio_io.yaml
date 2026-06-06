@@ -1,0 +1,15 @@
+audio_io_bridge_node:
+  ros__parameters:
+    # Reserved ALSA/PulseAudio device selectors. No audio hardware is required
+    # while both enable flags and both backends remain disabled.
+    microphone_device: default
+    speaker_device: default
+    microphone_enabled: false
+    speaker_enabled: false
+    stt_backend: none
+    tts_backend: none
+    transcript_input_topic: /voice/audio_transcript
+    text_command_topic: /voice/text_command
+    tts_request_topic: /voice/tts_text
+    status_topic: /voice/audio_status
+    publish_rate_hz: 1.0

@@ -12,6 +12,7 @@ def generate_launch_description():
     ui_port = LaunchConfiguration("ui_port")
     enable_web_ui = LaunchConfiguration("enable_web_ui")
     enable_native_gui = LaunchConfiguration("enable_native_gui")
+    enable_voice_agent = LaunchConfiguration("enable_voice_agent")
     enable_dual_xtm60 = LaunchConfiguration("enable_dual_xtm60")
     nav_params_file = LaunchConfiguration("nav_params_file")
     safety_params_file = LaunchConfiguration("safety_params_file")
@@ -47,6 +48,7 @@ def generate_launch_description():
             DeclareLaunchArgument("ui_port", default_value="8080"),
             DeclareLaunchArgument("enable_web_ui", default_value="true"),
             DeclareLaunchArgument("enable_native_gui", default_value="false"),
+            DeclareLaunchArgument("enable_voice_agent", default_value="true"),
             DeclareLaunchArgument("enable_dual_xtm60", default_value="true"),
             DeclareLaunchArgument(
                 "nav_params_file",
@@ -70,8 +72,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "motion_control_enabled",
-                default_value="true",
-                description="true lets /cmd_vel_safe write real motor speeds; false runs navigation read-only.",
+                default_value="false",
+                description="HIGH RISK. true lets /cmd_vel_safe write real motor speeds. Default false = read-only.",
             ),
             DeclareLaunchArgument(
                 "enable_xtm60_radar",
@@ -143,6 +145,16 @@ def generate_launch_description():
                     PathJoinSubstitution([bringup_share, "config", "scan_merger.yaml"])
                 ],
                 condition=IfCondition(dual_radar_active),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("wheelchair_voice_agent"),
+                        "launch",
+                        "voice_agent.launch.py",
+                    ])
+                ),
+                condition=IfCondition(enable_voice_agent),
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(

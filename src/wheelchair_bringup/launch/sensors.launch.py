@@ -4,7 +4,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
+from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
 
 
 def generate_launch_description():
@@ -19,10 +19,17 @@ def generate_launch_description():
     xtm60_config = LaunchConfiguration("xtm60_config")
     xtm60_left_config = LaunchConfiguration("xtm60_left_config")
     xtm60_right_config = LaunchConfiguration("xtm60_right_config")
+    xtm60_left_bind_ip = LaunchConfiguration("xtm60_left_bind_ip")
+    xtm60_right_bind_ip = LaunchConfiguration("xtm60_right_bind_ip")
+    xtm60_bind_port = LaunchConfiguration("xtm60_bind_port")
     ultrasonic_config = LaunchConfiguration("ultrasonic_config")
     camera_config = LaunchConfiguration("camera_config")
 
     bringup_share = FindPackageShare("wheelchair_bringup")
+    bringup_prefix = FindPackagePrefix("wheelchair_bringup")
+    xt_bindshim = PathJoinSubstitution(
+        [bringup_prefix, "lib", "wheelchair_bringup", "libxt_bindshim.so"]
+    )
     description_share = FindPackageShare("wheelchair_description")
     robot_description = {
         "robot_description": ParameterValue(
@@ -53,6 +60,9 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_xtm60", default_value="true"),
             DeclareLaunchArgument("enable_xtm60_left", default_value="false"),
             DeclareLaunchArgument("enable_xtm60_right", default_value="false"),
+            DeclareLaunchArgument("xtm60_left_bind_ip", default_value="192.168.0.100"),
+            DeclareLaunchArgument("xtm60_right_bind_ip", default_value="192.168.1.100"),
+            DeclareLaunchArgument("xtm60_bind_port", default_value="7687"),
             DeclareLaunchArgument("enable_imu", default_value="true"),
             DeclareLaunchArgument("enable_ultrasonic", default_value="true"),
             DeclareLaunchArgument("enable_camera", default_value="true"),
@@ -108,6 +118,11 @@ def generate_launch_description():
                     ("/xtm60/points", "/xtm60/left/points"),
                     ("/xtm60/status", "/xtm60/left/status"),
                 ],
+                additional_env={
+                    "LD_PRELOAD": xt_bindshim,
+                    "XT_BIND_IP": xtm60_left_bind_ip,
+                    "XT_BIND_PORT": xtm60_bind_port,
+                },
                 condition=IfCondition(enable_xtm60_left),
             ),
             Node(
@@ -123,6 +138,11 @@ def generate_launch_description():
                     ("/xtm60/points", "/xtm60/right/points"),
                     ("/xtm60/status", "/xtm60/right/status"),
                 ],
+                additional_env={
+                    "LD_PRELOAD": xt_bindshim,
+                    "XT_BIND_IP": xtm60_right_bind_ip,
+                    "XT_BIND_PORT": xtm60_bind_port,
+                },
                 condition=IfCondition(enable_xtm60_right),
             ),
             Node(

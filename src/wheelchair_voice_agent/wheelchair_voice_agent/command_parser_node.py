@@ -15,7 +15,10 @@ from wheelchair_voice_agent.model_api_stub import TextCommandModelStub
 class CommandParserNode(Node):
     def __init__(self):
         super().__init__("command_parser_node")
-        self.declare_parameter("known_goal_names", ["卫生间", "餐厅", "卧室", "门口", "充电点"])
+        self.declare_parameter(
+            "known_goal_names",
+            ["客厅", "卫生间", "餐厅", "卧室", "床边", "门口", "充电点"],
+        )
         self.model = TextCommandModelStub()
         self.intent_pub = self.create_publisher(String, "/voice/intent", 10)
         self.status_pub = self.create_publisher(String, "/voice/status", 10)

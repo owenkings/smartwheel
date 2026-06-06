@@ -70,6 +70,12 @@ def generate_launch_description():
             ),
             Node(
                 package="wheelchair_safety",
+                executable="emergency_stop_node",
+                name="emergency_stop_node",
+                output="screen",
+            ),
+            Node(
+                package="wheelchair_safety",
                 executable="safety_supervisor_node",
                 name="safety_supervisor_node",
                 output="screen",

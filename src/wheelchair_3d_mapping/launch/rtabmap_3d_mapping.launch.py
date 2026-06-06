@@ -75,7 +75,10 @@ def _setup(context, *args, **kwargs):
             }.items()))
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(mapping, "launch", "dual_lidar_fusion.launch.py")),
-            launch_arguments={"use_sim_time": use_sim}.items()))
+            launch_arguments={
+                "use_sim_time": use_sim,
+                "allow_single_lidar_fallback": s("allow_single_lidar_fallback"),
+            }.items()))
 
     # ICP odometry owns odom->base_link (skipped in external-odom mode).
     if odom_mode == "icp":
@@ -149,6 +152,8 @@ def generate_launch_description():
                               description="Publish /rgb_cloud_map using the two forward cameras for map coloring."),
         DeclareLaunchArgument("enable_ultrasonic", default_value="true",
                               description="Start ultrasonic adapter when bringup_sensors is true."),
+        DeclareLaunchArgument("allow_single_lidar_fallback", default_value="true",
+                              description="Allow one-lidar stationary mapping fallback. Set false whenever motion is enabled."),
         DeclareLaunchArgument("subscribe_scan_cloud", default_value="true"),
         DeclareLaunchArgument("approx_sync", default_value="true"),
         DeclareLaunchArgument("queue_size", default_value="10"),

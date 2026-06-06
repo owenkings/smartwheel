@@ -7,6 +7,7 @@ try:
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image, Imu, LaserScan, PointCloud2, Range
     from std_msgs.msg import Bool, String
 except ImportError:
@@ -23,6 +24,7 @@ except ImportError:
     Range = None
     Bool = None
     String = None
+    qos_profile_sensor_data = None
 
 from wheelchair_diagnostics.policy import TopicRule, evaluate_watchdog
 
@@ -36,6 +38,7 @@ class SensorWatchdogNode(Node):
         self.declare_parameter("odom_timeout_sec", 1.0)
         self.declare_parameter("base_timeout_sec", 1.0)
         self.declare_parameter("imu_timeout_sec", 1.5)
+        self.declare_parameter("imu_critical", False)
         self.declare_parameter("ultrasonic_timeout_sec", 1.5)
         self.declare_parameter("ultrasonic_topics", ["/ultrasonic/range_0"])
         self.declare_parameter("ultrasonic_0_critical", True)
@@ -46,6 +49,8 @@ class SensorWatchdogNode(Node):
         self.declare_parameter("camera_topics", ["/camera/left/image_raw", "/camera/right/image_raw"])
         self.declare_parameter("points_timeout_sec", 1.5)
         self.declare_parameter("points_topics", ["/xtm60/points"])
+        self.declare_parameter("points_0_critical", False)
+        self.declare_parameter("points_1_critical", False)
 
         self.startup_time = time.monotonic()
         self.last_seen: Dict[str, float] = {}
@@ -63,7 +68,12 @@ class SensorWatchdogNode(Node):
             TopicRule("/scan", float(self.get_parameter("scan_timeout_sec").value), True, "2D scan"),
             TopicRule("/wheel/odom", float(self.get_parameter("odom_timeout_sec").value), True, "wheel odom"),
             TopicRule("/base/status", float(self.get_parameter("base_timeout_sec").value), True, "base driver"),
-            TopicRule("/imu/data", float(self.get_parameter("imu_timeout_sec").value), False, "H30 IMU"),
+            TopicRule(
+                "/imu/data",
+                float(self.get_parameter("imu_timeout_sec").value),
+                bool(self.get_parameter("imu_critical").value),
+                "H30 IMU",
+            ),
         ]
         for index, topic in enumerate(self.get_parameter("camera_topics").value):
             rules.append(
@@ -75,11 +85,17 @@ class SensorWatchdogNode(Node):
                 )
             )
         for index, topic in enumerate(self.get_parameter("points_topics").value):
+            critical_name = f"points_{index}_critical"
+            critical = (
+                bool(self.get_parameter(critical_name).value)
+                if self.has_parameter(critical_name)
+                else False
+            )
             rules.append(
                 TopicRule(
                     str(topic),
                     float(self.get_parameter("points_timeout_sec").value),
-                    False,
+                    critical,
                     f"XT-M60 points {index}",
                 )
             )
@@ -114,7 +130,17 @@ class SensorWatchdogNode(Node):
         for topic in self.get_parameter("ultrasonic_topics").value:
             topic_types[str(topic)] = Range
         for topic, msg_type in topic_types.items():
-            self.create_subscription(msg_type, topic, lambda _msg, t=topic: self.mark_seen(t), 10)
+            qos = (
+                qos_profile_sensor_data
+                if msg_type in (Image, Imu, LaserScan, PointCloud2, Range)
+                else 10
+            )
+            self.create_subscription(
+                msg_type,
+                topic,
+                lambda _msg, t=topic: self.mark_seen(t),
+                qos,
+            )
 
     def mark_seen(self, topic: str):
         self.last_seen[topic] = time.monotonic()

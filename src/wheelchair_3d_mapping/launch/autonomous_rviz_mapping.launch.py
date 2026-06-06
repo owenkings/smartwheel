@@ -60,17 +60,19 @@ def _setup(context, *args, **kwargs):
             "bringup_sensors": "true",
             "points_topic": "/points_merged",
             "imu_topic": "/imu/data",
-            # Wheel odometry is the odom->base_link source (reliable on this wheeled
-            # base). icp_odometry is NOT run: the 120-deg flash-LiDAR cloud is too
-            # sparse/low-overlap for reliable ICP odometry (ratio < threshold).
+            # Wheel+H30 EKF is the odom->base_link source. icp_odometry is not
+            # run: the 120-degree flash-LiDAR cloud has insufficient overlap for
+            # reliable standalone ICP odometry during pivots.
             "odom_mode": "external",
-            "odom_topic": "/wheel/odom",
+            "odom_topic": "/odometry/filtered",
             "subscribe_scan_cloud": "true",
             "subscribe_rgb": "false",          # camera not in geometry SLAM
             "use_colorizer": "true" if use_colorizer else "false",
             "enable_ultrasonic": "true",
+            "allow_single_lidar_fallback": "false" if enable_motion else "true",
             "localization": "false",
-            "delete_db_on_start": "true",
+            "delete_db_on_start": s("delete_db_on_start"),
+            "database_path": s("database_path"),
             "rviz": "false",                   # this launch starts rviz2 separately
         }.items(),
     ))
@@ -103,22 +105,45 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # F. Base driver. Motion writes ONLY when enable_motion:=true. publish_tf=true:
-    # the base owns odom->base_link from wheel odometry (icp_odometry is not run in
-    # this mode, so there is no TF double-publish). RTAB-Map owns map->odom.
+    # Fuse wheel odometry with the H30 yaw/yaw-rate in planar mode. The EKF is
+    # the sole odom->base_link TF owner; RTAB-Map and Nav2 consume its output.
+    actions.append(Node(
+        package="robot_localization", executable="ekf_node", name="ekf_filter_node",
+        output="screen",
+        parameters=[os.path.join(bringup, "config", "robot_localization_ekf.yaml")],
+    ))
+
+    # Fail closed before safety can release any velocity. Both XT-M60 streams,
+    # the H30, all four ultrasonics, scan, odometry and base status are critical
+    # for autonomous motion.
+    actions.append(Node(
+        package="wheelchair_diagnostics", executable="sensor_watchdog_node",
+        name="sensor_watchdog_node", output="screen",
+        parameters=[
+            os.path.join(bringup, "config", "diagnostics.yaml"),
+            {
+                "startup_grace_sec": 0.0,
+                "imu_critical": True,
+                "points_0_critical": True,
+                "points_1_critical": True,
+            },
+        ],
+    ))
+
+    # F. Base driver. Motion writes only when enable_motion:=true. The EKF owns
+    # odom->base_link, so the base publishes odometry data but no TF.
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "base.launch.py")),
         launch_arguments={
             "mode": "real",
-            "publish_tf": "true",
+            "publish_tf": "false",
             "motion_control_enabled": "true" if enable_motion else "false",
-            "hold_zero_before_motion_init": "true" if enable_motion else "false",
+            "hold_zero_before_motion_init": "false",
         }.items(),
     ))
 
-    # G. Explorer. Reactive mode is the default first-pass "vacuum" behavior:
-    # it starts moving as soon as /scan is available, without waiting for a
-    # mature map/frontier graph. Frontier mode remains available for experiments.
+    # G. Explorer. Frontier mode is the default because all autonomous motion
+    # should follow a Nav2-planned route. Reactive mode remains a test fallback.
     if exploration_mode == "frontier":
         actions.append(Node(
             package="wheelchair_navigation", executable="frontier_explorer_node",
@@ -131,6 +156,7 @@ def _setup(context, *args, **kwargs):
                 "exploration_timeout_sec": float(s("exploration_timeout_sec")),
                 "stop_on_safety_warning": flag("stop_on_safety_warning"),
                 "stop_on_safety_emergency": flag("stop_on_safety_emergency"),
+                "require_enable_signal": flag("require_enable_signal"),
             }],
         ))
     else:
@@ -141,13 +167,14 @@ def _setup(context, *args, **kwargs):
                 "auto_start": explore_active,
                 "forward_speed": float(s("max_linear_speed")),
                 "turn_speed": float(s("max_angular_speed")),
-                "hard_stop_distance": 0.10,
+                "hard_stop_distance": 0.30,
                 "turn_trigger_distance": float(s("turn_trigger_distance")),
-                "side_trigger_distance": 0.10,
+                "side_trigger_distance": 0.30,
                 "ultrasonic_stale_timeout_sec": 1.0,
                 "ultrasonic_min_valid_m": 0.03,
                 "corridor_half_width_m": 0.45,
                 "corridor_lookahead_m": 1.20,
+                "require_enable_signal": flag("require_enable_signal"),
             }],
         ))
 
@@ -171,9 +198,15 @@ def generate_launch_description():
         # and safety_params.yaml (safety layer). These are advisory/record.
         DeclareLaunchArgument("max_linear_speed", default_value="0.05"),
         DeclareLaunchArgument("max_angular_speed", default_value="0.22"),
-        DeclareLaunchArgument("exploration_mode", default_value="reactive",
-                              description="reactive | frontier. reactive is the first-pass vacuum-like mode."),
-        DeclareLaunchArgument("turn_trigger_distance", default_value="0.30",
+        DeclareLaunchArgument("exploration_mode", default_value="frontier",
+                              description="frontier | reactive. Frontier uses Nav2 route planning and is the production default."),
+        DeclareLaunchArgument("require_enable_signal", default_value="true",
+                              description="Require an explicit true message on /autonomy/enable before exploration starts."),
+        DeclareLaunchArgument("delete_db_on_start", default_value="true",
+                              description="Start a fresh RTAB-Map database. Use a temporary database for preflight."),
+        DeclareLaunchArgument("database_path", default_value=os.path.expanduser("~/.ros/rtabmap.db"),
+                              description="RTAB-Map database path."),
+        DeclareLaunchArgument("turn_trigger_distance", default_value="0.50",
                               description="Reactive explorer starts turning when front scan/ultrasonic is closer than this."),
         DeclareLaunchArgument("min_frontier_size", default_value="8"),
         DeclareLaunchArgument("goal_timeout_sec", default_value="45.0"),

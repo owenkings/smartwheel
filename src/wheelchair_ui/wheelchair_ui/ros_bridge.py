@@ -9,7 +9,7 @@ try:
     import rclpy
     from action_msgs.msg import GoalStatus
     from ament_index_python.packages import get_package_share_directory
-    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
     from nav2_msgs.action import NavigateToPose
     from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
     from nav_msgs.srv import GetMap
@@ -24,7 +24,6 @@ except ImportError:
     get_package_share_directory = None
     PoseStamped = None
     PoseWithCovarianceStamped = None
-    Twist = None
     NavigateToPose = None
     OccupancyGrid = None
     Odometry = None
@@ -174,6 +173,8 @@ class WheelchairUiRosNode(Node):
         named_goals_path: str,
         semantic_map_path: Optional[str] = None,
         node_name: str = "wheelchair_ui_ros_bridge",
+        enabled_cameras: Optional[List[str]] = None,
+        ultrasonic_indices: Optional[List[int]] = None,
     ):
         super().__init__(node_name)
         self.store = NamedGoalStore(named_goals_path)
@@ -194,10 +195,17 @@ class WheelchairUiRosNode(Node):
         self.last_goal_error: Optional[str] = None
         self.route_path: Dict[str, Any] = {"frame_id": "map", "points": [], "age_sec": None}
         self.route_last_seen = 0.0
-        self.map_info: Optional[Dict] = None
+        self._map_candidates: Dict[str, Dict[str, Any]] = {}
         self._map_request_in_flight = False
-        self.declare_parameter("ultrasonic_indices", [0, 1, 2, 3])
-        self.declare_parameter("enabled_cameras", ["left", "right"])
+        self.declare_parameter(
+            "ultrasonic_indices",
+            ultrasonic_indices if ultrasonic_indices is not None else [0, 1, 2, 3],
+        )
+        self.declare_parameter(
+            "enabled_cameras",
+            enabled_cameras if enabled_cameras is not None else ["left", "right"],
+        )
+        self.declare_parameter("primary_map_timeout_sec", 5.0)
         self.declare_parameter("initial_pose_ack_tolerance_m", 0.75)
         self.declare_parameter("initial_pose_ack_tolerance_yaw", 1.0)
         self.declare_parameter("initial_pose_ack_timeout_sec", 4.0)
@@ -213,10 +221,15 @@ class WheelchairUiRosNode(Node):
         self.initial_pose_ack_timeout_sec = float(
             self.get_parameter("initial_pose_ack_timeout_sec").value
         )
+        self.primary_map_timeout_sec = float(
+            self.get_parameter("primary_map_timeout_sec").value
+        )
         enabled_cameras = set(self.get_parameter("enabled_cameras").value)
         self.camera_topics = self._camera_topics(enabled_cameras)
         self.sensor_status = {
             "laser": False,
+            "xtm60_left": False,
+            "xtm60_right": False,
             "imu": False,
             "ultrasonic": [False] * len(self.ultrasonic_indices),
             "odom": False,
@@ -235,8 +248,6 @@ class WheelchairUiRosNode(Node):
         self.goal_status_pub = self.create_publisher(String, "/navigation/goal_status", 10)
         self.emergency_stop_pub = self.create_publisher(Bool, "/emergency_stop_sw", 10)
         self.emergency_command_pub = self.create_publisher(String, "/emergency_stop_command", 10)
-        self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-        self.cmd_vel_safe_pub = self.create_publisher(Twist, "/cmd_vel_safe", 10)
         self.nav_client = (
             ActionClient(self, NavigateToPose, "/navigate_to_pose")
             if ActionClient is not None and NavigateToPose is not None
@@ -392,6 +403,8 @@ class WheelchairUiRosNode(Node):
         now = time.monotonic()
         sensors = {
             "laser": self._sensor_entry("laser", now),
+            "xtm60_left": self._sensor_entry("xtm60_left", now),
+            "xtm60_right": self._sensor_entry("xtm60_right", now),
             "scan": self._sensor_entry("scan", now),
             "imu": self._sensor_entry("imu", now),
             "odom": self._sensor_entry("odom", now),
@@ -404,7 +417,14 @@ class WheelchairUiRosNode(Node):
         for key in self.camera_topics:
             sensors[key] = self._sensor_entry(key, now)
         self.sensor_status = {
-            "laser": sensors["laser"]["online"] or sensors["scan"]["online"],
+            "laser": (
+                sensors["laser"]["online"]
+                or sensors["xtm60_left"]["online"]
+                or sensors["xtm60_right"]["online"]
+                or sensors["scan"]["online"]
+            ),
+            "xtm60_left": sensors["xtm60_left"]["online"],
+            "xtm60_right": sensors["xtm60_right"]["online"],
             "imu": sensors["imu"]["online"],
             "ultrasonic": [entry["online"] for entry in sensors["ultrasonic"]],
             "odom": sensors["odom"]["online"],
@@ -432,7 +452,7 @@ class WheelchairUiRosNode(Node):
         }
 
     def _fetch_map_if_missing(self):
-        if self.map_info is not None or self._map_request_in_flight or self.map_client is None:
+        if self.map_snapshot() is not None or self._map_request_in_flight or self.map_client is None:
             return
         if not self.map_client.service_is_ready():
             return
@@ -449,8 +469,11 @@ class WheelchairUiRosNode(Node):
             return
         self.on_map(response.map)
 
-    def _store_map(self, msg):
-        self.map_info = {
+    def _store_map(self, topic: str, msg):
+        self._map_candidates[topic] = {
+            "ok": True,
+            "source_topic": topic,
+            "_received_at": time.monotonic(),
             "frame_id": msg.header.frame_id,
             "width": msg.info.width,
             "height": msg.info.height,
@@ -463,7 +486,7 @@ class WheelchairUiRosNode(Node):
         }
 
     def on_map(self, msg):
-        self._store_map(msg)
+        self._store_map("/map", msg)
 
     def on_rtabmap_grid_map(self, msg):
         self._mark_sensor(
@@ -476,7 +499,7 @@ class WheelchairUiRosNode(Node):
                 "resolution": msg.info.resolution,
             },
         )
-        self._store_map(msg)
+        self._store_map("/rtabmap/grid_map", msg)
 
     def on_odom(self, msg):
         if self.pose_source == "amcl" and time.monotonic() - self.pose_last_seen <= self.sensor_timeout_sec:
@@ -565,8 +588,12 @@ class WheelchairUiRosNode(Node):
         self.on_xtm60_points_topic("/xtm60/points", msg)
 
     def on_xtm60_points_topic(self, topic: str, msg):
+        key = {
+            "/xtm60/left/points": "xtm60_left",
+            "/xtm60/right/points": "xtm60_right",
+        }.get(topic, "laser")
         self._mark_sensor(
-            "laser",
+            key,
             {
                 "topic": topic,
                 "frame_id": msg.header.frame_id,
@@ -648,13 +675,24 @@ class WheelchairUiRosNode(Node):
 
     def status(self) -> Dict:
         sensors = self._sensor_snapshot()
+        map_snapshot = self.map_snapshot()
         route = dict(self.route_path)
+        pose = dict(self.pose)
+        pose["age_sec"] = (
+            None if not self.pose_last_seen else max(0.0, time.monotonic() - self.pose_last_seen)
+        )
+        pose["confidence"] = (
+            "high"
+            if self.pose_source == "amcl" and pose["age_sec"] is not None
+            and pose["age_sec"] <= self.sensor_timeout_sec
+            else "low"
+        )
         if self.route_last_seen:
             route["age_sec"] = max(0.0, time.monotonic() - self.route_last_seen)
         return {
             "safety_state": self.safety_state,
             "navigation_status": self.navigation_status,
-            "pose": self.pose,
+            "pose": pose,
             "current_goal": self.current_goal,
             "route_path": route,
             "sensor_status": self.sensor_status,
@@ -667,7 +705,17 @@ class WheelchairUiRosNode(Node):
             "localization_health": self.localization_health,
             "passability_status": self.passability_status,
             "mapping_3d": self._mapping_3d_snapshot(),
-            "map_available": self.map_info is not None,
+            "map_available": map_snapshot is not None,
+            "map_status": (
+                {
+                    "ok": True,
+                    "source_topic": map_snapshot["source_topic"],
+                    "age_sec": map_snapshot["age_sec"],
+                    "frame_id": map_snapshot["frame_id"],
+                }
+                if map_snapshot
+                else {"ok": False, "reason": "map not ready"}
+            ),
             "initial_pose": self.initial_pose_status(),
         }
 
@@ -715,7 +763,7 @@ class WheelchairUiRosNode(Node):
         if not self._ensure_localized_for_goal():
             return False
         ok, reason = is_map_point_navigable(
-            self.map_info,
+            self.map_snapshot(),
             float(goal["position"][0]),
             float(goal["position"][1]),
             self.goal_clearance_m,
@@ -746,7 +794,7 @@ class WheelchairUiRosNode(Node):
         """Send an ad-hoc clicked map point to Nav2 after validating clearance."""
         if not self._ensure_localized_for_goal():
             return False
-        ok, reason = is_map_point_navigable(self.map_info, x, y, self.goal_clearance_m)
+        ok, reason = is_map_point_navigable(self.map_snapshot(), x, y, self.goal_clearance_m)
         if not ok:
             self.last_goal_error = reason
             self._publish_goal_status(f"GOAL_REJECTED: {reason}")
@@ -918,21 +966,32 @@ class WheelchairUiRosNode(Node):
         command = String()
         command.data = "stop" if active else "release"
         self.emergency_command_pub.publish(command)
-        if active:
-            self.publish_zero_velocity()
-
-    def publish_zero_velocity(self):
-        msg = Twist()
-        self.cmd_vel_pub.publish(msg)
-        self.cmd_vel_safe_pub.publish(msg)
 
     def request_hardware_shutdown(self) -> Dict:
         self.set_software_stop(True)
-        self.publish_zero_velocity()
-        return {"ok": True, "emergency_stop": True, "zero_velocity": True}
+        return {
+            "ok": True,
+            "emergency_stop": True,
+            "reason": "software stop requested; safety_supervisor owns /cmd_vel_safe",
+        }
 
     def map_snapshot(self) -> Optional[Dict]:
-        return self.map_info
+        primary = self._map_candidates.get("/rtabmap/grid_map")
+        fallback = self._map_candidates.get("/map")
+        now = time.monotonic()
+        selected = primary
+        if primary and fallback:
+            primary_age = max(0.0, now - float(primary["_received_at"]))
+            if primary_age > self.primary_map_timeout_sec:
+                selected = fallback
+        elif fallback:
+            selected = fallback
+        if selected is None:
+            return None
+        snapshot = dict(selected)
+        received_at = float(snapshot.pop("_received_at"))
+        snapshot["age_sec"] = max(0.0, now - received_at)
+        return snapshot
 
     def semantic_map(self) -> Dict:
         return self.semantic_store.load()
@@ -963,6 +1022,8 @@ class RosBridge:
         named_goals_path: Optional[str] = None,
         semantic_map_path: Optional[str] = None,
         node_name: str = "wheelchair_ui_ros_bridge",
+        enabled_cameras: Optional[List[str]] = None,
+        ultrasonic_indices: Optional[List[int]] = None,
     ):
         if rclpy is None:
             raise RuntimeError("ROS2 Python packages are required to run the UI bridge")
@@ -972,6 +1033,8 @@ class RosBridge:
             named_goals_path or default_named_goals_path(),
             semantic_map_path,
             node_name=node_name,
+            enabled_cameras=enabled_cameras,
+            ultrasonic_indices=ultrasonic_indices,
         )
         self.thread = threading.Thread(target=self._spin, daemon=True)
         self.thread.start()

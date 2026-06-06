@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = "wheelchair_voice_agent"
@@ -9,6 +11,8 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml", "README.md"]),
+        (f"share/{package_name}/config", glob("config/*.yaml")),
+        (f"share/{package_name}/launch", glob("launch/*.launch.py")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -20,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "command_parser_node = wheelchair_voice_agent.command_parser_node:main",
+            "audio_io_bridge_node = wheelchair_voice_agent.audio_io_bridge_node:main",
         ],
     },
 )

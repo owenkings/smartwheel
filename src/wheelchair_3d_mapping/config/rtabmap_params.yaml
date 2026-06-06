@@ -41,7 +41,7 @@ rtabmap:
     qos_scan: 2
     # Registration / map building from the LiDAR scan cloud (no visual features by default).
     Reg/Strategy: "1"          # 1=ICP
-    Reg/Force3DoF: "false"     # keep full 6-DoF 3D
+    Reg/Force3DoF: "true"      # planar wheelchair trajectory; cloud map remains 3D
     Mem/IncrementalMemory: "true"
     Mem/STMSize: "30"
     RGBD/ProximityBySpace: "true"

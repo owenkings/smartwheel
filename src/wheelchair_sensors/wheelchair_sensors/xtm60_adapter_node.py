@@ -237,6 +237,12 @@ class XTM60SdkAdapter:
         self._last_error = ""
         self._last_frame_time = 0.0
         self._last_restart_time = 0.0
+        self._last_measurement_start_time = 0.0
+        self._last_udp_attempt = 0.0
+        self._udp_dest_applied = not (
+            self.config.connection_mode.lower().strip() == "ethernet"
+            and self.config.udp_dest_port > 0
+        )
 
     @property
     def connected(self) -> bool:
@@ -315,14 +321,19 @@ class XTM60SdkAdapter:
             self.logger.warning(f"XT-M60 SDK poll failed: {exc}")
             self._connected = False
             self._measurement_started = False
+            self._udp_dest_applied = False
             return
         self._connected = connected
         if not connected:
             # Let the SDK self-reconnect (TCP re-handshake + UDP reopen, ~5-15s).
             # Do NOT destroy the SDK here; just re-issue start() once it is back.
             self._measurement_started = False
+            if self.config.udp_dest_port > 0:
+                self._udp_dest_applied = False
             return
         if not self._measurement_started:
+            if not self._apply_udp_destination():
+                return
             self._start_measurement()
             return
         # Connected and measuring but the UDP stream stalled: gently re-issue
@@ -331,11 +342,12 @@ class XTM60SdkAdapter:
         timeout = float(self.config.frame_timeout_sec)
         if timeout > 0:
             now = self._now()
-            if (self._last_frame_time > 0.0
-                    and now - self._last_frame_time > timeout
+            frame_reference = self._last_frame_time or self._last_measurement_start_time
+            if (frame_reference > 0.0
+                    and now - frame_reference > timeout
                     and now - self._last_restart_time > timeout):
                 self.logger.warning(
-                    f"XT-M60 connected but no frames for {now - self._last_frame_time:.1f}s; re-issuing start()")
+                    f"XT-M60 connected but no frames for {now - frame_reference:.1f}s; re-issuing start()")
                 self._last_restart_time = now
                 self._start_measurement()
 
@@ -353,17 +365,6 @@ class XTM60SdkAdapter:
             ok = self._sdk.setConnectIpaddress(self.config.ip_address)
             if not ok:
                 self.logger.warning(f"XT-M60 setConnectIpaddress returned false: {self.config.ip_address}")
-            if self.config.udp_dest_port > 0:
-                # Give each radar its own UDP dest port so two radars on one host
-                # do not collide on the default 7687.
-                setter = getattr(self._sdk, "setUdpDestIp", None)
-                if setter is not None:
-                    try:
-                        setter(self.config.udp_dest_ip, int(self.config.udp_dest_port))
-                        self.logger.info(
-                            f"XT-M60 UDP dest set to {self.config.udp_dest_ip}:{self.config.udp_dest_port}")
-                    except Exception as exc:
-                        self.logger.warning(f"XT-M60 setUdpDestIp failed: {exc}")
         elif mode == "usb":
             if not self.config.serial_port:
                 raise ValueError("serial_port is required when connection_mode is usb")
@@ -372,6 +373,37 @@ class XTM60SdkAdapter:
                 self.logger.warning(f"XT-M60 setConnectSerialportName returned false: {self.config.serial_port}")
         else:
             raise ValueError("connection_mode must be ethernet or usb")
+
+    def _apply_udp_destination(self) -> bool:
+        if self._udp_dest_applied or self.config.udp_dest_port <= 0:
+            return True
+        now = self._now()
+        if now - self._last_udp_attempt < max(0.1, self.config.reconnect_interval_sec):
+            return False
+        self._last_udp_attempt = now
+        setter = getattr(self._sdk, "setUdpDestIp", None)
+        if setter is None:
+            self._last_error = "XT-M60 SDK does not provide setUdpDestIp"
+            self.logger.error(self._last_error)
+            return False
+        try:
+            ok = setter(self.config.udp_dest_ip, int(self.config.udp_dest_port))
+        except Exception as exc:
+            self._last_error = str(exc)
+            self.logger.warning(f"XT-M60 setUdpDestIp failed: {exc}")
+            return False
+        if ok is False:
+            self._last_error = (
+                f"setUdpDestIp returned false for "
+                f"{self.config.udp_dest_ip}:{self.config.udp_dest_port}"
+            )
+            self.logger.warning(f"XT-M60 {self._last_error}")
+            return False
+        self._udp_dest_applied = True
+        self.logger.info(
+            f"XT-M60 UDP dest set to {self.config.udp_dest_ip}:{self.config.udp_dest_port}"
+        )
+        return True
 
     def _apply_optional_filters(self) -> None:
         if not self.config.enable_sdk_filters:
@@ -405,29 +437,45 @@ class XTM60SdkAdapter:
             except Exception as exc:
                 self.logger.warning(f"XT-M60 optional filter setSdkKalmanFilter failed: {exc}")
 
-    def _start_measurement(self) -> None:
+    def _start_measurement(self) -> bool:
         image_type = self._xintan_sdk.ImageType(int(self.config.image_type))
         try:
             try:
-                self._sdk.start(image_type, False)
+                ok = self._sdk.start(image_type, False)
             except TypeError:
-                self._sdk.start(image_type)
+                ok = self._sdk.start(image_type)
+            if ok is False:
+                self._last_error = "XT-M60 start() returned false"
+                self._measurement_started = False
+                self.logger.error(self._last_error)
+                return False
             self._measurement_started = True
+            self._last_measurement_start_time = self._now()
             self.logger.info(f"XT-M60 measurement started with ImageType({self.config.image_type})")
+            return True
         except Exception as exc:
             self._last_error = str(exc)
+            self._measurement_started = False
             self.logger.error(f"XT-M60 measurement start failed: {exc}")
+            return False
 
     def _on_event(self, event) -> None:
         event_name = str(getattr(event, "eventstr", ""))
         cmd_id = getattr(event, "cmdid", None)
-        if cmd_id == 0xFF:            # TCP disconnected; SDK will self-reconnect
+        if event_name == "sdkState" and cmd_id == 0xFF:
+            # TCP disconnected; SDK will self-reconnect. Other event classes
+            # also use 0xFF for normal device-state notifications.
             self._connected = False
             self._measurement_started = False
+            if self.config.udp_dest_port > 0:
+                self._udp_dest_applied = False
             self.logger.warning("XT-M60 SDK disconnected (cmdid=0xFF); waiting for self-reconnect")
-        elif cmd_id == 0xFE:          # (re)connected / handshake done -> restart measurement
+        elif event_name == "sdkState" and cmd_id == 0xFE:
+            # (Re)connected / handshake done -> restart measurement.
             self._connected = True
             self._measurement_started = False
+            if self.config.udp_dest_port > 0:
+                self._udp_dest_applied = False
             self.logger.info("XT-M60 SDK connected (cmdid=0xFE); will (re)start measurement")
         elif event_name == "sdkState":
             try:

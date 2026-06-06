@@ -13,7 +13,7 @@
 ## 硬件
 
 - 主机：NVIDIA AGX Orin 64G
-- 雷达：左右两台 XT-M60 固态 Flash 激光雷达，左侧 `192.168.0.101`（网关 `192.168.0.1`）、右侧 `192.168.1.101`（网关 `192.168.1.1`），两台位于隔离子网，第一版合并为 `/scan`
+- 雷达：左右两台 XT-M60 固态 Flash 激光雷达，左侧 `192.168.0.101`（网关 `192.168.0.1`）、右侧 `192.168.1.101`（网关 `192.168.1.1`），两台位于隔离子网，融合为 `/points_merged`（3D 主线）并各自投影为 `/scan`（2D 保底）。厂商 SDK 本地接收 socket 固定绑定 `0.0.0.0:7687`，双雷达靠 `libxt_bindshim.so`（`LD_PRELOAD`）把左右进程的接收 socket 分别钉到 `192.168.0.100:7687` 和 `192.168.1.100:7687`，从内核层隔离两路 UDP，避免串流。**当前状态（2026-06）：左雷达稳定 ~10Hz；右雷达硬件故障（`chip='0 0'`、停在 `Connected-Init`、不发点云 UDP），待断电重启/固件修复/更换后验收，详见 `docs/xtm60_stability.md`。**
 - IMU：H30，只用于姿态、角速度、上下坡、异常晃动检测，不作为长期定位唯一来源
 - 超声波：6 个 topic 预留，当前默认启用 4 个 FD07-34 RS485/Modbus RTU（`range_0`~`range_3`）
 - 摄像头：4 路预留，原 4 路中前向/后向已损坏，现仅左右两个前向摄像头可用，默认启用左右前向 USB 摄像头
@@ -336,6 +336,27 @@ ros2 topic hz /xtm60/left/points
 ros2 topic hz /xtm60/right/points
 ```
 
+### 双雷达 UDP 隔离（bind 垫片）
+
+厂商 SDK 的本地点云接收 socket 固定 `bind` 到 `0.0.0.0:7687`。两个适配器进程
+同时运行时会通过 `SO_REUSEPORT` 共享该端口，导致一路数据被分到错误进程。
+`wheelchair_bringup` 构建 `libxt_bindshim.so`，`sensors.launch.py` 通过
+`LD_PRELOAD` + `XT_BIND_IP`/`XT_BIND_PORT` 给左右进程注入不同的本机绑定地址：
+
+```text
+左: XT_BIND_IP=192.168.0.100 XT_BIND_PORT=7687
+右: XT_BIND_IP=192.168.1.100 XT_BIND_PORT=7687
+```
+
+接收 socket 钉到不同网卡 IP 后，内核按子网把 UDP 流路由到正确进程，端口同为
+7687 也不会串流。**关键约束**：每台雷达的 `udp_dest_port`（`xtm60_left.yaml` /
+`xtm60_right.yaml`）必须与垫片绑定端口一致（均为 `7687`）；否则设备发往的端口
+与 SDK 接收端口不匹配，该路永远 0 帧。之前右配置误用 `7688` 导致右雷达无数据，
+已修正为 `7687`。
+
+> 右雷达当前为硬件故障（`chip='0 0'`、`Connected-Init`、不发点云），端口/垫片/
+> 双开均已排除，需先恢复硬件。排查记录见 `docs/xtm60_stability.md`。
+
 如果雷达不是默认 IP，修改 `src/wheelchair_bringup/config/xtm60_sdk.yaml` 或直接传参：
 
 ```bash
@@ -547,29 +568,33 @@ pytest src/wheelchair_sensors/test src/wheelchair_perception/test src/wheelchair
 - 标准 ROS2 workspace/package 骨架
 - URDF/Xacro 和传感器 TF
 - mock 传感器链路
-- XT-M60 点云到 `/scan` 投影
-- slam_toolbox 建图 launch
+- 双 XT-M60 适配器、`libxt_bindshim.so` UDP 隔离、`/points_merged` 融合与 `/scan` 投影
+- RTAB-Map 3D 点云建图主线（`/rtabmap/cloud_map` + `/rtabmap/grid_map`），KISS-ICP 保底
+- slam_toolbox 2D 建图 launch（导航/保底链路）
 - AMCL/Nav2 launch 和参数
 - 安全监督、动态停车距离、限速、软硬急停
 - 命名目标 YAML 存储和 `/goal_pose` 发布
-- FastAPI Web UI
+- FastAPI Web 2D 用户地图 UI（地图/位姿/路径/POI/房间/禁行区/传感器状态/软急停）
 - 语音/文本命令解析 stub
 - 图像识别接口 stub
 - H30 IMU Yesense 真实串口读取
-- FD07-34 超声波 Modbus RTU 真实读取
-- 前/左 USB 摄像头 OpenCV 真实读取
+- FD07-34 超声波 Modbus RTU 真实读取（4 路）
+- 左右前向 USB 摄像头 OpenCV 真实读取
 - ZLAC8030/KeepLINK 可配置 Modbus RTU 底盘节点、轮速运动学和 `/wheel/odom`
 - 栅格地图叠加语义矢量图层的 UI 第一版
 - 最小 pytest 与 topic 检查脚本
 
 ## TODO
 
+- **修复右 XT-M60 硬件**（`chip='0 0'`、`Connected-Init`、不发点云），完成左右双路 ~10Hz 独立 + 同时验收
 - 用实际 ZLAC8030/KeepLINK 手册确认寄存器地址、速度单位、使能流程和反馈寄存器
 - 接入物理急停 IO 节点并做硬件断电链路测试
 - 接入电机编码器反馈后启用 EKF 融合 `/wheel/odom` + IMU
 - 补齐建图产品化流程：rosbag 录制、离线建图、地图质量评分、地图版本管理和 GUI 验收状态
 - 用实车数据标定 Nav2 costmap、DWB 局部规划器和安全阈值
 - 完成地图维护模式：长期障碍候选、用户确认、静态地图写入
+- 将 UI 语义禁行区/偏好路线接入 Nav2 keepout/speed-filter（当前仅存储与显示）
+- 自动重定位（AprilTag/充电标记/UWB/全局点云匹配）、回充对接、自动房间分割
 - 扩展右/后摄像头与行人/门状态/物体识别
 - 将 UI 的导航状态升级为 Nav2 action 反馈和失败原因展示
 

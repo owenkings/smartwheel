@@ -1,6 +1,7 @@
 # Nav2 params for AUTONOMOUS RViz EXPLORATION MAPPING (low-speed, mapping-while-
 # navigating). The global costmap static layer is fed by RTAB-Map's projected grid
-# (/rtabmap/grid_map); map->odom comes from RTAB-Map (icp_odometry), NOT AMCL, so
+# (/rtabmap/grid_map); map->odom comes from RTAB-Map, while wheel+H30 EKF owns
+# odom->base_link. AMCL is not used, so
 # no amcl/map_server sections here. All Nav2 output goes /cmd_vel_nav ->
 # safety_supervisor -> /cmd_vel_safe (never straight to the base). Speeds are
 # intentionally very low; raise only after off-ground + open-area validation.
@@ -10,7 +11,7 @@ bt_navigator:
     use_sim_time: false
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: /wheel/odom
+    odom_topic: /odometry/filtered
     bt_loop_duration: 10
     default_server_timeout: 20
     plugin_lib_names:
@@ -249,7 +250,7 @@ velocity_smoother:
     min_velocity: [0.0, 0.0, -0.25]
     max_accel: [0.20, 0.0, 0.5]
     max_decel: [-0.30, 0.0, -0.5]
-    odom_topic: /wheel/odom
+    odom_topic: /odometry/filtered
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0

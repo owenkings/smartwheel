@@ -23,10 +23,7 @@ xtm60_left_adapter_node:
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0
-    # Dual-radar UDP separation (default OFF). If BOTH radars drop/discard frames
-    # when run together, set distinct dest ports on BOTH adapters + the host IP on
-    # each radar's subnet, then restart:
-    #   left:  udp_dest_ip: "192.168.0.100"  udp_dest_port: 7687
-    #   right: udp_dest_ip: "192.168.1.100"  udp_dest_port: 7688
+    # The vendor SDK locally listens on UDP 7687. sensors.launch.py pins each
+    # process to the host IP on its radar subnet with libxt_bindshim.so.
     udp_dest_ip: "192.168.0.100"
     udp_dest_port: 7687

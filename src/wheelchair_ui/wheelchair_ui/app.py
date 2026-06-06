@@ -21,6 +21,16 @@ class GoalPayload(BaseModel):
     label: str | None = None
 
 
+class PosePayload(BaseModel):
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
+class NamedGoalPayload(BaseModel):
+    name: str
+
+
 class RoomPayload(BaseModel):
     name: str
     polygon: list[list[float]]
@@ -46,9 +56,19 @@ class MappingVersionPayload(BaseModel):
     version_id: str
 
 
-def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> FastAPI:
+def create_app(
+    named_goals_path: str,
+    semantic_map_path: str | None = None,
+    enabled_cameras: list[str] | None = None,
+    ultrasonic_indices: list[int] | None = None,
+) -> FastAPI:
     app = FastAPI(title="Wheelchair Control UI", version="0.1.0")
-    bridge = RosBridge(named_goals_path, semantic_map_path)
+    bridge = RosBridge(
+        named_goals_path,
+        semantic_map_path,
+        enabled_cameras=enabled_cameras,
+        ultrasonic_indices=ultrasonic_indices,
+    )
     mapping = MappingManager()
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -68,14 +88,7 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
 
     @app.get("/api/map")
     def map_snapshot():
-        return bridge.node.map_snapshot() or mapping.map_snapshot() or {
-            "frame_id": "map",
-            "width": 80,
-            "height": 60,
-            "resolution": 0.05,
-            "origin": {"x": -2.0, "y": -1.5},
-            "data": [-1] * (80 * 60),
-        }
+        return bridge.node.map_snapshot() or {"ok": False, "reason": "map not ready"}
 
     @app.get("/api/mapping/status")
     def mapping_status():
@@ -123,6 +136,29 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
             raise HTTPException(status_code=status_code, detail=detail)
         return {"ok": True}
 
+    @app.post("/api/navigate")
+    def navigate_pose(payload: PosePayload):
+        if not bridge.node.send_goal_pose(payload.x, payload.y, payload.yaw):
+            raise HTTPException(
+                status_code=409,
+                detail=bridge.node.last_goal_error or "navigation request rejected",
+            )
+        return {"ok": True}
+
+    @app.post("/api/navigate_named")
+    def navigate_named(payload: NamedGoalPayload):
+        if not bridge.node.send_named_goal(payload.name):
+            detail = bridge.node.last_goal_error or "navigation request rejected"
+            status_code = 404 if "不存在" in detail or "not found" in detail else 409
+            raise HTTPException(status_code=status_code, detail=detail)
+        return {"ok": True}
+
+    @app.post("/api/initial_pose")
+    def initial_pose(payload: PosePayload):
+        if not bridge.node.set_initial_pose(payload.x, payload.y, payload.yaw):
+            raise HTTPException(status_code=409, detail="initial pose request rejected")
+        return {"ok": True}
+
     @app.post("/api/stop")
     def stop():
         bridge.node.set_software_stop(True)
@@ -133,20 +169,18 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
         bridge.node.set_software_stop(False)
         return {"ok": True}
 
-    @app.post("/api/hardware/zero")
-    def zero_velocity():
-        bridge.node.publish_zero_velocity()
+    @app.post("/api/release_stop")
+    def release_stop():
+        bridge.node.set_software_stop(False)
         return {"ok": True}
 
-    @app.post("/api/hardware/shutdown")
-    def hardware_shutdown():
-        return bridge.node.request_hardware_shutdown()
-
-    @app.get("/api/semantic-map")
+    @app.get("/api/semantic-map", operation_id="get_semantic_map_legacy")
+    @app.get("/api/semantic_map", operation_id="get_semantic_map")
     def semantic_map():
         return bridge.node.semantic_map()
 
-    @app.put("/api/semantic-map")
+    @app.put("/api/semantic-map", operation_id="put_semantic_map_legacy")
+    @app.post("/api/semantic_map", operation_id="save_semantic_map")
     def save_semantic_map(payload: dict):
         return bridge.node.save_semantic_map(payload)
 
@@ -160,11 +194,13 @@ def create_app(named_goals_path: str, semantic_map_path: str | None = None) -> F
             raise HTTPException(status_code=404, detail="room not found")
         return {"ok": True}
 
-    @app.post("/api/no-go-zones")
+    @app.post("/api/no-go-zones", operation_id="upsert_no_go_zone_legacy")
+    @app.post("/api/no_go_zones", operation_id="upsert_no_go_zone")
     def upsert_no_go_zone(payload: ZonePayload):
         return bridge.node.upsert_no_go_zone(payload.dict())
 
-    @app.delete("/api/no-go-zones/{name}")
+    @app.delete("/api/no-go-zones/{name}", operation_id="delete_no_go_zone_legacy")
+    @app.delete("/api/no_go_zones/{name}", operation_id="delete_no_go_zone")
     def delete_no_go_zone(name: str):
         if not bridge.node.delete_no_go_zone(name):
             raise HTTPException(status_code=404, detail="zone not found")
@@ -179,9 +215,20 @@ def main():
     parser.add_argument("--port", default=8080, type=int)
     parser.add_argument("--named-goals-path", default=default_named_goals_path())
     parser.add_argument("--semantic-map-path", default=default_semantic_map_path())
+    parser.add_argument("--enabled-cameras", default="left,right")
+    parser.add_argument("--ultrasonic-indices", default="0,1,2,3")
     args, _ = parser.parse_known_args()
+    enabled_cameras = [item.strip() for item in args.enabled_cameras.split(",") if item.strip()]
+    ultrasonic_indices = [
+        int(item.strip()) for item in args.ultrasonic_indices.split(",") if item.strip()
+    ]
     uvicorn.run(
-        create_app(args.named_goals_path, args.semantic_map_path),
+        create_app(
+            args.named_goals_path,
+            args.semantic_map_path,
+            enabled_cameras,
+            ultrasonic_indices,
+        ),
         host=args.host,
         port=args.port,
     )

@@ -6,6 +6,7 @@ sensor_watchdog_node:
     odom_timeout_sec: 1.0
     base_timeout_sec: 1.0
     imu_timeout_sec: 1.5
+    imu_critical: true
     ultrasonic_timeout_sec: 1.5
     ultrasonic_topics:
       - /ultrasonic/range_0
@@ -26,6 +27,8 @@ sensor_watchdog_node:
       - /xtm60/right/points
       # Legacy single-radar topic, used only when enable_dual_xtm60:=false.
       # - /xtm60/points
+    points_0_critical: true
+    points_1_critical: true
 
 localization_health_node:
   ros__parameters:

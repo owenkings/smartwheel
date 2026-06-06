@@ -17,14 +17,14 @@ try:
     from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
     from geometry_msgs.msg import PoseStamped, Point
     from nav_msgs.msg import OccupancyGrid
-    from std_msgs.msg import String
+    from std_msgs.msg import Bool, String
     from visualization_msgs.msg import Marker, MarkerArray
     from nav2_msgs.action import NavigateToPose
     import tf2_ros
 except ImportError:  # allow py_compile / tooling without ROS
     rclpy = None
     Node = object
-    ActionClient = OccupancyGrid = PoseStamped = String = Marker = MarkerArray = None
+    ActionClient = OccupancyGrid = PoseStamped = Bool = String = Marker = MarkerArray = None
     NavigateToPose = tf2_ros = None
 
 FREE_MAX = 25      # occupancy <= this (and >=0) is free
@@ -91,6 +91,8 @@ class FrontierExplorerNode(Node):
         p("base_frame", "base_link")
         p("global_frame", "map")
         p("auto_start", True)
+        p("require_enable_signal", False)
+        p("enable_topic", "/autonomy/enable")
         p("min_frontier_size", 8)
         p("robot_radius", 0.35)
         p("safety_margin", 0.25)
@@ -108,6 +110,8 @@ class FrontierExplorerNode(Node):
         self.base_frame = g("base_frame")
         self.global_frame = g("global_frame")
         self.auto_start = bool(g("auto_start"))
+        self.require_enable_signal = bool(g("require_enable_signal"))
+        self.enable_received = not self.require_enable_signal
         self.min_frontier_size = int(g("min_frontier_size"))
         self.robot_radius = float(g("robot_radius"))
         self.safety_margin = float(g("safety_margin"))
@@ -134,6 +138,7 @@ class FrontierExplorerNode(Node):
         self.estop_pub = self.create_publisher(String, "/emergency_stop_command", 1)
         self.create_subscription(OccupancyGrid, self.map_topic, self._on_map, self._map_qos())
         self.create_subscription(String, "/safety_state", self._on_safety, 10)
+        self.create_subscription(Bool, str(g("enable_topic")), self._on_enable, 10)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
@@ -158,6 +163,11 @@ class FrontierExplorerNode(Node):
         self.safety_state = (msg.data.split(":", 1)[0] or "UNKNOWN").strip().upper()
         self.safety_last = self.now()
 
+    def _on_enable(self, msg):
+        self.enable_received = bool(msg.data)
+        if not self.enable_received:
+            self._cancel_goal()
+
     def _publish_status(self, text):
         self.status_pub.publish(String(data=text))
 
@@ -173,7 +183,7 @@ class FrontierExplorerNode(Node):
             return ("emergency", f"safety={s}")
         allow = {"CLEAR", "OK", "ACTIVE", "IDLE"}
         if not self.stop_on_safety_warning:
-            allow |= {"WARNING", "WARN", "SLOWDOWN", "STOP"}
+            allow |= {"WARNING", "WARN", "SLOWDOWN"}
         if s in allow:
             return None
         return ("block", f"safety={s}")
@@ -190,6 +200,10 @@ class FrontierExplorerNode(Node):
     def tick(self):
         if not self.auto_start:
             self._publish_status("IDLE: autonomous_exploration disabled")
+            return
+        if not self.enable_received:
+            self._cancel_goal()
+            self._publish_status("IDLE: waiting for explicit autonomy enable")
             return
         if self.now() - self.started_at > self.exploration_timeout_sec:
             self._cancel_goal()
