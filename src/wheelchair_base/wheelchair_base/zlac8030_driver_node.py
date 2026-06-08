@@ -242,11 +242,8 @@ class Zlac8030DriverNode(Node):
                 )
                 self.warned_no_registers = True
             return False
-        if (
-            not self.motion_control_enabled
-            and (abs(left_rpm) > 1e-6 or abs(right_rpm) > 1e-6)
-        ):
-            if not self.warned_motion_disabled:
+        if not self.motion_control_enabled:
+            if not command_is_zero and not self.warned_motion_disabled:
                 self.get_logger().warning(
                     "ZLAC8030 motion_control_enabled is false; non-zero wheel commands are blocked"
                 )
@@ -407,7 +404,7 @@ class Zlac8030DriverNode(Node):
     def _shutdown_hardware(self):
         if self.mode != "real":
             return
-        if self.registers.command_enabled:
+        if self.registers.command_enabled and self.motion_control_enabled:
             self._write_wheel_commands(0.0, 0.0)
         if not self._write_control_stop(emergency=True):
             self._write_enable_state(False)

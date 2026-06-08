@@ -4,7 +4,8 @@ set -o pipefail
 cd "$(dirname "$0")/.."
 source /opt/ros/humble/setup.bash 2>/dev/null || true
 source install/setup.bash 2>/dev/null || true
-export ROS_LOG_DIR="${ROS_LOG_DIR:-$PWD/.ros/log}"
+export ROS_LOG_DIR="$PWD/.ros/log"
+mkdir -p "$ROS_LOG_DIR"
 
 require_motion=false
 if [[ "${1:-}" == "--require-motion-enabled" ]]; then
@@ -111,11 +112,16 @@ else
 fi
 
 base_status="$(topic_once /base/status 3 || true)"
-if grep -q 'last_command_write_ok=true' <<<"$base_status"; then
+if grep -q 'motion_control_enabled=false' <<<"$base_status" \
+    && grep -q 'real_motion_enabled=false' <<<"$base_status" \
+    && grep -q 'motion_initialized=false' <<<"$base_status"; then
+  echo "OK   base is in read-only safe standby"
+elif grep -q 'motion_control_enabled=true' <<<"$base_status" \
+    && grep -q 'last_command_write_ok=true' <<<"$base_status"; then
   echo "OK   base command channel reports healthy writes"
 else
-  echo "BLOCK base command channel is not healthy"
-  arm_reasons+=("base last_command_write_ok is not true")
+  echo "BLOCK base command channel state is inconsistent or unhealthy"
+  arm_reasons+=("base must be safely disabled or report healthy enabled writes")
 fi
 if [[ "$require_motion" == true ]]; then
   if grep -q 'real_motion_enabled=true' <<<"$base_status" \

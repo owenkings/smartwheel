@@ -11,6 +11,9 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     require_localization_healthy = LaunchConfiguration("require_localization_healthy")
     enable_passability = LaunchConfiguration("enable_passability")
+    enable_semantic_keepout = LaunchConfiguration("enable_semantic_keepout")
+    semantic_map_path = LaunchConfiguration("semantic_map_path")
+    keepout_map_topic = LaunchConfiguration("keepout_map_topic")
     safety_params_file = LaunchConfiguration("safety_params_file")
     bringup_share = FindPackageShare("wheelchair_bringup")
     navigation_share = FindPackageShare("wheelchair_navigation")
@@ -43,6 +46,35 @@ def generate_launch_description():
                 "safety_params_file",
                 default_value=PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
                 description="Safety profile. Manned default; pass safety_params_mapping.yaml for unmanned low-speed mapping.",
+            ),
+            DeclareLaunchArgument(
+                "enable_semantic_keepout",
+                default_value="true",
+                description="Enforce semantic no-go polygons in Nav2 costmaps.",
+            ),
+            DeclareLaunchArgument(
+                "semantic_map_path",
+                default_value=PathJoinSubstitution(
+                    [navigation_share, "config", "semantic_map.yaml"]
+                ),
+            ),
+            DeclareLaunchArgument(
+                "keepout_map_topic",
+                default_value="/map",
+                description="Occupancy grid whose geometry defines the keepout mask.",
+            ),
+            Node(
+                package="wheelchair_navigation",
+                executable="semantic_keepout_node",
+                name="semantic_keepout_node",
+                output="screen",
+                parameters=[
+                    {
+                        "semantic_map_path": semantic_map_path,
+                        "map_topic": keepout_map_topic,
+                    }
+                ],
+                condition=IfCondition(enable_semantic_keepout),
             ),
             GroupAction(
                 [

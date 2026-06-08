@@ -25,6 +25,8 @@ setup(
             "navigation_status_node = wheelchair_navigation.navigation_status_node:main",
             "frontier_explorer_node = wheelchair_navigation.frontier_explorer_node:main",
             "reactive_explorer_node = wheelchair_navigation.reactive_explorer_node:main",
+            "semantic_keepout_node = wheelchair_navigation.semantic_keepout_node:main",
+            "startup_localization_node = wheelchair_navigation.startup_localization_node:main",
         ],
     },
 )

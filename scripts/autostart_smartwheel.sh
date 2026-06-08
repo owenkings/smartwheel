@@ -8,6 +8,13 @@ launch_file="${SMARTWHEEL_LAUNCH_FILE:-full_system.launch.py}"
 mode="${SMARTWHEEL_MODE:-real}"
 ui_port="${SMARTWHEEL_UI_PORT:-8080}"
 map_file="${SMARTWHEEL_MAP:-}"
+auto_select_map="${SMARTWHEEL_AUTO_SELECT_MAP:-true}"
+startup_localization_mode="${SMARTWHEEL_STARTUP_LOCALIZATION_MODE:-disabled}"
+startup_named_goal_name="${SMARTWHEEL_STARTUP_NAMED_GOAL:-charging}"
+startup_fixed_x="${SMARTWHEEL_STARTUP_FIXED_X:-0.0}"
+startup_fixed_y="${SMARTWHEEL_STARTUP_FIXED_Y:-0.0}"
+startup_fixed_yaw="${SMARTWHEEL_STARTUP_FIXED_YAW:-0.0}"
+startup_anchor_topic="${SMARTWHEEL_STARTUP_ANCHOR_TOPIC:-/localization/anchor_pose}"
 ros_domain_id="${ROS_DOMAIN_ID:-${SMARTWHEEL_ROS_DOMAIN_ID:-0}}"
 build_on_start="${SMARTWHEEL_BUILD_ON_START:-false}"
 setup_radar_network="${SMARTWHEEL_SETUP_RADAR_NETWORK:-true}"
@@ -73,10 +80,39 @@ set +u
 source "$workspace_root/install/setup.bash"
 set -u
 
+if [[ -z "$map_file" && "$launch_file" == "full_system.launch.py" ]]; then
+  case "$(echo "$auto_select_map" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on)
+      map_file="$(
+        python3 -m wheelchair_ui.map_selection --workspace "$workspace_root" \
+          2>/dev/null || true
+      )"
+      if [[ -n "$map_file" ]]; then
+        echo "Auto-selected active Nav2 map: $map_file"
+      fi
+      ;;
+  esac
+fi
+
 launch_args=()
 case "$launch_file" in
   full_system.launch.py)
     launch_args+=("ui_port:=$ui_port")
+    case "$(echo "$startup_localization_mode" | tr '[:upper:]' '[:lower:]')" in
+      disabled|named_goal|fixed|external_anchor) ;;
+      *)
+        echo "WARN invalid SMARTWHEEL_STARTUP_LOCALIZATION_MODE; using disabled" >&2
+        startup_localization_mode=disabled
+        ;;
+    esac
+    launch_args+=(
+      "startup_localization_mode:=$startup_localization_mode"
+      "startup_named_goal_name:=$startup_named_goal_name"
+      "startup_fixed_x:=$startup_fixed_x"
+      "startup_fixed_y:=$startup_fixed_y"
+      "startup_fixed_yaw:=$startup_fixed_yaw"
+      "startup_anchor_topic:=$startup_anchor_topic"
+    )
     # Normalize SMARTWHEEL_ENABLE_XTM60 (true|false|1|0|yes|no) to the
     # lowercase "true"/"false" that ROS launch IfCondition accepts. Anything
     # else falls back to false to keep the radar in standby by default.

@@ -633,6 +633,7 @@ class MappingManager:
             manifest = self._load_version_manifest()
             manifest.setdefault("current", {})[entry["map_name"]] = version_id
             manifest["latest"] = version_id
+            manifest["active_nav"] = version_id
             manifest["updated_at"] = self._now_iso()
             self._write_version_manifest(manifest)
         except Exception as exc:
@@ -849,6 +850,8 @@ class MappingManager:
         versions.append(entry)
         manifest.setdefault("current", {})[save_result.map_name] = save_result.version_id
         manifest["latest"] = save_result.version_id
+        if str((entry.get("quality") or {}).get("verdict", "")).upper() != "BAD":
+            manifest["active_nav"] = save_result.version_id
         manifest["updated_at"] = self._now_iso()
         self._write_version_manifest(manifest)
         return entry
@@ -931,7 +934,13 @@ class MappingManager:
         return self._compact_quality_report(report)
 
     def _load_version_manifest(self) -> Dict[str, Any]:
-        default = {"schema_version": 1, "current": {}, "latest": None, "versions": []}
+        default = {
+            "schema_version": 2,
+            "current": {},
+            "latest": None,
+            "active_nav": None,
+            "versions": [],
+        }
         if not self.version_manifest_path.exists():
             return default
         try:
@@ -940,9 +949,14 @@ class MappingManager:
             return default
         if not isinstance(manifest, dict):
             return default
-        manifest.setdefault("schema_version", 1)
+        try:
+            schema_version = int(manifest.get("schema_version", 1))
+        except (TypeError, ValueError):
+            schema_version = 1
+        manifest["schema_version"] = max(2, schema_version)
         manifest.setdefault("current", {})
         manifest.setdefault("latest", None)
+        manifest.setdefault("active_nav", None)
         manifest.setdefault("versions", [])
         return manifest
 

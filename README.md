@@ -13,7 +13,7 @@
 ## 硬件
 
 - 主机：NVIDIA AGX Orin 64G
-- 雷达：左右两台 XT-M60 固态 Flash 激光雷达，左侧 `192.168.0.101`（网关 `192.168.0.1`）、右侧 `192.168.1.101`（网关 `192.168.1.1`），两台位于隔离子网，融合为 `/points_merged`（3D 主线）并各自投影为 `/scan`（2D 保底）。厂商 SDK 本地接收 socket 固定绑定 `0.0.0.0:7687`，双雷达靠 `libxt_bindshim.so`（`LD_PRELOAD`）把左右进程的接收 socket 分别钉到 `192.168.0.100:7687` 和 `192.168.1.100:7687`，从内核层隔离两路 UDP，避免串流。**当前状态（2026-06）：左雷达稳定 ~10Hz；右雷达硬件故障（`chip='0 0'`、停在 `Connected-Init`、不发点云 UDP），待断电重启/固件修复/更换后验收，详见 `docs/xtm60_stability.md`。**
+- 雷达：左右两台 XT-M60 固态 Flash 激光雷达，左侧 `192.168.0.101`（网关 `192.168.0.1`）、右侧 `192.168.1.101`（网关 `192.168.1.1`），两台位于隔离子网，融合为 `/points_merged`（3D 主线）并各自投影为 `/scan`（2D 保底）。厂商 SDK 本地接收 socket 固定绑定 `0.0.0.0:7687`，双雷达靠 `libxt_bindshim.so`（`LD_PRELOAD`）把左右进程的接收 socket 分别钉到 `192.168.0.100:7687` 和 `192.168.1.100:7687`，从内核层隔离两路 UDP，避免串流。**当前状态（2026-06-08）：右雷达确认硬件损坏**（TCP 控制握手失败、`chip='0 0'`、`Connected-Init`、不发点云），暂不使用，等待固件修复或更换。**系统现以左雷达单路运行**：`dual_lidar_cloud_fusion` 的 `allow_single_lidar_fallback:true` 默认开启，单雷达仍可输出 `/points_merged`，静态建图/Nav2 规划/Web UI/全传感器链路均可用；但自主**运动**仍要求双雷达（使能电机时 fallback 关闭），详见 `docs/xtm60_stability.md`。**
 - IMU：H30，只用于姿态、角速度、上下坡、异常晃动检测，不作为长期定位唯一来源
 - 超声波：6 个 topic 预留，当前默认启用 4 个 FD07-34 RS485/Modbus RTU（`range_0`~`range_3`）
 - 摄像头：4 路预留，原 4 路中前向/后向已损坏，现仅左右两个前向摄像头可用，默认启用左右前向 USB 摄像头
@@ -247,6 +247,7 @@ ros2 topic echo /safety_state
 ros2 topic echo /hardware/status
 ros2 topic echo /system_stop_required
 ros2 topic echo /localization/health
+ros2 topic echo /localization/startup_status
 ros2 topic echo /passability/status
 ros2 topic echo /base/status
 ```
@@ -254,6 +255,22 @@ ros2 topic echo /base/status
 只要 `/system_stop_required=true`，安全节点会输出零速，不允许继续自动导航。
 
 `navigation.launch.py` 会启动定位健康检查；如果 `/amcl_pose`、`/wheel/odom` 或 `/scan` 缺失，`/localization/is_healthy=false`，安全节点会保持 `/cmd_vel_safe=0`。如果只是调试 Nav2 配置而不运行定位链路，可以先用 mock demo 或完整系统入口验证。
+
+启动定位管理器默认使用 `disabled`，不会发布 `/initialpose`。充电位坐标完成现场标定后，可使用命名点或固定姿态；AprilTag/UWB 节点可向外部锚点接口发布地图坐标：
+
+```bash
+ros2 launch wheelchair_bringup localization.launch.py \
+  map:=maps/indoor_map.yaml \
+  startup_localization_mode:=named_goal \
+  startup_named_goal_name:=charging
+
+ros2 launch wheelchair_bringup localization.launch.py \
+  map:=maps/indoor_map.yaml \
+  startup_localization_mode:=external_anchor \
+  startup_anchor_topic:=/localization/anchor_pose
+```
+
+可用模式为 `disabled`、`named_goal`、`fixed`、`external_anchor`。节点会重复提交初始位姿并等待 AMCL 回执，只发布定位消息和状态，不接触电机控制。当前仓库的 `charging` 坐标仍是 `(0, 0, 0)` 占位值，未标定前不要启用 `named_goal` 开机定位。
 
 14. 录制现场数据：
 

@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -46,8 +48,30 @@ class SemanticMapStore:
     def save(self, data: Dict) -> Dict:
         normalized = DEFAULT_SEMANTIC_MAP.copy()
         normalized.update(data or {})
-        with self.path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(normalized, handle, allow_unicode=True, sort_keys=False)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                yaml.safe_dump(
+                    normalized,
+                    handle,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         return normalized
 
     def list_rooms(self) -> List[Dict]:

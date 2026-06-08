@@ -9,7 +9,15 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     map_file = LaunchConfiguration("map")
     use_ekf = LaunchConfiguration("use_ekf")
+    startup_localization_mode = LaunchConfiguration("startup_localization_mode")
+    startup_named_goals_path = LaunchConfiguration("startup_named_goals_path")
+    startup_named_goal_name = LaunchConfiguration("startup_named_goal_name")
+    startup_fixed_x = LaunchConfiguration("startup_fixed_x")
+    startup_fixed_y = LaunchConfiguration("startup_fixed_y")
+    startup_fixed_yaw = LaunchConfiguration("startup_fixed_yaw")
+    startup_anchor_topic = LaunchConfiguration("startup_anchor_topic")
     bringup_share = FindPackageShare("wheelchair_bringup")
+    navigation_share = FindPackageShare("wheelchair_navigation")
 
     return LaunchDescription(
         [
@@ -24,6 +32,25 @@ def generate_launch_description():
                 "use_ekf",
                 default_value="false",
                 description="Enable robot_localization EKF after wheel odom is wired.",
+            ),
+            DeclareLaunchArgument(
+                "startup_localization_mode",
+                default_value="disabled",
+                description="disabled, named_goal, fixed, or external_anchor.",
+            ),
+            DeclareLaunchArgument(
+                "startup_named_goals_path",
+                default_value=PathJoinSubstitution(
+                    [navigation_share, "config", "named_goals.yaml"]
+                ),
+            ),
+            DeclareLaunchArgument("startup_named_goal_name", default_value="charging"),
+            DeclareLaunchArgument("startup_fixed_x", default_value="0.0"),
+            DeclareLaunchArgument("startup_fixed_y", default_value="0.0"),
+            DeclareLaunchArgument("startup_fixed_yaw", default_value="0.0"),
+            DeclareLaunchArgument(
+                "startup_anchor_topic",
+                default_value="/localization/anchor_pose",
             ),
             Node(
                 package="nav2_map_server",
@@ -66,6 +93,23 @@ def generate_launch_description():
                     )
                 ],
                 condition=IfCondition(use_ekf),
+            ),
+            Node(
+                package="wheelchair_navigation",
+                executable="startup_localization_node",
+                name="startup_localization_node",
+                output="screen",
+                parameters=[
+                    {
+                        "mode": startup_localization_mode,
+                        "named_goals_path": startup_named_goals_path,
+                        "named_goal_name": startup_named_goal_name,
+                        "fixed_x": startup_fixed_x,
+                        "fixed_y": startup_fixed_y,
+                        "fixed_yaw": startup_fixed_yaw,
+                        "anchor_topic": startup_anchor_topic,
+                    }
+                ],
             ),
         ]
     )

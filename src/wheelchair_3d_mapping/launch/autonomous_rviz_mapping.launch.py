@@ -101,6 +101,8 @@ def _setup(context, *args, **kwargs):
             "params_file": os.path.join(bringup, "config", "nav2_autonomous_mapping_params.yaml"),
             "require_localization_healthy": "false",
             "enable_passability": "false",
+            "enable_semantic_keepout": "true",
+            "keepout_map_topic": "/rtabmap/grid_map",
             "safety_params_file": os.path.join(bringup, "config", "safety_params_mapping.yaml"),
         }.items(),
     ))

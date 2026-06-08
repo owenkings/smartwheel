@@ -184,6 +184,10 @@ class WheelchairUiRosNode(Node):
         self.navigation_status = "IDLE"
         self.hardware_status = {"state": "UNKNOWN", "reason": "waiting for watchdog"}
         self.localization_health = {"state": "UNKNOWN", "reason": "waiting for localization health"}
+        self.startup_localization = {
+            "state": "UNKNOWN",
+            "reason": "waiting for startup localization status",
+        }
         self.passability_status = {"state": "UNKNOWN", "reason": "waiting for passability analyzer"}
         self.pose = {"x": 0.0, "y": 0.0, "yaw": 0.0, "frame_id": "odom"}
         self.pose_last_seen = 0.0
@@ -266,6 +270,12 @@ class WheelchairUiRosNode(Node):
         self.create_subscription(String, "/exploration/status", self.on_navigation_status, 10)
         self.create_subscription(String, "/hardware/status", self.on_hardware_status, 10)
         self.create_subscription(String, "/localization/health", self.on_localization_health, 10)
+        self.create_subscription(
+            String,
+            "/localization/startup_status",
+            self.on_startup_localization,
+            self._latched_map_qos(),
+        )
         self.create_subscription(String, "/passability/status", self.on_passability_status, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, 10)
         self.create_subscription(OccupancyGrid, "/map", self.on_map, map_qos)
@@ -367,6 +377,11 @@ class WheelchairUiRosNode(Node):
 
     def on_localization_health(self, msg):
         self.localization_health = self._parse_json_status(msg.data, self.localization_health)
+
+    def on_startup_localization(self, msg):
+        self.startup_localization = self._parse_json_status(
+            msg.data, self.startup_localization
+        )
 
     def on_passability_status(self, msg):
         self.passability_status = self._parse_json_status(msg.data, self.passability_status)
@@ -703,6 +718,7 @@ class WheelchairUiRosNode(Node):
             },
             "hardware_status": self.hardware_status,
             "localization_health": self.localization_health,
+            "startup_localization": self.startup_localization,
             "passability_status": self.passability_status,
             "mapping_3d": self._mapping_3d_snapshot(),
             "map_available": map_snapshot is not None,

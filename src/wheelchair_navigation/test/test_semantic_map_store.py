@@ -17,3 +17,13 @@ def test_semantic_map_room_and_no_go_zone_roundtrip(tmp_path):
     assert data["no_go_zones"][0]["name"] == "楼梯口"
     assert store.delete_room("餐厅") is True
     assert store.delete_no_go_zone("楼梯口") is True
+
+
+def test_semantic_map_save_leaves_no_temporary_file(tmp_path):
+    path = tmp_path / "semantic_map.yaml"
+    store = SemanticMapStore(str(path))
+
+    store.save({"rooms": [{"name": "客厅", "polygon": []}]})
+
+    assert path.exists()
+    assert list(tmp_path.glob(".semantic_map.yaml.*.tmp")) == []

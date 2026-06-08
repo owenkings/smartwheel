@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from wheelchair_ui.map_selection import resolve_active_nav_map
 from wheelchair_ui.mapping_manager import MapSaveResult, MappingManager
 
 
@@ -63,6 +64,7 @@ def test_map_version_manifest_alias_and_activation(tmp_path):
 
     assert entry["version_id"] == version_id
     assert manifest["latest"] == version_id
+    assert manifest["active_nav"] == version_id
     assert manifest["current"]["demo"] == version_id
     assert manifest["versions"][0]["quality"]["verdict"] == "GOOD"
     assert current_meta["image"] == "demo.pgm"
@@ -73,6 +75,104 @@ def test_map_version_manifest_alias_and_activation(tmp_path):
     assert status["state"] == "MAP_READY"
     assert status["map_version"]["version_id"] == version_id
     assert status["quality_status"]["verdict"] == "GOOD"
+
+
+def test_active_map_resolution_skips_newer_bad_map(tmp_path):
+    workspace = tmp_path / "workspace"
+    version_dir = workspace / "maps" / "versions"
+    version_dir.mkdir(parents=True)
+
+    def write_map(version_id):
+        image = version_dir / f"{version_id}.pgm"
+        metadata = version_dir / f"{version_id}.yaml"
+        image.write_bytes(b"P5\n1 1\n255\n\x00")
+        metadata.write_text(
+            yaml.safe_dump(
+                {
+                    "image": image.name,
+                    "resolution": 0.05,
+                    "origin": [0.0, 0.0, 0.0],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return metadata
+
+    good_yaml = write_map("good")
+    bad_yaml = write_map("bad")
+    manifest = {
+        "schema_version": 2,
+        "active_nav": "good",
+        "latest": "bad",
+        "current": {},
+        "versions": [
+            {
+                "version_id": "good",
+                "version_yaml": str(good_yaml),
+                "quality": {"verdict": "GOOD"},
+            },
+            {
+                "version_id": "bad",
+                "version_yaml": str(bad_yaml),
+                "quality": {"verdict": "BAD"},
+            },
+        ],
+    }
+    (workspace / "maps" / "map_versions.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    assert resolve_active_nav_map(workspace) == good_yaml.resolve()
+
+
+def test_active_map_resolution_rejects_missing_image(tmp_path):
+    workspace = tmp_path / "workspace"
+    map_dir = workspace / "maps"
+    map_dir.mkdir(parents=True)
+    broken_yaml = map_dir / "broken.yaml"
+    broken_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "image": "missing.pgm",
+                "resolution": 0.05,
+                "origin": [0.0, 0.0, 0.0],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (map_dir / "map_versions.json").write_text(
+        json.dumps(
+            {
+                "latest": "broken",
+                "versions": [
+                    {
+                        "version_id": "broken",
+                        "version_yaml": str(broken_yaml),
+                        "quality": {"verdict": "GOOD"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert resolve_active_nav_map(workspace) is None
+
+
+def test_manifest_with_invalid_schema_version_is_migrated(tmp_path):
+    workspace = tmp_path / "workspace"
+    map_dir = workspace / "maps"
+    map_dir.mkdir(parents=True)
+    (map_dir / "map_versions.json").write_text(
+        json.dumps({"schema_version": "invalid", "versions": []}),
+        encoding="utf-8",
+    )
+
+    manifest = MappingManager(workspace)._load_version_manifest()
+
+    assert manifest["schema_version"] == 2
+    assert manifest["active_nav"] is None
 
 
 def test_save_map_retries_with_volatile_qos(tmp_path, monkeypatch):

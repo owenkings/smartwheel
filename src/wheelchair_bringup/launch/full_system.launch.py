@@ -19,6 +19,12 @@ def generate_launch_description():
     enable_passability = LaunchConfiguration("enable_passability")
     require_localization_healthy = LaunchConfiguration("require_localization_healthy")
     motion_control_enabled = LaunchConfiguration("motion_control_enabled")
+    startup_localization_mode = LaunchConfiguration("startup_localization_mode")
+    startup_named_goal_name = LaunchConfiguration("startup_named_goal_name")
+    startup_fixed_x = LaunchConfiguration("startup_fixed_x")
+    startup_fixed_y = LaunchConfiguration("startup_fixed_y")
+    startup_fixed_yaw = LaunchConfiguration("startup_fixed_yaw")
+    startup_anchor_topic = LaunchConfiguration("startup_anchor_topic")
     # Top-level switch for whether ANY XT-M60 radar adapter starts. When false,
     # neither the single-radar adapter nor the dual left/right adapters run,
     # nor do the pointcloud_to_laserscan / scan_merger downstream nodes. The
@@ -74,6 +80,19 @@ def generate_launch_description():
                 "motion_control_enabled",
                 default_value="false",
                 description="HIGH RISK. true lets /cmd_vel_safe write real motor speeds. Default false = read-only.",
+            ),
+            DeclareLaunchArgument(
+                "startup_localization_mode",
+                default_value="disabled",
+                description="disabled, named_goal, fixed, or external_anchor.",
+            ),
+            DeclareLaunchArgument("startup_named_goal_name", default_value="charging"),
+            DeclareLaunchArgument("startup_fixed_x", default_value="0.0"),
+            DeclareLaunchArgument("startup_fixed_y", default_value="0.0"),
+            DeclareLaunchArgument("startup_fixed_yaw", default_value="0.0"),
+            DeclareLaunchArgument(
+                "startup_anchor_topic",
+                default_value="/localization/anchor_pose",
             ),
             DeclareLaunchArgument(
                 "enable_xtm60_radar",
@@ -160,7 +179,19 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([bringup_share, "launch", "localization.launch.py"])
                 ),
-                launch_arguments={"map": map_file, "use_ekf": "false"}.items(),
+                launch_arguments={
+                    "map": map_file,
+                    "use_ekf": "false",
+                    "startup_localization_mode": startup_localization_mode,
+                    "startup_named_goals_path": PathJoinSubstitution(
+                        [navigation_share, "config", "named_goals.yaml"]
+                    ),
+                    "startup_named_goal_name": startup_named_goal_name,
+                    "startup_fixed_x": startup_fixed_x,
+                    "startup_fixed_y": startup_fixed_y,
+                    "startup_fixed_yaw": startup_fixed_yaw,
+                    "startup_anchor_topic": startup_anchor_topic,
+                }.items(),
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(

@@ -82,6 +82,23 @@ def test_motion_control_disabled_blocks_nonzero_commands():
     assert node.modbus.writes == []
 
 
+def test_motion_control_disabled_blocks_zero_speed_register_writes():
+    node = make_node(single_slave_dual_axis=True)
+    node.motion_control_enabled = False
+
+    assert node._write_wheel_commands(0.0, 0.0) is False
+    assert node.modbus.writes == []
+
+
+def test_shutdown_with_motion_disabled_only_uses_disable_fallback():
+    node = make_node(single_slave_dual_axis=True)
+    node.motion_control_enabled = False
+
+    node._shutdown_hardware()
+
+    assert node.modbus.writes == [(1, 20, 0)]
+
+
 def test_single_slave_can_write_dual_axis_command_together():
     node = make_node(single_slave_dual_axis=True)
     node.write_dual_axis_command_together = True
