@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wheelchair_perception.pointcloud_to_laserscan_node import (  # noqa: E402
+    PointCloudToLaserScanNode,
     ScanProjectionConfig,
     project_points_to_scan,
 )
@@ -42,6 +43,21 @@ def test_scan_projection_uses_expected_laserscan_beam_count():
     config = ScanProjectionConfig()
 
     assert config.beam_count == 242
+
+
+def test_pointcloud_subscription_accepts_best_effort_sensor_qos():
+    import rclpy
+    from rclpy.context import Context
+    from rclpy.qos import ReliabilityPolicy
+
+    context = Context()
+    rclpy.init(context=context)
+    node = PointCloudToLaserScanNode(context=context)
+    try:
+        assert node.cloud_sub.qos_profile.reliability == ReliabilityPolicy.BEST_EFFORT
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
 
 
 def pytest_approx(value):

@@ -6,6 +6,7 @@ try:
     import rclpy
     from rclpy.duration import Duration
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from rclpy.time import Time
     from geometry_msgs.msg import Point
     from sensor_msgs.msg import LaserScan, PointCloud2
@@ -16,6 +17,7 @@ except ImportError:  # Allows pure helper tests without a sourced ROS environmen
     rclpy = None
     Duration = None
     Node = object
+    qos_profile_sensor_data = None
     Time = None
     Point = None
     LaserScan = None
@@ -105,8 +107,8 @@ def transform_point(point: Point3, transform) -> Point3:
 
 
 class PointCloudToLaserScanNode(Node):
-    def __init__(self):
-        super().__init__("pointcloud_to_laserscan_node")
+    def __init__(self, *, context=None):
+        super().__init__("pointcloud_to_laserscan_node", context=context)
         self.declare_parameter("input_topic", "/xtm60/points")
         self.declare_parameter("output_topic", "/scan")
         self.declare_parameter("marker_topic", "/scan_projection_markers")
@@ -148,7 +150,7 @@ class PointCloudToLaserScanNode(Node):
         self.scan_pub = self.create_publisher(LaserScan, self.output_topic, queue_size)
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, queue_size)
         self.cloud_sub = self.create_subscription(
-            PointCloud2, self.input_topic, self.on_cloud, queue_size
+            PointCloud2, self.input_topic, self.on_cloud, qos_profile_sensor_data
         )
 
         self.tf_buffer = tf2_ros.Buffer()

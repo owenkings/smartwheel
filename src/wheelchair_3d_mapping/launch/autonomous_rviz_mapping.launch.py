@@ -18,7 +18,6 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -37,10 +36,53 @@ def _setup(context, *args, **kwargs):
     enable_motion = flag("enable_motion")
     autonomous = flag("autonomous_exploration")
     use_colorizer = flag("use_colorizer")
+    hardware_profile = s("hardware_profile").lower()
+    if hardware_profile not in ("dual_lidar", "left_lidar_lab", "right_lidar_lab"):
+        raise RuntimeError(
+            "hardware_profile must be dual_lidar, left_lidar_lab, or right_lidar_lab"
+        )
+    if hardware_profile == "right_lidar_lab":
+        raise RuntimeError(
+            "hardware_profile=right_lidar_lab is reserved but not implemented in this release"
+        )
+
+    left_lidar_lab = hardware_profile == "left_lidar_lab"
+    enable_left_lidar = True
+    enable_right_lidar = not left_lidar_lab
+    allow_single_lidar_fallback = left_lidar_lab or not enable_motion
+
     exploration_mode = s("exploration_mode").lower()
+    if exploration_mode == "auto":
+        exploration_mode = "reactive" if left_lidar_lab else "frontier"
+    if exploration_mode not in ("frontier", "reactive"):
+        raise RuntimeError("exploration_mode must be auto, frontier, or reactive")
+
+    linear_arg = s("max_linear_speed").lower()
+    angular_arg = s("max_angular_speed").lower()
+    max_linear_speed = (0.03 if left_lidar_lab else 0.05) if linear_arg == "auto" else float(linear_arg)
+    max_angular_speed = (0.18 if left_lidar_lab else 0.22) if angular_arg == "auto" else float(angular_arg)
+    if left_lidar_lab:
+        max_linear_speed = min(max_linear_speed, 0.04)
+        max_angular_speed = min(max_angular_speed, 0.18)
+
+    diagnostics_config = (
+        "diagnostics_left_lidar_lab.yaml" if left_lidar_lab else "diagnostics.yaml"
+    )
+    scan_merger_config = "scan_merger_left_only.yaml" if left_lidar_lab else "scan_merger.yaml"
+    rviz_config = "left_lidar_lab_mapping.rviz" if left_lidar_lab else "autonomous_3d_mapping.rviz"
     explore_active = enable_motion and autonomous
 
     actions = []
+    if left_lidar_lab:
+        actions.append(LogInfo(
+            msg="[left_lidar_lab] RIGHT XT-M60 is disabled / under repair. "
+                "Single-left-lidar autonomous mapping demo mode."
+        ))
+    actions.append(LogInfo(
+        msg=f"[autonomous_rviz_mapping] hardware_profile={hardware_profile} "
+            f"exploration_mode={exploration_mode} max_linear_speed={max_linear_speed:.3f} "
+            f"max_angular_speed={max_angular_speed:.3f}"
+    ))
     if autonomous and not enable_motion:
         actions.append(LogInfo(msg="[autonomous_rviz_mapping] ERROR: autonomous_exploration:=true "
                                    "requires enable_motion:=true. Exploration MOTION DISABLED "
@@ -53,11 +95,13 @@ def _setup(context, *args, **kwargs):
         actions.append(LogInfo(msg="[autonomous_rviz_mapping] enable_motion:=false -> base will not write "
                                    "motor speeds (safe). Pass enable_motion:=true to allow motion."))
 
-    # A. + C. Sensors (dual XT-M60 + IMU + ultrasonic) + fusion (/points_merged) + RTAB-Map 3D.
+    # A. + C. Profile-selected XT-M60 sensors + fusion + RTAB-Map 3D.
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(mapping, "launch", "rtabmap_3d_mapping.launch.py")),
         launch_arguments={
-            "bringup_sensors": "true",
+            "bringup_sensors": s("bringup_sensors"),
+            "enable_xtm60_left": "true" if enable_left_lidar else "false",
+            "enable_xtm60_right": "true" if enable_right_lidar else "false",
             "points_topic": "/points_merged",
             "imu_topic": "/imu/data",
             # Wheel+H30 EKF is the odom->base_link source. icp_odometry is not
@@ -69,7 +113,7 @@ def _setup(context, *args, **kwargs):
             "subscribe_rgb": "false",          # camera not in geometry SLAM
             "use_colorizer": "true" if use_colorizer else "false",
             "enable_ultrasonic": "true",
-            "allow_single_lidar_fallback": "false" if enable_motion else "true",
+            "allow_single_lidar_fallback": "true" if allow_single_lidar_fallback else "false",
             "localization": "false",
             "delete_db_on_start": s("delete_db_on_start"),
             "database_path": s("database_path"),
@@ -77,11 +121,13 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # B. /scan for Nav2 local costmap + safety + passability (from the two radars).
-    for name, cfg in (
-        ("pointcloud_to_laserscan_left_node", "pointcloud_to_scan_left.yaml"),
-        ("pointcloud_to_laserscan_right_node", "pointcloud_to_scan_right.yaml"),
-    ):
+    # B. /scan for Nav2 and safety. The lab profile never starts the absent right chain.
+    scan_converters = [("pointcloud_to_laserscan_left_node", "pointcloud_to_scan_left.yaml")]
+    if enable_right_lidar:
+        scan_converters.append(
+            ("pointcloud_to_laserscan_right_node", "pointcloud_to_scan_right.yaml")
+        )
+    for name, cfg in scan_converters:
         actions.append(Node(
             package="wheelchair_perception", executable="pointcloud_to_laserscan_node",
             name=name, output="screen",
@@ -90,7 +136,7 @@ def _setup(context, *args, **kwargs):
     actions.append(Node(
         package="wheelchair_perception", executable="scan_merger_node",
         name="scan_merger_node", output="screen",
-        parameters=[os.path.join(bringup, "config", "scan_merger.yaml")],
+        parameters=[os.path.join(bringup, "config", scan_merger_config)],
     ))
 
     # D. + E. Nav2 (low-speed mapping params) + safety + passability + goal mgmt.
@@ -115,21 +161,12 @@ def _setup(context, *args, **kwargs):
         parameters=[os.path.join(bringup, "config", "robot_localization_ekf.yaml")],
     ))
 
-    # Fail closed before safety can release any velocity. Both XT-M60 streams,
-    # the H30, all four ultrasonics, scan, odometry and base status are critical
-    # for autonomous motion.
+    # Fail closed before safety can release velocity. Sensor criticality comes
+    # entirely from the selected profile config; do not hard-code a right lidar.
     actions.append(Node(
         package="wheelchair_diagnostics", executable="sensor_watchdog_node",
         name="sensor_watchdog_node", output="screen",
-        parameters=[
-            os.path.join(bringup, "config", "diagnostics.yaml"),
-            {
-                "startup_grace_sec": 0.0,
-                "imu_critical": True,
-                "points_0_critical": True,
-                "points_1_critical": True,
-            },
-        ],
+        parameters=[os.path.join(bringup, "config", diagnostics_config)],
     ))
 
     # F. Base driver. Motion writes only when enable_motion:=true. The EKF owns
@@ -137,15 +174,15 @@ def _setup(context, *args, **kwargs):
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "base.launch.py")),
         launch_arguments={
-            "mode": "real",
+            "mode": s("base_mode"),
             "publish_tf": "false",
             "motion_control_enabled": "true" if enable_motion else "false",
             "hold_zero_before_motion_init": "false",
         }.items(),
     ))
 
-    # G. Explorer. Frontier mode is the default because all autonomous motion
-    # should follow a Nav2-planned route. Reactive mode remains a test fallback.
+    # G. Explorer. The single-left-lidar lab profile defaults to reactive mode;
+    # the dual-lidar profile keeps the existing frontier default.
     if exploration_mode == "frontier":
         actions.append(Node(
             package="wheelchair_navigation", executable="frontier_explorer_node",
@@ -167,8 +204,8 @@ def _setup(context, *args, **kwargs):
             name="reactive_explorer_node", output="screen",
             parameters=[{
                 "auto_start": explore_active,
-                "forward_speed": float(s("max_linear_speed")),
-                "turn_speed": float(s("max_angular_speed")),
+                "forward_speed": max_linear_speed,
+                "turn_speed": max_angular_speed,
                 "hard_stop_distance": 0.30,
                 "turn_trigger_distance": float(s("turn_trigger_distance")),
                 "side_trigger_distance": 0.30,
@@ -180,28 +217,45 @@ def _setup(context, *args, **kwargs):
             }],
         ))
 
+    if flag("rviz"):
+        actions.append(Node(
+            package="rviz2", executable="rviz2", name="rviz2", output="screen",
+            arguments=["-d", os.path.join(mapping, "rviz", rviz_config)],
+        ))
+
     return actions
 
 
 def generate_launch_description():
-    rviz_cfg = os.path.join(
-        get_package_share_directory("wheelchair_3d_mapping"), "rviz", "autonomous_3d_mapping.rviz"
-    )
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "hardware_profile", default_value="dual_lidar",
+            description="dual_lidar | left_lidar_lab | right_lidar_lab (reserved)",
+        ),
         DeclareLaunchArgument("enable_motion", default_value="false",
                               description="HIGH RISK. true allows the base to write motor speeds."),
         DeclareLaunchArgument("autonomous_exploration", default_value="false",
                               description="HIGH RISK. true lets frontier_explorer send goals (needs enable_motion)."),
         DeclareLaunchArgument("bringup_sensors", default_value="true"),
+        DeclareLaunchArgument(
+            "base_mode", default_value="real",
+            description="real for hardware; mock for no-hardware integration testing.",
+        ),
         DeclareLaunchArgument("enable_xtm60_radar", default_value="true"),
         DeclareLaunchArgument("use_colorizer", default_value="false",
                               description="Colorize the cloud with the cameras (visual only)."),
-        # Enforced low-speed caps live in nav2_autonomous_mapping_params.yaml (Nav2)
-        # and safety_params.yaml (safety layer). These are advisory/record.
-        DeclareLaunchArgument("max_linear_speed", default_value="0.05"),
-        DeclareLaunchArgument("max_angular_speed", default_value="0.22"),
-        DeclareLaunchArgument("exploration_mode", default_value="frontier",
-                              description="frontier | reactive. Frontier uses Nav2 route planning and is the production default."),
+        DeclareLaunchArgument(
+            "max_linear_speed", default_value="auto",
+            description="auto: 0.05 dual-lidar, 0.03 left-lidar lab (lab capped at 0.04).",
+        ),
+        DeclareLaunchArgument(
+            "max_angular_speed", default_value="auto",
+            description="auto: 0.22 dual-lidar, 0.18 left-lidar lab (lab capped at 0.18).",
+        ),
+        DeclareLaunchArgument(
+            "exploration_mode", default_value="auto",
+            description="auto | frontier | reactive. auto selects frontier for dual and reactive for left-lidar lab.",
+        ),
         DeclareLaunchArgument("require_enable_signal", default_value="true",
                               description="Require an explicit true message on /autonomy/enable before exploration starts."),
         DeclareLaunchArgument("delete_db_on_start", default_value="true",
@@ -219,9 +273,4 @@ def generate_launch_description():
         DeclareLaunchArgument("stop_on_safety_emergency", default_value="true"),
         DeclareLaunchArgument("rviz", default_value="true"),
         OpaqueFunction(function=_setup),
-        Node(
-            package="rviz2", executable="rviz2", name="rviz2", output="screen",
-            arguments=["-d", rviz_cfg],
-            condition=IfCondition(LaunchConfiguration("rviz")),
-        ),
     ])

@@ -20,7 +20,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "allow_single_lidar_fallback",
             default_value="true",
-            description="Allow mapping to continue from one lidar. Must be false for autonomous motion.",
+            description="Allow mapping to continue from one lidar for an approved hardware profile.",
         ),
         Node(
             package="wheelchair_3d_mapping",

@@ -1,0 +1,16 @@
+scan_merger_node:
+  ros__parameters:
+    input_topics:
+      - /scan_left
+    output_topic: /scan
+    frame_id: base_link
+    publish_rate_hz: 10.0
+    stale_timeout_sec: 0.5
+    require_all_sources: false
+    angle_min: -1.5708
+    angle_max: 1.5708
+    angle_increment: 0.0087
+    range_min: 0.08
+    range_max: 8.0
+    scan_time: 0.1
+    use_inf: true

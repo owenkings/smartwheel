@@ -1,0 +1,36 @@
+sensor_watchdog_node:
+  ros__parameters:
+    startup_grace_sec: 10.0
+    publish_rate_hz: 2.0
+    scan_timeout_sec: 0.8
+    odom_timeout_sec: 1.0
+    base_timeout_sec: 1.0
+    imu_timeout_sec: 1.5
+    imu_critical: true
+    ultrasonic_timeout_sec: 1.5
+    ultrasonic_topics:
+      - /ultrasonic/range_0
+      - /ultrasonic/range_1
+      - /ultrasonic/range_2
+      - /ultrasonic/range_3
+    ultrasonic_0_critical: true
+    ultrasonic_1_critical: true
+    ultrasonic_2_critical: true
+    ultrasonic_3_critical: true
+    camera_timeout_sec: 5.0
+    camera_topics:
+      - /camera/left/image_raw
+      - /camera/right/image_raw
+    points_timeout_sec: 1.5
+    points_topics:
+      - /xtm60/left/points
+    points_0_critical: true
+
+localization_health_node:
+  ros__parameters:
+    publish_rate_hz: 2.0
+    max_amcl_age_sec: 1000000.0
+    max_odom_age_sec: 1.0
+    max_scan_age_sec: 1.0
+    max_covariance_xy: 0.50
+    max_covariance_yaw: 0.35

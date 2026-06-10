@@ -19,10 +19,11 @@ try:
     from rclpy.node import Node
     from sensor_msgs.msg import LaserScan, Range
     from std_msgs.msg import Bool, String
+    from visualization_msgs.msg import Marker
 except ImportError:  # allow unit tests / py_compile without ROS installed
     rclpy = None
     Node = object
-    Twist = LaserScan = Range = Odometry = Bool = String = None
+    Twist = LaserScan = Range = Odometry = Bool = String = Marker = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,8 @@ class ReactiveExplorerNode(Node):
         p("odom_topic", "/wheel/odom")
         p("cmd_vel_topic", "/cmd_vel_nav")
         p("status_topic", "/exploration/status")
+        p("status_marker_topic", "/exploration/status_marker")
+        p("status_marker_frame", "base_link")
         p("forward_speed", 0.05)
         p("turn_speed", 0.22)
         p("turn_trigger_distance", 0.75)
@@ -231,6 +234,9 @@ class ReactiveExplorerNode(Node):
 
         self.cmd_pub = self.create_publisher(Twist, self.get_parameter("cmd_vel_topic").value, 10)
         self.status_pub = self.create_publisher(String, self.get_parameter("status_topic").value, 10)
+        self.status_marker_pub = self.create_publisher(
+            Marker, self.get_parameter("status_marker_topic").value, 10
+        )
         self.create_subscription(LaserScan, self.get_parameter("scan_topic").value, self.on_scan, 10)
         self.create_subscription(Odometry, self.get_parameter("odom_topic").value, self.on_odom, 10)
         self.create_subscription(
@@ -277,7 +283,37 @@ class ReactiveExplorerNode(Node):
         cmd.linear.x = float(linear)
         cmd.angular.z = float(angular)
         self.cmd_pub.publish(cmd)
+        self._publish_status(status)
+
+    def _publish_status(self, status: str):
         self.status_pub.publish(String(data=status))
+
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = str(self.get_parameter("status_marker_frame").value)
+        marker.ns = "reactive_explorer_status"
+        marker.id = 0
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.action = Marker.ADD
+        marker.pose.position.z = 1.35
+        marker.pose.orientation.w = 1.0
+        marker.scale.z = 0.16
+        marker.color.a = 1.0
+        if status.startswith("FORWARD"):
+            marker.color.g = 1.0
+        elif status.startswith(("TURN", "TURNING")):
+            marker.color.r = 1.0
+            marker.color.g = 0.75
+        elif status.startswith("IDLE"):
+            marker.color.r = 0.6
+            marker.color.g = 0.8
+            marker.color.b = 1.0
+        else:
+            marker.color.r = 1.0
+            marker.color.g = 0.2
+            marker.color.b = 0.2
+        marker.text = status
+        self.status_marker_pub.publish(marker)
 
     def _distance_from_forward_start(self) -> float:
         if self.last_odom_xy is None or self.forward_start_xy is None:
@@ -306,7 +342,7 @@ class ReactiveExplorerNode(Node):
     def tick(self):
         now = self.now()
         if not self.auto_start:
-            self.status_pub.publish(String(data="IDLE: reactive exploration disabled"))
+            self._publish_status("IDLE: reactive exploration disabled")
             return
         if not self.enable_received:
             self._clear_forward_window()
