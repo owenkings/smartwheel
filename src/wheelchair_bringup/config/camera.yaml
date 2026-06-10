@@ -11,10 +11,11 @@ camera_adapter_node:
     fps: 15.0
     # Two identical UVC cameras expose capture nodes on EVEN /dev/video indices
     # (0,2); ODD indices (1,3) are metadata-only and CANNOT capture. Verified on
-    # this Orin: /dev/video0 captures; /dev/video2 currently does NOT open
-    # (check the 2nd camera cable/port/bandwidth). Confirm left vs right and pin
-    # with udev/by-id (the two cameras share an identical by-id name).
-    enabled_cameras: [left, right]
+    # this Orin (2026-06-10): only /dev/video0 exists/captures; /dev/video2 is
+    # absent (second camera unplugged/faulty), so only the left camera is
+    # enabled to avoid endless V4L2 open-failure spam. Re-add `right` once the
+    # second camera is reconnected and confirmed at an even index.
+    enabled_cameras: [left]
     left_device: "0"
     right_device: "2"
     front_device: "0"

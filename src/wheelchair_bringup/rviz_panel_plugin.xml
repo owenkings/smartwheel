@@ -1,0 +1,12 @@
+<library path="wheelchair_teleop_panel">
+  <class
+    name="wheelchair_bringup/TeleopPanel"
+    type="wheelchair_bringup::TeleopPanel"
+    base_class_type="rviz_common::Panel">
+    <description>
+      On-screen wheelchair teleop panel. Publishes Twist to /cmd_vel_nav through
+      the safety supervisor. Buttons and W/A/S/D keys for Forward/Back/Left/Right,
+      Stop/Space to halt.
+    </description>
+  </class>
+</library>
