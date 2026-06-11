@@ -12,23 +12,37 @@ set -u
 workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$workspace_root"
 
-# Pick a usable X display. Override by exporting DISPLAY before running.
-if [[ -z "${DISPLAY:-}" ]]; then
-  for d in :1 :0 :1001; do
-    if DISPLAY="$d" timeout 3 xdpyinfo >/dev/null 2>&1; then
-      export DISPLAY="$d"
-      break
-    fi
+# Pick a usable X display + matching XAUTHORITY. The NoMachine/gdm session
+# usually lives on :1 with auth at /run/user/<uid>/gdm/Xauthority (NOT
+# ~/.Xauthority). Override by exporting DISPLAY/XAUTHORITY before running.
+detect_display() {
+  local uid xauth_candidates d xa
+  uid="$(id -u)"
+  xauth_candidates=(
+    "${XAUTHORITY:-}"
+    "/run/user/${uid}/gdm/Xauthority"
+    "$HOME/.Xauthority"
+  )
+  for d in "${DISPLAY:-}" :1 :0 :1001; do
+    [[ -z "$d" ]] && continue
+    for xa in "${xauth_candidates[@]}"; do
+      [[ -z "$xa" || ! -f "$xa" ]] && continue
+      if DISPLAY="$d" XAUTHORITY="$xa" timeout 3 xdpyinfo >/dev/null 2>&1; then
+        export DISPLAY="$d" XAUTHORITY="$xa"
+        return 0
+      fi
+    done
   done
-fi
+  return 1
+}
 
-if [[ -z "${DISPLAY:-}" ]]; then
-  echo "ERROR: no usable X DISPLAY found. On NoMachine, run this inside the" >&2
-  echo "remote desktop terminal, or 'export DISPLAY=:1' then re-run." >&2
+if ! detect_display; then
+  echo "ERROR: no usable X DISPLAY found. In your NoMachine desktop terminal run:" >&2
+  echo "  echo \$DISPLAY ; echo \$XAUTHORITY" >&2
+  echo "then re-run:  DISPLAY=<that> XAUTHORITY=<that> bash $0" >&2
   exit 1
 fi
-export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
-echo "Using DISPLAY=$DISPLAY"
+echo "Using DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY"
 
 if [[ ! -f /opt/ros/humble/setup.bash ]]; then
   echo "ERROR: /opt/ros/humble/setup.bash not found." >&2

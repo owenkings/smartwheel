@@ -117,6 +117,12 @@ Visualization Manager:
       Topic:
         Value: /camera/left/image_raw
         Reliability Policy: Best Effort
+    - Class: rviz_default_plugins/Image
+      Name: Right Camera
+      Enabled: true
+      Topic:
+        Value: /camera/right/image_raw
+        Reliability Policy: Best Effort
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
