@@ -1,0 +1,162 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: wheelchair_bringup/TeleopPanel
+    Name: Wheelchair Teleop
+    Topic: /cmd_vel_nav
+    Linear: 0.25
+    Angular: 0.6
+Visualization Manager:
+  Global Options:
+    # map frame is published by RTAB-Map (map->odom). While mapping, the growing
+    # cloud_map / grid_map live in the map frame, so this is the frame to watch.
+    # If RTAB-Map is not running yet, switch Fixed Frame to odom to still see the
+    # live sensors.
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 40
+      Cell Size: 0.5
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.6
+      Show Names: true
+    # --- RTAB-Map outputs (the mapping result) ---
+    - Class: rviz_default_plugins/PointCloud2
+      Name: RTAB-Map 3D Cloud Map
+      Enabled: true
+      Topic:
+        Value: /rtabmap/cloud_map
+        Depth: 5
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (m): 0.03
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+    - Class: rviz_default_plugins/Map
+      Name: RTAB-Map Projected Grid
+      Enabled: true
+      Topic:
+        Value: /rtabmap/grid_map
+        Durability Policy: Transient Local
+      Color Scheme: map
+    # --- Live sensors ---
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Merged Live Cloud
+      Enabled: true
+      Topic:
+        Value: /points_merged
+        Depth: 5
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (m): 0.03
+      Size (Pixels): 2
+      Color Transformer: Intensity
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Left XT-M60 Raw Cloud
+      Enabled: false
+      Topic:
+        Value: /xtm60/left/points
+        Depth: 5
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (m): 0.03
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+    - Class: rviz_default_plugins/LaserScan
+      Name: Merged Navigation Scan
+      Enabled: true
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (Pixels): 3
+      Color: 255; 80; 80
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic 0
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/range_0
+        Reliability Policy: Best Effort
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic 1
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/range_1
+        Reliability Policy: Best Effort
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic 2
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/range_2
+        Reliability Policy: Best Effort
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic 3
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/range_3
+        Reliability Policy: Best Effort
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/Odometry
+      Name: EKF Odometry
+      Enabled: true
+      Topic:
+        Value: /odometry/filtered
+        Reliability Policy: Best Effort
+      Keep: 100
+      Shape: Arrow
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/Image
+      Name: Left Camera
+      Enabled: true
+      Topic:
+        Value: /camera/left/image_raw
+        Reliability Policy: Best Effort
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbit3D
+      Distance: 12
+      Target Frame: base_link
+    Saved:
+      - Class: rviz_default_plugins/TopDownOrtho
+        Name: TopDown
+        Scale: 40
+        Target Frame: base_link
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
