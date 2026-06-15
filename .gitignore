@@ -75,3 +75,9 @@ tools/*
 
 # raw calibration captures (keep the .yaml, not the image tarball)
 calib/*.tar.gz
+
+# auto_test: keep only templates and README
+auto_test/*
+!auto_test/README.md
+!auto_test/templates/
+!auto_test/templates/**
