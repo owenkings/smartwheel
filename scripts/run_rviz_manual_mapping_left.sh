@@ -51,22 +51,46 @@ source "$ws_root/install/setup.bash" 2>/dev/null || true
 rviz_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/manual_mapping_left.rviz"
 [[ -f "$rviz_cfg" ]] || rviz_cfg="$ws_root/src/wheelchair_bringup/rviz/manual_mapping_left.rviz"
 
-pids=()
+stop_script="$ws_root/scripts/stop_mapping.sh"
+
+# --- Pre-launch cleanup: kill any leftover stack from a previous run so nodes
+#     don't pile up (e.g. multiple zlac8030_driver_node fighting the serial
+#     port). Without this, an unclean previous exit accumulates duplicates. ---
+if [[ -f "$stop_script" ]]; then
+  echo "Pre-launch cleanup of any previous mapping stack..."
+  bash "$stop_script" >/dev/null 2>&1 || true
+fi
+
+# --- Teardown: on exit/INT/TERM, tear down the whole subtree, not just the two
+#     direct child PIDs. ros2 launch can leak its children (they reparent to
+#     systemd --user and keep running), so we delegate to stop_mapping.sh which
+#     pattern-kills every node the stack starts (INT then KILL). ---
 cleanup() {
   trap - EXIT INT TERM
+  echo ""
+  echo "Shutting down mapping stack + RViz..."
+  # First INT the direct children we started (fast path for clean shutdown).
   for p in "${pids[@]}"; do kill -INT "$p" >/dev/null 2>&1 || true; done
+  # Then sweep the full subtree (handles leaked/reparented launch children).
+  if [[ -f "$stop_script" ]]; then
+    bash "$stop_script" >/dev/null 2>&1 || true
+  fi
 }
+pids=()
 trap cleanup EXIT INT TERM
 
+# Run each background job in its own session/process group (setsid) so the whole
+# group can be signalled together and children are easier to reap.
 # 1. Mapping stack, no bundled RViz.
-ros2 launch wheelchair_bringup manual_mapping_left.launch.py \
+setsid ros2 launch wheelchair_bringup manual_mapping_left.launch.py \
   motion_control_enabled:="$motion" rviz:=false delete_db_on_start:=true &
 pids+=("$!")
 
 # 2. RViz separately once the stack has had a moment to publish TF/topics.
 sleep 8
 echo "Starting RViz (mapping view + embedded TeleopPanel): $rviz_cfg"
-rviz2 -d "$rviz_cfg" &
+setsid rviz2 -d "$rviz_cfg" &
 pids+=("$!")
 
+# Wait for any child to exit (e.g. you close RViz), then cleanup() runs on EXIT.
 wait -n

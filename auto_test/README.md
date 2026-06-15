@@ -1,4 +1,4 @@
-y# SmartWheel 自动化可视化测试协议
+# SmartWheel 自动化可视化测试协议
 
 用 **ubuntu-desktop-control MCP** 截取 RViz / 桌面运行界面，对 SmartWheel 的运行状态做
 **可视化自动化测试**，并生成可直接用于修复的 Markdown 报告。
