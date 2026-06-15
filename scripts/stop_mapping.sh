@@ -25,6 +25,8 @@ patterns=(
   "wheelchair_3d_mapping/lib"
   "wheelchair_diagnostics/lib"
   "rtabmap_slam/rtabmap"
+  "robot_localization/ekf_node"
+  "robot_localization/lib"
   "robot_state_publisher --ros-args"
 )
 

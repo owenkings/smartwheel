@@ -12,8 +12,8 @@ ekf_filter_node:
     base_link_frame: base_link
     world_frame: odom
 
-    # Wheel odom is the long-term planar motion source once motor encoders are integrated.
-    # Keep this interface even when the first prototype uses mock odom or scan matching.
+    # Wheel odom is the long-term planar motion source. It anchors the ABSOLUTE
+    # yaw of the odom frame (starts at 0 at node start). x/y + vx/vy + vyaw fused.
     odom0: /wheel/odom
     odom0_config: [true, true, false,
                    false, false, true,
@@ -24,15 +24,23 @@ ekf_filter_node:
     odom0_relative: false
     odom0_queue_size: 10
 
-    # IMU is useful for yaw rate, tilt, ramps, and abnormal shaking.
-    # It must not be treated as a standalone long-term indoor localization source.
+    # IMU (H30): excellent short-term yaw, but its absolute heading is in the
+    # sensor's OWN AHRS reference (~173 deg off the odom frame here), so it must
+    # NOT be fused as a second ABSOLUTE yaw next to wheel odom -- two conflicting
+    # absolute headings make the EKF jitter between them.
+    #
+    # FIX (keeps all IMU info, drops nothing): imu0_differential: true. In
+    # differential mode robot_localization integrates the CHANGE in IMU yaw
+    # instead of its absolute value, so the constant ~173 deg offset cancels and
+    # the IMU's yaw motion is still fully fused. Wheel odom stays the single
+    # absolute yaw anchor; IMU contributes yaw rate (relative yaw + vyaw).
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,
                   false, false, true,
                   true, false, false]
-    imu0_differential: false
+    imu0_differential: true
     imu0_relative: false
     imu0_remove_gravitational_acceleration: true
     imu0_queue_size: 10

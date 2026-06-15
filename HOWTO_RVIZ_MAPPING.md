@@ -104,7 +104,16 @@ bash scripts/save_mapping_result.sh lab_map_01
 - `lab_map_01.ply`：导出的 3D 点云（可用 CloudCompare/MeshLab 打开）
 
 ### 2.7 结束
-回到运行建图的终端按 `Ctrl+C` 停止。
+回到运行建图的终端按 `Ctrl+C` 停止。脚本会自动收尾：先 INT 直接子进程，再调用
+`scripts/stop_mapping.sh` 扫掉整个子树（处理 ros2 launch 偶发逃逸/被 systemd 收养的节点）。
+
+> 若发现退出后仍有残留（`ps -ef | grep wheelchair_` 还有节点，或 `ros2 node list` 出现
+> 重复节点名），手动兜底全清：
+> ```bash
+> bash scripts/stop_mapping.sh          # 优雅(INT)→超时→强杀(KILL)
+> bash scripts/stop_mapping.sh --force  # 直接强杀
+> ```
+> 启动脚本现在每次启动前也会自动预清理上一轮残留，避免 `zlac8030_driver_node` 多份争串口。
 
 ### 2.8 查看建好的地图
 保存后 `maps/<name>/` 里有三种文件，各用不同方式查看（都在 NoMachine 桌面里开）：
@@ -167,6 +176,7 @@ rtabmap-databaseViewer ~/smartwheel/maps/lab_map_01/lab_map_01.db
 | 后退不动 | 严格配置禁止倒车；手动建图配置已开启倒车。确认用的是 `safety_params_manual_mapping.yaml`（manual_mapping/teleop 默认就是它） |
 | 指令在动/不动间抖动 | 命令行 `ros2 topic pub` 和 RViz 面板抢 `/cmd_vel_nav`。只用面板驾驶，别再手动 pub |
 | 雷达点云突然没了几秒 | XT-M60 偶发瞬时断流，会自动重连恢复，等几秒 |
+| 退出后还有节点残留 / `ros2 node list` 有重复节点名 | 跑 `bash scripts/stop_mapping.sh` 兜底全清；启动脚本已会自动预清理上一轮残留 |
 | 排版重启又变回去 | 没保存，改完按 `Ctrl+S` |
 
 ---
