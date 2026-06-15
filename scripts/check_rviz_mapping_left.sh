@@ -32,12 +32,13 @@ check_present() {  # topic
   fi
 }
 
-check_field_false() {  # topic field human  -> pass if value is "false"
+check_field_false() {  # topic field human  -> pass if value is false (any case)
   local topic="$1" field="$2"
   local val
   val="$(timeout 5 ros2 topic echo "$topic" --field "$field" --once 2>/dev/null | head -1)"
-  if [[ "$val" == "false" ]]; then
-    printf '  OK   %-26s %s=false\n' "$topic" "$field"; pass=$((pass+1))
+  local lc="${val,,}"
+  if [[ "$lc" == "false" ]]; then
+    printf '  OK   %-26s %s=%s\n' "$topic" "$field" "$val"; pass=$((pass+1))
   else
     printf '  FAIL %-26s %s=%s (expected false)\n' "$topic" "$field" "${val:-?}"; fail=$((fail+1))
   fi

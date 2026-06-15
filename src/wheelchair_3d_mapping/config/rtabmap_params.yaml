@@ -18,18 +18,24 @@ icp_odometry:
     qos_imu: 1           # /imu/data is RELIABLE
     deskewing: false     # flash ToF: no intra-frame distortion, no per-point time
     expected_update_rate: 0.0
-    Icp/VoxelSize: "0.1"
+    # --- ICP tuning for the narrow 120-deg flash LiDAR ---
+    # Finer voxel keeps more points in the (small) overlap region so ICP locks
+    # better during turns; more iterations + smaller correspondence distance.
+    Icp/VoxelSize: "0.05"
     Icp/PointToPlane: "true"
     Icp/PointToPlaneK: "10"
-    Icp/MaxCorrespondenceDistance: "1.0"
-    Icp/Iterations: "10"
+    Icp/MaxCorrespondenceDistance: "0.5"
+    Icp/Iterations: "30"
     Icp/Epsilon: "0.001"
-    Icp/MaxTranslation: "2.0"
-    Icp/CorrespondenceRatio: "0.2"
+    Icp/MaxTranslation: "1.0"
+    Icp/CorrespondenceRatio: "0.1"
     Odom/Strategy: "0"        # 0=Frame-to-Map
     Odom/GuessMotion: "true"
-    Odom/ScanKeyFrameThr: "0.7"
-    OdomF2M/ScanMaxSize: "15000"
+    Odom/ScanKeyFrameThr: "0.8"
+    OdomF2M/ScanMaxSize: "20000"
+    OdomF2M/ScanSubtractRadius: "0.05"
+    # Planar chair: lock roll/pitch/z so drift cannot tilt the map.
+    Reg/Force3DoF: "true"
 
 rtabmap:
   ros__parameters:
@@ -44,22 +50,33 @@ rtabmap:
     Reg/Force3DoF: "true"      # planar wheelchair trajectory; cloud map remains 3D
     Mem/IncrementalMemory: "true"
     Mem/STMSize: "30"
+    # Hardware odom (EKF) leads; ICP refines each neighbor link so wheel-odom
+    # drift between keyframes is corrected by the LiDAR. This is the "hardware
+    # first, ICP assists" link refinement.
+    RGBD/NeighborLinkRefining: "true"
+    # Proximity (space) loop closure: with no visual loop closure on this narrow
+    # LiDAR, space-proximity links are the only way to close a loop when the chair
+    # returns near a past pose. Widen the search so a lap around a table can link.
     RGBD/ProximityBySpace: "true"
+    RGBD/ProximityPathMaxNeighbors: "10"
+    RGBD/ProximityMaxGraphDepth: "0"
+    RGBD/LocalRadius: "3.0"
     RGBD/AngularUpdate: "0.05"   # [site] new keyframe after this much rotation (rad)
     RGBD/LinearUpdate: "0.05"    # [site] new keyframe after this much translation (m)
+    RGBD/OptimizeFromGraphEnd: "false"
     RGBD/OptimizeMaxError: "3.0"
     Rtabmap/DetectionRate: "1.0"
-    Icp/VoxelSize: "0.1"
+    Icp/VoxelSize: "0.05"
     Icp/PointToPlane: "true"
-    Icp/MaxCorrespondenceDistance: "1.0"
-    Icp/Iterations: "10"
-    Icp/CorrespondenceRatio: "0.2"
+    Icp/MaxCorrespondenceDistance: "0.5"
+    Icp/Iterations: "30"
+    Icp/CorrespondenceRatio: "0.1"
     # 2D occupancy grid (/rtabmap/grid_map) PROJECTED from the 3D scan cloud, for Nav2.
     Grid/Sensor: "0"           # 0=laser scan / point cloud (0.22 replaced Grid/FromDepth)
     Grid/3D: "false"           # 2D projection (cloud projected to xy plane)
     Grid/NormalsSegmentation: "false"  # ground/obstacle split by height (robust for sparse cloud)
     Grid/CellSize: "0.05"
-    Grid/RangeMax: "20.0"
+    Grid/RangeMax: "12.0"
     Grid/MaxGroundHeight: "0.15"    # [site] points below this are ground (floor flatness)
     Grid/MaxObstacleHeight: "1.8"   # [site] ceiling / usable-height cutoff
     Grid/GroundIsObstacle: "false"

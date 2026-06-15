@@ -14,8 +14,8 @@ xtm60_adapter_node:
 
     # Keep 1.0 unless hardware validation proves the SDK build returns mm.
     point_unit_scale: 1.0
-    range_min: 0.05
-    range_max: 20.0
+    range_min: 0.3
+    range_max: 12.0
     publish_intensity: true
 
     # Conservative SDK-side filters. Tune with real raw data.

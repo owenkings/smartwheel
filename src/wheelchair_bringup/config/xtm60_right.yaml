@@ -10,8 +10,8 @@ xtm60_right_adapter_node:
     use_sdk_timestamps: false
 
     point_unit_scale: 1.0
-    range_min: 0.05
-    range_max: 20.0
+    range_min: 0.3
+    range_max: 12.0
     publish_intensity: true
 
     enable_sdk_filters: true

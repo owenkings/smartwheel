@@ -8,8 +8,10 @@ dual_lidar_cloud_fusion_node:
     status_topic: /points_merged/status
 
     # Radial range filter (sensor frame), then height filter (target frame).
-    min_range: 0.05
-    max_range: 20.0
+    # XT-M60 trustworthy band is ~0.3-15 m; use 0.3-12 m to drop the blind-zone
+    # noise and unreliable far/flying points.
+    min_range: 0.3
+    max_range: 12.0
     z_min: -2.0
     z_max: 3.0
 

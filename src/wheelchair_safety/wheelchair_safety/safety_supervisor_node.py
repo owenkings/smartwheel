@@ -28,6 +28,11 @@ class SafetyParams:
     allow_reverse_motion: bool = False
     allow_rotation_when_blocked: bool = False
     max_reverse_speed: float = 0.15
+    # Manual mode: human-supervised teleop. Skips ALL obstacle/distance gating
+    # (scan + ultrasonic stop/slowdown/rotation), so the operator drives freely
+    # and can combine linear + angular (arc turns). Software/hardware E-stop and
+    # speed clamping STILL apply. Never enable for autonomous operation.
+    manual_bypass: bool = False
     rotate_in_place_angular_threshold: float = 0.2
     rotation_stop_distance: float = 0.7
     warning_distance: float = 1.5
@@ -176,6 +181,19 @@ def evaluate_safety(
             "software stop command is active",
             0.0,
             0.0,
+            scan_distance,
+            min_ultra,
+            dynamic_stop,
+        )
+    # Manual mode: human-supervised driving. E-stops above still apply; below
+    # here all obstacle/distance gating is skipped so the operator drives freely
+    # (including arc turns: combined linear + angular). Speed is still clamped.
+    if params.manual_bypass:
+        return SafetyDecision(
+            "MANUAL",
+            "manual mode: obstacle safety bypassed (human supervised)",
+            capped_linear,
+            capped_angular,
             scan_distance,
             min_ultra,
             dynamic_stop,
@@ -580,45 +598,48 @@ class SafetySupervisorNode(Node):
     def publish_safe_command(self):
         now = self.get_clock().now()
         scan_distance = self.latest_scan_distance
-        age = (now - self.last_scan_time).nanoseconds / 1e9
-        if age > self.stale_timeout_sec:
-            self._publish_zero_state(f"SENSOR_FAULT: scan stale for {age:.2f}s")
-            return
-
-        if self.require_emergency_heartbeat:
-            if self.last_emergency_time is None:
-                self._publish_zero_state("SENSOR_FAULT: emergency-stop heartbeat missing")
-                return
-            e_age = (now - self.last_emergency_time).nanoseconds / 1e9
-            if e_age > self.emergency_timeout_sec:
-                self._publish_zero_state(f"SENSOR_FAULT: emergency-stop heartbeat stale for {e_age:.2f}s")
+        manual = self.params.manual_bypass
+        if not manual:
+            age = (now - self.last_scan_time).nanoseconds / 1e9
+            if age > self.stale_timeout_sec:
+                self._publish_zero_state(f"SENSOR_FAULT: scan stale for {age:.2f}s")
                 return
 
-        ultrasonic_fault = self._ultrasonic_fault_reason(now)
-        if ultrasonic_fault:
-            self._publish_zero_state(f"SENSOR_FAULT: {ultrasonic_fault}")
-            return
+            if self.require_emergency_heartbeat:
+                if self.last_emergency_time is None:
+                    self._publish_zero_state("SENSOR_FAULT: emergency-stop heartbeat missing")
+                    return
+                e_age = (now - self.last_emergency_time).nanoseconds / 1e9
+                if e_age > self.emergency_timeout_sec:
+                    self._publish_zero_state(f"SENSOR_FAULT: emergency-stop heartbeat stale for {e_age:.2f}s")
+                    return
 
-        localization_fault = self._localization_fault_reason(now)
-        if localization_fault:
-            self._publish_zero_state(f"SENSOR_FAULT: {localization_fault}")
-            return
+            ultrasonic_fault = self._ultrasonic_fault_reason(now)
+            if ultrasonic_fault:
+                self._publish_zero_state(f"SENSOR_FAULT: {ultrasonic_fault}")
+                return
 
-        if self.system_stop_required:
-            self._publish_zero_state(
-                f"SENSOR_FAULT: diagnostic stop required; {self.system_stop_reason}"
-            )
-            return
+        if not manual:
+            localization_fault = self._localization_fault_reason(now)
+            if localization_fault:
+                self._publish_zero_state(f"SENSOR_FAULT: {localization_fault}")
+                return
 
-        if self.require_consistency_healthy and self.consistency_score < self.min_consistency_score:
-            self._publish_zero_state(
-                f"SENSOR_FAULT: wheel/LIVO consistency too low ({self.consistency_score:.2f})"
-            )
-            return
+            if self.system_stop_required:
+                self._publish_zero_state(
+                    f"SENSOR_FAULT: diagnostic stop required; {self.system_stop_reason}"
+                )
+                return
 
-        if self.passability_state == "BLOCKED":
-            self._publish_zero_state(f"STOP: passability blocked; {self.passability_reason}")
-            return
+            if self.require_consistency_healthy and self.consistency_score < self.min_consistency_score:
+                self._publish_zero_state(
+                    f"SENSOR_FAULT: wheel/LIVO consistency too low ({self.consistency_score:.2f})"
+                )
+                return
+
+            if self.passability_state == "BLOCKED":
+                self._publish_zero_state(f"STOP: passability blocked; {self.passability_reason}")
+                return
 
         cmd_age = (now - self.latest_cmd_time).nanoseconds / 1e9
         requested = self.latest_cmd if cmd_age <= self.cmd_timeout_sec else (0.0, 0.0)

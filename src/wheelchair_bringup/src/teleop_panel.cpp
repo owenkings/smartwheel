@@ -44,9 +44,6 @@ TeleopPanel::TeleopPanel(QWidget * parent)
 
   for (auto * b : {forward_button_, backward_button_, left_button_, right_button_}) {
     b->setMinimumHeight(48);
-    b->setAutoRepeat(true);
-    b->setAutoRepeatDelay(0);
-    b->setAutoRepeatInterval(80);
   }
   stop_button_->setMinimumHeight(48);
   stop_button_->setStyleSheet("background-color:#aa3030; color:white; font-weight:bold;");
@@ -72,16 +69,16 @@ TeleopPanel::TeleopPanel(QWidget * parent)
 
   setLayout(main_layout);
 
-  // While a button is held (autorepeat) it keeps the target; pressed sets the
-  // direction, released stops.
-  connect(forward_button_, &QPushButton::pressed, this, &TeleopPanel::setForward);
-  connect(forward_button_, &QPushButton::released, this, &TeleopPanel::stop);
-  connect(backward_button_, &QPushButton::pressed, this, &TeleopPanel::setBackward);
-  connect(backward_button_, &QPushButton::released, this, &TeleopPanel::stop);
-  connect(left_button_, &QPushButton::pressed, this, &TeleopPanel::setLeft);
-  connect(left_button_, &QPushButton::released, this, &TeleopPanel::stop);
-  connect(right_button_, &QPushButton::pressed, this, &TeleopPanel::setRight);
-  connect(right_button_, &QPushButton::released, this, &TeleopPanel::stop);
+  // Buttons set their direction flag while pressed and clear it on release.
+  // Multiple held directions combine (e.g. Forward+Left = forward-left arc).
+  connect(forward_button_, &QPushButton::pressed, this, [this]() {setDir(true, false, false, false, true);});
+  connect(forward_button_, &QPushButton::released, this, [this]() {setDir(true, false, false, false, false);});
+  connect(backward_button_, &QPushButton::pressed, this, [this]() {setDir(false, true, false, false, true);});
+  connect(backward_button_, &QPushButton::released, this, [this]() {setDir(false, true, false, false, false);});
+  connect(left_button_, &QPushButton::pressed, this, [this]() {setDir(false, false, true, false, true);});
+  connect(left_button_, &QPushButton::released, this, [this]() {setDir(false, false, true, false, false);});
+  connect(right_button_, &QPushButton::pressed, this, [this]() {setDir(false, false, false, true, true);});
+  connect(right_button_, &QPushButton::released, this, [this]() {setDir(false, false, false, true, false);});
   connect(stop_button_, &QPushButton::clicked, this, &TeleopPanel::stop);
   connect(linear_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
     this, &TeleopPanel::updateSpeeds);
@@ -118,23 +115,46 @@ void TeleopPanel::updateSpeeds()
 {
   max_linear_ = linear_spin_->value();
   max_angular_ = angular_spin_->value();
+  recomputeTarget();
 }
 
-void TeleopPanel::setTarget(double linear_scale, double angular_scale, const QString & label)
+void TeleopPanel::setDir(bool forward, bool backward, bool left, bool right, bool held)
 {
-  target_linear_ = linear_scale * max_linear_;
-  target_angular_ = angular_scale * max_angular_;
-  state_label_->setText(label);
-  state_label_->setStyleSheet("color:#ffd000; font-weight:bold; font-size:14px;");
+  if (forward) {fwd_ = held;}
+  if (backward) {back_ = held;}
+  if (left) {left_ = held;}
+  if (right) {right_ = held;}
+  recomputeTarget();
 }
 
-void TeleopPanel::setForward() {setTarget(1.0, 0.0, "FORWARD");}
-void TeleopPanel::setBackward() {setTarget(-1.0, 0.0, "BACK");}
-void TeleopPanel::setLeft() {setTarget(0.0, 1.0, "TURN LEFT");}
-void TeleopPanel::setRight() {setTarget(0.0, -1.0, "TURN RIGHT");}
+void TeleopPanel::recomputeTarget()
+{
+  double lin = 0.0;
+  if (fwd_) {lin += 1.0;}
+  if (back_) {lin -= 1.0;}
+  double ang = 0.0;
+  if (left_) {ang += 1.0;}
+  if (right_) {ang -= 1.0;}
+
+  target_linear_ = lin * max_linear_;
+  target_angular_ = ang * max_angular_;
+
+  QString label;
+  if (lin == 0.0 && ang == 0.0) {
+    label = "STOPPED";
+    state_label_->setStyleSheet("color:#80ff80; font-weight:bold; font-size:14px;");
+  } else {
+    QString lin_s = lin > 0 ? "FWD" : (lin < 0 ? "BACK" : "");
+    QString ang_s = ang > 0 ? "LEFT" : (ang < 0 ? "RIGHT" : "");
+    label = (lin_s + " " + ang_s).trimmed();
+    state_label_->setStyleSheet("color:#ffd000; font-weight:bold; font-size:14px;");
+  }
+  state_label_->setText(label);
+}
 
 void TeleopPanel::stop()
 {
+  fwd_ = back_ = left_ = right_ = false;
   target_linear_ = 0.0;
   target_angular_ = 0.0;
   state_label_->setText("STOPPED");
@@ -165,16 +185,16 @@ bool TeleopPanel::eventFilter(QObject * object, QEvent * event)
     const bool pressed = (event->type() == QEvent::KeyPress);
     switch (key_event->key()) {
       case Qt::Key_W:
-        pressed ? setForward() : stop();
+        setDir(true, false, false, false, pressed);
         return true;
       case Qt::Key_S:
-        pressed ? setBackward() : stop();
+        setDir(false, true, false, false, pressed);
         return true;
       case Qt::Key_A:
-        pressed ? setLeft() : stop();
+        setDir(false, false, true, false, pressed);
         return true;
       case Qt::Key_D:
-        pressed ? setRight() : stop();
+        setDir(false, false, false, true, pressed);
         return true;
       case Qt::Key_Space:
         if (pressed) {

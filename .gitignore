@@ -3,7 +3,6 @@ build/
 install/
 log/
 .ros/
-.ros/
 
 # Python cache
 __pycache__/
@@ -36,16 +35,20 @@ maps/*
 *.so
 
 # IDE / AI agents
-# IDE / AI agents
 .vscode/
 .idea/
 .agents/
 .codex/
-.agents/
-.codex/
+.vscode-test/
+*.code-workspace
 *.swp
 *.swo
 *~
+
+# Local scratch files kept at repo root during bringup/debugging
+/.*.log
+/.*.txt
+/.*.py
 
 # OS
 .DS_Store

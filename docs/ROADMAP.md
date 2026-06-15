@@ -28,10 +28,15 @@
 ## 阶段总览
 | 阶段 | 名称 | 目标 | 状态 |
 |---|---|---|---|
-| 0 | RViz 传感器可视化 | 在 RViz 看到点云/scan/IMU/超声波/相机/TF，不动电机 | spec: `specs/stage0_sensor_visualization.md` |
-| 1 | 手动行走建图 | 用户按键/面板控制低速行走，RTAB-Map 边走边建图，保存地图 | spec: `specs/stage1_manual_mapping.md` |
-| 2 | 自主建图 (reactive) | 轮椅自主低速探索建图（先 reactive，不做 frontier） | spec: `specs/stage2_autonomous_mapping.md` |
-| 3 | 定位导航 + 上层 | 已有地图重定位、POI 导航、GUI/语音/用户地图 | spec: `specs/stage3_navigation_and_apps.md` |
+| 0 | RViz 传感器可视化 | 在 RViz 看到点云/scan/IMU/超声波/相机/TF，不动电机 | spec: `specs/stage0_sensor_visualization.md` ✅ |
+| 1 | 手动行走建图 | 用户按键/面板控制低速行走，RTAB-Map 边走边建图，保存地图 | spec: `specs/stage1_manual_mapping.md` ✅ 基本完成 |
+| 2 | 定位 + 导航 | 用手动建的图重定位，RViz/POI 点选目标，Nav2 自主导航到达 | spec: `specs/stage2_navigation.md` |
+| 3 | 自主建图 (reactive) | 轮椅自主低速探索建图（先 reactive，不做 frontier） | spec: `specs/stage3_autonomous_mapping.md` |
+
+> **顺序说明（2026-06 调整）**：先做"手动建图 + 导航"打底（人工建图 → 自主导航的最小可用闭环），
+> 自主建图后置。理由：手动建图 + 导航能形成一个完整可用的系统；自主建图是增强项，
+> 即使难度大或暂时做不出，也不影响"手动建图打底 + 导航"这条主线可用。
+> 上层应用（GUI/Web、语音、用户 POI 地图）作为阶段 2 的子项或更后续逐步接回。
 
 ## 复用的底座资产（不重写，从 git 历史 checkout）
 XT-M60 左雷达驱动、H30 IMU、超声波、相机驱动、URDF/TF、robot_state_publisher、

@@ -273,6 +273,14 @@ class Zlac8030DriverNode(Node):
             return self._write_control_stop(emergency=False)
         left_value = int(round(left_rpm * self.rpm_to_register_scale))
         right_value = int(round(right_rpm * self.rpm_to_register_scale))
+        self.get_logger().info(
+            f"ZLAC write: left_rpm={left_rpm:.2f} right_rpm={right_rpm:.2f} "
+            f"-> reg[{self.registers.command_left_register}]={left_value} "
+            f"reg[{self.registers.command_right_register}]={right_value} "
+            f"single_dual={self.single_slave_dual_axis} together={self.write_dual_axis_command_together} "
+            f"init={self.motion_initialized}",
+            throttle_duration_sec=1.0,
+        )
         try:
             if (
                 self.motion_control_enabled
@@ -342,10 +350,17 @@ class Zlac8030DriverNode(Node):
                 self.registers.control_word_register,
                 self.registers.clear_fault_value,
             )
+            # The ZLAC8030D state machine needs a short settle time between
+            # clear-fault and drive-enable, and again after enable, before it
+            # will accept target speeds. Without these delays the registers are
+            # written "successfully" but the drive stays disabled and the wheels
+            # report 0 rpm. Mirrors the known-good bring-up jog script.
+            time.sleep(0.2)
             self._write_if_configured(
                 self.registers.control_word_register,
                 self.registers.drive_enable_value,
             )
+            time.sleep(0.2)
             self.motion_initialized = True
             return True
         except Exception as exc:

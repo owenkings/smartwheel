@@ -38,6 +38,7 @@ def generate_launch_description():
 
     motion_control_enabled = LaunchConfiguration("motion_control_enabled")
     use_rviz = LaunchConfiguration("rviz")
+    safety_params_file = LaunchConfiguration("safety_params_file")
 
     sensors_launch = os.path.join(bringup, "launch", "sensors.launch.py")
     base_launch = os.path.join(bringup, "launch", "base.launch.py")
@@ -48,6 +49,18 @@ def generate_launch_description():
             description="HIGH RISK. true lets /cmd_vel_safe write real motor speeds. "
                         "Default false = read-only (verify the chain without moving)."),
         DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument(
+            "enable_ekf", default_value="true",
+            description="Run robot_localization EKF as the odom->base_link owner. "
+                        "Set false when an external odometry source (e.g. RTAB-Map "
+                        "icp_odometry) owns that TF, to avoid a TF fight."),
+        DeclareLaunchArgument(
+            "safety_params_file",
+            default_value=PathJoinSubstitution(
+                [bringup_share, "config", "safety_params_manual_mapping.yaml"]),
+            description="Safety profile. Default = human-supervised manual-mapping profile "
+                        "(ignores the chair's own structure on ultrasonic, tolerates brief "
+                        "LiDAR drop-outs). Pass safety_params.yaml for the strict profile."),
 
         LogInfo(msg="[manual_teleop] single LEFT XT-M60, manual teleop only. "
                     "No Nav2 / RTAB-Map / explorer. Drive from the RViz TeleopPanel."),
@@ -80,10 +93,12 @@ def generate_launch_description():
         ),
 
         # Wheel + IMU EKF: owns odom->base_link TF and publishes /odometry/filtered.
+        # Disabled (enable_ekf:=false) when icp_odometry owns odom->base_link.
         Node(
             package="robot_localization", executable="ekf_node", name="ekf_filter_node",
             output="screen",
             parameters=[os.path.join(bringup, "config", "robot_localization_ekf.yaml")],
+            condition=IfCondition(LaunchConfiguration("enable_ekf")),
         ),
 
         # Watchdog with the LEFT-ONLY profile so the broken right radar is not
@@ -98,7 +113,7 @@ def generate_launch_description():
         Node(
             package="wheelchair_safety", executable="emergency_stop_node",
             name="emergency_stop_node", output="screen",
-            parameters=[PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"])],
+            parameters=[safety_params_file],
         ),
 
         # Safety supervisor: /cmd_vel_nav -> /cmd_vel_safe. Manual teleop still
@@ -107,7 +122,7 @@ def generate_launch_description():
             package="wheelchair_safety", executable="safety_supervisor_node",
             name="safety_supervisor_node", output="screen",
             parameters=[
-                PathJoinSubstitution([bringup_share, "config", "safety_params.yaml"]),
+                safety_params_file,
                 {"require_localization_healthy": False},
             ],
         ),

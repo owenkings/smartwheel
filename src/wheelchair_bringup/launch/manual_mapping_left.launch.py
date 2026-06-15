@@ -5,15 +5,17 @@
   the 3D cloud map and 2D projected grid while the user drives by hand.
 
 Mapping data flow:
-  /points_merged (left-only fallback) + /odometry/filtered (EKF)
-     -> RTAB-Map -> /rtabmap/cloud_map (3D)  /rtabmap/grid_map (2D)
+  /points_merged (left-only fallback) + /odometry/filtered (EKF: wheel + IMU)
+     -> RTAB-Map (external odom) -> /rtabmap/cloud_map (3D)  /rtabmap/grid_map (2D)
 
 Control (safety never bypassed):
   RViz TeleopPanel -> /cmd_vel_nav -> safety_supervisor -> /cmd_vel_safe -> base
 
-RTAB-Map runs in EXTERNAL odom mode using /odometry/filtered, so the EKF stays
-the single odom->base_link owner (icp_odometry is NOT started, avoiding a TF
-fight). NO Nav2, NO autonomous explorer.
+Odometry = HARDWARE FIRST: the robot_localization EKF fuses wheel odometry +
+H30 IMU and owns odom->base_link (more accurate than narrow-FOV ICP on a planar
+floor). RTAB-Map runs in external-odom mode: it uses the EKF trajectory and adds
+LiDAR ICP only to refine neighbor links and detect space-proximity loop closures
+(ICP assists, hardware leads). NO Nav2, NO autonomous explorer.
 
 SAFETY: motors move only with motion_control_enabled:=true (default false =
 read-only). Off-ground/clear-area test first, keep the physical E-stop in reach.
@@ -59,14 +61,16 @@ def generate_launch_description():
                     "Drive from the RViz TeleopPanel; RTAB-Map builds the map as you go. "
                     "No Nav2 / no autonomous explorer."),
 
-        # 1. Manual teleop base stack (sensors, TF, scan, EKF, watchdog, safety,
-        #    base, RViz TeleopPanel). RViz is started here separately, so disable
-        #    the one inside manual_teleop to avoid two RViz windows.
+        # 1. Manual teleop base stack (sensors, TF, scan, watchdog, safety,
+        #    base, RViz TeleopPanel) WITH the EKF enabled: wheel-odom + IMU is the
+        #    primary odom->base_link source (hardware odometry, more accurate than
+        #    narrow-FOV ICP on a planar floor). RViz started separately below.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(manual_teleop_launch),
             launch_arguments={
                 "motion_control_enabled": motion_control_enabled,
                 "rviz": "false",
+                "enable_ekf": "true",
             }.items(),
         ),
 
@@ -78,9 +82,11 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 3. RTAB-Map in EXTERNAL odom mode (uses EKF /odometry/filtered, no icp
-        #    so it does not fight the EKF for odom->base_link). Camera kept out of
-        #    the geometry sync path (subscribe_rgb:=false).
+        # 3. RTAB-Map in EXTERNAL odom mode: it consumes the EKF odometry
+        #    (/odometry/filtered, wheel + IMU) as the trajectory, and uses LiDAR
+        #    ICP only to REFINE neighbor links and detect space-proximity loop
+        #    closures. Hardware odometry leads, ICP assists. The EKF owns
+        #    odom->base_link (icp_odometry NOT started, no TF fight).
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rtabmap_launch),
             launch_arguments={

@@ -1,162 +1,605 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 0
     Name: Displays
     Property Tree Widget:
-      Expanded: ~
+      Expanded:
+        - /Left XT-M60 Raw Cloud (color = distance)1
+        - /Left XT-M60 Raw Cloud (color = distance)1/Topic1
+      Splitter Ratio: 0.5
+    Tree Height: 140
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+      - /TopDown1
     Name: Views
-  - Class: wheelchair_bringup/TeleopPanel
+    Splitter Ratio: 0.5
+  - Angular: 0.5
+    Class: wheelchair_bringup/TeleopPanel
+    Linear: 0.1
     Name: Wheelchair Teleop
     Topic: /cmd_vel_nav
-    Linear: 0.25
-    Angular: 0.6
 Visualization Manager:
-  Global Options:
-    # map frame is published by RTAB-Map (map->odom). While mapping, the growing
-    # cloud_map / grid_map live in the map frame, so this is the frame to watch.
-    # If RTAB-Map is not running yet, switch Fixed Frame to odom to still see the
-    # live sensors.
-    Fixed Frame: map
-    Background Color: 48; 48; 48
-    Frame Rate: 15
+  Class: ""
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
-      Enabled: true
-      Plane Cell Count: 40
+    - Alpha: 0.5
       Cell Size: 0.5
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 40
       Reference Frame: <Fixed Frame>
-    - Class: rviz_default_plugins/RobotModel
-      Name: RobotModel
-      Enabled: true
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
       Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /robot_description
-        Durability Policy: Transient Local
-        Reliability Policy: Reliable
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_front_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_rear_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        imu_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        laser_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_wheel_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_wheel_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_0_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_1_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_3_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_4_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ultrasonic_5_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        xtm60_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        xtm60_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
     - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+        base_link:
+          Value: true
+        camera_front_link:
+          Value: true
+        camera_left_link:
+          Value: true
+        camera_rear_link:
+          Value: true
+        camera_right_link:
+          Value: true
+        imu_link:
+          Value: true
+        laser_link:
+          Value: true
+        left_wheel_link:
+          Value: true
+        map:
+          Value: true
+        odom:
+          Value: true
+        right_wheel_link:
+          Value: true
+        ultrasonic_0_link:
+          Value: true
+        ultrasonic_1_link:
+          Value: true
+        ultrasonic_2_link:
+          Value: true
+        ultrasonic_3_link:
+          Value: true
+        ultrasonic_4_link:
+          Value: true
+        ultrasonic_5_link:
+          Value: true
+        xtm60_left_link:
+          Value: true
+        xtm60_right_link:
+          Value: true
+      Marker Scale: 0.6000000238418579
       Name: TF
-      Enabled: true
-      Marker Scale: 0.6
+      Show Arrows: true
+      Show Axes: true
       Show Names: true
-    # --- RTAB-Map outputs (the mapping result) ---
-    - Class: rviz_default_plugins/PointCloud2
+      Tree:
+        map:
+          odom:
+            base_link:
+              camera_front_link:
+                {}
+              camera_left_link:
+                {}
+              camera_rear_link:
+                {}
+              camera_right_link:
+                {}
+              imu_link:
+                {}
+              laser_link:
+                {}
+              left_wheel_link:
+                {}
+              right_wheel_link:
+                {}
+              ultrasonic_0_link:
+                {}
+              ultrasonic_1_link:
+                {}
+              ultrasonic_2_link:
+                {}
+              ultrasonic_3_link:
+                {}
+              ultrasonic_4_link:
+                {}
+              ultrasonic_5_link:
+                {}
+              xtm60_left_link:
+                {}
+              xtm60_right_link:
+                {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 1.4181864261627197
+        Min Value: -1.0885553359985352
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
       Name: RTAB-Map 3D Cloud Map
-      Enabled: true
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.029999999329447746
+      Style: Points
       Topic:
-        Value: /rtabmap/cloud_map
         Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
         Reliability Policy: Reliable
-        Durability Policy: Transient Local
-      Style: Points
-      Size (m): 0.03
-      Size (Pixels): 2
-      Color Transformer: AxisColor
-      Axis: Z
-    - Class: rviz_default_plugins/Map
-      Name: RTAB-Map Projected Grid
-      Enabled: true
-      Topic:
-        Value: /rtabmap/grid_map
-        Durability Policy: Transient Local
+        Value: /rtabmap/cloud_map
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 0.699999988079071
+      Class: rviz_default_plugins/Map
       Color Scheme: map
-    # --- Live sensors ---
-    - Class: rviz_default_plugins/PointCloud2
-      Name: Merged Live Cloud
+      Draw Behind: false
       Enabled: true
+      Name: RTAB-Map Projected Grid
       Topic:
-        Value: /points_merged
         Depth: 5
-        Reliability Policy: Best Effort
-      Style: Points
-      Size (m): 0.03
-      Size (Pixels): 2
-      Color Transformer: Intensity
-    - Class: rviz_default_plugins/PointCloud2
-      Name: Left XT-M60 Raw Cloud
-      Enabled: false
-      Topic:
-        Value: /xtm60/left/points
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /rtabmap/grid_map
+      Update Topic:
         Depth: 5
-        Reliability Policy: Best Effort
-      Style: Points
-      Size (m): 0.03
-      Size (Pixels): 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /rtabmap/grid_map_updates
+      Use Timestamp: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 6.237789630889893
+        Min Value: 1.002162218093872
+        Value: true
+      Axis: X
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
       Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Merged Live Cloud
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.009999999776482582
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /points_merged
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 6.2379326820373535
+        Min Value: 0.9968156814575195
+        Value: true
+      Axis: X
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Left XT-M60 Raw Cloud (color = distance)
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.05000000074505806
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /xtm60/left/points
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
       Axis: Z
-    - Class: rviz_default_plugins/LaserScan
-      Name: Merged Navigation Scan
-      Enabled: true
-      Topic:
-        Value: /scan
-        Reliability Policy: Best Effort
-      Size (Pixels): 3
+      Channel Name: intensity
+      Class: rviz_default_plugins/LaserScan
       Color: 255; 80; 80
-    - Class: rviz_default_plugins/Range
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Merged Navigation Scan
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.009999999776482582
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 0.5
+      Buffer Length: 1
+      Class: rviz_default_plugins/Range
+      Color: 255; 255; 0
+      Enabled: true
       Name: Ultrasonic 0
-      Enabled: true
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /ultrasonic/range_0
-        Reliability Policy: Best Effort
+      Value: true
+    - Alpha: 0.5
+      Buffer Length: 1
+      Class: rviz_default_plugins/Range
       Color: 255; 255; 0
-    - Class: rviz_default_plugins/Range
+      Enabled: true
       Name: Ultrasonic 1
-      Enabled: true
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /ultrasonic/range_1
-        Reliability Policy: Best Effort
+      Value: true
+    - Alpha: 0.5
+      Buffer Length: 1
+      Class: rviz_default_plugins/Range
       Color: 255; 255; 0
-    - Class: rviz_default_plugins/Range
+      Enabled: true
       Name: Ultrasonic 2
-      Enabled: true
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /ultrasonic/range_2
-        Reliability Policy: Best Effort
+      Value: true
+    - Alpha: 0.5
+      Buffer Length: 1
+      Class: rviz_default_plugins/Range
       Color: 255; 255; 0
-    - Class: rviz_default_plugins/Range
+      Enabled: true
       Name: Ultrasonic 3
-      Enabled: true
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /ultrasonic/range_3
-        Reliability Policy: Best Effort
-      Color: 255; 255; 0
-    - Class: rviz_default_plugins/Odometry
-      Name: EKF Odometry
-      Enabled: true
-      Topic:
-        Value: /odometry/filtered
-        Reliability Policy: Best Effort
-      Keep: 100
-      Shape: Arrow
+      Value: true
+    - Angle Tolerance: 0.10000000149011612
+      Class: rviz_default_plugins/Odometry
       Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.30000001192092896
+          Color: 204; 51; 204
+          Scale: 1
+          Value: true
         Value: false
-    - Class: rviz_default_plugins/Image
-      Name: Left Camera
       Enabled: true
+      Keep: 100
+      Name: EKF Odometry
+      Position Tolerance: 0.10000000149011612
+      Shape:
+        Alpha: 1
+        Axes Length: 1
+        Axes Radius: 0.10000000149011612
+        Color: 255; 25; 0
+        Head Length: 0.30000001192092896
+        Head Radius: 0.10000000149011612
+        Shaft Length: 1
+        Shaft Radius: 0.05000000074505806
+        Value: Arrow
       Topic:
-        Value: /camera/left/image_raw
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
         Reliability Policy: Best Effort
+        Value: /odometry/filtered
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Left Camera
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/left/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Right Camera
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/right/image_raw
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 15
+  Name: root
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
     - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /initialpose
     - Class: rviz_default_plugins/SetGoal
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /goal_pose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Name: Orbit3D
-      Distance: 12
+      Distance: 11.262407302856445
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 2.0265579223632812e-06
+        Y: 2.7418136596679688e-06
+        Z: -9.5367431640625e-07
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 1.2953981161117554
       Target Frame: base_link
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 1.0804016590118408
     Saved:
-      - Class: rviz_default_plugins/TopDownOrtho
+      - Angle: 0
+        Class: rviz_default_plugins/TopDownOrtho
+        Enable Stereo Rendering:
+          Stereo Eye Separation: 0.05999999865889549
+          Stereo Focal Distance: 1
+          Swap Stereo Eyes: false
+          Value: false
+        Invert Z Axis: false
         Name: TopDown
+        Near Clip Distance: 0.009999999776482582
         Scale: 40
         Target Frame: base_link
+        Value: TopDownOrtho (rviz_default_plugins)
+        X: 0
+        Y: 0
 Window Geometry:
-  Height: 900
-  Width: 1500
   Displays:
     collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Left Camera:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd00000002000000000000019000000328fc0200000003fb00000016004c006500660074002000430061006d006500720061010000003e000001350000002800fffffffb0000001800520069006700680074002000430061006d00650072006101000001790000011d0000002800fffffffb000000100044006900730070006c006100790073010000029c000000ca000000ca00ffffff000000010000014800000328fc0200000002fb000000220057006800650065006c00630068006100690072002000540065006c0065006f0070010000003e000001ff0000014400fffffffb0000000a00560069006500770073010000024300000123000000a600ffffff000002f80000032800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Right Camera:
+    collapsed: false
+  Views:
+    collapsed: false
+  Wheelchair Teleop:
+    collapsed: false
+  Width: 1500
+  X: 172
+  Y: 77

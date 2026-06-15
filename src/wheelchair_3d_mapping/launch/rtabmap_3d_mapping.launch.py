@@ -102,6 +102,11 @@ def _setup(context, *args, **kwargs):
         "frame_id": frame_id,
         "subscribe_scan_cloud": flag("subscribe_scan_cloud"),
         "subscribe_rgb": subscribe_rgb,
+        # RTAB-Map defaults subscribe_depth=true; for LiDAR-only mapping we must
+        # explicitly disable depth/rgbd, otherwise the node waits on /rgb/image +
+        # /depth/image and reports "Did not receive data since 5 seconds".
+        "subscribe_depth": subscribe_rgb,
+        "subscribe_rgbd": False,
         "approx_sync": flag("approx_sync"),
         "topic_queue_size": qsize, "sync_queue_size": qsize,
         "Mem/IncrementalMemory": "false" if localization else "true",

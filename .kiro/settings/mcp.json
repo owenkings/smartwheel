@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "ubuntu-desktop-control": {
+      "command": "/home/nvidia/.local/bin/ubuntu-desktop-control",
+      "args": [],
+      "env": {
+        "DISPLAY": ":1",
+        "XAUTHORITY": "/run/user/1000/gdm/Xauthority",
+        "XDG_SESSION_TYPE": "x11"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "take_screenshot",
+        "get_screen_info",
+        "get_display_diagnostics",
+        "map_GUI_elements_location",
+        "convert_screenshot_coordinates"
+      ]
+    }
+  }
+}

@@ -10,8 +10,11 @@ xtm60_left_adapter_node:
     use_sdk_timestamps: false
 
     point_unit_scale: 1.0
-    range_min: 0.05
-    range_max: 20.0
+    # XT-M60 reliable range is ~0.3-15 m (50% reflectivity). Filter to the
+    # trustworthy band: drop the <0.3 m blind zone (noise / chair's own body)
+    # and the >12 m far points (unreliable / flying points indoors).
+    range_min: 0.3
+    range_max: 12.0
     publish_intensity: true
 
     enable_sdk_filters: true
