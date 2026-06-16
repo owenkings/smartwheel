@@ -56,8 +56,13 @@ def generate_launch_description():
                               description="Start a fresh map. Set false to append to an existing db."),
         DeclareLaunchArgument(
             "database_path", default_value=os.path.expanduser("~/.ros/rtabmap.db")),
+        DeclareLaunchArgument(
+            "enable_xtm60_right", default_value="false",
+            description="Enable the RIGHT XT-M60 (192.168.1.101) as a second radar. "
+                        "Default false. Set true once the right radar is online; "
+                        "dual_lidar fusion will merge both into /points_merged."),
 
-        LogInfo(msg="[manual_mapping_left] single LEFT XT-M60 manual-drive mapping. "
+        LogInfo(msg="[manual_mapping_left] LEFT XT-M60 (+ optional RIGHT) manual-drive mapping. "
                     "Drive from the RViz TeleopPanel; RTAB-Map builds the map as you go. "
                     "No Nav2 / no autonomous explorer."),
 
@@ -71,6 +76,7 @@ def generate_launch_description():
                 "motion_control_enabled": motion_control_enabled,
                 "rviz": "false",
                 "enable_ekf": "true",
+                "enable_xtm60_right": LaunchConfiguration("enable_xtm60_right"),
             }.items(),
         ),
 

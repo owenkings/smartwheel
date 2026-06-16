@@ -10,19 +10,46 @@ xtm60_left_adapter_node:
     use_sdk_timestamps: false
 
     point_unit_scale: 1.0
-    # XT-M60 reliable range is ~0.3-15 m (50% reflectivity). Filter to the
-    # trustworthy band: drop the <0.3 m blind zone (noise / chair's own body)
-    # and the >12 m far points (unreliable / flying points indoors).
-    range_min: 0.3
-    range_max: 12.0
+    # Match the XT-Toffuture upper-computer M60 default "PointCloud+Amp" view:
+    # Min Show Distance = 0 cm, Max Show Distance = 5000 cm (no practical cutoff).
+    # The raw /xtm60/left/points topic is therefore shown UNFILTERED, exactly
+    # like the upper-computer. Mapping is unaffected: dual_lidar_cloud_fusion_node
+    # re-applies the trustworthy 0.3-12 m band on /points_merged for RTAB-Map.
+    range_min: 0.0
+    range_max: 50.0
     publish_intensity: true
+    # Publish an ORGANIZED cloud (height=sensor rows, width=cols, invalid pixels
+    # = NaN) instead of a shuffled flat list. Keeps neighbour pixels adjacent so
+    # RViz renders a dense, surface-like view (like the upper-computer) instead
+    # of scattered "confetti". The fusion node tolerates NaNs (range filter drops
+    # them) so mapping is unaffected.
+    organized_cloud: true
 
+    # SDK device-side filters matched to dev_scene.ini [M60.Scene1.Filters]:
+    #   medianSize=3, edgeThreshold=150, kalmanFactor=0.30 (=300/1000),
+    #   kalmanThreshold=300. minLSB (Min Amplitude=70-80) and HDR/int-times are
+    #   stored on the device (set via the upper-computer "Config Device"); the
+    #   adapter does NOT override them, so resolution/binning/amp-threshold and
+    #   thus point density already match the upper-computer.
     enable_sdk_filters: true
     kalman_factor: 300
-    kalman_threshold: 200
+    kalman_threshold: 300
     kalman_range: 2000
     median_size: 3
     edge_threshold: 150
+    # Extra SDK filters matched to dev_scene.ini [M60.Scene1.Filters] so the ROS
+    # cloud gets the same cleanup the upper-computer does (dust / postprocess /
+    # reflective). Set the *_enable flags false to turn any off.
+    dust_enable: true
+    dust_threshold: 9000          # dustThreshold
+    dust_frames: 2                # dustFrames
+    postprocess_enable: true
+    postprocess_threshold: 5.0    # postprocessThreshold (near-range optimize)
+    postprocess_dynamic_enable: 1 # dynamicsEnabled (moving-object handling)
+    postprocess_dynamic_winsize: 9 # dynamicsWinsize
+    reflective_enable: true
+    reflective_th_min: 0.5        # ref_th_min (multipath / strong-reflection)
+    reflective_th_max: 2.0        # ref_th_max
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0

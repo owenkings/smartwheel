@@ -74,12 +74,25 @@ class XTM60SdkConfig:
     range_min: float = 0.05
     range_max: float = 20.0
     publish_intensity: bool = True
+    organized_cloud: bool = True
     enable_sdk_filters: bool = True
     kalman_factor: int = 300
     kalman_threshold: int = 200
     kalman_range: int = 2000
     median_size: int = 3
     edge_threshold: int = 150
+    # Extra SDK filters matching the XT-Toffuture upper-computer M60 defaults
+    # (dev_scene.ini [M60.Scene1.Filters]). 0/false disables each one.
+    dust_enable: bool = True
+    dust_threshold: int = 9000
+    dust_frames: int = 2
+    postprocess_enable: bool = True
+    postprocess_threshold: float = 5.0
+    postprocess_dynamic_enable: int = 1
+    postprocess_dynamic_winsize: int = 9
+    reflective_enable: bool = True
+    reflective_th_min: float = 0.5
+    reflective_th_max: float = 2.0
     reconnect_interval_sec: float = 3.0
     require_ping_before_start: bool = True
     frame_timeout_sec: float = 8.0
@@ -214,6 +227,63 @@ def extract_xyzi_points(
     return result
 
 
+def extract_xyzi_grid(
+    frame,
+    unit_scale: float = 1.0,
+    range_min: float = 0.05,
+    range_max: float = 20.0,
+):
+    """Extract an ORGANIZED XYZI cloud preserving the sensor's row/col grid.
+
+    Returns (points, width, height). Every one of width*height pixels keeps its
+    slot in row-major order; invalid / out-of-range pixels become (nan,nan,nan,0)
+    instead of being dropped. This keeps the cloud "organized" so RViz/Open3D can
+    treat it as a depth image (neighbours stay adjacent), which looks far denser
+    and more surface-like than a shuffled, gap-filled flat list.
+
+    Falls back to (None, 0, 0) if the frame has no usable grid dimensions, so the
+    caller can use the unordered extractor instead.
+    """
+    if not getattr(frame, "hasPointcloud", False):
+        return None, 0, 0
+    raw_points = getattr(frame, "points", None)
+    if not raw_points:
+        return None, 0, 0
+    width = int(getattr(frame, "width", 0) or 0)
+    height = int(getattr(frame, "height", 0) or 0)
+    if width <= 0 or height <= 0 or width * height != len(raw_points):
+        # Grid dimensions missing or inconsistent with the point count.
+        return None, 0, 0
+
+    amplitudes: Optional[Sequence] = getattr(frame, "amplData", None)
+    scaled_min = max(0.0, float(range_min))
+    scaled_max = max(scaled_min, float(range_max))
+    scale = float(unit_scale)
+    nan = float("nan")
+    grid: List[XYZI] = [None] * len(raw_points)
+
+    for index, point in enumerate(raw_points):
+        x = float(getattr(point, "x", nan)) * scale
+        y = float(getattr(point, "y", nan)) * scale
+        z = float(getattr(point, "z", nan)) * scale
+        valid = math.isfinite(x) and math.isfinite(y) and math.isfinite(z)
+        if valid:
+            distance = math.sqrt(x * x + y * y + z * z)
+            if distance < scaled_min or distance > scaled_max:
+                valid = False
+        if not valid:
+            grid[index] = (nan, nan, nan, 0.0)
+            continue
+        intensity = float(getattr(point, "i", 0.0))
+        if amplitudes is not None and index < len(amplitudes):
+            try:
+                intensity = float(amplitudes[index])
+            except (TypeError, ValueError):
+                intensity = 0.0
+        grid[index] = (x, y, z, intensity)
+    return grid, width, height
+
+
 class XTM60SdkAdapter:
     """Small XT-M60 SDK wrapper for ROS2 publishing.
 
@@ -231,6 +301,7 @@ class XTM60SdkAdapter:
         self._latest_points: Optional[List[XYZI]] = None
         self._latest_frame_id: Optional[int] = None
         self._latest_sdk_stamp: Optional[Tuple[int, int]] = None
+        self._latest_grid: Tuple[int, int] = (0, 0)
         self._connected = False
         self._measurement_started = False
         self._last_connect_attempt = 0.0
@@ -351,13 +422,15 @@ class XTM60SdkAdapter:
                 self._last_restart_time = now
                 self._start_measurement()
 
-    def take_latest_points(self) -> Tuple[Optional[List[XYZI]], Optional[Tuple[int, int]]]:
+    def take_latest_points(self):
         with self._lock:
             points = self._latest_points
             stamp = self._latest_sdk_stamp
+            grid = self._latest_grid
             self._latest_points = None
             self._latest_sdk_stamp = None
-        return points, stamp
+            self._latest_grid = (0, 0)
+        return points, stamp, grid
 
     def _configure_connection(self) -> None:
         mode = self.config.connection_mode.lower().strip()
@@ -437,6 +510,40 @@ class XTM60SdkAdapter:
             except Exception as exc:
                 self.logger.warning(f"XT-M60 optional filter setSdkKalmanFilter failed: {exc}")
 
+        # Extra filters matching the upper-computer (dust / postprocess /
+        # reflective). Each is guarded by its own enable flag and skipped if the
+        # SDK build does not expose the API.
+        if self.config.dust_enable:
+            dust = getattr(self._sdk, "setSdkDustFilter", None)
+            if dust is not None:
+                try:
+                    dust(int(self.config.dust_threshold), int(self.config.dust_frames))
+                except Exception as exc:
+                    self.logger.warning(f"XT-M60 optional filter setSdkDustFilter failed: {exc}")
+
+        if self.config.postprocess_enable:
+            postprocess = getattr(self._sdk, "setPostProcess", None)
+            if postprocess is not None:
+                try:
+                    postprocess(
+                        float(self.config.postprocess_threshold),
+                        int(self.config.postprocess_dynamic_enable),
+                        int(self.config.postprocess_dynamic_winsize),
+                    )
+                except Exception as exc:
+                    self.logger.warning(f"XT-M60 optional filter setPostProcess failed: {exc}")
+
+        if self.config.reflective_enable:
+            reflective = getattr(self._sdk, "setSdkReflectiveFilter", None)
+            if reflective is not None:
+                try:
+                    reflective(
+                        float(self.config.reflective_th_min),
+                        float(self.config.reflective_th_max),
+                    )
+                except Exception as exc:
+                    self.logger.warning(f"XT-M60 optional filter setSdkReflectiveFilter failed: {exc}")
+
     def _start_measurement(self) -> bool:
         image_type = self._xintan_sdk.ImageType(int(self.config.image_type))
         try:
@@ -485,12 +592,32 @@ class XTM60SdkAdapter:
 
     def _on_frame(self, frame) -> None:
         self._last_frame_time = self._now()
-        points = extract_xyzi_points(
-            frame,
-            unit_scale=self.config.point_unit_scale,
-            range_min=self.config.range_min,
-            range_max=self.config.range_max,
-        )
+        width = 0
+        height = 0
+        if self.config.organized_cloud:
+            points, width, height = extract_xyzi_grid(
+                frame,
+                unit_scale=self.config.point_unit_scale,
+                range_min=self.config.range_min,
+                range_max=self.config.range_max,
+            )
+            if points is None:
+                # Grid unavailable this frame: fall back to the unordered cloud.
+                points = extract_xyzi_points(
+                    frame,
+                    unit_scale=self.config.point_unit_scale,
+                    range_min=self.config.range_min,
+                    range_max=self.config.range_max,
+                )
+                width = 0
+                height = 0
+        else:
+            points = extract_xyzi_points(
+                frame,
+                unit_scale=self.config.point_unit_scale,
+                range_min=self.config.range_min,
+                range_max=self.config.range_max,
+            )
         if not points:
             return
         sdk_stamp = None
@@ -503,6 +630,7 @@ class XTM60SdkAdapter:
             self._latest_points = points
             self._latest_sdk_stamp = sdk_stamp
             self._latest_frame_id = frame_id
+            self._latest_grid = (int(width), int(height))
 
     @staticmethod
     def _now() -> float:
@@ -530,12 +658,23 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("range_min", 0.05)
         self.declare_parameter("range_max", 20.0)
         self.declare_parameter("publish_intensity", True)
+        self.declare_parameter("organized_cloud", True)
         self.declare_parameter("enable_sdk_filters", True)
         self.declare_parameter("kalman_factor", 300)
         self.declare_parameter("kalman_threshold", 200)
         self.declare_parameter("kalman_range", 2000)
         self.declare_parameter("median_size", 3)
         self.declare_parameter("edge_threshold", 150)
+        self.declare_parameter("dust_enable", True)
+        self.declare_parameter("dust_threshold", 9000)
+        self.declare_parameter("dust_frames", 2)
+        self.declare_parameter("postprocess_enable", True)
+        self.declare_parameter("postprocess_threshold", 5.0)
+        self.declare_parameter("postprocess_dynamic_enable", 1)
+        self.declare_parameter("postprocess_dynamic_winsize", 9)
+        self.declare_parameter("reflective_enable", True)
+        self.declare_parameter("reflective_th_min", 0.5)
+        self.declare_parameter("reflective_th_max", 2.0)
         self.declare_parameter("reconnect_interval_sec", 3.0)
         self.declare_parameter("require_ping_before_start", True)
         self.declare_parameter("frame_timeout_sec", 8.0)
@@ -588,9 +727,9 @@ class XTM60AdapterNode(Node):
             return
 
         self.adapter.poll()
-        points, sdk_stamp = self.adapter.take_latest_points()
+        points, sdk_stamp, grid = self.adapter.take_latest_points()
         if points:
-            self.pub.publish(self._make_cloud(points, sdk_stamp))
+            self.pub.publish(self._make_cloud(points, sdk_stamp, grid))
         state = "connected" if self.adapter.connected else "disconnected"
         started = "measuring" if self.adapter.measurement_started else "waiting_measurement"
         self._publish_status(f"{state}; {started}; {self.adapter.last_error}")
@@ -607,12 +746,23 @@ class XTM60AdapterNode(Node):
             range_min=float(self.get_parameter("range_min").value),
             range_max=float(self.get_parameter("range_max").value),
             publish_intensity=bool(self.get_parameter("publish_intensity").value),
+            organized_cloud=bool(self.get_parameter("organized_cloud").value),
             enable_sdk_filters=bool(self.get_parameter("enable_sdk_filters").value),
             kalman_factor=int(self.get_parameter("kalman_factor").value),
             kalman_threshold=int(self.get_parameter("kalman_threshold").value),
             kalman_range=int(self.get_parameter("kalman_range").value),
             median_size=int(self.get_parameter("median_size").value),
             edge_threshold=int(self.get_parameter("edge_threshold").value),
+            dust_enable=bool(self.get_parameter("dust_enable").value),
+            dust_threshold=int(self.get_parameter("dust_threshold").value),
+            dust_frames=int(self.get_parameter("dust_frames").value),
+            postprocess_enable=bool(self.get_parameter("postprocess_enable").value),
+            postprocess_threshold=float(self.get_parameter("postprocess_threshold").value),
+            postprocess_dynamic_enable=int(self.get_parameter("postprocess_dynamic_enable").value),
+            postprocess_dynamic_winsize=int(self.get_parameter("postprocess_dynamic_winsize").value),
+            reflective_enable=bool(self.get_parameter("reflective_enable").value),
+            reflective_th_min=float(self.get_parameter("reflective_th_min").value),
+            reflective_th_max=float(self.get_parameter("reflective_th_max").value),
             reconnect_interval_sec=float(self.get_parameter("reconnect_interval_sec").value),
             require_ping_before_start=bool(self.get_parameter("require_ping_before_start").value),
             frame_timeout_sec=float(self.get_parameter("frame_timeout_sec").value),
@@ -668,7 +818,8 @@ class XTM60AdapterNode(Node):
             return f"waiting for ping {self.config.ip_address}"
         return "startup pending"
 
-    def _make_cloud(self, points: Sequence[XYZI], sdk_stamp: Optional[Tuple[int, int]]):
+    def _make_cloud(self, points: Sequence[XYZI], sdk_stamp: Optional[Tuple[int, int]],
+                    grid: Tuple[int, int] = (0, 0)):
         header = Header()
         header.frame_id = self.frame_id
         use_sdk_timestamps = bool(self.get_parameter("use_sdk_timestamps").value)
@@ -678,6 +829,9 @@ class XTM60AdapterNode(Node):
         else:
             header.stamp = self.get_clock().now().to_msg()
 
+        width, height = int(grid[0]), int(grid[1])
+        organized = width > 0 and height > 0 and width * height == len(points)
+
         if bool(self.get_parameter("publish_intensity").value):
             fields = [
                 PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -685,8 +839,25 @@ class XTM60AdapterNode(Node):
                 PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
                 PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
             ]
-            return point_cloud2.create_cloud(header, fields, list(points))
-        return point_cloud2.create_cloud_xyz32(header, [(x, y, z) for x, y, z, _i in points])
+            xyzi = list(points)
+        else:
+            fields = [
+                PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            ]
+            xyzi = [(x, y, z) for x, y, z, _i in points]
+
+        cloud = point_cloud2.create_cloud(header, fields, xyzi)
+        if organized:
+            # Mark the cloud as organized (grid). create_cloud() defaults to
+            # height=1; set the real sensor grid so RViz/consumers treat it as a
+            # depth image (neighbours adjacent -> denser, surface-like view).
+            cloud.height = height
+            cloud.width = width
+            cloud.row_step = cloud.point_step * width
+            cloud.is_dense = False
+        return cloud
 
     @staticmethod
     def _is_plausible_epoch_stamp(stamp: Optional[Tuple[int, int]]) -> bool:

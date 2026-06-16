@@ -61,19 +61,24 @@ def generate_launch_description():
             description="Safety profile. Default = human-supervised manual-mapping profile "
                         "(ignores the chair's own structure on ultrasonic, tolerates brief "
                         "LiDAR drop-outs). Pass safety_params.yaml for the strict profile."),
+        DeclareLaunchArgument(
+            "enable_xtm60_right", default_value="false",
+            description="Enable the RIGHT XT-M60 (192.168.1.101) as a second radar. "
+                        "Default false (single left radar). Set true once the right "
+                        "radar is online to run both radars at once."),
 
-        LogInfo(msg="[manual_teleop] single LEFT XT-M60, manual teleop only. "
+        LogInfo(msg="[manual_teleop] LEFT XT-M60 (+ optional RIGHT), manual teleop only. "
                     "No Nav2 / RTAB-Map / explorer. Drive from the RViz TeleopPanel."),
 
-        # Sensors + TF: left radar, IMU, ultrasonics, left camera. Right radar
-        # left off (broken hardware).
+        # Sensors + TF: left radar, IMU, ultrasonics, cameras. Right radar
+        # enabled by the enable_xtm60_right argument (default off).
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
             launch_arguments={
                 "mode": "real",
                 "enable_xtm60": "false",
                 "enable_xtm60_left": "true",
-                "enable_xtm60_right": "false",
+                "enable_xtm60_right": LaunchConfiguration("enable_xtm60_right"),
                 "enable_imu": "true",
                 "enable_ultrasonic": "true",
                 "enable_camera": "true",
