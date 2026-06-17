@@ -98,7 +98,48 @@ def _setup(context, *args, **kwargs):
                                        f"must own odom->base_link and actually publish (icp_odometry NOT started)."))
 
     # rtabmap -> 3D cloud map + graph + projected 2D grid.
-    rtab_params = [cfg, common, {
+    # NOTE: the YAML param file (cfg) is unreliable here -- rtabmap_slam ignores
+    # file-provided Grid/RGBD/Reg/* keys in this setup (verified: file params show
+    # library defaults at runtime while dict params apply). So the ESSENTIAL
+    # mapping params are passed explicitly in this dict, which definitely reaches
+    # the node. Keep cfg first for any params that do load; dict overrides win.
+    essential = {
+        "Reg/Strategy": "1",
+        "Reg/Force3DoF": "true",
+        "Mem/IncrementalMemory": "true",
+        "Mem/STMSize": "30",
+        "RGBD/NeighborLinkRefining": "true",
+        "RGBD/ProximityBySpace": "true",
+        "RGBD/ProximityPathMaxNeighbors": "10",
+        "RGBD/LocalRadius": "3.0",
+        "RGBD/AngularUpdate": "0.05",
+        "RGBD/LinearUpdate": "0.05",
+        "RGBD/OptimizeMaxError": "3.0",
+        "Rtabmap/DetectionRate": "1.0",
+        "Icp/VoxelSize": "0.05",
+        "Icp/PointToPlane": "true",
+        "Icp/MaxCorrespondenceDistance": "0.5",
+        "Icp/Iterations": "30",
+        "Icp/CorrespondenceRatio": "0.1",
+        # --- 2D occupancy grid: ground/obstacle split (the wide-FOV flash camera
+        #     sees lots of floor; without this the floor becomes obstacle and the
+        #     2D map goes all-black). ---
+        "Grid/Sensor": "0",
+        "Grid/3D": "false",
+        "Grid/NormalsSegmentation": "true",
+        "Grid/NormalK": "10",
+        "Grid/MaxGroundAngle": "30",
+        "Grid/ClusterRadius": "0.1",
+        "Grid/MinClusterSize": "5",
+        "Grid/CellSize": "0.05",
+        "Grid/RangeMax": "8.0",
+        "Grid/MaxGroundHeight": "0.15",
+        "Grid/MaxObstacleHeight": "1.8",
+        "Grid/GroundIsObstacle": "false",
+        "Grid/RayTracing": "true",
+        "GridGlobal/MinSize": "20.0",
+    }
+    rtab_params = [cfg, common, essential, {
         "frame_id": frame_id,
         "subscribe_scan_cloud": flag("subscribe_scan_cloud"),
         "subscribe_rgb": subscribe_rgb,

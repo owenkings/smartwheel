@@ -74,9 +74,18 @@ rtabmap:
     # 2D occupancy grid (/rtabmap/grid_map) PROJECTED from the 3D scan cloud, for Nav2.
     Grid/Sensor: "0"           # 0=laser scan / point cloud (0.22 replaced Grid/FromDepth)
     Grid/3D: "false"           # 2D projection (cloud projected to xy plane)
-    Grid/NormalsSegmentation: "false"  # ground/obstacle split by height (robust for sparse cloud)
+    # Ground/obstacle split by SURFACE NORMALS (not just height). The XT-M60 is a
+    # wide-FOV flash camera that returns a lot of floor; a pure height threshold
+    # mislabels sloped/drifted floor as obstacle (2D map goes all black). Normal
+    # segmentation classifies up-facing surfaces as ground regardless of small
+    # height error, so the floor becomes free space and only walls/objects remain.
+    Grid/NormalsSegmentation: "true"
+    Grid/NormalK: "10"              # neighbours used to estimate each normal
+    Grid/MaxGroundAngle: "30"       # deg; surfaces within 30 of horizontal = ground
+    Grid/ClusterRadius: "0.1"
+    Grid/MinClusterSize: "5"
     Grid/CellSize: "0.05"
-    Grid/RangeMax: "12.0"
+    Grid/RangeMax: "8.0"            # trust the closer band for the grid
     Grid/MaxGroundHeight: "0.15"    # [site] points below this are ground (floor flatness)
     Grid/MaxObstacleHeight: "1.8"   # [site] ceiling / usable-height cutoff
     Grid/GroundIsObstacle: "false"
