@@ -107,7 +107,7 @@ class DualLidarCloudFusionNode(Node):
             state.xyz, state.inten, state.stamp = xyz, inten, msg.header.stamp
             return
 
-        mat = self._lookup(msg.header.frame_id)
+        mat = self._lookup(msg.header.frame_id, msg.header.stamp)  # audit D178 (中)
         if mat is None:
             state.tf_ok = False
             self._warn(f"tf_{msg.header.frame_id}",
@@ -130,12 +130,20 @@ class DualLidarCloudFusionNode(Node):
         except Exception as exc:
             self._warn(f"flt_{msg.header.frame_id}", f"filter pipeline error: {exc}")
 
-    def _lookup(self, source_frame: str):
+    def _lookup(self, source_frame: str, stamp):
+        # audit D178 (中): look up TF at the source cloud's timestamp, not at
+        # rclpy.time.Time() (latest available).  If the TF is unavailable for
+        # this exact timestamp (ExtrapolationException, LookupException, etc.)
+        # return None so the caller skips the frame.  We do NOT fall back to
+        # rclpy.time.Time() because using the "latest" transform to warp a
+        # point cloud captured at an earlier moment introduces motion-dependent
+        # mis-registration.
         if not source_frame:
             return None
         try:
+            stamp_time = rclpy.time.Time.from_msg(stamp)
             tf = self.tf_buffer.lookup_transform(
-                self.target_frame, source_frame, rclpy.time.Time(),
+                self.target_frame, source_frame, stamp_time,
                 timeout=rclpy.duration.Duration(seconds=self.tf_timeout))
             return cloud_utils.transform_to_matrix(tf)
         except (LookupException, ConnectivityException, ExtrapolationException):
@@ -168,7 +176,23 @@ class DualLidarCloudFusionNode(Node):
         xyz = np.vstack(parts_xyz)
         inten = np.concatenate([p for p in parts_i]) if have_intensity else None
         header = Header()
-        header.stamp = self.get_clock().now().to_msg()
+        # audit D034/D168 (高; ICP 关闭后降级风险)
+        # Use the source frame acquisition time rather than wall clock.
+        # Pick the newer stamp among left/right (single-lidar: left stamp only).
+        # Fall back to wall clock only when all source stamps are zero (sec==0 and nanosec==0).
+        src_stamp = None
+        for ok, st in ((left_ok, self.left), (right_ok, self.right)):
+            if ok and st.stamp is not None:
+                if src_stamp is None:
+                    src_stamp = st.stamp
+                else:
+                    # Pick the newer (larger) stamp
+                    if (st.stamp.sec, st.stamp.nanosec) > (src_stamp.sec, src_stamp.nanosec):
+                        src_stamp = st.stamp
+        if src_stamp is not None and not (src_stamp.sec == 0 and src_stamp.nanosec == 0):
+            header.stamp = src_stamp
+        else:
+            header.stamp = self.get_clock().now().to_msg()
         header.frame_id = self.target_frame
         self.pub.publish(cloud_utils.make_xyzi_cloud(header, xyz, inten))
         self._publish_status(left_ok, right_ok, int(xyz.shape[0]), fallback_active)

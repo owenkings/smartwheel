@@ -37,6 +37,23 @@ xtm60_right_adapter_node:
     reflective_th_min: 0.5
     reflective_th_max: 2.0
 
+    # Device-side IMAGING params (pushed on connect), mirroring the upper-computer
+    # "Config Device" flow / xintan.xtcfg. Same values as the left radar.
+    apply_device_config: true
+    int_time_gs: 2000
+    int_time_1: 1600
+    int_time_2: 200
+    int_time_3: 30
+    int_time_4: 1600
+    hdr_mode: 1
+    min_amplitude: 70
+    max_fps: 10
+    mod_freq1: 0
+    mod_freq2: 0
+    mod_freq3: 0
+    mod_freq4: 3
+    mod_freq5: 2
+
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0

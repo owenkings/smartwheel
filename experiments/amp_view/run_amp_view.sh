@@ -64,6 +64,22 @@ ros2 launch wheelchair_bringup sensors.launch.py \
 pids+=("$!")
 sleep 6
 
+# 1b. base_link -> xtm60_left_link static TF.
+# The left radar's fixed joint was REMOVED from the URDF (that TF edge is now
+# owned by ekf-pose-mapping's ground_plane_calibrator_node, which amp_view does
+# NOT start). So when viewing the LEFT radar, robot_state_publisher no longer
+# emits base_link->xtm60_left_link and the cloud (frame=xtm60_left_link) has no
+# transform to the Fixed Frame -> 3D shows nothing. Republish the nominal edge
+# here (x y z = 0.45 0.24 0.45, rpy = pi/2 0 pi/2, the verified z-fwd/y-up/x-left
+# convention). The RIGHT radar still has its joint in the URDF, so skip it there.
+if [[ "$side" == "left" ]]; then
+  ros2 run tf2_ros static_transform_publisher \
+    --x 0.45 --y 0.24 --z 0.45 --roll 1.5708 --pitch 0 --yaw 1.5708 \
+    --frame-id base_link --child-frame-id xtm60_left_link &
+  pids+=("$!")
+  echo "Published static TF base_link -> xtm60_left_link (URDF joint removed; calibrator not run here)."
+fi
+
 # 2. amp/depth image renderer on the chosen topic.
 python3 "$ws_root/experiments/amp_view/amp_image_node.py" \
   --ros-args -p input_topic:="$points_topic" &

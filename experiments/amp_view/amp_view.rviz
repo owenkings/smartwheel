@@ -7,15 +7,6 @@ Panels:
         - /Left Cloud (amp)1/Autocompute Value Bounds1
       Splitter Ratio: 0.5
     Tree Height: 197
-  - Class: rviz_default_plugins/Image
-    Name: Amp Image (PointCloud+Amp)
-    Value: true
-  - Class: rviz_default_plugins/Image
-    Name: Amp Mono (infrared)
-    Value: true
-  - Class: rviz_default_plugins/Image
-    Name: Depth Image
-    Value: true
 Visualization Manager:
   Class: ""
   Displays:

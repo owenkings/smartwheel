@@ -27,10 +27,7 @@ xtm60_left_adapter_node:
 
     # SDK device-side filters matched to dev_scene.ini [M60.Scene1.Filters]:
     #   medianSize=3, edgeThreshold=150, kalmanFactor=0.30 (=300/1000),
-    #   kalmanThreshold=300. minLSB (Min Amplitude=70-80) and HDR/int-times are
-    #   stored on the device (set via the upper-computer "Config Device"); the
-    #   adapter does NOT override them, so resolution/binning/amp-threshold and
-    #   thus point density already match the upper-computer.
+    #   kalmanThreshold=300.
     enable_sdk_filters: true
     kalman_factor: 300
     kalman_threshold: 300
@@ -50,6 +47,28 @@ xtm60_left_adapter_node:
     reflective_enable: true
     reflective_th_min: 0.5        # ref_th_min (multipath / strong-reflection)
     reflective_th_max: 2.0        # ref_th_max
+    # --- Device-side IMAGING params, pushed to the radar on connect, mirroring
+    #     the upper-computer "Config Device" flow and xtsdk_py/xintan.xtcfg.
+    #     Previously the adapter left these at the radar's power-on defaults, so
+    #     ROS clouds were dimmer/sparser than the tuned upper-computer view.
+    #     Values copied from the exported xintan.xtcfg:
+    #       intgs=2000 int1=1600 int2=200 int3=30 int4=1600
+    #       HDR=1 minLSB=70 maxfps=10 freq4=3 freq5=3
+    #     Set apply_device_config:false to keep the device's stored settings. ---
+    apply_device_config: true
+    int_time_gs: 2000
+    int_time_1: 1600
+    int_time_2: 200
+    int_time_3: 30
+    int_time_4: 1600
+    hdr_mode: 1
+    min_amplitude: 70
+    max_fps: 10
+    mod_freq1: 0
+    mod_freq2: 0
+    mod_freq3: 0
+    mod_freq4: 3
+    mod_freq5: 2
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0

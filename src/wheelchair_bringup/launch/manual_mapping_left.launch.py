@@ -6,16 +6,19 @@
 
 Mapping data flow:
   /points_merged (left-only fallback) + /odometry/filtered (EKF: wheel + IMU)
-     -> RTAB-Map (external odom) -> /rtabmap/cloud_map (3D)  /rtabmap/grid_map (2D)
+     -> RTAB-Map (external odom, 零几何配准) -> /rtabmap/cloud_map (3D)  /rtabmap/grid_map (2D)
 
 Control (safety never bypassed):
   RViz TeleopPanel -> /cmd_vel_nav -> safety_supervisor -> /cmd_vel_safe -> base
 
-Odometry = HARDWARE FIRST: the robot_localization EKF fuses wheel odometry +
-H30 IMU and owns odom->base_link (more accurate than narrow-FOV ICP on a planar
-floor). RTAB-Map runs in external-odom mode: it uses the EKF trajectory and adds
-LiDAR ICP only to refine neighbor links and detect space-proximity loop closures
-(ICP assists, hardware leads). NO Nav2, NO autonomous explorer.
+Odometry = HARDWARE FIRST (纯 EKF 位姿, ICP 已关闭 — req 1.2/1.3):
+  robot_localization EKF fuses wheel odometry + H30 IMU → /odometry/filtered → odom->base_link.
+  RTAB-Map 工作于「纯外部里程计」模式 (odom_mode=external)：
+    - icp_odometry 节点 **不启动** (odom->base_link 仅 EKF 发布, 无 TF 争用)
+    - Reg/Strategy=0, RGBD/NeighborLinkRefining=false, RGBD/ProximityBySpace=false
+      → RTAB-Map 不做任何几何配准, 直接按 EKF 位姿堆叠点云
+  XT-M60 是 120°×60° 窄视场 flash ToF; 平墙方向 ICP 无约束会滑移旋转 yaw (Triangle_Distortion),
+  故关闭 ICP 是必要的, 而非可选优化。
 
 SAFETY: motors move only with motion_control_enabled:=true (default false =
 read-only). Off-ground/clear-area test first, keep the physical E-stop in reach.
@@ -80,7 +83,65 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 2. Dual-lidar fusion (single-left fallback) -> /points_merged.
+        # 2. Ground-plane calibrator — FIXED-HEIGHT MODE (req 2.4/2.7).
+        #
+        # USER-DECIDED MANUAL OVERRIDE of req 2.7: the LEFT radar uses a fixed
+        # 0.50 m height and auto ground-plane calibration is DISABLED (the floor
+        # is too sparse/noisy to lock; the prior auto-cal got 0/240 valid samples
+        # and so never published the TF). ground_plane_calibrator_node is still
+        # the SOLE owner of the base_link→xtm60_left_link TF edge (URDF
+        # xtm60_left_fixed_joint stays removed, design 方案 A) — in fixed mode it
+        # publishes the full static transform ONCE at startup from the fixed
+        # height/pitch via StaticTransformBroadcaster (no RANSAC, no lock-failure
+        # path). This is what restores the RViz point cloud: with the TF always
+        # present the fusion node stops skipping frames (D178) and /points_merged
+        # populates.
+        #
+        # ORDERING: started BEFORE the fusion node so its static (latched) TF is
+        # available by the time the fusion node looks up xtm60_left_link→base_link
+        # to merge into /points_merged (req 2.4).
+        #
+        # x/y/yaw reproduce the fixed geometric part formerly carried by the URDF
+        # joint (xyz=[0.45, 0.24, *], yaw=0); z is the user-fixed 0.50 m.
+        Node(
+            package="wheelchair_3d_mapping",
+            executable="ground_plane_calibrator",
+            name="ground_plane_calibrator",
+            output="screen",
+            parameters=[{
+                "input_topic": "/xtm60/left/points",
+                "target_frame": "base_link",
+                "radar_frame": "xtm60_left_link",
+                "x_offset": 0.45,
+                "y_offset": 0.24,
+                "yaw": 0.0,
+                # USER-DECIDED MANUAL OVERRIDE of req 2.7: the LEFT radar uses a
+                # FIXED 0.50 m height; auto ground-plane calibration is DISABLED.
+                # The floor is too sparse/noisy to lock (a ~0.13 m near surface +
+                # 0/240 valid samples), so the auto-cal never published the
+                # base_link→xtm60_left_link TF — the fusion node then skipped
+                # every frame (D178: no TF → skip), /points_merged stayed empty
+                # and RViz showed NO POINT CLOUD. Fixing the height makes the
+                # calibrator publish the TF unconditionally at startup, which is
+                # what restores the RViz point cloud. fixed_height > 0 routes the
+                # node to its no-RANSAC fixed path (no lock-failure / missing-TF
+                # path); fixed_pitch_deg=0 keeps the radar level.
+                "fixed_height": 0.50,
+                "fixed_pitch_deg": 0.0,
+            }],
+        ),
+
+        # 3. Dual-lidar fusion (single-left fallback) -> /points_merged.
+        #
+        # Single lidar fallback confirmed – req 3.3/4.1/4.2
+        # allow_single_lidar_fallback=true : fusion node publishes /points_merged
+        #   from the left radar alone when the right radar is absent or stale.
+        # enable_xtm60_right=false (default) : right radar driver not started,
+        #   so only the left XT-M60 (192.168.0.101) is online in Stage 1.
+        # This combination satisfies:
+        #   req 3.3 – Fusion_Node publishes from left radar when right is absent.
+        #   req 4.1 – Pipeline uses only Left_Radar as point-cloud source.
+        #   req 4.2 – Pipeline does NOT require the right radar to be online.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(fusion_launch),
             launch_arguments={
@@ -88,11 +149,11 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 3. RTAB-Map in EXTERNAL odom mode: it consumes the EKF odometry
-        #    (/odometry/filtered, wheel + IMU) as the trajectory, and uses LiDAR
-        #    ICP only to REFINE neighbor links and detect space-proximity loop
-        #    closures. Hardware odometry leads, ICP assists. The EKF owns
-        #    odom->base_link (icp_odometry NOT started, no TF fight).
+        # 4. RTAB-Map in EXTERNAL odom mode: it consumes the EKF odometry
+        #    (/odometry/filtered, wheel + IMU) as the trajectory. ICP is fully
+        #    DISABLED (Reg/Strategy=0, NeighborLinkRefining=false, ProximityBySpace=false).
+        #    RTAB-Map 直接按 EKF 位姿堆叠点云, 不做任何几何配准 (req 1.2, 1.3).
+        #    icp_odometry 节点不启动; EKF 是 odom->base_link 的唯一发布者 (无 TF 争用).
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rtabmap_launch),
             launch_arguments={
@@ -111,7 +172,7 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 4. RViz: sensor view + embedded TeleopPanel + map displays.
+        # 5. RViz: sensor view + embedded TeleopPanel + map displays.
         Node(
             package="rviz2", executable="rviz2", name="rviz2", output="screen",
             arguments=["-d", PathJoinSubstitution(

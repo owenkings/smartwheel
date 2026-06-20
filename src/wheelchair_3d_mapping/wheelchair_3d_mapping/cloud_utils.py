@@ -79,8 +79,18 @@ def filter_by_range(
     """Radial range filter in the sensor frame (call before transforming)."""
     if xyz.shape[0] == 0:
         return xyz, inten
+    # audit D179 (低): explicitly reject (0,0,0) placeholder points and any
+    # point with non-finite components.  Do NOT rely on min_range side-effect
+    # (would silently pass through when min_range == 0).  min_range semantics
+    # (user-configured near-clip) are preserved unchanged by the r >= min_range
+    # term below.
+    finite_mask = (
+        np.isfinite(xyz[:, 0])
+        & np.isfinite(xyz[:, 1])
+        & np.isfinite(xyz[:, 2])
+    )
     r = np.linalg.norm(xyz, axis=1)
-    mask = np.isfinite(r) & (r >= min_range) & (r <= max_range)
+    mask = finite_mask & (r > 0) & (r >= min_range) & (r <= max_range)
     return xyz[mask], (inten[mask] if inten is not None else None)
 
 

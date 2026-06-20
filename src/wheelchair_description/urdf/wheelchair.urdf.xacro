@@ -84,26 +84,19 @@
     <origin xyz="0.45 0.0 0.65" rpy="0.0 -0.0873 0.0"/>
   </joint>
 
-  <link name="xtm60_left_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.10 0.06 0.04"/>
-      </geometry>
-      <material name="laser_red"/>
-    </visual>
-  </link>
-  <joint name="xtm60_left_fixed_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="xtm60_left_link"/>
-    <!-- XT-M60 (ToF camera) publishes points in OPTICAL convention (z forward,
-         x right, y down). This rpy makes the link an optical frame so optical-z
-         maps to base_link +x (forward).
-         Height measured on hardware: lens ~0.45 m above the ground (base_link
-         origin is at ground level: wheel center z=0.16 - wheel_radius 0.16 = 0).
-         The old 0.65 was 20 cm too high and pushed floor/wall points below z=0. -->
-    <origin xyz="0.45 0.24 0.45" rpy="-1.5708 0.0 -1.5708"/>
-  </joint>
+  <!-- ============================================================
+       xtm60_left_link: TF edge base_link→xtm60_left_link is now OWNED by
+       ground_plane_calibrator_node (StaticTransformBroadcaster), which
+       calibrates the radar height (z) and pitch from the ground plane at
+       runtime (see .kiro/specs/ekf-pose-mapping, design 方案 A, req 2.4/2.7).
+       The former fixed joint (xyz=[0.45,0.24,0.45] rpy=[1.5708,0,1.5708],
+       z=0.45 placeholder) is removed here to avoid double-publishing the
+       same TF edge.  The calibrator reproduces the verified sensor
+       convention (z fwd, y up, x left) as R_CONV and adds calibrated pitch.
+       The xtm60_left_link visual box is dropped with the joint to keep the
+       URDF tree fully connected (the frame still exists via the calibrator's
+       TF broadcast). DO NOT re-add a fixed joint for this edge.
+       ============================================================ -->
 
   <link name="xtm60_right_link">
     <visual>
@@ -117,13 +110,14 @@
   <joint name="xtm60_right_fixed_joint" type="fixed">
     <parent link="base_link"/>
     <child link="xtm60_right_link"/>
-    <!-- optical frame: z forward -> base_link +x (see left joint note).
-         RIGHT radar was relocated out of the box onto the right armrest, taped,
+    <!-- Same VERIFIED XT-M60 convention as the left radar: z fwd, y up, x left.
+         rpy=(pi/2,0,pi/2) (was -pi/2,0,-pi/2 which rolled the cloud 180 deg).
+         RIGHT radar relocated out of the box onto the right armrest, taped,
          ~20 cm higher than the original mount -> ~0.65 m above ground. The
          lateral/forward offset on the armrest is approximate and MUST be
          re-measured / calibrated in RViz against the left cloud before relying
          on the merged map. Placeholder below. -->
-    <origin xyz="0.45 -0.24 0.65" rpy="-1.5708 0.0 -1.5708"/>
+    <origin xyz="0.45 -0.24 0.65" rpy="1.5708 0.0 1.5708"/>
   </joint>
 
   <link name="imu_link">

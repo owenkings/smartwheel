@@ -29,6 +29,7 @@ setup(
             "cloud_to_occupancy_grid_node = wheelchair_3d_mapping.cloud_to_occupancy_grid_node:main",
             "rgb_cloud_colorizer_node = wheelchair_3d_mapping.rgb_cloud_colorizer_node:main",
             "kiss_icp_mapping_node = wheelchair_3d_mapping.kiss_icp_mapping_node:main",
+            "ground_plane_calibrator = wheelchair_3d_mapping.ground_plane_calibrator_node:main",
         ],
     },
 )

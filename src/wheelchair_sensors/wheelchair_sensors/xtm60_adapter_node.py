@@ -93,6 +93,30 @@ class XTM60SdkConfig:
     reflective_enable: bool = True
     reflective_th_min: float = 0.5
     reflective_th_max: float = 2.0
+    # --- Device-side IMAGING params (pushed to the radar on connect, matching
+    #     the upper-computer "Config Device" flow / xintan.xtcfg). These set how
+    #     the sensor actually images: exposure (integration times), HDR, minimum
+    #     amplitude threshold, max fps, modulation frequencies. The ROS adapter
+    #     previously did NOT set these, so the radar used its power-on defaults
+    #     -> ROS clouds looked worse than the upper-computer's tuned version.
+    #     apply_device_config=false keeps the device's stored settings. ---
+    apply_device_config: bool = True
+    int_time_gs: int = 2000      # grayscale integration time (us)
+    int_time_1: int = 1600       # HDR exposure 1 (us)
+    int_time_2: int = 200        # HDR exposure 2 (us)
+    int_time_3: int = 30         # HDR exposure 3 (us)
+    int_time_4: int = 1600       # HDR exposure 4 (us) -- xtcfg int4
+    hdr_mode: int = 1            # 0=off, 1=temporal HDR
+    min_amplitude: int = 70      # minLSB amplitude threshold
+    max_fps: int = 10
+    # Modulation frequencies (SDK enum indices, matching xintan.xtcfg freqN).
+    # The official sdk_example_3d.py passes freq1..freq4 from the cfg plus a
+    # hardcoded ModulationFreq(2) as the 5th arg -> mod_freq5 defaults to 2.
+    mod_freq1: int = 0
+    mod_freq2: int = 0
+    mod_freq3: int = 0
+    mod_freq4: int = 3
+    mod_freq5: int = 2
     reconnect_interval_sec: float = 3.0
     require_ping_before_start: bool = True
     frame_timeout_sec: float = 8.0
@@ -544,9 +568,77 @@ class XTM60SdkAdapter:
                 except Exception as exc:
                     self.logger.warning(f"XT-M60 optional filter setSdkReflectiveFilter failed: {exc}")
 
+    def _apply_device_config(self) -> None:
+        """Push imaging params to the radar (exposure/HDR/minAmp/fps/modfreq).
+
+        Mirrors the upper-computer "Config Device" flow and the official SDK
+        example (sdk_example_3d.py): without this the radar uses its power-on
+        defaults and the ROS cloud is dimmer/sparser than the tuned upper-
+        computer view. Each call is guarded; a missing API or failure only warns.
+        """
+        if not self.config.apply_device_config:
+            return
+        sdk = self._sdk
+        xs = self._xintan_sdk
+
+        def _try(name, fn):
+            try:
+                fn()
+            except Exception as exc:
+                self.logger.warning(f"XT-M60 device-config {name} failed: {exc}")
+
+        # Stop measurement before reconfiguring (official flow stops first).
+        stop = getattr(sdk, "stop", None)
+        if stop is not None:
+            _try("stop", lambda: stop())
+
+        set_int = getattr(sdk, "setIntTimesus", None)
+        if set_int is not None:
+            # Official sdk_example_3d.py: setIntTimesus(intgs, int1, int2, int3, int4, 0).
+            # Fall back to the 4-arg form if the SDK build expects fewer args.
+            def _do_set_int():
+                try:
+                    set_int(
+                        int(self.config.int_time_gs), int(self.config.int_time_1),
+                        int(self.config.int_time_2), int(self.config.int_time_3),
+                        int(self.config.int_time_4), 0)
+                except TypeError:
+                    set_int(
+                        int(self.config.int_time_gs), int(self.config.int_time_1),
+                        int(self.config.int_time_2), int(self.config.int_time_3))
+            _try("setIntTimesus", _do_set_int)
+
+        set_hdr = getattr(sdk, "setHdrMode", None)
+        if set_hdr is not None and xs is not None and hasattr(xs, "HDRMode"):
+            _try("setHdrMode", lambda: set_hdr(xs.HDRMode(int(self.config.hdr_mode))))
+
+        set_freq = getattr(sdk, "setMultiModFreq", None)
+        if set_freq is not None and xs is not None and hasattr(xs, "ModulationFreq"):
+            _try("setMultiModFreq", lambda: set_freq(
+                xs.ModulationFreq(int(self.config.mod_freq1)),
+                xs.ModulationFreq(int(self.config.mod_freq2)),
+                xs.ModulationFreq(int(self.config.mod_freq3)),
+                xs.ModulationFreq(int(self.config.mod_freq4)),
+                xs.ModulationFreq(int(self.config.mod_freq5))))
+
+        set_amp = getattr(sdk, "setMinAmplitude", None)
+        if set_amp is not None:
+            _try("setMinAmplitude", lambda: set_amp(int(self.config.min_amplitude)))
+
+        set_fps = getattr(sdk, "setMaxFps", None)
+        if set_fps is not None:
+            _try("setMaxFps", lambda: set_fps(int(self.config.max_fps)))
+
+        self.logger.info(
+            f"XT-M60 device-config applied: int=({self.config.int_time_gs},"
+            f"{self.config.int_time_1},{self.config.int_time_2},{self.config.int_time_3}) "
+            f"HDR={self.config.hdr_mode} minAmp={self.config.min_amplitude} "
+            f"fps={self.config.max_fps}")
+
     def _start_measurement(self) -> bool:
         image_type = self._xintan_sdk.ImageType(int(self.config.image_type))
         try:
+            self._apply_device_config()
             try:
                 ok = self._sdk.start(image_type, False)
             except TypeError:
@@ -675,6 +767,21 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("reflective_enable", True)
         self.declare_parameter("reflective_th_min", 0.5)
         self.declare_parameter("reflective_th_max", 2.0)
+        # Device-side imaging params (xintan.xtcfg / upper-computer "Config Device").
+        self.declare_parameter("apply_device_config", True)
+        self.declare_parameter("int_time_gs", 2000)
+        self.declare_parameter("int_time_1", 1600)
+        self.declare_parameter("int_time_2", 200)
+        self.declare_parameter("int_time_3", 30)
+        self.declare_parameter("int_time_4", 1600)
+        self.declare_parameter("hdr_mode", 1)
+        self.declare_parameter("min_amplitude", 70)
+        self.declare_parameter("max_fps", 10)
+        self.declare_parameter("mod_freq1", 0)
+        self.declare_parameter("mod_freq2", 0)
+        self.declare_parameter("mod_freq3", 0)
+        self.declare_parameter("mod_freq4", 3)
+        self.declare_parameter("mod_freq5", 2)
         self.declare_parameter("reconnect_interval_sec", 3.0)
         self.declare_parameter("require_ping_before_start", True)
         self.declare_parameter("frame_timeout_sec", 8.0)
@@ -763,6 +870,20 @@ class XTM60AdapterNode(Node):
             reflective_enable=bool(self.get_parameter("reflective_enable").value),
             reflective_th_min=float(self.get_parameter("reflective_th_min").value),
             reflective_th_max=float(self.get_parameter("reflective_th_max").value),
+            apply_device_config=bool(self.get_parameter("apply_device_config").value),
+            int_time_gs=int(self.get_parameter("int_time_gs").value),
+            int_time_1=int(self.get_parameter("int_time_1").value),
+            int_time_2=int(self.get_parameter("int_time_2").value),
+            int_time_3=int(self.get_parameter("int_time_3").value),
+            int_time_4=int(self.get_parameter("int_time_4").value),
+            hdr_mode=int(self.get_parameter("hdr_mode").value),
+            min_amplitude=int(self.get_parameter("min_amplitude").value),
+            max_fps=int(self.get_parameter("max_fps").value),
+            mod_freq1=int(self.get_parameter("mod_freq1").value),
+            mod_freq2=int(self.get_parameter("mod_freq2").value),
+            mod_freq3=int(self.get_parameter("mod_freq3").value),
+            mod_freq4=int(self.get_parameter("mod_freq4").value),
+            mod_freq5=int(self.get_parameter("mod_freq5").value),
             reconnect_interval_sec=float(self.get_parameter("reconnect_interval_sec").value),
             require_ping_before_start=bool(self.get_parameter("require_ping_before_start").value),
             frame_timeout_sec=float(self.get_parameter("frame_timeout_sec").value),

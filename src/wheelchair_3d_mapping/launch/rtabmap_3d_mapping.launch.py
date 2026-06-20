@@ -103,14 +103,19 @@ def _setup(context, *args, **kwargs):
     # library defaults at runtime while dict params apply). So the ESSENTIAL
     # mapping params are passed explicitly in this dict, which definitely reaches
     # the node. Keep cfg first for any params that do load; dict overrides win.
+    # This dict is the authoritative source (D041: 双真值源隐患已消除 — yaml 标注「dict 为准」).
     essential = {
-        "Reg/Strategy": "1",
-        "Reg/Force3DoF": "true",
+        # === 纯 EKF 位姿 / 零几何配准 (req 1.2, 1.3) ===
+        # Reg/Strategy=0: 关闭 ICP 配准。XT-M60 窄视场(120°) 在平墙方向 ICP 无约束会滑移
+        # 并旋转 yaw，产生 Triangle_Distortion。关闭后 RTAB-Map 直接采信 EKF 位姿堆叠点云。
+        "Reg/Strategy": "0",           # 0=无配准; 原值=1(ICP) — task1/req1.2
+        "Reg/Force3DoF": "true",       # 平面轮椅；锁 z/roll/pitch 防地图倾斜；与零配准不冲突
         "Mem/IncrementalMemory": "true",
         "Mem/STMSize": "30",
-        "RGBD/NeighborLinkRefining": "true",
-        "RGBD/ProximityBySpace": "true",
-        "RGBD/ProximityPathMaxNeighbors": "10",
+        # ICP 相邻帧精修与空间邻近回环全部关闭，否则仍会通过 ICP 反向改写 EKF 位姿。
+        "RGBD/NeighborLinkRefining": "false",   # 原值=true  — task1/req1.2
+        "RGBD/ProximityBySpace": "false",       # 原值=true  — task1/req1.2
+        "RGBD/ProximityPathMaxNeighbors": "0",  # 原值=10    — task1/req1.2
         "RGBD/LocalRadius": "3.0",
         "RGBD/AngularUpdate": "0.05",
         "RGBD/LinearUpdate": "0.05",

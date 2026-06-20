@@ -29,6 +29,57 @@ def test_filter_by_range():
     assert np.allclose(out[0], [1.0, 0.0, 0.0])
 
 
+def test_filter_by_range_boundaries_inclusive():
+    # r exactly at min_range and max_range are kept; just outside are dropped.
+    xyz = np.array(
+        [
+            [0.5, 0.0, 0.0],   # r == min_range -> keep
+            [0.49, 0.0, 0.0],  # r < min_range  -> drop
+            [20.0, 0.0, 0.0],  # r == max_range -> keep
+            [20.01, 0.0, 0.0],  # r > max_range  -> drop
+        ]
+    )
+    out, _ = cloud_utils.filter_by_range(xyz, None, 0.5, 20.0)
+    assert out.shape[0] == 2
+    assert np.allclose(out[0], [0.5, 0.0, 0.0])
+    assert np.allclose(out[1], [20.0, 0.0, 0.0])
+
+
+def test_filter_by_range_keeps_intensity_aligned():
+    xyz = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    inten = np.array([10.0, 11.0, 12.0], dtype=np.float32)
+    out, out_i = cloud_utils.filter_by_range(xyz, inten, 0.5, 20.0)
+    assert out.shape[0] == 2
+    assert out_i is not None
+    assert np.allclose(out_i, [11.0, 12.0])
+
+
+def test_filter_by_range_rejects_zero_origin_even_when_min_range_zero():
+    # audit D179: (0,0,0) placeholder points must be removed by the explicit
+    # r > 0 term, NOT merely as a side-effect of min_range. With min_range == 0
+    # the placeholder origin point must still be dropped.
+    xyz = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    out, _ = cloud_utils.filter_by_range(xyz, None, 0.0, 20.0)
+    assert out.shape[0] == 1
+    assert np.allclose(out[0], [1.0, 0.0, 0.0])
+
+
+def test_filter_by_range_rejects_non_finite_points():
+    # audit D179: points with NaN or inf components are explicitly removed.
+    xyz = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [np.nan, 0.0, 0.0],
+            [0.0, np.inf, 0.0],
+            [0.0, 0.0, -np.inf],
+            [2.0, 0.0, 0.0],
+        ]
+    )
+    out, _ = cloud_utils.filter_by_range(xyz, None, 0.05, 20.0)
+    assert out.shape[0] == 2
+    assert np.allclose(out, [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+
+
 def test_voxel_downsample_reduces():
     xyz = np.array([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [5.0, 5.0, 5.0]])
     out, _ = cloud_utils.voxel_downsample(xyz, None, 0.1)
