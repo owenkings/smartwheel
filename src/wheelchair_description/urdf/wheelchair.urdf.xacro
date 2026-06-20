@@ -98,27 +98,19 @@
        TF broadcast). DO NOT re-add a fixed joint for this edge.
        ============================================================ -->
 
-  <link name="xtm60_right_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.10 0.06 0.04"/>
-      </geometry>
-      <material name="laser_red"/>
-    </visual>
-  </link>
-  <joint name="xtm60_right_fixed_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="xtm60_right_link"/>
-    <!-- Same VERIFIED XT-M60 convention as the left radar: z fwd, y up, x left.
-         rpy=(pi/2,0,pi/2) (was -pi/2,0,-pi/2 which rolled the cloud 180 deg).
-         RIGHT radar relocated out of the box onto the right armrest, taped,
-         ~20 cm higher than the original mount -> ~0.65 m above ground. The
-         lateral/forward offset on the armrest is approximate and MUST be
-         re-measured / calibrated in RViz against the left cloud before relying
-         on the merged map. Placeholder below. -->
-    <origin xyz="0.45 -0.24 0.65" rpy="1.5708 0.0 1.5708"/>
-  </joint>
+  <!-- ============================================================
+       xtm60_right_link: TF edge base_link→xtm60_right_link is now OWNED by
+       ground_plane_calibrator_node (StaticTransformBroadcaster), same design
+       方案 A as the left radar. The calibrator auto-derives the right radar
+       height (z) and pitch from the ground plane (RANSAC on the first frames),
+       so the radar can be moved / re-aimed without editing this URDF. The
+       calibrator reproduces the verified sensor convention (z fwd, y up,
+       x left) as R_CONV and adds the calibrated pitch. The link visual box is
+       dropped with the joint to keep the URDF tree fully connected (the frame
+       still exists via the calibrator's TF broadcast). DO NOT re-add a fixed
+       joint for this edge. amp_view (which does NOT run the calibrator)
+       publishes a nominal static TF for this edge itself.
+       ============================================================ -->
 
   <link name="imu_link">
     <visual>

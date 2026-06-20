@@ -30,7 +30,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -44,6 +44,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("rviz")
     delete_db = LaunchConfiguration("delete_db_on_start")
     database_path = LaunchConfiguration("database_path")
+    radar = LaunchConfiguration("radar")
 
     manual_teleop_launch = os.path.join(bringup, "launch", "manual_teleop.launch.py")
     fusion_launch = os.path.join(mapping, "launch", "dual_lidar_fusion.launch.py")
@@ -60,10 +61,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "database_path", default_value=os.path.expanduser("~/.ros/rtabmap.db")),
         DeclareLaunchArgument(
-            "enable_xtm60_right", default_value="false",
-            description="Enable the RIGHT XT-M60 (192.168.1.101) as a second radar. "
-                        "Default false. Set true once the right radar is online; "
-                        "dual_lidar fusion will merge both into /points_merged."),
+            "radar", default_value="left",
+            description="Which XT-M60(s) to map with: left | right | both. "
+                        "Selects the radar driver(s), scan and the ground-plane "
+                        "calibrator (calibrator only runs for the left radar, whose "
+                        "URDF joint was removed). Default left."),
 
         LogInfo(msg="[manual_mapping_left] LEFT XT-M60 (+ optional RIGHT) manual-drive mapping. "
                     "Drive from the RViz TeleopPanel; RTAB-Map builds the map as you go. "
@@ -79,7 +81,7 @@ def generate_launch_description():
                 "motion_control_enabled": motion_control_enabled,
                 "rviz": "false",
                 "enable_ekf": "true",
-                "enable_xtm60_right": LaunchConfiguration("enable_xtm60_right"),
+                "radar": radar,
             }.items(),
         ),
 
@@ -108,6 +110,8 @@ def generate_launch_description():
             executable="ground_plane_calibrator",
             name="ground_plane_calibrator",
             output="screen",
+            condition=IfCondition(PythonExpression(
+                ["'", radar, "' in ('left', 'both')"])),
             parameters=[{
                 "input_topic": "/xtm60/left/points",
                 "target_frame": "base_link",
@@ -128,6 +132,46 @@ def generate_launch_description():
                 # path); fixed_pitch_deg=0 keeps the radar level.
                 "fixed_height": 0.50,
                 "fixed_pitch_deg": 0.0,
+            }],
+        ),
+
+        # 2b. Ground-plane calibrator for the RIGHT radar — AUTO mode (req 2.1-2.7).
+        #
+        # Unlike the left radar (fixed mode), the RIGHT radar runs FULL auto
+        # ground-plane calibration: it derives BOTH the mount height (z) and the
+        # pitch from the first frames' ground plane (RANSAC). The user reported
+        # the right radar is aimed slightly UP (ground points tilt instead of
+        # lying flat); auto-cal measures that pitch from the lowest plane (the
+        # floor — nothing can be below it) and corrects it automatically, so the
+        # radar can be re-aimed/moved without editing the URDF (req 2.7).
+        #
+        # This node is the SOLE owner of base_link→xtm60_right_link (the URDF
+        # xtm60_right_fixed_joint was removed, design 方案 A). fixed_height is left
+        # at its 0.0 default -> the RANSAC auto path runs (no fixed short-circuit).
+        # The calibrator's tuned defaults (400 iters, 15° vertical tol,
+        # extrapolation gate, farthest-down prior) target exactly this right-radar
+        # case. x/y/yaw reproduce the fixed geometric part the URDF joint carried
+        # (xyz=[0.45, -0.24, *], yaw=0); z + pitch come from the ground plane.
+        #
+        # Started BEFORE the fusion node so its (latched) TF is available when the
+        # fusion node looks up xtm60_right_link→base_link.
+        Node(
+            package="wheelchair_3d_mapping",
+            executable="ground_plane_calibrator",
+            name="ground_plane_calibrator_right",
+            output="screen",
+            condition=IfCondition(PythonExpression(
+                ["'", radar, "' in ('right', 'both')"])),
+            parameters=[{
+                "input_topic": "/xtm60/right/points",
+                "target_frame": "base_link",
+                "radar_frame": "xtm60_right_link",
+                "x_offset": 0.45,
+                "y_offset": -0.24,
+                "yaw": 0.0,
+                # fixed_height=0.0 (default) -> RANSAC auto height+pitch path.
+                "recalibrate_period_sec": 0.0,   # calibrate once at startup, then lock
+                "settle_frames": 5,
             }],
         ),
 

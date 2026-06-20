@@ -8,8 +8,10 @@
 # RViz not coming up when bundled with ~12 other nodes.
 #
 # Motors move only with MOTION=true. Default is read-only.
-#   MOTION=true bash scripts/run_rviz_manual_mapping_left.sh   # enable motors
-#   bash scripts/run_rviz_manual_mapping_left.sh               # read-only
+#   MOTION=true bash scripts/run_rviz_manual_mapping_left.sh                # left radar, motors on
+#   bash scripts/run_rviz_manual_mapping_left.sh                           # left radar, read-only
+#   RADAR=right MOTION=true bash scripts/run_rviz_manual_mapping_left.sh    # right radar only
+#   RADAR=both  MOTION=true bash scripts/run_rviz_manual_mapping_left.sh    # both radars
 
 ws_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ws_root"
@@ -44,7 +46,13 @@ case "$(echo "$motion" | tr '[:upper:]' '[:lower:]')" in
   *) motion=false ;;
 esac
 echo "motion_control_enabled=$motion (true = motors may move)"
-echo "right_radar=${RIGHT_RADAR:-false} (true = also use right XT-M60 @192.168.1.101)"
+radar="${RADAR:-left}"
+case "$(echo "$radar" | tr '[:upper:]' '[:lower:]')" in
+  right) radar=right ;;
+  both) radar=both ;;
+  *) radar=left ;;
+esac
+echo "radar=$radar (left | right | both XT-M60)"
 
 source /opt/ros/humble/setup.bash 2>/dev/null || true
 source "$ws_root/install/setup.bash" 2>/dev/null || true
@@ -85,7 +93,7 @@ trap cleanup EXIT INT TERM
 # 1. Mapping stack, no bundled RViz.
 setsid ros2 launch wheelchair_bringup manual_mapping_left.launch.py \
   motion_control_enabled:="$motion" rviz:=false delete_db_on_start:=true \
-  enable_xtm60_right:="${RIGHT_RADAR:-false}" &
+  radar:="$radar" &
 pids+=("$!")
 
 # 2. RViz separately once the stack has had a moment to publish TF/topics.

@@ -64,20 +64,27 @@ ros2 launch wheelchair_bringup sensors.launch.py \
 pids+=("$!")
 sleep 6
 
-# 1b. base_link -> xtm60_left_link static TF.
-# The left radar's fixed joint was REMOVED from the URDF (that TF edge is now
+# 1b. base_link -> xtm60_{left,right}_link static TF.
+# BOTH radar fixed joints were REMOVED from the URDF (those TF edges are now
 # owned by ekf-pose-mapping's ground_plane_calibrator_node, which amp_view does
-# NOT start). So when viewing the LEFT radar, robot_state_publisher no longer
-# emits base_link->xtm60_left_link and the cloud (frame=xtm60_left_link) has no
-# transform to the Fixed Frame -> 3D shows nothing. Republish the nominal edge
-# here (x y z = 0.45 0.24 0.45, rpy = pi/2 0 pi/2, the verified z-fwd/y-up/x-left
-# convention). The RIGHT radar still has its joint in the URDF, so skip it there.
+# NOT start). So robot_state_publisher no longer emits base_link->xtm60_*_link
+# and the cloud (frame=xtm60_*_link) has no transform to the Fixed Frame -> 3D
+# shows nothing. Republish the nominal edge here so amp_view works standalone.
+# Heights = the lower (range-sensing) lens: right = 0.52 m, left ~1.5 cm lower
+# = 0.505 m. rpy = pi/2 0 pi/2 is the verified z-fwd/y-up/x-left convention.
+# (These are nominal display values; the mapping launch auto-calibrates instead.)
 if [[ "$side" == "left" ]]; then
   ros2 run tf2_ros static_transform_publisher \
-    --x 0.45 --y 0.24 --z 0.45 --roll 1.5708 --pitch 0 --yaw 1.5708 \
+    --x 0.45 --y 0.24 --z 0.505 --roll 1.5708 --pitch 0 --yaw 1.5708 \
     --frame-id base_link --child-frame-id xtm60_left_link &
   pids+=("$!")
-  echo "Published static TF base_link -> xtm60_left_link (URDF joint removed; calibrator not run here)."
+  echo "Published static TF base_link -> xtm60_left_link (z=0.505; URDF joint removed; calibrator not run here)."
+else
+  ros2 run tf2_ros static_transform_publisher \
+    --x 0.45 --y -0.24 --z 0.52 --roll 1.5708 --pitch 0 --yaw 1.5708 \
+    --frame-id base_link --child-frame-id xtm60_right_link &
+  pids+=("$!")
+  echo "Published static TF base_link -> xtm60_right_link (z=0.52; URDF joint removed; calibrator not run here)."
 fi
 
 # 2. amp/depth image renderer on the chosen topic.

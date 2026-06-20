@@ -8,22 +8,19 @@ dual_lidar_cloud_fusion_node:
     status_topic: /points_merged/status
 
     # Radial range filter (sensor frame), then height filter (target frame).
-    # XT-M60 trustworthy band is ~0.3-15 m; use 0.3-12 m to drop the blind-zone
-    # noise and unreliable far/flying points.
+    # XT-M60 trustworthy band is ~0.3-15 m; keep the full 0.3-15 m so far walls
+    # are not clipped (only the blind-zone < 0.3 m is dropped).
     min_range: 0.3
-    max_range: 12.0
-    # Height crop in base_link for the MAPPING cloud. The XT-M60 is a wide-FOV
-    # flash camera (~60 deg vertical): mounted at ~0.65 m it sees a lot of FLOOR
-    # (downward rays) and CEILING (upward rays). Keep a band around chair/obstacle
-    # height so the 3D map and grid are built from walls/objects, not floor and
-    # ceiling sweep. Floor itself is still handled by the grid ground segmentation
-    # in rtabmap. z_min slightly below 0 keeps the true floor line for ray-tracing
-    # free space; z_max cuts the ceiling. (Display topic /xtm60/* is NOT cropped.)
-    z_min: -0.10
-    z_max: 1.80
+    max_range: 15.0
+    # Height crop in base_link for the MAPPING cloud. Widened so the mapping cloud
+    # keeps nearly all of what amp_view shows (only extreme floor/ceiling sweep is
+    # cut). Floor itself is still classified by rtabmap grid ground segmentation.
+    z_min: -0.50
+    z_max: 2.50
 
-    # 0.0 disables voxel downsampling. Raise to thin dense clouds before LIVO.
-    voxel_leaf_size: 0.05
+    # 0.0 disables voxel downsampling -> mapping cloud keeps full sensor
+    # resolution, matching the dense amp_view look (no thinning).
+    voxel_leaf_size: 0.0
 
     # If only one lidar is fresh, keep publishing from it instead of stopping.
     allow_single_lidar_fallback: true
