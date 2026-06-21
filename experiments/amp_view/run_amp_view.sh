@@ -81,10 +81,10 @@ if [[ "$side" == "left" ]]; then
   echo "Published static TF base_link -> xtm60_left_link (z=0.505; URDF joint removed; calibrator not run here)."
 else
   ros2 run tf2_ros static_transform_publisher \
-    --x 0.45 --y -0.24 --z 0.52 --roll 1.5708 --pitch 0 --yaw 1.5708 \
+    --x 0.606 --y -0.24 --z 0.52 --roll 1.5708 --pitch 0 --yaw 1.5708 \
     --frame-id base_link --child-frame-id xtm60_right_link &
   pids+=("$!")
-  echo "Published static TF base_link -> xtm60_right_link (z=0.52; URDF joint removed; calibrator not run here)."
+  echo "Published static TF base_link -> xtm60_right_link (x=0.606 y=-0.24 z=0.52; URDF joint removed; calibrator not run here)."
 fi
 
 # 2. amp/depth image renderer on the chosen topic.

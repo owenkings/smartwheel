@@ -166,7 +166,11 @@ def generate_launch_description():
                 "input_topic": "/xtm60/right/points",
                 "target_frame": "base_link",
                 "radar_frame": "xtm60_right_link",
-                "x_offset": 0.45,
+                # Measured: right radar is 15.65 cm offset front/back from the
+                # left radar (left x=0.45). Both face straight forward, lateral
+                # spacing ~50 cm (left y=+0.24, right y=-0.24). Right radar is
+                # 15.65 cm IN FRONT of the left -> x = 0.45 + 0.156 = 0.606.
+                "x_offset": 0.606,
                 "y_offset": -0.24,
                 "yaw": 0.0,
                 # fixed_height=0.0 (default) -> RANSAC auto height+pitch path.

@@ -295,15 +295,15 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 6.237789630889893
-        Min Value: 1.002162218093872
-        Value: true
-      Axis: X
+        Max Value: 2
+        Min Value: -0.2
+        Value: false
+      Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255
       Color Transformer: AxisColor
-      Decay Time: 99999
+      Decay Time: 0
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255

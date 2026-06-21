@@ -1,0 +1,27 @@
+camera_adapter_node:
+  ros__parameters:
+    mode: real
+    # Four USB3.0 cameras. MJPG keeps bandwidth manageable even on USB3.
+    fourcc: "MJPG"
+    publish_rate_hz: 30.0
+    width: 640
+    height: 480
+    fps: 30.0
+    # Four physical cameras mapped to the four roles. Device indices come from
+    # `python3 auto_test/probe_cameras.py` (use the CAPTURE-able even/30fps
+    # nodes; some cameras also expose a 60fps node — pick ONE node per physical
+    # camera). Default 0/2/4/6 = the four 30fps capture nodes. If two panels show
+    # the SAME camera, swap one index for 5 or 7 until all four differ.
+    enabled_cameras: [front, left, right, rear]
+    front_device: "0"
+    left_device: "2"
+    right_device: "4"
+    rear_device: "6"
+    front_rotate_deg: 0
+    left_rotate_deg: 0
+    right_rotate_deg: 0
+    rear_rotate_deg: 0
+    front_camera_info_url: ""
+    left_camera_info_url: ""
+    right_camera_info_url: ""
+    rear_camera_info_url: ""
