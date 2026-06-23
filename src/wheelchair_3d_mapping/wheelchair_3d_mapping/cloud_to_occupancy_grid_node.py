@@ -46,6 +46,12 @@ class CloudToOccupancyGridNode(Node):
         self.declare_parameter("publish_rate_hz", 2.0)
         self.declare_parameter("tf_timeout_sec", 0.1)
         self.declare_parameter("input_timeout_sec", 1.0)
+        # D038 fix: accumulate occupancy across frames instead of rebuilding from
+        # the current frame only. With /cloud_registered (current-frame cloud) and
+        # no accumulation the 2D map was just the instantaneous view -- driving
+        # past / turning erased already-seen obstacles. accumulate=False keeps the
+        # old instantaneous behaviour for callers that feed a full /cloud_map.
+        self.declare_parameter("accumulate", True)
 
         self.map_frame = self.get_parameter("map_frame").value
         self.res = float(self.get_parameter("resolution").value)
@@ -60,6 +66,11 @@ class CloudToOccupancyGridNode(Node):
         self.max_cells = int(self.get_parameter("max_cells").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
         self.input_timeout = float(self.get_parameter("input_timeout_sec").value)
+        self.accumulate = bool(self.get_parameter("accumulate").value)
+        # Persistent accumulation state (D038): anchored grid that grows-by-OR.
+        self._acc = None          # int16 grid (h,w) of v_unknown/v_free/v_occ
+        self._acc_origin = None   # (ox, oy) anchored once, fixed thereafter (D039)
+        self._acc_wh = None       # (w, h)
 
         self._latest = None
         self._latest_recv = 0.0
@@ -127,6 +138,17 @@ class CloudToOccupancyGridNode(Node):
         h = max(1, min(h, self.max_cells))
         return ox, oy, w, h
 
+    def _fixed_bounds(self):
+        """Fixed canvas (anchored once) for accumulate mode. Uses the static
+        origin/size config so the persistent map never shifts (D039)."""
+        ox = float(self.get_parameter("origin_x").value)
+        oy = float(self.get_parameter("origin_y").value)
+        w = int(np.ceil(float(self.get_parameter("map_width_m").value) / self.res))
+        h = int(np.ceil(float(self.get_parameter("map_height_m").value) / self.res))
+        w = max(1, min(w, self.max_cells))
+        h = max(1, min(h, self.max_cells))
+        return ox, oy, w, h
+
     def _tick(self):
         xyz = self._latest
         if xyz is None:
@@ -134,25 +156,53 @@ class CloudToOccupancyGridNode(Node):
         if (time.monotonic() - self._latest_recv) > self.input_timeout:
             self._warn("stale_cloud", "input cloud stale; suppressing 2D map (LIVO backend down?)")
             return
-        ox, oy, w, h = self._bounds(xyz)
-        grid = np.full((h, w), self.v_unknown, dtype=np.int16)
 
+        if self.accumulate:
+            self._tick_accumulate(xyz)
+        else:
+            self._tick_instantaneous(xyz)
+
+    def _classify(self, xyz, ox, oy, w, h):
+        """Return (free_mask_grid, occ_bool_grid) for the points in this frame."""
         col = np.floor((xyz[:, 0] - ox) / self.res).astype(np.int64)
         row = np.floor((xyz[:, 1] - oy) / self.res).astype(np.int64)
         inb = (col >= 0) & (col < w) & (row >= 0) & (row < h)
         z = xyz[:, 2]
-
+        free = np.zeros((h, w), dtype=bool)
+        occ = np.zeros((h, w), dtype=bool)
         gmask = inb & (z >= self.gz[0]) & (z <= self.gz[1])
         if np.any(gmask):
-            grid[row[gmask], col[gmask]] = self.v_free
-
+            free[row[gmask], col[gmask]] = True
         omask = inb & (z >= self.oz[0]) & (z <= self.oz[1])
         if np.any(omask):
-            occ = np.zeros((h, w), dtype=bool)
             occ[row[omask], col[omask]] = True
-            occ = self._inflate(occ)
-            grid[occ] = self.v_occ
+        dropped = int((~inb).sum())
+        if dropped:
+            self._warn("oob", f"{dropped} pts outside 2D canvas; enlarge map_width/height_m")
+        return free, occ
 
+    def _tick_accumulate(self, xyz):
+        ox, oy, w, h = self._fixed_bounds()
+        if self._acc is None or self._acc_wh != (w, h) or self._acc_origin != (ox, oy):
+            self._acc = np.full((h, w), self.v_unknown, dtype=np.int16)
+            self._acc_origin = (ox, oy)
+            self._acc_wh = (w, h)
+        free, occ = self._classify(xyz, ox, oy, w, h)
+        occ = self._inflate(occ)
+        # Merge into persistent grid: free fills unknown; occupied is sticky and
+        # overrides free (obstacles persist once seen).
+        fill_free = free & (self._acc == self.v_unknown)
+        self._acc[fill_free] = self.v_free
+        self._acc[occ] = self.v_occ
+        self._publish(self._acc, ox, oy, w, h)
+
+    def _tick_instantaneous(self, xyz):
+        ox, oy, w, h = self._bounds(xyz)
+        grid = np.full((h, w), self.v_unknown, dtype=np.int16)
+        free, occ = self._classify(xyz, ox, oy, w, h)
+        grid[free] = self.v_free
+        occ = self._inflate(occ)
+        grid[occ] = self.v_occ
         self._publish(grid, ox, oy, w, h)
 
     def _inflate(self, occ):

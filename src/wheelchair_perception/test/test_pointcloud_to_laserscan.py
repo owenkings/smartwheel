@@ -64,3 +64,48 @@ def pytest_approx(value):
     import pytest
 
     return pytest.approx(value, rel=1e-3)
+
+
+def test_restamp_output_defaults_false_and_preserves_capture_stamp():
+    """D024: /scan must keep the cloud's capture timestamp by default."""
+    import rclpy
+    from rclpy.context import Context
+    from std_msgs.msg import Header
+
+    context = Context()
+    rclpy.init(context=context)
+    node = PointCloudToLaserScanNode(context=context)
+    try:
+        assert node.restamp_output is False
+        header = Header()
+        header.frame_id = "base_link"
+        header.stamp.sec = 1234
+        header.stamp.nanosec = 567
+        scan = node._make_scan(header, project_points_to_scan([], node.config))
+        # capture stamp preserved, not overwritten with wall clock "now"
+        assert scan.header.stamp.sec == 1234
+        assert scan.header.stamp.nanosec == 567
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
+
+
+def test_make_scan_falls_back_to_now_when_source_stamp_absent():
+    """When source stamp is 0/0, fall back to clock so downstream still gets a stamp."""
+    import rclpy
+    from rclpy.context import Context
+    from std_msgs.msg import Header
+
+    context = Context()
+    rclpy.init(context=context)
+    node = PointCloudToLaserScanNode(context=context)
+    try:
+        header = Header()
+        header.frame_id = "base_link"
+        header.stamp.sec = 0
+        header.stamp.nanosec = 0
+        scan = node._make_scan(header, project_points_to_scan([], node.config))
+        assert scan.header.stamp.sec != 0 or scan.header.stamp.nanosec != 0
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)

@@ -125,7 +125,11 @@ class PointCloudToLaserScanNode(Node):
         self.declare_parameter("use_inf", True)
         self.declare_parameter("queue_size", 10)
         self.declare_parameter("publish_debug_markers", True)
-        self.declare_parameter("restamp_output", True)
+        # D024 fix: default False so /scan keeps the cloud's CAPTURE timestamp.
+        # Wall-clock restamping broke time alignment with TF/odom (scan-to-map
+        # did TF lookups at the wrong instant -> 2D wall smear). Only fall back
+        # to "now" when the source stamp is genuinely absent (sec+nanosec == 0).
+        self.declare_parameter("restamp_output", False)
 
         self.input_topic = self.get_parameter("input_topic").value
         self.output_topic = self.get_parameter("output_topic").value
@@ -185,8 +189,14 @@ class PointCloudToLaserScanNode(Node):
         if frame_id == self.target_frame:
             return [(float(x), float(y), float(z)) for x, y, z in raw_points]
 
+        # D025 fix: look up the transform at the cloud's CAPTURE time, not Time()
+        # (=latest). Using the latest TF to transform an older cloud while the
+        # base is moving produces a projection error proportional to speed. If
+        # the transform at that stamp isn't available, lookup raises and on_cloud
+        # skips the frame (fail-safe) rather than mis-projecting with latest TF.
+        stamp = Time.from_msg(msg.header.stamp) if (msg.header.stamp.sec or msg.header.stamp.nanosec) else Time()
         transform = self.tf_buffer.lookup_transform(
-            self.target_frame, frame_id, Time(), timeout=Duration(seconds=0.1)
+            self.target_frame, frame_id, stamp, timeout=Duration(seconds=0.1)
         )
         return [transform_point((float(x), float(y), float(z)), transform) for x, y, z in raw_points]
 

@@ -16,14 +16,14 @@
 
 ## Tasks
 
-- [ ] 1. 审查基线代码：确认 gap 清单与优先级
+- [x] 1. 审查基线代码：确认 gap 清单与优先级
   - 读取 `docs/project_code_audit.md` §1，列出所有"高"及"阻断"级缺陷，逐一确认是否已修复。
   - 读取 `.kiro/specs/fastlio-narrow-fov-mapping/tasks.md`，确认 T1–T14 的 [x] 标记与实际代码一致。
   - 记录：`auto_test/<ts>_baseline_audit/report.md`（覆盖：D024、D025、D029、D034、D038、T15、T16）。
   - **不修改运行时代码**，仅记录。
   - _Requirements: R1, R3, R4, R9_
 
-- [ ] 2. 修复 D024/D025：`pointcloud_to_laserscan_node` 时间戳 + TF 时刻
+- [x] 2. 修复 D024/D025：`pointcloud_to_laserscan_node` 时间戳 + TF 时刻
   - `restamp_output` 参数默认改为 `False`（保留源帧 stamp，而非发布墙钟）。
   - `_read_points_in_target_frame` 的 `lookup_transform` 改用 `msg.header.stamp`；
     TF 不可用时跳帧，不用 `Time()` 强投影。
@@ -32,7 +32,7 @@
   - `colcon test --packages-select wheelchair_perception` 通过。
   - _Requirements: R4, R9_
 
-- [ ] 3. 修复 D038：`cloud_to_occupancy_grid_node` 累积栅格
+- [x] 3. 修复 D038：`cloud_to_occupancy_grid_node` 累积栅格
   - 节点内维护 `_acc_grid`：obstacle 点累积标记 occupied（不可逆），ground/free 点标记 free。
   - 定时器发布 `_acc_grid` 而非每帧重建。
   - 修复 D039（`rolling` 模式 origin 漂移）：改为固定步进 anchor。
