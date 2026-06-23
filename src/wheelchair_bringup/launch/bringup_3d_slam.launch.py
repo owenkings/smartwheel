@@ -106,11 +106,15 @@ def _setup(context, *args, **kwargs):
                                    "alias. Install ros-humble-topic-tools, or point the LIVO/colorizer "
                                    "image_topic at /camera/<side>/image_raw directly."))
 
-    # 4. External LIVO backend (graceful if not installed / backend:=none).
-    actions.append(IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(mapping, "launch", "livo_3d_mapping.launch.py")),
-        launch_arguments={"backend": backend}.items(),
-    ))
+    # 4. 3D mapping backend: FAST-LIO is now the LiDAR-inertial mapping main line
+    #    (see manual_mapping_lio_left.launch.py / fast_lio_mapping.launch.py). The
+    #    old external-LIVO placeholder wrapper (livo_3d_mapping.launch.py) was
+    #    removed in the fastlio-narrow-fov-mapping spec (Task 14). This autonomous
+    #    bringup no longer starts a mapping backend here; use the manual FAST-LIO
+    #    chain for mapping. Kept as a no-op note to avoid a broken include.
+    actions.append(LogInfo(msg="[bringup_3d_slam] mapping backend: use FAST-LIO "
+                               "(manual_mapping_lio_left.launch.py). The old LIVO "
+                               "placeholder wrapper was removed (spec Task 14)."))
 
     # 5. Base driver. publish_tf only when tf_owner=wheel. Motors stay gated.
     actions.append(IncludeLaunchDescription(

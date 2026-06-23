@@ -1,0 +1,30 @@
+diff --git a/src/IMU_Processing.hpp b/src/IMU_Processing.hpp
+index f35378f..071d2ee 100644
+--- a/src/IMU_Processing.hpp
++++ b/src/IMU_Processing.hpp
+@@ -293,7 +293,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
+   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
+   dt = note * (pcl_end_time - imu_end_time);
+   kf_state.predict(dt, Q, in);
+-  
++
+   imu_state = kf_state.get_x();
+   last_imu_ = meas.imu.back();
+   last_lidar_end_time_ = pcl_end_time;
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index d441261..6b95029 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -64,7 +64,11 @@
+ #include <ikd-Tree/ikd_Tree.h>
+ 
+ #define INIT_TIME           (0.1)
+-#define LASER_POINT_COV     (0.001)
++#define LASER_POINT_COV     (100.0)   // [SW Task7 r4] was 0.001; narrow-FOV sparse flash
++// cloud was over-trusted and the scan-match update overrode the IMU yaw prediction
++// every frame (predicted ~7deg vs real 98deg). Raising the per-point measurement
++// covariance 1000x makes the iEKF trust the gyro prediction over the weak LiDAR
++// geometric constraint, so real rotation accumulates in the state.
+ #define MAXN                (720000)
+ #define PUBFRAME_PERIOD     (20)
+ 

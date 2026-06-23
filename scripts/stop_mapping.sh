@@ -17,7 +17,13 @@ force=false
 # Patterns covering every process the mapping stack launches.
 patterns=(
   "manual_mapping_left.launch.py"
+  "manual_mapping_lio_left.launch.py"
+  "fast_lio_mapping.launch.py"
   "rviz2 -d .*manual_mapping_left.rviz"
+  "rviz2 -d .*manual_mapping_lio_left.rviz"
+  "fast_lio/lib"
+  "fastlio_mapping"
+  "lio_cloud_adapter"
   "wheelchair_sensors/lib"
   "wheelchair_perception/lib"
   "wheelchair_safety/lib"
@@ -28,6 +34,7 @@ patterns=(
   "robot_localization/ekf_node"
   "robot_localization/lib"
   "robot_state_publisher --ros-args"
+  "static_transform_publisher"
 )
 
 count_alive() {

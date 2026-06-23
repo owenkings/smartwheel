@@ -61,6 +61,11 @@ local_config.yaml
 # Vendor SDK (too large, install separately)
 xtsdk_py/
 
+# Vendored third-party SLAM source (large, with nested .git). Reproduce from the
+# documented URL + commit hash + patches/ (see docs/fastlio_mapping.md). FAST-LIO
+# at commit 2fffc57; apply patches/apply_fastlio_patches.sh after clone.
+src/third_party/
+
 # XT-M60 logs
 xtlog/
 

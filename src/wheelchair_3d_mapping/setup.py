@@ -25,11 +25,10 @@ setup(
     entry_points={
         "console_scripts": [
             "dual_lidar_cloud_fusion_node = wheelchair_3d_mapping.dual_lidar_cloud_fusion_node:main",
+            "lio_cloud_adapter = wheelchair_3d_mapping.lio_cloud_adapter_node:main",
             "wheel_livo_consistency_monitor = wheelchair_3d_mapping.wheel_livo_consistency_monitor:main",
             "cloud_to_occupancy_grid_node = wheelchair_3d_mapping.cloud_to_occupancy_grid_node:main",
             "rgb_cloud_colorizer_node = wheelchair_3d_mapping.rgb_cloud_colorizer_node:main",
-            "kiss_icp_mapping_node = wheelchair_3d_mapping.kiss_icp_mapping_node:main",
-            "ground_plane_calibrator = wheelchair_3d_mapping.ground_plane_calibrator_node:main",
         ],
     },
 )

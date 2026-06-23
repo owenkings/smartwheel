@@ -1,0 +1,79 @@
+# FAST-LIO2 config for the single LEFT XT-M60 flash-ToF radar (spec:
+# fastlio-narrow-fov-mapping, Task 5). Consumed by fast_lio (Ericsii/FAST_LIO_ROS2,
+# commit 2fffc57). The node reads parameters under /**:ros__parameters.
+#
+# XT-M60 is a whole-frame flash ToF: standard sensor_msgs/PointCloud2 XYZI, NO
+# per-point time, NO ring, ~10 Hz, narrow 120x90 FOV. It is fed via the
+# lio_cloud_adapter_node on /lio/cloud_in (Task 3), NOT a Livox/Velodyne driver.
+#
+# DESKEW OFF: FAST-LIO's Velodyne path (lidar_type=2) normally uses a per-point
+# 'time' field for motion de-skew. XT-M60 has no per-point time, so the adapter
+# emits a zero 'time' field (add_zero_time_field=true) -> every point shares the
+# frame stamp -> de-skew degenerates to "no intra-frame correction", which is
+# exactly what we want for a flash snapshot. time_sync_en=false.
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1            # keep all points (XT-M60 is already sparse vs a 32-line spinner)
+        max_iteration: 3
+        filter_size_surf: 0.2          # indoor scale (tune in Task 7)
+        filter_size_map: 0.3           # indoor scale (tune in Task 7)
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./xtm60_left_lio_map.pcd"
+
+        common:
+            lid_topic: "/lio/cloud_in"   # output of lio_cloud_adapter_node (Task 3)
+            imu_topic: "/imu/data"       # H30 (~200 Hz measured, not 100)
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2                # 2 = Velodyne/standard PointCloud2 XYZI path (NOT Livox/AVIA)
+            scan_line: 90                # XT-M60 organized-cloud vertical lines (approx; refined in Task 7)
+            scan_rate: 10                # Hz
+            timestamp_unit: 0            # 0=seconds; adapter ramps per-point time 0..0.1s
+                                         # so FAST-LIO's sync_packages batches a full
+                                         # 10Hz IMU window per frame (Task 7 fix B).
+            blind: 0.1                   # near-clip (m); XT-M60 near surface/noise
+
+        mapping:
+            # [Task 7 round-4 fix] The iEKF was absorbing the REAL yaw rate into the
+            # gyro bias: bg_z ran up to ~0.098 rad/s (= the ~98deg/18s turn rate), so
+            # gyro_z - bg_z ~= 0 and the predicted rotation cancelled out. Root cause:
+            # narrow-FOV sparse LiDAR barely constrains yaw, so the filter "explained"
+            # the gyro's rotation as bias drift. Fix: make the gyro-bias random walk
+            # VERY stiff (b_gyr_cov 1e-4 -> 1e-7) so bias can't soak up real motion,
+            # and trust the gyro more (gyr_cov 0.1 -> 0.5). acc bias also stiffened.
+            acc_cov: 0.5
+            gyr_cov: 0.5
+            b_acc_cov: 0.00001
+            b_gyr_cov: 0.0000001
+            fov_degree: 120.0            # XT-M60 horizontal FOV ~120 deg (narrow; NOT 360)
+            det_range: 20.0              # XT-M60 effective indoor range (m)
+            extrinsic_est_en: false      # extrinsic is known/derived; do NOT online-estimate
+            # LiDAR pose in IMU body frame: T_il = inv(base->imu) @ base->lidar.
+            # [Task 15 ground-calib, RECALIBRATED] Calibrated from the STATIONARY
+            # floor-visible bag (auto_test/20260622_ground_calib_bag) by RANSAC-
+            # fitting the floor PLANE (refined on inliers via SVD), NOT a brute-force
+            # median search over a mixed band. See recalibrate.py.
+            #   floor normal (sensor z-fwd/y-up/x-left): [0.0136, 0.9997, 0.0193]
+            #   mount height = |d| = 0.545 m ; mount pitch = +1.10 deg ; roll = +0.78 deg
+            #   floor->base_link z on plane inliers: median -0.0001 m, std 0.008 m (flat).
+            # (The previous 12.5deg pitch / 0.53m came from a broken objective that
+            #  minimised median+std over a band that was only ~21% floor.)
+            # base->imu=[0,0,0.45]; base->lidar=[0.45,0.24,0.545] (quat in launch TF).
+            extrinsic_T: [ 0.450000, 0.240000, 0.095437 ]
+            extrinsic_R: [ -0.000135, -0.019278, 0.999814,
+                            0.999907, -0.013615, -0.000128,
+                            0.013615, 0.999721, 0.019278 ]
+
+        publish:
+            path_en: true                # publish /path for RViz trajectory (req 4 / Task 10)
+            scan_publish_en: true        # publish registered cloud
+            dense_publish_en: true
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: true            # accumulate full map; saved via /map_save service (Task 13)
+            interval: -1                 # all frames in ONE pcd

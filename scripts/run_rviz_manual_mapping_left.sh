@@ -50,15 +50,24 @@ radar="${RADAR:-left}"
 case "$(echo "$radar" | tr '[:upper:]' '[:lower:]')" in
   right) radar=right ;;
   both) radar=both ;;
-  *) radar=left ;;
+  left) radar=left ;;
+  *) radar=right ;;
 esac
-echo "radar=$radar (left | right | both XT-M60)"
+echo "radar=$radar (right default; left is boxed/occluded | both)"
 
 source /opt/ros/humble/setup.bash 2>/dev/null || true
 source "$ws_root/install/setup.bash" 2>/dev/null || true
 
-rviz_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/manual_mapping_left.rviz"
-[[ -f "$rviz_cfg" ]] || rviz_cfg="$ws_root/src/wheelchair_bringup/rviz/manual_mapping_left.rviz"
+# Select top-level launch + RViz by radar. RIGHT is the live deployment (left
+# radar boxed/occluded). LEFT kept for when it is unboxed.
+if [[ "$radar" == "left" ]]; then
+  top_launch="manual_mapping_lio_left.launch.py"
+else
+  radar=right
+  top_launch="manual_mapping_lio_right.launch.py"
+fi
+rviz_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/manual_mapping_lio_left.rviz"
+[[ -f "$rviz_cfg" ]] || rviz_cfg="$ws_root/src/wheelchair_bringup/rviz/manual_mapping_lio_left.rviz"
 
 stop_script="$ws_root/scripts/stop_mapping.sh"
 
@@ -90,15 +99,14 @@ trap cleanup EXIT INT TERM
 
 # Run each background job in its own session/process group (setsid) so the whole
 # group can be signalled together and children are easier to reap.
-# 1. Mapping stack, no bundled RViz.
-setsid ros2 launch wheelchair_bringup manual_mapping_left.launch.py \
-  motion_control_enabled:="$motion" rviz:=false delete_db_on_start:=true \
-  radar:="$radar" &
+# 1. FAST-LIO mapping stack (LiDAR-inertial), no bundled RViz.
+setsid ros2 launch wheelchair_bringup "$top_launch" \
+  motion_control_enabled:="$motion" rviz:=false &
 pids+=("$!")
 
 # 2. RViz separately once the stack has had a moment to publish TF/topics.
 sleep 8
-echo "Starting RViz (mapping view + embedded TeleopPanel): $rviz_cfg"
+echo "Starting RViz (FAST-LIO mapping view + embedded TeleopPanel): $rviz_cfg"
 setsid rviz2 -d "$rviz_cfg" &
 pids+=("$!")
 

@@ -152,6 +152,132 @@ def make_xyzi_cloud(header, xyz: np.ndarray, inten=None) -> "PointCloud2":
     return msg
 
 
+_XYZIT_FIELDS = None
+
+
+def _xyzit_fields():
+    global _XYZIT_FIELDS
+    if _XYZIT_FIELDS is None:
+        f32 = PointField.FLOAT32
+        _XYZIT_FIELDS = [
+            PointField(name="x", offset=0, datatype=f32, count=1),
+            PointField(name="y", offset=4, datatype=f32, count=1),
+            PointField(name="z", offset=8, datatype=f32, count=1),
+            PointField(name="intensity", offset=12, datatype=f32, count=1),
+            PointField(name="time", offset=16, datatype=f32, count=1),
+        ]
+    return _XYZIT_FIELDS
+
+
+def make_xyzi_time_cloud(header, xyz: np.ndarray, inten=None, time_value: float = 0.0) -> "PointCloud2":
+    """Like make_xyzi_cloud but appends a per-point float32 'time' field.
+
+    Every point gets the same ``time_value`` (default 0.0). This satisfies
+    FAST-LIO parsers that strictly require a per-point time field while keeping
+    the integer-frame single-timestamp semantics (XT-M60 is a whole-frame
+    snapshot with no per-point timing).
+    """
+    n = int(xyz.shape[0])
+    data = np.zeros((n, 5), dtype=np.float32)
+    if n:
+        data[:, :3] = xyz.astype(np.float32)
+        if inten is not None:
+            data[:, 3] = inten.astype(np.float32)
+        data[:, 4] = np.float32(time_value)
+    msg = PointCloud2()
+    msg.header = header
+    msg.height = 1
+    msg.width = n
+    msg.fields = _xyzit_fields()
+    msg.is_bigendian = False
+    msg.point_step = 20
+    msg.row_step = 20 * n
+    msg.is_dense = True
+    msg.data = data.tobytes()
+    return msg
+
+
+_VELODYNE_FIELDS = None
+
+
+def _velodyne_fields():
+    """FAST-LIO velodyne_ros::Point layout: x,y,z,intensity (float32) + time
+    (float32) + ring (uint16). Field offsets match the PCL-registered struct so
+    pcl::fromROSMsg<velodyne_ros::Point> reads them by name."""
+    global _VELODYNE_FIELDS
+    if _VELODYNE_FIELDS is None:
+        f32 = PointField.FLOAT32
+        u16 = PointField.UINT16
+        _VELODYNE_FIELDS = [
+            PointField(name="x", offset=0, datatype=f32, count=1),
+            PointField(name="y", offset=4, datatype=f32, count=1),
+            PointField(name="z", offset=8, datatype=f32, count=1),
+            PointField(name="intensity", offset=12, datatype=f32, count=1),
+            PointField(name="time", offset=16, datatype=f32, count=1),
+            PointField(name="ring", offset=20, datatype=u16, count=1),
+        ]
+    return _VELODYNE_FIELDS
+
+
+def make_velodyne_cloud(header, xyz: np.ndarray, inten=None, ring=None,
+                        sweep_time: float = 0.1) -> "PointCloud2":
+    """Build a FAST-LIO velodyne-format cloud (x,y,z,intensity,time,ring).
+
+    Rationale (spec fastlio-narrow-fov-mapping, Task 7):
+    FAST-LIO's lidar_type=2 path deserializes into velodyne_ros::Point which
+    REQUIRES both 'ring' (uint16) and 'time' (float32). XT-M60 is a flash
+    snapshot with neither.
+
+    Two coupled requirements discovered by investigation:
+      1. RING: emit a valid ring index (0 for all points) so FAST-LIO's
+         ring-indexed arrays are never read out of bounds.
+      2. PER-POINT TIME SWEEP: FAST-LIO's sync_packages() derives each scan's
+         end-time from points.back().time, and only batches IMU samples up to
+         that end-time. If every point shares one timestamp, lidar_end_time
+         collapses to ~lidar_beg_time, so almost NO IMU is integrated between
+         frames and the orientation never tracks the gyro. Fix: ramp 'time'
+         LINEARLY from 0 .. sweep_time across the frame (default 0.1 s = one
+         10 Hz frame period) so lidar_end_time ~= beg + 0.1 s and the full IMU
+         stream between frames is consumed. Use timestamp_unit=0 (seconds) in
+         the FAST-LIO config so time is interpreted as seconds.
+
+    Note: this 'sweep' is a synthetic ordering for IMU batching only; XT-M60 is
+    a whole-frame snapshot so the absolute per-point timing is not physical, but
+    a monotone 0..0.1 s ramp gives FAST-LIO the per-frame window it needs without
+    introducing real de-skew error (motion within 0.1 s at <=0.3 rad/s is tiny).
+    """
+    n = int(xyz.shape[0])
+    point_step = 24
+    buf = np.zeros((n, point_step), dtype=np.uint8)
+    if n:
+        f = np.zeros((n, 5), dtype=np.float32)
+        f[:, :3] = xyz.astype(np.float32)
+        if inten is not None:
+            f[:, 3] = inten.astype(np.float32)
+        # per-point time ramp 0..sweep_time (seconds) across the frame
+        if n > 1:
+            f[:, 4] = np.linspace(0.0, sweep_time, n, dtype=np.float32)
+        else:
+            f[:, 4] = np.float32(sweep_time)
+        buf[:, 0:20] = f.view(np.uint8).reshape(n, 20)
+        if ring is None:
+            r = np.zeros(n, dtype=np.uint16)
+        else:
+            r = np.asarray(ring, dtype=np.uint16)
+        buf[:, 20:22] = r.view(np.uint8).reshape(n, 2)
+    msg = PointCloud2()
+    msg.header = header
+    msg.height = 1
+    msg.width = n
+    msg.fields = _velodyne_fields()
+    msg.is_bigendian = False
+    msg.point_step = point_step
+    msg.row_step = point_step * n
+    msg.is_dense = True
+    msg.data = buf.tobytes()
+    return msg
+
+
 def _xyzrgb_fields():
     global _XYZRGB_FIELDS
     if _XYZRGB_FIELDS is None:

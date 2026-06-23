@@ -1,0 +1,64 @@
+# FAST-LIO2 config for the single RIGHT XT-M60 flash-ToF radar.
+# (spec: fastlio-narrow-fov-mapping; right-radar path added 20260623 after the
+#  LEFT radar was boxed/occluded and the deployment switched to RIGHT-only.)
+#
+# Mirrors xtm60_left_lio.yaml. Differences: input is /xtm60/right/points (fed via
+# the adapter to /lio/cloud_in), and the extrinsic is the RIGHT radar's measured
+# mount (height 0.510 m, pitch -1.04 deg, roll -9.1 deg; plane residual 4.3 mm).
+#
+# Same flash-ToF handling as left: lidar_type=2 (Velodyne XYZI path), de-skew off
+# via the adapter's per-point time ramp (timestamp_unit=0), and the Task-7
+# LASER_POINT_COV fix lives in vendored source (see docs/fastlio_mapping.md).
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 3
+        filter_size_surf: 0.2
+        filter_size_map: 0.3
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./xtm60_right_lio_map.pcd"
+
+        common:
+            lid_topic: "/lio/cloud_in"   # adapter output (adapter subscribes /xtm60/right/points)
+            imu_topic: "/imu/data"       # H30 (~200 Hz measured)
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2                # Velodyne/standard PointCloud2 XYZI path
+            scan_line: 90
+            scan_rate: 10
+            timestamp_unit: 0            # seconds; adapter ramps per-point time 0..0.1s
+            blind: 0.1
+
+        mapping:
+            # Task-7 covariance tuning (same rationale as left): stiff gyro bias +
+            # higher gyr/acc cov so the narrow-FOV LiDAR update can't soak the real
+            # rotation into bias. Pairs with LASER_POINT_COV=100 in vendored source.
+            acc_cov: 0.5
+            gyr_cov: 0.5
+            b_acc_cov: 0.00001
+            b_gyr_cov: 0.0000001
+            fov_degree: 120.0
+            det_range: 20.0
+            extrinsic_est_en: false
+            # RIGHT radar mount (measured 20260623, auto_test/20260623_dual_radar_calib):
+            #   height 0.510 m, pitch -1.04 deg, roll -9.1 deg, plane residual 4.3 mm.
+            # T_il = inv(base->imu[0,0,0.45]) @ base->right_lidar[0.606,-0.24,0.510].
+            # (x=0.606: right radar ~15.65 cm fwd of the left x=0.45 per dual-radar report.)
+            extrinsic_T: [ 0.606000, -0.240000, 0.060000 ]
+            extrinsic_R: [ 0.018147, -0.158128, 0.987252,
+                           0.999835, 0.002870, -0.017918,
+                          -0.000000, 0.987414, 0.158154 ]
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: true
+            interval: -1
