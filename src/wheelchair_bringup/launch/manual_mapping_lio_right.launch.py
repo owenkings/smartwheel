@@ -6,7 +6,7 @@ selects the right radar throughout:
   - manual_teleop radar:=right (right XT-M60 driver + right scan)
   - fast_lio_mapping radar:=right (xtm60_right_lio.yaml + right extrinsic TF)
   - cloud_to_occupancy_grid fed by /cloud_registered
-  - RViz: manual_mapping_lio_left.rviz layout (radar-agnostic topics:
+  - RViz: manual_mapping_lio_right.rviz layout (radar-agnostic topics:
     /cloud_registered, /Odometry, /map_2d_from_3d, /scan, cameras)
 
 TF ownership: EKF OFF (enable_ekf:=false), base publish_tf:=false -> FAST-LIO is
@@ -91,11 +91,26 @@ def generate_launch_description():
             condition=IfCondition(enable_loop_backend),
         ),
 
-        # 5. RViz (radar-agnostic LIO layout).
+        # 4b. Loop-backend TF alignment (Task 6). RTAB-Map external-odom expects an
+        #     `odom -> base_link` chain, but FAST-LIO publishes its pose on
+        #     `camera_init -> body -> base_link` (camera_init is FAST-LIO's world
+        #     origin; /Odometry is expressed in camera_init). Publish an identity
+        #     `odom -> camera_init` so RTAB-Map's odom frame bridges onto FAST-LIO's
+        #     world and the chain odom -> camera_init -> body -> base_link is whole.
+        #     Only when the backend is on (default off -> not published, no clash).
+        Node(
+            package="tf2_ros", executable="static_transform_publisher",
+            name="loop_backend_odom_to_camera_init",
+            arguments=["0", "0", "0", "0", "0", "0", "odom", "camera_init"],
+            output="screen",
+            condition=IfCondition(enable_loop_backend),
+        ),
+
+        # 5. RViz (right-radar LIO layout).
         Node(
             package="rviz2", executable="rviz2", name="rviz2", output="screen",
             arguments=["-d", PathJoinSubstitution(
-                [bringup_share, "rviz", "manual_mapping_lio_left.rviz"])],
+                [bringup_share, "rviz", "manual_mapping_lio_right.rviz"])],
             condition=IfCondition(use_rviz),
         ),
     ])

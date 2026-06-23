@@ -22,5 +22,7 @@
 - 也可手动新建文件按上面约定记录。
 
 ## 索引(最新在上)
+- `20260623_narrow_fov_audit.md` — narrow-fov-mapping-audit spec 执行(Task 1–11,除 Task5 需硬件):
+  D024/D025/D038/D039/D034 修复、右雷达 RViz 版式、回环后端 TF 对齐、65/65 测试。
 - `20260623_fastlio_right_radar.md` — FAST-LIO 右雷达路径 + LASER_POINT_COV 加固 + 外参标定 + 文档收尾。
 - (更早的 FAST-LIO 重构过程见 `auto_test/2026062*` 各 report.md 与 `.kiro/specs/fastlio-narrow-fov-mapping/`。)

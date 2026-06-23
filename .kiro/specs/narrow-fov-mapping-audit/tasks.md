@@ -40,7 +40,7 @@
   - `colcon test --packages-select wheelchair_3d_mapping` 通过。
   - _Requirements: R3, R9_
 
-- [ ] 4. 制作右雷达 RViz 版式 `manual_mapping_lio_right.rviz`
+- [x] 4. 制作右雷达 RViz 版式 `manual_mapping_lio_right.rviz`
   - 布局对标示例截图二：主视图（3D 上色云 + RobotModel + /path 轨迹）+ 左下 2D 栅格面板
     + 右下 LaserScan 极坐标面板 + 右侧 Battery Status / Views 面板。
   - 参数：`AxisColor(Z)`、`Decay Time=0`、Fixed Frame=`map`。
@@ -57,7 +57,7 @@
   - **运动安全**：`motion_control_enabled:=true` 仅在离地/清场后，急停在手边。
   - _Requirements: R1, R2, R3, R4_
 
-- [ ] 6. RTAB-Map 回环后端 TF 对齐（R6）
+- [x] 6. RTAB-Map 回环后端 TF 对齐（R6）
   - 在 `enable_loop_backend:=true` 时，顶层 launch 中增加
     `static_transform_publisher odom → camera_init`（identity TF），
     使 RTAB-Map 的 `odom→base_link` 与 FAST-LIO 的 `camera_init→body→base_link` 链路对接。
@@ -66,7 +66,7 @@
   - `docs/fastlio_mapping.md` 补充回环后端启用步骤与 TF 结构说明。
   - _Requirements: R6_
 
-- [ ] 7. 修复 D034：`dual_lidar_cloud_fusion_node` 输出时间戳
+- [x] 7. 修复 D034：`dual_lidar_cloud_fusion_node` 输出时间戳
   - `_publish_merged` 中改用参与合并的源帧 stamp（取两路较新的 `state.stamp`），
     而非 `get_clock().now()` 墙钟。
   - 源 stamp 缺失（全 0）时才回退墙钟。
@@ -76,20 +76,20 @@
     此修复为长期健壮性；标注影响范围再实施。
   - _Requirements: R9_
 
-- [ ] 8. 高优先级里程计缺陷评估（D001、D005）
+- [x] 8. 高优先级里程计缺陷评估（D001、D005）
   - 读 D001（单轮饱和）、D005（反馈失败零积分），评估在右雷达 FAST-LIO 主导下的实际影响：
     FAST-LIO 自身做位姿估计，轮速里程仅供 EKF（已关 TF 发布），故影响降低。
   - 若影响仅残留于 EKF 诊断：在 `docs/project_code_audit.md` §4 更新状态为"低优先/后续处理"并说明理由。
   - 若影响 Nav2 路径规划（轮速输入 costmap）：补修复并测试。
   - _Requirements: R9_
 
-- [ ] 9. `.kiro/specs/fastlio-narrow-fov-mapping/tasks.md` 状态同步
+- [x] 9. `.kiro/specs/fastlio-narrow-fov-mapping/tasks.md` 状态同步
   - 将 Task 15（整链现场验证）从 `[ ]` 改为 `[x]`（任务 5 完成后）；
     Task 16（文档收尾）从 `[ ]` 改为 `[x]`（任务 10 完成后）。
   - 确认 T1–T14 的 [x] 与实际代码文件一一对应。
   - _Requirements: R8_
 
-- [ ] 10. 文档收尾（Task 16 / R8）
+- [x] 10. 文档收尾（Task 16 / R8）
   - `docs/fastlio_mapping.md`：补充右雷达启动命令、RViz 版式说明、RTAB-Map 回环后端步骤、
     LASER_POINT_COV 重建恢复、Orin brownout 防护。
   - 顶层 `README.md`：更新当前部署状态（右雷达，2D+3D 建图可用）；列出 run 命令。
@@ -97,7 +97,7 @@
   - 提交所有文档改动：`git commit -m "docs: narrow-fov-mapping-audit completion"`。
   - _Requirements: R8_
 
-- [ ] 11. 回归测试全绿确认
+- [x] 11. 回归测试全绿确认
   - `bash auto_test/20260623_dual_radar_calib/cpu_safe.sh -c 0-3 -- colcon test \
       --packages-select wheelchair_3d_mapping wheelchair_sensors wheelchair_perception \
       wheelchair_base wheelchair_safety --parallel-workers 1`

@@ -313,7 +313,19 @@ deskew off、`extrinsic_est_en=false`、fov 120、blind 0.1)。
 
 ### 6.3 启动、地图保存、RTAB-Map 后端开关
 
-将在任务 11(顶层启动链)、13(保存)、12(RTAB-Map 后端)、16(收尾)补全。
+启动见 §7.2（右雷达,当前默认入口）。地图保存见 `scripts/save_mapping_result.sh`
+（累积 `/cloud_registered` → PLY + `/map_2d_from_3d` → PGM/YAML）。
+
+**RTAB-Map 可选回环后端**（`enable_loop_backend:=true`,默认 off）:
+- 以 external-odom 模式消费 FAST-LIO 位姿（`odom_topic=/Odometry`、`points_topic=/cloud_registered`、
+  `Reg/Strategy=0`），仅做回环/位姿图/导出,不抢前端里程计（FAST-LIO 仍是唯一实时位姿源）。
+- **TF 对齐（Task 6）**:FAST-LIO 把位姿发布在 `camera_init → body → base_link` 链上
+  （`camera_init` 是其世界原点,`/Odometry` 在 `camera_init` 系）。RTAB-Map external-odom
+  期望 `odom → base_link`。顶层 `manual_mapping_lio_right.launch.py` 在
+  `enable_loop_backend:=true` 时发布一个 **identity `odom → camera_init`** 静态 TF,
+  使链路 `odom → camera_init → body → base_link` 完整。默认 off 时不发布,无 TF 冲突。
+- 角色边界:**FAST-LIO2 = 前端实时位姿;RTAB-Map = 可选后端回环/导出**,无双真值源。
+
 
 
 ---
