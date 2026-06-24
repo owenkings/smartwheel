@@ -33,7 +33,9 @@ from launch_ros.actions import Node
 # Measured mount calibration -> base_link->xtm60_<radar>_link static TF (quat) and
 # the FAST-LIO config file per radar.
 # LEFT  (20260622_ground_calib_bag): 0.545 m, pitch +1.1, roll +0.78 (floor-visible).
-# RIGHT (20260623_dual_radar_calib): 0.510 m, pitch -1.04, roll -9.1, residual 4.3 mm.
+# RIGHT (20260623, recomputed): 0.499 m, floor flat (tilt 0.00deg, std 8mm) via
+#        plane-fit + Rodrigues alignment (recompute_right_extrinsic.py). The earlier
+#        rpy-composed value left the ground tilted 10.4deg.
 RADAR_TF = {
     "left": dict(
         xyz=("0.45", "0.24", "0.545"),
@@ -42,8 +44,8 @@ RADAR_TF = {
         cfg="xtm60_left_lio.yaml",
     ),
     "right": dict(
-        xyz=("0.606", "-0.24", "0.510"),
-        quat=("0.462904", "0.454579", "0.533183", "0.542948"),
+        xyz=("0.606", "-0.24", "0.499"),
+        quat=("0.461852", "0.539985", "0.456948", "0.535077"),
         frame="xtm60_right_link", topic="/xtm60/right/points",
         cfg="xtm60_right_lio.yaml",
     ),

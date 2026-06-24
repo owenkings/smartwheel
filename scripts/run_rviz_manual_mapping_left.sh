@@ -112,5 +112,18 @@ echo "Starting RViz (FAST-LIO mapping view + embedded TeleopPanel): $rviz_cfg"
 setsid rviz2 -d "$rviz_cfg" &
 pids+=("$!")
 
+# 3. Optional dedicated 2D occupancy-grid window (separate RViz instance, top-down).
+#    RViz2 can't dock a 2nd render view in one window, so the 2D map is its own
+#    window you can place next to the main one. Disable with MAP2D=false.
+map2d="${MAP2D:-true}"
+case "$(echo "$map2d" | tr '[:upper:]' '[:lower:]')" in true|1|yes|on) map2d=true ;; *) map2d=false ;; esac
+if [[ "$map2d" == true ]]; then
+  map2d_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/map_2d.rviz"
+  [[ -f "$map2d_cfg" ]] || map2d_cfg="$ws_root/src/wheelchair_bringup/rviz/map_2d.rviz"
+  echo "Starting 2D occupancy-grid window: $map2d_cfg"
+  setsid rviz2 -d "$map2d_cfg" &
+  pids+=("$!")
+fi
+
 # Wait for any child to exit (e.g. you close RViz), then cleanup() runs on EXIT.
 wait -n

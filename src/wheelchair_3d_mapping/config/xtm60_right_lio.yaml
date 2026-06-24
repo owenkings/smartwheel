@@ -45,13 +45,16 @@
             det_range: 20.0
             extrinsic_est_en: false
             # RIGHT radar mount (measured 20260623, auto_test/20260623_dual_radar_calib):
-            #   height 0.510 m, pitch -1.04 deg, roll -9.1 deg, plane residual 4.3 mm.
-            # T_il = inv(base->imu[0,0,0.45]) @ base->right_lidar[0.606,-0.24,0.510].
-            # (x=0.606: right radar ~15.65 cm fwd of the left x=0.45 per dual-radar report.)
-            extrinsic_T: [ 0.606000, -0.240000, 0.060000 ]
-            extrinsic_R: [ 0.018147, -0.158128, 0.987252,
-                           0.999835, 0.002870, -0.017918,
-                          -0.000000, 0.987414, 0.158154 ]
+            #   height 0.499 m, plane residual std 8 mm. RECOMPUTED 20260623 via
+            #   plane-fit + Rodrigues alignment (recompute_right_extrinsic.py): the
+            #   earlier rpy-composed extrinsic left the floor tilted 10.4deg (ground
+            #   sloped in the 3D cloud); this one verifies floor->base z flat (tilt
+            #   0.00deg, median -0.0003 m). T_il = inv(base->imu[0,0,0.45]) @
+            #   base->right_lidar[0.606,-0.24,0.499].
+            extrinsic_T: [ 0.606000, -0.240000, 0.048863 ]
+            extrinsic_R: [ -0.000770, 0.009782, 0.999952,
+                            0.987791, 0.155782, -0.000763,
+                           -0.155782, 0.987743, -0.009782 ]
 
         publish:
             path_en: true

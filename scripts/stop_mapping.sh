@@ -23,6 +23,7 @@ patterns=(
   "rviz2 -d .*manual_mapping_left.rviz"
   "rviz2 -d .*manual_mapping_lio_left.rviz"
   "rviz2 -d .*manual_mapping_lio_right.rviz"
+  "rviz2 -d .*map_2d.rviz"
   "fast_lio/lib"
   "fastlio_mapping"
   "lio_cloud_adapter"
