@@ -123,8 +123,10 @@ Visualization Manager:
     # FAST-LIO odometry + trajectory path.
     - Angle Tolerance: 0.1
       Class: rviz_default_plugins/Odometry
+      Covariance:
+        Value: false
       Enabled: true
-      Keep: 300
+      Keep: 1
       Name: LIO Odometry
       Position Tolerance: 0.1
       Shape:
