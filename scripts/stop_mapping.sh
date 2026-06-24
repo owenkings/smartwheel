@@ -18,9 +18,11 @@ force=false
 patterns=(
   "manual_mapping_left.launch.py"
   "manual_mapping_lio_left.launch.py"
+  "manual_mapping_lio_right.launch.py"
   "fast_lio_mapping.launch.py"
   "rviz2 -d .*manual_mapping_left.rviz"
   "rviz2 -d .*manual_mapping_lio_left.rviz"
+  "rviz2 -d .*manual_mapping_lio_right.rviz"
   "fast_lio/lib"
   "fastlio_mapping"
   "lio_cloud_adapter"

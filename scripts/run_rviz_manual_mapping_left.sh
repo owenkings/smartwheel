@@ -46,7 +46,7 @@ case "$(echo "$motion" | tr '[:upper:]' '[:lower:]')" in
   *) motion=false ;;
 esac
 echo "motion_control_enabled=$motion (true = motors may move)"
-radar="${RADAR:-left}"
+radar="${RADAR:-right}"
 case "$(echo "$radar" | tr '[:upper:]' '[:lower:]')" in
   right) radar=right ;;
   both) radar=both ;;
@@ -62,12 +62,14 @@ source "$ws_root/install/setup.bash" 2>/dev/null || true
 # radar boxed/occluded). LEFT kept for when it is unboxed.
 if [[ "$radar" == "left" ]]; then
   top_launch="manual_mapping_lio_left.launch.py"
+  rviz_name="manual_mapping_lio_left.rviz"
 else
   radar=right
   top_launch="manual_mapping_lio_right.launch.py"
+  rviz_name="manual_mapping_lio_right.rviz"
 fi
-rviz_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/manual_mapping_lio_left.rviz"
-[[ -f "$rviz_cfg" ]] || rviz_cfg="$ws_root/src/wheelchair_bringup/rviz/manual_mapping_lio_left.rviz"
+rviz_cfg="$ws_root/install/wheelchair_bringup/share/wheelchair_bringup/rviz/$rviz_name"
+[[ -f "$rviz_cfg" ]] || rviz_cfg="$ws_root/src/wheelchair_bringup/rviz/$rviz_name"
 
 stop_script="$ws_root/scripts/stop_mapping.sh"
 
