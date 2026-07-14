@@ -14,6 +14,7 @@ from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Trigger
 
 from smartwheel_map_products.colorizer import CameraFrame, colorize_points
+from smartwheel_map_products.metrics import evaluate_trajectory
 from smartwheel_map_products.occupancy import raycast_occupancy
 from smartwheel_map_products.writers import export_map_bundle
 from smartwheel_sensor_api import apply_transform, pointcloud2_from_xyz, pointcloud2_to_xyz
@@ -55,6 +56,11 @@ class MapProductsNode(Node):
         self.declare_parameter("max_obstacle_z", 2.2)
         self.declare_parameter("export_delay_sec", 1.0)
         self.declare_parameter("enable_offline_colorization", True)
+        self.declare_parameter("ground_truth_topic", "")
+        self.declare_parameter("backend_cloud_topic", "")
+        self.declare_parameter("require_backend_cloud", False)
+        self.declare_parameter("maximum_evaluation_time_delta_sec", 0.1)
+        self.declare_parameter("maximum_pose_time_delta_sec", 0.15)
         camera_defaults = {
             "front": ([0.40, 0.0, 0.82], [0.0, 0.0, 0.0]),
             "left": ([0.0, 0.28, 0.80], [0.0, 0.0, math.pi / 2.0]),
@@ -82,6 +88,12 @@ class MapProductsNode(Node):
         self._max_z = float(self.get_parameter("max_obstacle_z").value)
         self._export_delay = float(self.get_parameter("export_delay_sec").value)
         self._color_enabled = bool(self.get_parameter("enable_offline_colorization").value)
+        self._backend_cloud_topic = str(self.get_parameter("backend_cloud_topic").value).strip()
+        self._require_backend_cloud = bool(self.get_parameter("require_backend_cloud").value)
+        self._maximum_evaluation_delta = float(
+            self.get_parameter("maximum_evaluation_time_delta_sec").value
+        )
+        self._maximum_pose_delta = float(self.get_parameter("maximum_pose_time_delta_sec").value)
         self._camera_extrinsics = {
             name: transform_matrix(
                 self.get_parameter(f"{name}_camera_xyz").value,
@@ -93,24 +105,37 @@ class MapProductsNode(Node):
         self._origins = []
         self._poses = []
         self._ground_truth = []
+        self._backend_points = None
+        self._backend_frame = ""
         self._camera_info = {}
         self._camera_frames: list[CameraFrame] = []
         self._completed_at = None
         self._exported = False
+        self._rejected_pose_associations = 0
 
         latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self._cloud_pub = self.create_publisher(PointCloud2, "/map_cloud", latched)
-        self._map_pub = self.create_publisher(OccupancyGrid, "/map", latched)
+        self._cloud_pub = self.create_publisher(PointCloud2, "/map_products/cloud", latched)
+        self._map_pub = self.create_publisher(OccupancyGrid, "/map_products/occupancy", latched)
         self._complete_pub = self.create_publisher(String, "/map_export/completed", latched)
+        self._failure_pub = self.create_publisher(String, "/map_export/failed", latched)
         self.create_service(Trigger, "/map_export/export", self._on_export_request)
         self.create_subscription(PointCloud2, "/lidar/merged/points", self._on_cloud, qos_profile_sensor_data)
         odom_qos = QoSProfile(depth=500, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(Odometry, "/odom/fused", self._on_odom, odom_qos)
-        self.create_subscription(Odometry, "/sim/ground_truth/odom", self._on_ground_truth, odom_qos)
+        ground_truth_topic = str(self.get_parameter("ground_truth_topic").value).strip()
+        if ground_truth_topic:
+            self.create_subscription(Odometry, ground_truth_topic, self._on_ground_truth, odom_qos)
+        if self._backend_cloud_topic:
+            self.create_subscription(
+                PointCloud2,
+                self._backend_cloud_topic,
+                self._on_backend_cloud,
+                qos_profile_sensor_data,
+            )
         self.create_subscription(Bool, "/sim/completed", self._on_completed, latched)
         if self._color_enabled:
             for name in CAMERAS:
@@ -139,14 +164,27 @@ class MapProductsNode(Node):
             (_stamp_seconds(message.header.stamp), pose.position.x, pose.position.y, _yaw_from_quaternion(pose.orientation))
         )
 
+    def _on_backend_cloud(self, message: PointCloud2) -> None:
+        try:
+            points, _ = pointcloud2_to_xyz(message)
+        except ValueError as exc:
+            self.get_logger().error(f"backend cloud rejected: {exc}")
+            return
+        if points.size == 0:
+            return
+        self._backend_points = points
+        self._backend_frame = message.header.frame_id
+
     def _nearest_pose(self, stamp: float):
         if not self._poses:
             return None
-        return min(self._poses, key=lambda pose: abs(pose[0] - stamp))
+        pose = min(self._poses, key=lambda candidate: abs(candidate[0] - stamp))
+        return pose if abs(pose[0] - stamp) <= self._maximum_pose_delta else None
 
     def _on_cloud(self, message: PointCloud2) -> None:
         pose = self._nearest_pose(_stamp_seconds(message.header.stamp))
         if pose is None:
+            self._rejected_pose_associations += 1
             return
         try:
             points, _ = pointcloud2_to_xyz(message)
@@ -196,7 +234,8 @@ class MapProductsNode(Node):
         products = self._current_products()
         if products is None:
             response.success = False
-            response.message = "no merged point cloud has been received"
+            response.message = self._missing_products_reason()
+            self._failure_pub.publish(String(data=response.message))
             return response
         self._publish(products[0], products[2])
         self._export(*products)
@@ -207,22 +246,39 @@ class MapProductsNode(Node):
     def _current_products(self):
         if not self._points:
             return None
-        points = np.vstack(self._points)
+        local_points = np.vstack(self._points)
         origins = np.vstack(self._origins)
         if self._voxel > 0.0:
-            keys = np.floor(points / self._voxel).astype(np.int64)
+            keys = np.floor(local_points / self._voxel).astype(np.int64)
             _, first = np.unique(keys, axis=0, return_index=True)
             first.sort()
-            points = points[first]
+            local_points = local_points[first]
             origins = origins[first]
         grid = raycast_occupancy(
-            points,
+            local_points,
             origins,
             resolution=self._resolution,
             min_obstacle_z=self._min_z,
             max_obstacle_z=self._max_z,
         )
-        return points, origins, grid
+        if self._require_backend_cloud:
+            if self._backend_points is None or self._backend_frame != "map":
+                return None
+            geometry = self._backend_points
+            geometry_source = f"backend:{self._backend_cloud_topic}"
+        else:
+            geometry = local_points
+            geometry_source = "local_odometry_accumulator"
+        return geometry, origins, grid, geometry_source
+
+    def _missing_products_reason(self) -> str:
+        if not self._points:
+            return "no merged point cloud has been received"
+        if self._require_backend_cloud and self._backend_points is None:
+            return f"required backend cloud has not been received: {self._backend_cloud_topic}"
+        if self._require_backend_cloud and self._backend_frame != "map":
+            return f"required backend cloud frame must be map, got: {self._backend_frame or '<empty>'}"
+        return "map products are unavailable"
 
     def _tick(self) -> None:
         if (
@@ -234,6 +290,8 @@ class MapProductsNode(Node):
             if products is not None:
                 self._publish(products[0], products[2])
                 self._export(*products)
+            else:
+                self._failure_pub.publish(String(data=self._missing_products_reason()))
 
     def _publish(self, points, grid) -> None:
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
@@ -250,7 +308,7 @@ class MapProductsNode(Node):
         message.data = grid.cells.ravel().astype(np.int8).tolist()
         self._map_pub.publish(message)
 
-    def _export(self, points, _origins, grid) -> None:
+    def _export(self, points, _origins, grid, geometry_source: str) -> None:
         colors = None
         colored_count = 0
         if self._color_enabled and self._camera_frames:
@@ -263,13 +321,11 @@ class MapProductsNode(Node):
         loop_error = None
         if len(self._poses) >= 2:
             loop_error = math.hypot(self._poses[-1][1] - self._poses[0][1], self._poses[-1][2] - self._poses[0][2])
-        ground_truth_rmse = None
-        if self._poses and self._ground_truth:
-            squared_errors = []
-            for pose in self._poses:
-                truth = min(self._ground_truth, key=lambda candidate: abs(candidate[0] - pose[0]))
-                squared_errors.append((pose[1] - truth[1]) ** 2 + (pose[2] - truth[2]) ** 2)
-            ground_truth_rmse = math.sqrt(sum(squared_errors) / len(squared_errors))
+        trajectory_metrics = evaluate_trajectory(
+            self._poses,
+            self._ground_truth,
+            max_time_delta_sec=self._maximum_evaluation_delta,
+        )
         minimum = points.min(axis=0)
         maximum = points.max(axis=0)
         quality = {
@@ -281,11 +337,14 @@ class MapProductsNode(Node):
             "unknown_cells": unknown,
             "trajectory_pose_count": len(self._poses),
             "ground_truth_pose_count": len(self._ground_truth),
+            "rejected_pose_associations": self._rejected_pose_associations,
             "loop_closure_position_error_m": loop_error,
-            "trajectory_ground_truth_rmse_m": ground_truth_rmse,
+            "geometry_source": geometry_source,
+            "raycast_occupancy_source": "local_odometry_accumulator",
+            **trajectory_metrics,
             "map_bounds_min_m": minimum.tolist(),
             "map_bounds_max_m": maximum.tolist(),
-            "tf_conflicts_detected": 0,
+            "tf_conflict_runtime_check": "NOT_PERFORMED_BY_EXPORTER",
             "hardware_validated": False,
         }
         profile = {

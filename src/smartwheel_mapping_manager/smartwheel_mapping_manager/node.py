@@ -8,6 +8,8 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
+from rtabmap_msgs.msg import Info
+from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import Imu, PointCloud2
 from smartwheel_interfaces.msg import MappingStatus, WheelEncoder
 from smartwheel_interfaces.srv import MapTask
@@ -16,6 +18,7 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 from smartwheel_mapping_manager.state_machine import MappingState, MappingStateMachine
+from smartwheel_mapping_manager.quality_gate import validate_quality_bundle
 from smartwheel_sensor_api import TimestampMonitor, pointcloud2_to_xyz, validate_pointcloud_fields
 
 
@@ -34,6 +37,14 @@ class MappingManagerNode(Node):
         self.declare_parameter("maximum_lidar_imu_delta_sec", 0.25)
         self.declare_parameter("maximum_dual_lidar_delta_sec", 0.03)
         self.declare_parameter("maximum_point_coordinate_m", 100.0)
+        self.declare_parameter("mapping_backend", "rtabmap")
+        self.declare_parameter("backend_map_topic", "/rtabmap/map")
+        self.declare_parameter("require_loop_closure", True)
+        self.declare_parameter("minimum_backend_nodes", 5)
+        self.declare_parameter("minimum_map_points", 1000)
+        self.declare_parameter("minimum_trajectory_poses", 10)
+        self.declare_parameter("maximum_trajectory_rmse_m", 1.0)
+        self.declare_parameter("finalization_timeout_sec", 15.0)
         self._map_name = str(self.get_parameter("map_name").value)
         self._timeout = float(self.get_parameter("checking_timeout_sec").value)
         self._minimum_disk = float(self.get_parameter("minimum_free_disk_gb").value)
@@ -48,6 +59,15 @@ class MappingManagerNode(Node):
         self._max_lidar_imu_delta = float(self.get_parameter("maximum_lidar_imu_delta_sec").value)
         self._max_dual_delta = float(self.get_parameter("maximum_dual_lidar_delta_sec").value)
         self._max_coordinate = float(self.get_parameter("maximum_point_coordinate_m").value)
+        self._backend = str(self.get_parameter("mapping_backend").value)
+        if self._backend not in ("rtabmap", "slam_toolbox"):
+            raise ValueError("mapping_backend must be rtabmap or slam_toolbox")
+        self._require_loop = bool(self.get_parameter("require_loop_closure").value)
+        self._minimum_backend_nodes = int(self.get_parameter("minimum_backend_nodes").value)
+        self._minimum_map_points = int(self.get_parameter("minimum_map_points").value)
+        self._minimum_poses = int(self.get_parameter("minimum_trajectory_poses").value)
+        self._maximum_rmse = float(self.get_parameter("maximum_trajectory_rmse_m").value)
+        self._finalization_timeout = float(self.get_parameter("finalization_timeout_sec").value)
         self._machine = MappingStateMachine()
         self._checks = {}
         self._seen = {"left": 0, "right": 0, "imu": 0, "wheel": 0}
@@ -58,6 +78,11 @@ class MappingManagerNode(Node):
         self._checking_started = None
         self._sim_complete = False
         self._export_path = ""
+        self._export_failure = ""
+        self._backend_nodes = 0
+        self._backend_map_seen = False
+        self._loop_events = set()
+        self._finalization_started = None
         latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -72,6 +97,15 @@ class MappingManagerNode(Node):
         self.create_subscription(WheelEncoder, "/wheel/encoder_counts", self._on_wheel, 20)
         self.create_subscription(Bool, "/sim/completed", self._on_sim_complete, latched)
         self.create_subscription(String, "/map_export/completed", self._on_export, latched)
+        self.create_subscription(String, "/map_export/failed", self._on_export_failure, latched)
+        if self._backend == "rtabmap":
+            self.create_subscription(Info, "/rtabmap/info", self._on_rtabmap_info, 20)
+        self.create_subscription(
+            OccupancyGrid,
+            str(self.get_parameter("backend_map_topic").value),
+            self._on_backend_map,
+            latched,
+        )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self.create_timer(0.25, self._tick)
@@ -128,6 +162,32 @@ class MappingManagerNode(Node):
     def _on_export(self, message: String) -> None:
         self._export_path = message.data
 
+    def _on_export_failure(self, message: String) -> None:
+        self._export_failure = message.data
+
+    def _on_rtabmap_info(self, message: Info) -> None:
+        self._backend_nodes = max(self._backend_nodes, len(message.wm_state))
+        if message.loop_closure_id > 0:
+            self._loop_events.add(("loop", int(message.ref_id), int(message.loop_closure_id)))
+        if message.proximity_detection_id > 0:
+            self._loop_events.add(("proximity", int(message.ref_id), int(message.proximity_detection_id)))
+
+    def _on_backend_map(self, message: OccupancyGrid) -> None:
+        self._backend_map_seen = message.info.width > 0 and message.info.height > 0 and bool(message.data)
+
+    def _backend_ready(self) -> bool:
+        if self._backend == "rtabmap":
+            nodes_ready = self._backend_nodes >= self._minimum_backend_nodes
+            loop_ready = not self._require_loop or bool(self._loop_events)
+            return nodes_ready and loop_ready and self._backend_map_seen
+        return self._backend_map_seen
+
+    def _update_backend_checks(self) -> None:
+        self._checks["backend_map_received"] = self._backend_map_seen
+        if self._backend == "rtabmap":
+            self._checks["backend_minimum_nodes"] = self._backend_nodes >= self._minimum_backend_nodes
+            self._checks["backend_loop_evidence"] = not self._require_loop or bool(self._loop_events)
+
     def _preflight(self) -> bool:
         for name, count in self._seen.items():
             self._checks[f"topic_{name}"] = count >= 2
@@ -170,9 +230,15 @@ class MappingManagerNode(Node):
             self._bag_path.is_dir()
             and any(path.stat().st_size > 0 for path in self._bag_path.glob("*.db3"))
         )
-        return all(self._checks.values())
+        preflight = [
+            value
+            for name, value in self._checks.items()
+            if not name.startswith("backend_") and not name.startswith("quality_")
+        ]
+        return bool(preflight) and all(preflight)
 
     def _tick(self) -> None:
+        self._update_backend_checks()
         state = self._machine.state
         if state is MappingState.FAILED:
             self._publish()
@@ -187,13 +253,51 @@ class MappingManagerNode(Node):
             self._machine.advance()
         elif state is MappingState.MAPPING and self._sim_complete:
             self._machine.advance()
-        elif state in (MappingState.LOOP_CLOSING, MappingState.OPTIMIZING):
-            self._machine.advance()
+            self._finalization_started = time.monotonic()
+        elif state is MappingState.LOOP_CLOSING:
+            if self._backend_ready():
+                self._machine.advance()
+            elif self._finalization_timed_out():
+                self._machine.fail(self._backend_failure_reason())
+        elif state is MappingState.OPTIMIZING:
+            if self._backend_ready():
+                self._machine.advance()
+            elif self._finalization_timed_out():
+                self._machine.fail(self._backend_failure_reason())
         elif state is MappingState.EXPORTING and self._export_path:
             self._machine.advance()
+        elif state is MappingState.EXPORTING and self._finalization_timed_out():
+            reason = self._export_failure or "map export did not complete before timeout"
+            self._machine.fail(reason)
         elif state is MappingState.QUALITY_CHECK:
-            self._machine.advance()
+            quality_checks = validate_quality_bundle(
+                self._export_path,
+                self._backend,
+                self._minimum_map_points,
+                self._minimum_poses,
+                self._maximum_rmse,
+            )
+            self._checks.update({f"quality_{name}": value for name, value in quality_checks.items()})
+            failed = [name for name, passed in quality_checks.items() if not passed]
+            if failed:
+                self._machine.fail(f"quality gate failed: {', '.join(failed)}")
+            else:
+                self._machine.advance()
         self._publish()
+
+    def _finalization_timed_out(self) -> bool:
+        return (
+            self._finalization_started is not None
+            and time.monotonic() - self._finalization_started > self._finalization_timeout
+        )
+
+    def _backend_failure_reason(self) -> str:
+        failed = [
+            name
+            for name in ("backend_map_received", "backend_minimum_nodes", "backend_loop_evidence")
+            if name in self._checks and not self._checks[name]
+        ]
+        return f"backend evidence timeout: {', '.join(failed) or 'unknown backend evidence'}"
 
     def _on_task(self, request, response):
         if request.command == MapTask.Request.RESET:

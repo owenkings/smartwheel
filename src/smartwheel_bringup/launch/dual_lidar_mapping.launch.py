@@ -31,6 +31,14 @@ def generate_launch_description():
                 ],
             ),
             Node(
+                package="smartwheel_global_mapping",
+                executable="rtabmap_optimized_cloud_node",
+                output="screen",
+                condition=IfCondition(
+                    PythonExpression(["'", LaunchConfiguration("mapping_backend"), "' == 'rtabmap'"])
+                ),
+            ),
+            Node(
                 package="rtabmap_slam",
                 executable="rtabmap",
                 output="screen",
@@ -38,7 +46,14 @@ def generate_launch_description():
                     PythonExpression(["'", LaunchConfiguration("mapping_backend"), "' == 'rtabmap'"])
                 ),
                 parameters=[str(config / "rtabmap_params.yaml"), {"database_path": LaunchConfiguration("database_path")}],
-                remappings=[("odom", "/odom/fused"), ("scan_cloud", "/lidar/merged/points"), ("map", "/rtabmap/map")],
+                remappings=[
+                    ("odom", "/odom/fused"),
+                    ("scan_cloud", "/lidar/merged/points"),
+                    ("map", "/rtabmap/map"),
+                    ("grid_map", "/rtabmap/grid_map"),
+                    ("cloud_map", "/rtabmap/cloud_map"),
+                    ("info", "/rtabmap/info"),
+                ],
             ),
             Node(
                 package="slam_toolbox",

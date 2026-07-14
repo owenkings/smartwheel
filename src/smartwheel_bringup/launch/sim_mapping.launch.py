@@ -96,6 +96,7 @@ def _setup(context):
     enable_cameras = _as_bool(LaunchConfiguration("enable_cameras").perform(context))
     colorization = _as_bool(LaunchConfiguration("enable_offline_colorization").perform(context))
     record_bag = _as_bool(LaunchConfiguration("record_bag").perform(context))
+    enable_loop_closure = _as_bool(LaunchConfiguration("enable_loop_closure").perform(context))
     camera_params = {}
     for name in ("front", "left", "right", "rear"):
         camera = cameras[name]
@@ -226,6 +227,9 @@ def _setup(context):
                     "bag_path": str(bag_path) if record_bag else "",
                     "export_delay_sec": 3.0,
                     "enable_offline_colorization": colorization and enable_cameras,
+                    "ground_truth_topic": "/sim/ground_truth/odom",
+                    "backend_cloud_topic": "/rtabmap/optimized_cloud" if backend == "rtabmap" else "",
+                    "require_backend_cloud": backend == "rtabmap",
                     **camera_params,
                 }
             ],
@@ -248,8 +252,18 @@ def _setup(context):
                     "record_bag": record_bag,
                     "bag_path": str(bag_path) if record_bag else "",
                     "checking_timeout_sec": float(LaunchConfiguration("startup_delay_sec").perform(context)) + 10.0,
+                    "mapping_backend": backend,
+                    "backend_map_topic": "/rtabmap/map" if backend == "rtabmap" else "/map",
+                    "require_loop_closure": enable_loop_closure if backend == "rtabmap" else False,
                 }
             ],
+        ),
+        Node(
+            package="smartwheel_global_mapping",
+            executable="rtabmap_optimized_cloud_node",
+            name="stage_a_rtabmap_optimized_cloud",
+            output="screen",
+            condition=IfCondition(PythonExpression(["'", backend, "' == 'rtabmap'"])),
         ),
         Node(
             package="rtabmap_slam",
@@ -259,13 +273,21 @@ def _setup(context):
             condition=IfCondition(PythonExpression(["'", backend, "' == 'rtabmap'"])),
             parameters=[
                 str(Path(get_package_share_directory("smartwheel_global_mapping")) / "config" / "rtabmap_params.yaml"),
-                {"database_path": str(database_path)},
+                {
+                    "database_path": str(database_path),
+                    "RGBD/ProximityBySpace": "true" if enable_loop_closure else "false",
+                    # Time-neighbor constraints are not loop-closure evidence and can
+                    # overconstrain this synthetic route. Space proximity is the tested loop mode.
+                    "RGBD/ProximityByTime": "false",
+                },
             ],
             remappings=[
                 ("odom", "/odom/fused"),
                 ("scan_cloud", "/lidar/merged/points"),
                 ("map", "/rtabmap/map"),
                 ("grid_map", "/rtabmap/grid_map"),
+                ("cloud_map", "/rtabmap/cloud_map"),
+                ("info", "/rtabmap/info"),
             ],
         ),
         Node(
@@ -286,7 +308,7 @@ def _setup(context):
                 "/camera/right/image_raw", "/camera/right/camera_info",
                 "/camera/rear/image_raw", "/camera/rear/camera_info",
                 "/lidar/merged/points", "/scan", "/sim/ground_truth/odom", "/sim/completed",
-                "/map", "/map_cloud", "/hardware/status",
+                "/map_products/occupancy", "/map_products/cloud", "/hardware/status",
                 "/tf", "/tf_static", "/diagnostics", "/mapping/status",
             ],
             output="screen",
@@ -307,6 +329,7 @@ def generate_launch_description():
             DeclareLaunchArgument("record_bag", default_value="false", choices=["true", "false"]),
             DeclareLaunchArgument("enable_cameras", default_value="true", choices=["true", "false"]),
             DeclareLaunchArgument("enable_online_visual_loop", default_value="false", choices=["true", "false"]),
+            DeclareLaunchArgument("enable_loop_closure", default_value="true", choices=["true", "false"]),
             DeclareLaunchArgument("enable_offline_colorization", default_value="true", choices=["true", "false"]),
             DeclareLaunchArgument("hardware_enabled", default_value="false", choices=["true", "false"]),
             DeclareLaunchArgument("motion_mode", default_value="teleop", choices=["teleop", "push"]),

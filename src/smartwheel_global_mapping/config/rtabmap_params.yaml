@@ -1,5 +1,7 @@
 rtabmap:
   ros__parameters:
+    map_cleanup: false
+    map_always_update: true
     subscribe_depth: false
     subscribe_rgb: false
     subscribe_stereo: false
@@ -19,9 +21,15 @@ rtabmap:
     Mem/InitWMWithAllNodes: "false"
     RGBD/CreateOccupancyGrid: "true"
     RGBD/ProximityBySpace: "true"
+    RGBD/ProximityByTime: "false"
+    RGBD/ProximityAngle: "180"
+    RGBD/ProximityMaxGraphDepth: "0"
     RGBD/ProximityPathMaxNeighbors: "2"
     Rtabmap/DetectionRate: "5.0"
     Reg/Strategy: "1"
+    Icp/MaxCorrespondenceDistance: "0.2"
+    Icp/MaxTranslation: "0.5"
+    Icp/MaxRotation: "1.57"
     Grid/FromDepth: "false"
     Grid/3D: "true"
     Grid/RayTracing: "true"

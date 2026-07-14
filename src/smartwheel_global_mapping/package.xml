@@ -10,6 +10,8 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>rtabmap_msgs</exec_depend>
+  <exec_depend>rtabmap_python</exec_depend>
   <exec_depend>smartwheel_sensor_api</exec_depend>
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>

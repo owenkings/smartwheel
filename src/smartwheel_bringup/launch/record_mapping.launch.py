@@ -12,7 +12,8 @@ def generate_launch_description():
         "/camera/left/camera_info", "/camera/right/image_raw", "/camera/right/camera_info",
         "/camera/rear/image_raw", "/camera/rear/camera_info", "/tf", "/tf_static",
         "/lidar/merged/points", "/scan", "/sim/ground_truth/odom", "/sim/completed",
-        "/map", "/map_cloud", "/hardware/status", "/diagnostics", "/mapping/status",
+        "/map_products/occupancy", "/map_products/cloud", "/hardware/status",
+        "/diagnostics", "/mapping/status",
     ]
     return LaunchDescription(
         [

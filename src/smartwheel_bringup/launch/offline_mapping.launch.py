@@ -24,9 +24,19 @@ def _setup(context):
     output_root = Path(LaunchConfiguration("output_root").perform(context)).expanduser().resolve()
     map_name = LaunchConfiguration("map_name").perform(context)
     version = output_root / f"{map_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-    version.mkdir(parents=True, exist_ok=False)
     config = Path(get_package_share_directory("smartwheel_global_mapping")) / "config"
     replay_rate = LaunchConfiguration("replay_rate").perform(context)
+    replay_rate_value = float(replay_rate)
+    if replay_rate_value <= 0.0:
+        raise RuntimeError("replay_rate must be greater than zero")
+    if backend == "rtabmap" and replay_rate_value > 1.0:
+        raise RuntimeError(
+            "RTAB-Map offline replay_rate must be <= 1.0 so synchronized inputs are not silently dropped"
+        )
+    post_replay_settle_sec = float(LaunchConfiguration("post_replay_settle_sec").perform(context))
+    if post_replay_settle_sec < 2.0:
+        raise RuntimeError("post_replay_settle_sec must be at least 2.0 seconds")
+    version.mkdir(parents=True, exist_ok=False)
     common = {"use_sim_time": True}
     playback = ExecuteProcess(
         cmd=[
@@ -34,9 +44,10 @@ def _setup(context):
             "--remap",
             "/tf:=/offline/recorded_tf",
             "/odom/fused:=/offline/recorded_odom",
-            "/map:=/offline/recorded_map",
-            "/map_cloud:=/offline/recorded_map_cloud",
+            "/map_products/occupancy:=/offline/recorded_map_products_occupancy",
+            "/map_products/cloud:=/offline/recorded_map_products_cloud",
             "/mapping/status:=/offline/recorded_mapping_status",
+            "/sim/completed:=/offline/recorded_sim_completed",
         ],
         output="screen",
     )
@@ -79,8 +90,19 @@ def _setup(context):
                     "enable_offline_colorization": _as_bool(
                         LaunchConfiguration("enable_offline_colorization").perform(context)
                     ),
+                    "ground_truth_topic": "/sim/ground_truth/odom",
+                    "backend_cloud_topic": "/rtabmap/optimized_cloud" if backend == "rtabmap" else "",
+                    "require_backend_cloud": backend == "rtabmap",
                 },
             ],
+        ),
+        Node(
+            package="smartwheel_global_mapping",
+            executable="rtabmap_optimized_cloud_node",
+            name="offline_rtabmap_optimized_cloud",
+            output="screen",
+            condition=IfCondition(PythonExpression(["'", backend, "' == 'rtabmap'"])),
+            parameters=[common],
         ),
         Node(
             package="rtabmap_slam",
@@ -98,6 +120,8 @@ def _setup(context):
                 ("scan_cloud", "/lidar/merged/points"),
                 ("map", "/rtabmap/map"),
                 ("grid_map", "/rtabmap/grid_map"),
+                ("cloud_map", "/rtabmap/cloud_map"),
+                ("info", "/rtabmap/info"),
             ],
         ),
         Node(
@@ -121,7 +145,10 @@ def _setup(context):
             actions=[playback],
         ),
         RegisterEventHandler(
-            OnProcessExit(target_action=playback, on_exit=[TimerAction(period=1.0, actions=[export])])
+            OnProcessExit(
+                target_action=playback,
+                on_exit=[TimerAction(period=post_replay_settle_sec, actions=[export])],
+            )
         ),
     ]
     return actions
@@ -146,6 +173,7 @@ def generate_launch_description():
             DeclareLaunchArgument("map_name", default_value="offline_map"),
             DeclareLaunchArgument("output_root", default_value="maps/versions"),
             DeclareLaunchArgument("replay_rate", default_value="1.0"),
+            DeclareLaunchArgument("post_replay_settle_sec", default_value="5.0"),
             OpaqueFunction(function=_setup),
         ]
     )
