@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>smartwheel_tests</name>
+  <version>0.1.0</version>
+  <description>Cross-package Stage A unit and integration acceptance tests.</description>
+  <maintainer email="todo@example.com">SmartWheel team</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <test_depend>ament_pytest</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
+  <test_depend>smartwheel_sensor_api</test_depend>
+  <test_depend>smartwheel_sim</test_depend>
+  <test_depend>smartwheel_map_products</test_depend>
+  <test_depend>smartwheel_global_mapping</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
