@@ -1,0 +1,149 @@
+profile:
+  name: TODO_real_profile_name
+  mode: real
+  hardware_enabled: false
+
+lidar_left:
+  model: XT-M60
+  ip_address: null
+  sdk_config_path: null
+  frame_id: xtm60_left_link
+  point_unit: null
+  scan_rate_hz: null
+  timestamp_source: null
+  timestamp_semantics: null
+  has_per_point_time: null
+  point_time_field: null
+  intensity_field: null
+  range_min_m: null
+  range_max_m: null
+  horizontal_fov_deg: null
+  vertical_fov_deg: null
+  x_m: null
+  y_m: null
+  z_m: null
+  roll_deg: null
+  pitch_deg: null
+  yaw_deg: null
+
+lidar_right:
+  model: XT-M60
+  ip_address: null
+  sdk_config_path: null
+  frame_id: xtm60_right_link
+  point_unit: null
+  scan_rate_hz: null
+  timestamp_source: null
+  timestamp_semantics: null
+  has_per_point_time: null
+  point_time_field: null
+  intensity_field: null
+  range_min_m: null
+  range_max_m: null
+  horizontal_fov_deg: null
+  vertical_fov_deg: null
+  x_m: null
+  y_m: null
+  z_m: null
+  roll_deg: null
+  pitch_deg: null
+  yaw_deg: null
+
+dual_lidar:
+  center_distance_m: null
+  horizontal_overlap_deg: null
+  vertical_overlap_deg: null
+  max_pair_time_difference_ms: null
+  primary_lidar: left
+  integration_mode: map_only
+
+imu:
+  model: H30
+  port: null
+  baud_rate: null
+  frame_id: imu_link
+  rate_hz: null
+  timestamp_source: null
+  axis_convention: null
+  orientation_available: null
+  x_m: null
+  y_m: null
+  z_m: null
+  roll_deg: null
+  pitch_deg: null
+  yaw_deg: null
+
+wheel:
+  wheel_radius_m: null
+  track_width_m: null
+  encoder_cpr: null
+  encoder_bits: null
+  gear_ratio: null
+  left_sign: null
+  right_sign: null
+  velocity_unit: null
+  register_definition_source: null
+  encoders_available_in_push_mode: null
+
+cameras:
+  front:
+    device: null
+    frame_id: camera_front_link
+    width: null
+    height: null
+    fps: null
+    timestamp_source: null
+    intrinsic_file: null
+    distortion_model: null
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_deg: null
+    pitch_deg: null
+    yaw_deg: null
+  left:
+    device: null
+    frame_id: camera_left_link
+    width: null
+    height: null
+    fps: null
+    timestamp_source: null
+    intrinsic_file: null
+    distortion_model: null
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_deg: null
+    pitch_deg: null
+    yaw_deg: null
+  right:
+    device: null
+    frame_id: camera_right_link
+    width: null
+    height: null
+    fps: null
+    timestamp_source: null
+    intrinsic_file: null
+    distortion_model: null
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_deg: null
+    pitch_deg: null
+    yaw_deg: null
+  rear:
+    device: null
+    frame_id: camera_rear_link
+    width: null
+    height: null
+    fps: null
+    timestamp_source: null
+    intrinsic_file: null
+    distortion_model: null
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_deg: null
+    pitch_deg: null
+    yaw_deg: null
+

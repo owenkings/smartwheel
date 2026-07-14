@@ -1,0 +1,150 @@
+profile:
+  name: deterministic_stage_a_seed_20260714
+  mode: mock
+  hardware_enabled: false
+  simulation_only: true
+
+lidar_left:
+  model: XT-M60_SIMULATION_ONLY
+  ip_address: null
+  sdk_config_path: null
+  frame_id: xtm60_left_link
+  point_unit: m
+  scan_rate_hz: 5.0
+  timestamp_source: deterministic_sim_clock
+  timestamp_semantics: frame_acquisition_time
+  has_per_point_time: false
+  point_time_field: null
+  intensity_field: intensity
+  range_min_m: 0.2
+  range_max_m: 12.0
+  horizontal_fov_deg: 120.0
+  vertical_fov_deg: 45.0
+  x_m: 0.32
+  y_m: 0.18
+  z_m: 0.72
+  roll_deg: 0.0
+  pitch_deg: -4.0
+  yaw_deg: 28.0
+
+lidar_right:
+  model: XT-M60_SIMULATION_ONLY
+  ip_address: null
+  sdk_config_path: null
+  frame_id: xtm60_right_link
+  point_unit: m
+  scan_rate_hz: 5.0
+  timestamp_source: deterministic_sim_clock
+  timestamp_semantics: frame_acquisition_time
+  has_per_point_time: false
+  point_time_field: null
+  intensity_field: intensity
+  range_min_m: 0.2
+  range_max_m: 12.0
+  horizontal_fov_deg: 120.0
+  vertical_fov_deg: 45.0
+  x_m: 0.32
+  y_m: -0.18
+  z_m: 0.72
+  roll_deg: 0.0
+  pitch_deg: -4.0
+  yaw_deg: -28.0
+
+dual_lidar:
+  center_distance_m: 0.36
+  horizontal_overlap_deg: 64.0
+  vertical_overlap_deg: 45.0
+  max_pair_time_difference_ms: 30.0
+  primary_lidar: left
+  integration_mode: map_only
+
+imu:
+  model: H30_SIMULATION_ONLY
+  port: null
+  baud_rate: null
+  frame_id: imu_link
+  rate_hz: 50.0
+  timestamp_source: deterministic_sim_clock
+  axis_convention: REP-103
+  orientation_available: true
+  x_m: 0.0
+  y_m: 0.0
+  z_m: 0.50
+  roll_deg: 0.0
+  pitch_deg: 0.0
+  yaw_deg: 0.0
+
+wheel:
+  wheel_radius_m: 0.16
+  track_width_m: 0.58
+  encoder_cpr: 2048
+  encoder_bits: 32
+  gear_ratio: 1.0
+  left_sign: 1
+  right_sign: 1
+  velocity_unit: count
+  register_definition_source: deterministic_simulator
+  encoders_available_in_push_mode: true
+
+cameras:
+  front:
+    device: synthetic_front
+    frame_id: camera_front_link
+    width: 160
+    height: 120
+    fps: 5.0
+    timestamp_source: deterministic_sim_clock
+    intrinsic_file: synthetic_pinhole
+    distortion_model: plumb_bob
+    x_m: 0.40
+    y_m: 0.0
+    z_m: 0.82
+    roll_deg: 0.0
+    pitch_deg: 0.0
+    yaw_deg: 0.0
+  left:
+    device: synthetic_left
+    frame_id: camera_left_link
+    width: 160
+    height: 120
+    fps: 5.0
+    timestamp_source: deterministic_sim_clock
+    intrinsic_file: synthetic_pinhole
+    distortion_model: plumb_bob
+    x_m: 0.0
+    y_m: 0.28
+    z_m: 0.80
+    roll_deg: 0.0
+    pitch_deg: 0.0
+    yaw_deg: 90.0
+  right:
+    device: synthetic_right
+    frame_id: camera_right_link
+    width: 160
+    height: 120
+    fps: 5.0
+    timestamp_source: deterministic_sim_clock
+    intrinsic_file: synthetic_pinhole
+    distortion_model: plumb_bob
+    x_m: 0.0
+    y_m: -0.28
+    z_m: 0.80
+    roll_deg: 0.0
+    pitch_deg: 0.0
+    yaw_deg: -90.0
+  rear:
+    device: synthetic_rear
+    frame_id: camera_rear_link
+    width: 160
+    height: 120
+    fps: 5.0
+    timestamp_source: deterministic_sim_clock
+    intrinsic_file: synthetic_pinhole
+    distortion_model: plumb_bob
+    x_m: -0.28
+    y_m: 0.0
+    z_m: 0.78
+    roll_deg: 0.0
+    pitch_deg: 0.0
+    yaw_deg: 180.0
+
