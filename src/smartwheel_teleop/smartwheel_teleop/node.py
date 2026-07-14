@@ -66,8 +66,14 @@ class SafeTeleopNode(Node):
             emergency_stop=self._emergency_stop,
             command_not_timed_out=self._controller.command_fresh(now),
         )
-        if motor_command_allowed(gate):
-            self._motor_pub.publish(safe)
+        if self._hardware_enabled:
+            self._motor_pub.publish(safe if motor_command_allowed(gate) else Twist())
+
+    def stop(self) -> None:
+        zero = Twist()
+        self._safe_pub.publish(zero)
+        if self._hardware_enabled:
+            self._motor_pub.publish(zero)
 
 
 def main(args=None) -> None:
@@ -78,7 +84,8 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop()
+        rclpy.spin_once(node, timeout_sec=0.05)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
