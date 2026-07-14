@@ -1,8 +1,89 @@
-# SmartWheel
+# SmartWheel Mapping V2
 
-室内自主轮椅(ROS 2 Humble,Jetson Orin / aarch64,工作区 `/home/nvidia/smartwheel`)。
+This workspace contains a clean ROS 2 Humble architecture for Stage A indoor mapping
+without physical hardware. Stage A uses deterministic synthetic XT-M60-like point
+clouds, H30-style IMU data, wheel encoders, four mock cameras, and mock-LIO copied from
+ground truth. It does not validate any real sensor, motor, protocol, calibration, or
+FAST-LIO2 performance.
 
-## 3D 建图主线:FAST-LIO2(LiDAR-惯性里程计)
+Real transports and motor output are disabled by default. Do not set
+`hardware_enabled:=true` until the Stage B runbook has been authorized and completed.
+
+## Build and test
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+source install/setup.bash
+colcon test
+colcon test-result --verbose
+```
+
+The full build passes all 28 workspace packages. The retained third-party
+`livox_ros_driver2` package has pre-existing copyright/style/uncrustify lint failures.
+The mapping-v2 acceptance suite is isolated with:
+
+```bash
+colcon test --test-result-base /tmp/smartwheel_stage_a_results \
+  --packages-select smartwheel_interfaces smartwheel_description \
+  smartwheel_sensor_api xtm60_ros2_driver h30_imu_driver wheel_odom_driver \
+  camera_array_driver dual_lidar_fusion smartwheel_state_estimation \
+  smartwheel_global_mapping smartwheel_map_products smartwheel_mapping_manager \
+  smartwheel_teleop smartwheel_bringup smartwheel_sim smartwheel_tests
+colcon test-result --test-result-base /tmp/smartwheel_stage_a_results --verbose
+```
+
+## Stage A simulation
+
+```bash
+source install/setup.bash
+ros2 launch smartwheel_bringup sim_mapping.launch.py \
+  map_name:=stage_a_demo record_bag:=false
+```
+
+The default RTAB-Map path produces a versioned directory under `maps/versions/` with
+PCD/PLY geometry, optional colored PLY, PGM/PNG/YAML occupancy data, trajectory files,
+quality reports, manifest, hardware/algorithm profiles, and `rtabmap.db`.
+
+Use the optional 2D baseline with:
+
+```bash
+ros2 launch smartwheel_bringup sim_mapping.launch.py mapping_backend:=slam_toolbox
+```
+
+## Record and replay
+
+```bash
+ros2 launch smartwheel_bringup sim_mapping.launch.py \
+  map_name:=recorded_run record_bag:=true
+
+ros2 launch smartwheel_bringup offline_mapping.launch.py \
+  bag_path:=/absolute/path/to/raw_bag map_name:=replayed_run replay_rate:=1.0
+```
+
+Offline replay namespaces recorded derived TF and maps, reconstructs the selected
+`odom -> base_link` edge, and leaves exactly one selected global backend responsible for
+`map -> odom`. Replay at `1.0` is the validated rate.
+
+For an externally supplied stream or bag, start the exporter and trigger it explicitly:
+
+```bash
+ros2 launch smartwheel_bringup map_export.launch.py
+ros2 service call /map_export/export std_srvs/srv/Trigger '{}'
+```
+
+Key documents are [the delivery report](docs/STAGE_A_DELIVERY_REPORT.md),
+[the frame/topic contract](docs/FRAME_AND_TOPIC_CONTRACT.md),
+[implementation status](docs/IMPLEMENTATION_STATUS.md), and
+[known limitations](docs/KNOWN_LIMITATIONS.md). Stage B must follow
+[the hardware runbook](docs/HARDWARE_BRINGUP_RUNBOOK.md).
+
+## Legacy deployment (not mapping v2)
+
+The material below describes the pre-existing hardware stack. It is retained for audit
+and reference and must not be mixed into mapping-v2 launches.
+
+### 3D 建图主线:FAST-LIO2(LiDAR-惯性里程计)
 
 当前 3D 建图采用 **FAST-LIO2(LiDAR-Inertial Odometry)**,取代了此前「纯 EKF 位姿 + RTAB-Map 零配准」
 链路(后者在窄视场 XT-M60 上产生"漩涡/重影",根因是缺少 IMU 主导的帧间配准)。

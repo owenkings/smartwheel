@@ -37,6 +37,7 @@ not fused again by `robot_localization` in `lio_primary` mode.
 | `/lidar/left/points_registered` | `sensor_msgs/PointCloud2` | `base_link` | sensor data | dual-LiDAR fusion |
 | `/lidar/right/points_registered` | `sensor_msgs/PointCloud2` | `base_link` | sensor data | dual-LiDAR fusion |
 | `/lidar/merged/points` | `sensor_msgs/PointCloud2` | `base_link` | sensor data | dual-LiDAR fusion |
+| `/scan` | `sensor_msgs/LaserScan` | `base_link` | sensor data | toolbox-only cloud adapter |
 | `/imu/data_raw` | `sensor_msgs/Imu` | `imu_link` | sensor data | H30 backend |
 | `/wheel/encoder_counts` | `smartwheel_interfaces/WheelEncoder` | n/a | reliable depth 20 | wheel backend/simulator |
 | `/wheel/odom` | `nav_msgs/Odometry` | `odom` / `base_link` | reliable depth 20 | wheel odom driver |
@@ -52,6 +53,10 @@ not fused again by `robot_localization` in `lio_primary` mode.
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | n/a | reliable depth 10 | all components |
 | `/sim/ground_truth/odom` | `nav_msgs/Odometry` | `map` / `base_link_gt` | reliable depth 20 | simulator only |
 | `/sim/completed` | `std_msgs/Bool` | n/a | reliable transient local | simulator only |
+| `/map_export/completed` | `std_msgs/String` | n/a | reliable transient local | map product node |
+
+The `/map_export/export` service uses `std_srvs/Trigger`. `/mapping/task` uses
+`smartwheel_interfaces/MapTask` for `START`, `STOP`, `EXPORT`, and `RESET` requests.
 
 All frame IDs, topics, rates, timeouts, and queue depths are ROS parameters. The table
 defines defaults, not permission to hard-code real hardware properties.
@@ -66,4 +71,3 @@ defines defaults, not permission to hard-code real hardware properties.
 - Zero timestamps are accepted only from explicit mock fixtures that declare that
   behavior. Real backends fail diagnostics on zero or regressing time.
 - `dual_lio` is an interface-only Stage A mode and emits `NOT_IMPLEMENTED`.
-
