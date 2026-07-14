@@ -1,4 +1,5 @@
 import math
+import time
 
 import numpy as np
 import rclpy
@@ -34,6 +35,7 @@ class IndoorSimNode(Node):
         self.declare_parameter("duration_sec", 12.0)
         self.declare_parameter("sim_step_sec", 0.02)
         self.declare_parameter("playback_rate", 4.0)
+        self.declare_parameter("publisher_discovery_warmup_sec", 1.5)
         self.declare_parameter("lidar_rate_hz", 5.0)
         self.declare_parameter("wheel_rate_hz", 20.0)
         self.declare_parameter("camera_rate_hz", 5.0)
@@ -60,8 +62,11 @@ class IndoorSimNode(Node):
         self._duration = float(self.get_parameter("duration_sec").value)
         self._step = float(self.get_parameter("sim_step_sec").value)
         playback_rate = float(self.get_parameter("playback_rate").value)
+        warmup_sec = float(self.get_parameter("publisher_discovery_warmup_sec").value)
         if self._duration <= 0.0 or self._step <= 0.0 or playback_rate <= 0.0:
             raise ValueError("simulation duration, step, and playback rate must be positive")
+        if warmup_sec < 0.0:
+            raise ValueError("publisher discovery warmup must be non-negative")
         self._scene = IndoorScene()
         self._trajectory = ClosedLoopTrajectory()
         self._left_model = LidarModel(
@@ -114,29 +119,35 @@ class IndoorSimNode(Node):
 
         self._index = 0
         self._sim_time = 0.0
-        self._epoch = 1.0
         self._previous_pose = self._trajectory.sample(0.0, self._duration)
         self._left_distance = 0.0
         self._right_distance = 0.0
+        self._pending_distance = 0.0
+        self._pending_yaw = 0.0
         self._left_count = 0
         self._right_count = 0
         self._completed = False
+        self._start_after = time.monotonic() + warmup_sec
         self._publish_hardware_status()
         self._timer = self.create_timer(self._step / playback_rate, self._tick)
 
     def _tick(self) -> None:
-        if self._completed:
+        if self._completed or time.monotonic() < self._start_after:
             return
         pose = self._trajectory.sample(self._sim_time, self._duration)
-        stamp_sec = self._epoch + self._sim_time
+        stamp_sec = self.get_clock().now().nanoseconds * 1e-9
         stamp = _time_message(stamp_sec)
         distance = math.hypot(pose.x - self._previous_pose.x, pose.y - self._previous_pose.y)
         dyaw = _angle_delta(pose.yaw, self._previous_pose.yaw)
         yaw_rate = dyaw / self._step if self._index > 0 else 0.0
+        self._pending_distance += distance
+        self._pending_yaw += dyaw
         self._publish_ground_truth(pose, stamp, distance / self._step, yaw_rate)
         self._publish_imu(pose, stamp, yaw_rate)
         if self._index % self._wheel_period == 0:
-            self._publish_encoder(distance, dyaw, stamp)
+            self._publish_encoder(self._pending_distance, self._pending_yaw, stamp)
+            self._pending_distance = 0.0
+            self._pending_yaw = 0.0
         if self._index % self._lidar_period == 0:
             self._publish_lidars(pose, stamp_sec)
         if self._enable_cameras and self._index % self._camera_period == 0:
@@ -146,7 +157,7 @@ class IndoorSimNode(Node):
         self._sim_time = min(self._duration, self._sim_time + self._step)
         if self._sim_time >= self._duration:
             final_pose = self._trajectory.sample(self._duration, self._duration)
-            final_stamp = _time_message(self._epoch + self._duration)
+            final_stamp = self.get_clock().now().to_msg()
             self._publish_ground_truth(final_pose, final_stamp, 0.0, 0.0)
             self._completed = True
             self._completed_pub.publish(Bool(data=True))
@@ -276,4 +287,3 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-

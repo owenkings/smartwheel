@@ -24,12 +24,14 @@ class StateSelectorNode(Node):
         if self._mode not in ("lio_primary", "wheel_imu_fallback"):
             raise ValueError("state_mode must be lio_primary or wheel_imu_fallback")
         self._timeout = float(self.get_parameter("source_timeout_sec").value)
+        self._selected_source = "lio" if self._mode == "lio_primary" else "wheel"
         self._monitor = ResidualMonitor(
             float(self.get_parameter("max_linear_residual").value),
             float(self.get_parameter("max_angular_residual").value),
         )
         self._latest = {"lio": None, "wheel": None}
         self._received_at = {"lio": 0.0, "wheel": 0.0}
+        self._selected_latest = None
         self._publisher = self.create_publisher(
             Odometry, str(self.get_parameter("output_topic").value), 20
         )
@@ -41,12 +43,13 @@ class StateSelectorNode(Node):
         self.create_subscription(
             Odometry, str(self.get_parameter("wheel_topic").value), lambda msg: self._on_odom("wheel", msg), 20
         )
+        self.create_timer(0.1, self._refresh_tf)
 
     def _on_odom(self, source: str, message: Odometry) -> None:
         self._latest[source] = message
         self._received_at[source] = self.get_clock().now().nanoseconds * 1e-9
-        selected = "lio" if self._mode == "lio_primary" else "wheel"
-        if source == selected:
+        if source == self._selected_source:
+            self._selected_latest = message
             self._publisher.publish(message)
             self._broadcast(message)
         if self._latest["lio"] is not None and self._latest["wheel"] is not None:
@@ -60,7 +63,7 @@ class StateSelectorNode(Node):
 
     def _broadcast(self, odom: Odometry) -> None:
         transform = TransformStamped()
-        transform.header = odom.header
+        transform.header.stamp = self.get_clock().now().to_msg()
         transform.header.frame_id = "odom"
         transform.child_frame_id = "base_link"
         transform.transform.translation.x = odom.pose.pose.position.x
@@ -68,6 +71,11 @@ class StateSelectorNode(Node):
         transform.transform.translation.z = odom.pose.pose.position.z
         transform.transform.rotation = odom.pose.pose.orientation
         self._tf.sendTransform(transform)
+
+    def _refresh_tf(self) -> None:
+        age = self.get_clock().now().nanoseconds * 1e-9 - self._received_at[self._selected_source]
+        if self._selected_latest is not None and age <= self._timeout:
+            self._broadcast(self._selected_latest)
 
     def _publish_residual(self, result: dict) -> None:
         array = DiagnosticArray()
@@ -95,4 +103,3 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-

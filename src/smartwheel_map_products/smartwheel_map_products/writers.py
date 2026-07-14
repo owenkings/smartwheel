@@ -131,11 +131,16 @@ def export_map_bundle(
         for key, value in sorted(quality.items()):
             stream.write(f"- `{key}`: `{value}`\n")
     files = []
+    externally_managed_files = []
     for path in sorted(output.rglob("*")):
         if path.is_file() and path.name != "manifest.json":
+            relative = path.relative_to(output)
+            if path.name == "rtabmap.db" or "raw_bag" in relative.parts:
+                externally_managed_files.append(str(relative))
+                continue
             files.append(
                 {
-                    "path": str(path.relative_to(output)),
+                    "path": str(relative),
                     "bytes": path.stat().st_size,
                     "sha256": _sha256(path),
                 }
@@ -145,9 +150,9 @@ def export_map_bundle(
         "stage": "A_SYNTHETIC",
         "complete": True,
         "files": files,
+        "externally_managed_files": externally_managed_files,
     }
     with (output / "manifest.json").open("w", encoding="utf-8") as stream:
         json.dump(manifest, stream, indent=2, sort_keys=True)
         stream.write("\n")
     return output
-

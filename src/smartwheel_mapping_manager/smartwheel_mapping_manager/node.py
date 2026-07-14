@@ -1,6 +1,8 @@
 import shutil
 import time
+from pathlib import Path
 
+import numpy as np
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -10,10 +12,11 @@ from sensor_msgs.msg import Imu, PointCloud2
 from smartwheel_interfaces.msg import MappingStatus, WheelEncoder
 from smartwheel_interfaces.srv import MapTask
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 from smartwheel_mapping_manager.state_machine import MappingState, MappingStateMachine
-from smartwheel_sensor_api import TimestampMonitor, validate_pointcloud_fields
+from smartwheel_sensor_api import TimestampMonitor, pointcloud2_to_xyz, validate_pointcloud_fields
 
 
 class MappingManagerNode(Node):
@@ -24,13 +27,34 @@ class MappingManagerNode(Node):
         self.declare_parameter("checking_timeout_sec", 8.0)
         self.declare_parameter("minimum_free_disk_gb", 1.0)
         self.declare_parameter("record_bag", False)
+        self.declare_parameter("bag_path", "")
+        self.declare_parameter("minimum_lidar_rate_hz", 2.0)
+        self.declare_parameter("minimum_imu_rate_hz", 20.0)
+        self.declare_parameter("minimum_wheel_rate_hz", 5.0)
+        self.declare_parameter("maximum_lidar_imu_delta_sec", 0.25)
+        self.declare_parameter("maximum_dual_lidar_delta_sec", 0.03)
+        self.declare_parameter("maximum_point_coordinate_m", 100.0)
         self._map_name = str(self.get_parameter("map_name").value)
         self._timeout = float(self.get_parameter("checking_timeout_sec").value)
         self._minimum_disk = float(self.get_parameter("minimum_free_disk_gb").value)
+        self._record_bag = bool(self.get_parameter("record_bag").value)
+        self._bag_path = Path(str(self.get_parameter("bag_path").value)).expanduser()
+        self._minimum_rates = {
+            "left": float(self.get_parameter("minimum_lidar_rate_hz").value),
+            "right": float(self.get_parameter("minimum_lidar_rate_hz").value),
+            "imu": float(self.get_parameter("minimum_imu_rate_hz").value),
+            "wheel": float(self.get_parameter("minimum_wheel_rate_hz").value),
+        }
+        self._max_lidar_imu_delta = float(self.get_parameter("maximum_lidar_imu_delta_sec").value)
+        self._max_dual_delta = float(self.get_parameter("maximum_dual_lidar_delta_sec").value)
+        self._max_coordinate = float(self.get_parameter("maximum_point_coordinate_m").value)
         self._machine = MappingStateMachine()
         self._checks = {}
         self._seen = {"left": 0, "right": 0, "imu": 0, "wheel": 0}
         self._monitors = {name: TimestampMonitor() for name in self._seen}
+        self._first_stamp = {name: None for name in self._seen}
+        self._latest_stamp = {name: None for name in self._seen}
+        self._cloud_units_valid = {"left": False, "right": False}
         self._checking_started = None
         self._sim_complete = False
         self._export_path = ""
@@ -41,6 +65,7 @@ class MappingManagerNode(Node):
         )
         self._publisher = self.create_publisher(MappingStatus, "/mapping/status", latched)
         self.create_service(MapTask, "/mapping/task", self._on_task)
+        self._export_client = self.create_client(Trigger, "/map_export/export")
         self.create_subscription(PointCloud2, "/lidar/left/points_raw", lambda msg: self._on_cloud("left", msg), qos_profile_sensor_data)
         self.create_subscription(PointCloud2, "/lidar/right/points_raw", lambda msg: self._on_cloud("right", msg), qos_profile_sensor_data)
         self.create_subscription(Imu, "/imu/data_raw", self._on_imu, qos_profile_sensor_data)
@@ -61,7 +86,11 @@ class MappingManagerNode(Node):
 
     def _observe(self, name: str, stamp) -> None:
         try:
-            self._monitors[name].observe(self._stamp(stamp))
+            seconds = self._stamp(stamp)
+            self._monitors[name].observe(seconds)
+            if self._first_stamp[name] is None:
+                self._first_stamp[name] = seconds
+            self._latest_stamp[name] = seconds
             self._seen[name] += 1
         except ValueError as exc:
             self._machine.fail(f"{name} timestamp check failed: {exc}")
@@ -71,6 +100,16 @@ class MappingManagerNode(Node):
             validate_pointcloud_fields(message)
         except ValueError as exc:
             self._machine.fail(f"{name} point field check failed: {exc}")
+            return
+        try:
+            points, _ = pointcloud2_to_xyz(message)
+            self._cloud_units_valid[name] = bool(
+                points.size > 0
+                and np.isfinite(points).all()
+                and float(np.max(np.abs(points))) <= self._max_coordinate
+            )
+        except ValueError as exc:
+            self._machine.fail(f"{name} point data check failed: {exc}")
             return
         self._observe(name, message.header.stamp)
 
@@ -92,6 +131,26 @@ class MappingManagerNode(Node):
     def _preflight(self) -> bool:
         for name, count in self._seen.items():
             self._checks[f"topic_{name}"] = count >= 2
+            first = self._first_stamp[name]
+            latest = self._latest_stamp[name]
+            elapsed = 0.0 if first is None or latest is None else latest - first
+            rate = 0.0 if elapsed <= 0.0 else (count - 1) / elapsed
+            self._checks[f"rate_{name}"] = rate >= self._minimum_rates[name]
+        self._checks["point_units_left"] = self._cloud_units_valid["left"]
+        self._checks["point_units_right"] = self._cloud_units_valid["right"]
+        left_stamp = self._latest_stamp["left"]
+        right_stamp = self._latest_stamp["right"]
+        imu_stamp = self._latest_stamp["imu"]
+        self._checks["dual_lidar_time_delta"] = (
+            left_stamp is not None
+            and right_stamp is not None
+            and abs(left_stamp - right_stamp) <= self._max_dual_delta
+        )
+        self._checks["lidar_imu_time_delta"] = (
+            imu_stamp is not None
+            and left_stamp is not None
+            and abs(left_stamp - imu_stamp) <= self._max_lidar_imu_delta
+        )
         free_gb = shutil.disk_usage(".").free / (1024**3)
         self._checks["disk_space"] = free_gb >= self._minimum_disk
         frames = (
@@ -107,7 +166,10 @@ class MappingManagerNode(Node):
             self._tf_buffer.can_transform("base_link", frame, Time(), timeout=Duration(seconds=0.01))
             for frame in frames
         )
-        self._checks["bag_policy"] = True
+        self._checks["bag_policy"] = not self._record_bag or (
+            self._bag_path.is_dir()
+            and any(path.stat().st_size > 0 for path in self._bag_path.glob("*.db3"))
+        )
         return all(self._checks.values())
 
     def _tick(self) -> None:
@@ -145,6 +207,25 @@ class MappingManagerNode(Node):
             self._checking_started = time.monotonic()
             response.accepted = True
             response.reason = "started"
+        elif request.command == MapTask.Request.STOP and self._machine.state is MappingState.MAPPING:
+            self._sim_complete = True
+            response.accepted = True
+            response.reason = "mapping stop requested"
+        elif request.command == MapTask.Request.EXPORT and self._machine.state in (
+            MappingState.MAPPING,
+            MappingState.LOOP_CLOSING,
+            MappingState.OPTIMIZING,
+            MappingState.EXPORTING,
+        ):
+            while self._machine.state is not MappingState.EXPORTING:
+                self._machine.advance()
+            if self._export_client.service_is_ready():
+                self._export_client.call_async(Trigger.Request())
+                response.accepted = True
+                response.reason = "export requested"
+            else:
+                response.accepted = False
+                response.reason = "map export service is unavailable"
         else:
             response.accepted = False
             response.reason = f"command not valid in {self._machine.state.value}"
@@ -173,4 +254,3 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-

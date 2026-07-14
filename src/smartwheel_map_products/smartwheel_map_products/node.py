@@ -11,6 +11,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, Header, String
+from std_srvs.srv import Trigger
 
 from smartwheel_map_products.colorizer import CameraFrame, colorize_points
 from smartwheel_map_products.occupancy import raycast_occupancy
@@ -105,9 +106,11 @@ class MapProductsNode(Node):
         self._cloud_pub = self.create_publisher(PointCloud2, "/map_cloud", latched)
         self._map_pub = self.create_publisher(OccupancyGrid, "/map", latched)
         self._complete_pub = self.create_publisher(String, "/map_export/completed", latched)
+        self.create_service(Trigger, "/map_export/export", self._on_export_request)
         self.create_subscription(PointCloud2, "/lidar/merged/points", self._on_cloud, qos_profile_sensor_data)
-        self.create_subscription(Odometry, "/odom/fused", self._on_odom, 20)
-        self.create_subscription(Odometry, "/sim/ground_truth/odom", self._on_ground_truth, 20)
+        odom_qos = QoSProfile(depth=500, reliability=ReliabilityPolicy.RELIABLE)
+        self.create_subscription(Odometry, "/odom/fused", self._on_odom, odom_qos)
+        self.create_subscription(Odometry, "/sim/ground_truth/odom", self._on_ground_truth, odom_qos)
         self.create_subscription(Bool, "/sim/completed", self._on_completed, latched)
         if self._color_enabled:
             for name in CAMERAS:
@@ -185,6 +188,22 @@ class MapProductsNode(Node):
         if message.data and self._completed_at is None:
             self._completed_at = time.monotonic()
 
+    def _on_export_request(self, _request, response):
+        if self._exported:
+            response.success = True
+            response.message = f"already exported: {self._directory}"
+            return response
+        products = self._current_products()
+        if products is None:
+            response.success = False
+            response.message = "no merged point cloud has been received"
+            return response
+        self._publish(products[0], products[2])
+        self._export(*products)
+        response.success = True
+        response.message = str(self._directory)
+        return response
+
     def _current_products(self):
         if not self._points:
             return None
@@ -206,16 +225,15 @@ class MapProductsNode(Node):
         return points, origins, grid
 
     def _tick(self) -> None:
-        products = self._current_products()
-        if products is not None:
-            self._publish(products[0], products[2])
         if (
             self._completed_at is not None
             and not self._exported
             and time.monotonic() - self._completed_at >= self._export_delay
-            and products is not None
         ):
-            self._export(*products)
+            products = self._current_products()
+            if products is not None:
+                self._publish(products[0], products[2])
+                self._export(*products)
 
     def _publish(self, points, grid) -> None:
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
@@ -236,7 +254,8 @@ class MapProductsNode(Node):
         colors = None
         colored_count = 0
         if self._color_enabled and self._camera_frames:
-            colors, colored = colorize_points(points, self._camera_frames)
+            stride = max(1, len(self._camera_frames) // 64)
+            colors, colored = colorize_points(points, self._camera_frames[::stride])
             colored_count = int(colored.sum())
         occupied = int(np.count_nonzero(grid.cells == 100))
         free = int(np.count_nonzero(grid.cells == 0))
@@ -244,6 +263,15 @@ class MapProductsNode(Node):
         loop_error = None
         if len(self._poses) >= 2:
             loop_error = math.hypot(self._poses[-1][1] - self._poses[0][1], self._poses[-1][2] - self._poses[0][2])
+        ground_truth_rmse = None
+        if self._poses and self._ground_truth:
+            squared_errors = []
+            for pose in self._poses:
+                truth = min(self._ground_truth, key=lambda candidate: abs(candidate[0] - pose[0]))
+                squared_errors.append((pose[1] - truth[1]) ** 2 + (pose[2] - truth[2]) ** 2)
+            ground_truth_rmse = math.sqrt(sum(squared_errors) / len(squared_errors))
+        minimum = points.min(axis=0)
+        maximum = points.max(axis=0)
         quality = {
             "stage": "A_SYNTHETIC",
             "point_count": int(points.shape[0]),
@@ -254,6 +282,9 @@ class MapProductsNode(Node):
             "trajectory_pose_count": len(self._poses),
             "ground_truth_pose_count": len(self._ground_truth),
             "loop_closure_position_error_m": loop_error,
+            "trajectory_ground_truth_rmse_m": ground_truth_rmse,
+            "map_bounds_min_m": minimum.tolist(),
+            "map_bounds_max_m": maximum.tolist(),
             "tf_conflicts_detected": 0,
             "hardware_validated": False,
         }
@@ -292,4 +323,3 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-

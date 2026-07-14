@@ -45,6 +45,6 @@ def test_map_bundle_contains_nonempty_products(tmp_path):
         assert (output / name).stat().st_size > 0
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["complete"] is True
+    assert manifest["externally_managed_files"] == []
     map_yaml = yaml.safe_load((output / "map_2d.yaml").read_text(encoding="utf-8"))
     assert map_yaml["resolution"] == 0.1
-
