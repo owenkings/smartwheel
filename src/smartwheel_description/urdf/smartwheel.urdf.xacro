@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="smartwheel_mapping_v2">
+  <xacro:arg name="wheel_track_m" default="0.0"/>
+  <xacro:arg name="wheel_radius_m" default="0.0"/>
+
+  <xacro:arg name="imu_x" default="0.0"/>
+  <xacro:arg name="imu_y" default="0.0"/>
+  <xacro:arg name="imu_z" default="0.0"/>
+  <xacro:arg name="imu_roll" default="0.0"/>
+  <xacro:arg name="imu_pitch" default="0.0"/>
+  <xacro:arg name="imu_yaw" default="0.0"/>
+
+  <xacro:arg name="left_lidar_x" default="0.0"/>
+  <xacro:arg name="left_lidar_y" default="0.0"/>
+  <xacro:arg name="left_lidar_z" default="0.0"/>
+  <xacro:arg name="left_lidar_roll" default="0.0"/>
+  <xacro:arg name="left_lidar_pitch" default="0.0"/>
+  <xacro:arg name="left_lidar_yaw" default="0.0"/>
+  <xacro:arg name="right_lidar_x" default="0.0"/>
+  <xacro:arg name="right_lidar_y" default="0.0"/>
+  <xacro:arg name="right_lidar_z" default="0.0"/>
+  <xacro:arg name="right_lidar_roll" default="0.0"/>
+  <xacro:arg name="right_lidar_pitch" default="0.0"/>
+  <xacro:arg name="right_lidar_yaw" default="0.0"/>
+
+  <xacro:arg name="front_camera_x" default="0.0"/>
+  <xacro:arg name="front_camera_y" default="0.0"/>
+  <xacro:arg name="front_camera_z" default="0.0"/>
+  <xacro:arg name="front_camera_roll" default="0.0"/>
+  <xacro:arg name="front_camera_pitch" default="0.0"/>
+  <xacro:arg name="front_camera_yaw" default="0.0"/>
+  <xacro:arg name="left_camera_x" default="0.0"/>
+  <xacro:arg name="left_camera_y" default="0.0"/>
+  <xacro:arg name="left_camera_z" default="0.0"/>
+  <xacro:arg name="left_camera_roll" default="0.0"/>
+  <xacro:arg name="left_camera_pitch" default="0.0"/>
+  <xacro:arg name="left_camera_yaw" default="0.0"/>
+  <xacro:arg name="right_camera_x" default="0.0"/>
+  <xacro:arg name="right_camera_y" default="0.0"/>
+  <xacro:arg name="right_camera_z" default="0.0"/>
+  <xacro:arg name="right_camera_roll" default="0.0"/>
+  <xacro:arg name="right_camera_pitch" default="0.0"/>
+  <xacro:arg name="right_camera_yaw" default="0.0"/>
+  <xacro:arg name="rear_camera_x" default="0.0"/>
+  <xacro:arg name="rear_camera_y" default="0.0"/>
+  <xacro:arg name="rear_camera_z" default="0.0"/>
+  <xacro:arg name="rear_camera_roll" default="0.0"/>
+  <xacro:arg name="rear_camera_pitch" default="0.0"/>
+  <xacro:arg name="rear_camera_yaw" default="0.0"/>
+
+  <link name="base_link"/>
+  <link name="wheel_left_link"/>
+  <link name="wheel_right_link"/>
+  <link name="imu_link"/>
+  <link name="xtm60_left_link"/>
+  <link name="xtm60_right_link"/>
+  <link name="camera_front_link"/>
+  <link name="camera_left_link"/>
+  <link name="camera_right_link"/>
+  <link name="camera_rear_link"/>
+
+  <joint name="wheel_left_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_left_link"/>
+    <origin xyz="0 ${float(xacro.arg('wheel_track_m')) / 2.0} $(arg wheel_radius_m)" rpy="0 0 0"/>
+  </joint>
+  <joint name="wheel_right_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_right_link"/>
+    <origin xyz="0 ${-float(xacro.arg('wheel_track_m')) / 2.0} $(arg wheel_radius_m)" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:macro name="fixed_sensor" params="joint child xyz rpy">
+    <joint name="${joint}" type="fixed">
+      <parent link="base_link"/><child link="${child}"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:fixed_sensor joint="imu_joint" child="imu_link"
+    xyz="$(arg imu_x) $(arg imu_y) $(arg imu_z)"
+    rpy="$(arg imu_roll) $(arg imu_pitch) $(arg imu_yaw)"/>
+  <xacro:fixed_sensor joint="xtm60_left_joint" child="xtm60_left_link"
+    xyz="$(arg left_lidar_x) $(arg left_lidar_y) $(arg left_lidar_z)"
+    rpy="$(arg left_lidar_roll) $(arg left_lidar_pitch) $(arg left_lidar_yaw)"/>
+  <xacro:fixed_sensor joint="xtm60_right_joint" child="xtm60_right_link"
+    xyz="$(arg right_lidar_x) $(arg right_lidar_y) $(arg right_lidar_z)"
+    rpy="$(arg right_lidar_roll) $(arg right_lidar_pitch) $(arg right_lidar_yaw)"/>
+  <xacro:fixed_sensor joint="camera_front_joint" child="camera_front_link"
+    xyz="$(arg front_camera_x) $(arg front_camera_y) $(arg front_camera_z)"
+    rpy="$(arg front_camera_roll) $(arg front_camera_pitch) $(arg front_camera_yaw)"/>
+  <xacro:fixed_sensor joint="camera_left_joint" child="camera_left_link"
+    xyz="$(arg left_camera_x) $(arg left_camera_y) $(arg left_camera_z)"
+    rpy="$(arg left_camera_roll) $(arg left_camera_pitch) $(arg left_camera_yaw)"/>
+  <xacro:fixed_sensor joint="camera_right_joint" child="camera_right_link"
+    xyz="$(arg right_camera_x) $(arg right_camera_y) $(arg right_camera_z)"
+    rpy="$(arg right_camera_roll) $(arg right_camera_pitch) $(arg right_camera_yaw)"/>
+  <xacro:fixed_sensor joint="camera_rear_joint" child="camera_rear_link"
+    xyz="$(arg rear_camera_x) $(arg rear_camera_y) $(arg rear_camera_z)"
+    rpy="$(arg rear_camera_roll) $(arg rear_camera_pitch) $(arg rear_camera_yaw)"/>
+</robot>
