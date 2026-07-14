@@ -1,4 +1,7 @@
+import re
 from pathlib import Path
+
+import yaml
 
 
 REQUIRED_PACKAGES = {
@@ -72,3 +75,64 @@ def test_only_state_selector_owns_odom_to_base_tf():
         if "TransformBroadcaster" in text and "base_link" in text and "odom" in text:
             publishers.append(source.name)
     assert publishers == ["state_selector_node.py"]
+
+
+def test_ground_truth_is_not_an_odometry_or_mapping_input():
+    root = repository_root()
+    forbidden = [
+        root / "src/smartwheel_state_estimation/smartwheel_state_estimation/mock_lio_node.py",
+        root / "src/smartwheel_global_mapping",
+    ]
+    for path in forbidden:
+        sources = [path] if path.is_file() else path.rglob("*.py")
+        for source in sources:
+            assert "/sim/ground_truth/odom" not in source.read_text(encoding="utf-8")
+
+
+def test_custom_map_products_do_not_compete_for_backend_map_topic():
+    root = repository_root()
+    source = (root / "src/smartwheel_map_products/smartwheel_map_products/node.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'create_publisher(OccupancyGrid, "/map",' not in source
+    assert '"/map_products/occupancy"' in source
+
+
+def test_offline_replay_cannot_export_on_recorded_completion_event():
+    root = repository_root()
+    source = (root / "src/smartwheel_bringup/launch/offline_mapping.launch.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"/sim/completed:=/offline/recorded_sim_completed"' in source
+    assert "post_replay_settle_sec" in source
+
+
+def test_rtabmap_offline_replay_rejects_accelerated_playback():
+    root = repository_root()
+    source = (root / "src/smartwheel_bringup/launch/offline_mapping.launch.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'backend == "rtabmap" and replay_rate_value > 1.0' in source
+    assert "silently dropped" in source
+
+
+def test_third_party_build_dependencies_are_exactly_pinned_and_nested():
+    root = repository_root()
+    manifest = yaml.safe_load((root / "third_party/dependencies.repos").read_text(encoding="utf-8"))
+    repositories = manifest["repositories"]
+    assert set(repositories) == {
+        "fast_lio_ros2",
+        "fast_lio_ros2/include/ikd-Tree",
+        "livox_ros_driver2",
+    }
+    for repository in repositories.values():
+        assert repository["type"] == "git"
+        assert re.fullmatch(r"[0-9a-f]{40}", repository["version"])
+
+    references = yaml.safe_load(
+        (root / "third_party/references.repos").read_text(encoding="utf-8")
+    )["repositories"]
+    assert set(references).isdisjoint(repositories)
+    assert re.fullmatch(
+        r"[0-9a-f]{40}", references["fast_lio_upstream_reference"]["version"]
+    )

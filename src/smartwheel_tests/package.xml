@@ -7,6 +7,7 @@
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <test_depend>ament_pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
   <test_depend>sensor_msgs</test_depend>
   <test_depend>std_msgs</test_depend>
   <test_depend>smartwheel_sensor_api</test_depend>
