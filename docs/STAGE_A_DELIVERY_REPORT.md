@@ -1,5 +1,11 @@
 # Stage A Delivery Report
 
+> **Superseded by Stage A-R review.** This file records the original Stage A claims and
+> is not acceptance evidence. The review found ground-truth leakage, zero-error metric
+> circularity, non-backend map export, automatic success transitions, and command
+> watchdog defects. Use `STAGE_A_REVIEW_REPORT.md`, `STAGE_A_DEFECTS.md`, and
+> `STAGE_A_ACCEPTANCE.md` for the audited result.
+
 Date: 2026-07-14
 Branch: `feature/mapping-v2-clean-architecture`
 

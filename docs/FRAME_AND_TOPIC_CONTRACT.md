@@ -23,7 +23,7 @@ map                         global_mapping backend (exactly one publisher)
 ```
 
 `rtabmap` and `slam_toolbox` are mutually exclusive map backends. FAST-LIO2, wheel
-odometry, mock ground truth, and `robot_localization` must not also publish either
+odometry, synthetic ground truth, and `robot_localization` must not also publish either
 dynamic edge unless selected as its sole owner. The H30 IMU consumed by FAST-LIO2 is
 not fused again by `robot_localization` in `lio_primary` mode.
 
@@ -46,20 +46,30 @@ not fused again by `robot_localization` in `lio_primary` mode.
 | `/odom/fused` | `nav_msgs/Odometry` | `odom` / `base_link` | reliable depth 20 | state selector |
 | `/camera/{name}/image_raw` | `sensor_msgs/Image` | camera link | sensor data | camera backend |
 | `/camera/{name}/camera_info` | `sensor_msgs/CameraInfo` | camera link | reliable transient local | camera backend |
-| `/map` | `nav_msgs/OccupancyGrid` | `map` | reliable transient local | active map backend/product node |
-| `/map_cloud` | `sensor_msgs/PointCloud2` | `map` | reliable transient local | map accumulator |
+| `/map` | `nav_msgs/OccupancyGrid` | `map` | reliable transient local | slam_toolbox when selected |
+| `/rtabmap/grid_map` | `nav_msgs/OccupancyGrid` | `map` | backend QoS | RTAB-Map when selected |
+| `/rtabmap/cloud_map` | `sensor_msgs/PointCloud2` | `map` | backend QoS | RTAB-Map occupancy-derived cloud; not used as the 3D export source |
+| `/rtabmap/optimized_cloud` | `sensor_msgs/PointCloud2` | `map` | reliable transient local | stored keyframe scans transformed by RTAB-Map optimized graph poses |
+| `/map_products/occupancy` | `nav_msgs/OccupancyGrid` | `map` | reliable transient local | custom ray-cast exporter |
+| `/map_products/cloud` | `sensor_msgs/PointCloud2` | `map` | reliable transient local | selected export geometry; RTAB-Map mode requires `/rtabmap/optimized_cloud` |
 | `/mapping/status` | `smartwheel_interfaces/MappingStatus` | n/a | reliable transient local | mapping manager |
 | `/hardware/status` | `smartwheel_interfaces/HardwareStatus` | n/a | reliable depth 10 | hardware facade/simulator |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | n/a | reliable depth 10 | all components |
 | `/sim/ground_truth/odom` | `nav_msgs/Odometry` | `map` / `base_link_gt` | reliable depth 20 | simulator only |
 | `/sim/completed` | `std_msgs/Bool` | n/a | reliable transient local | simulator only |
 | `/map_export/completed` | `std_msgs/String` | n/a | reliable transient local | map product node |
+| `/map_export/failed` | `std_msgs/String` | n/a | reliable transient local | map product node |
+| `/motor/command` | `geometry_msgs/Twist` | n/a | reliable depth 10 | gated teleop intent |
+| `/motor/command_safe` | `geometry_msgs/Twist` | n/a | reliable depth 10 | independent watchdog; future motor adapter input |
 
 The `/map_export/export` service uses `std_srvs/Trigger`. `/mapping/task` uses
 `smartwheel_interfaces/MapTask` for `START`, `STOP`, `EXPORT`, and `RESET` requests.
 
 All frame IDs, topics, rates, timeouts, and queue depths are ROS parameters. The table
 defines defaults, not permission to hard-code real hardware properties.
+
+`/sim/ground_truth/odom` is consumed only by Stage A metric evaluation. It is not an
+odometry, mapping, TF, or backend input.
 
 ## Timing and Pairing
 

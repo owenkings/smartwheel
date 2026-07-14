@@ -11,17 +11,26 @@
   validates only synthetic offline projection/colorization.
 - RTAB-Map, slam_toolbox, and robot_localization are distribution packages. Stage A
   launch ownership is runtime-tested, but real-data tuning remains Phase B work.
-- FAST-LIO2 is pinned as a third-party dependency and has an input adapter contract, but
-  is not cloned or executed in Stage A. The runtime `mock_lio_node` copies ground truth.
+- FAST-LIO2 and its build dependencies are pinned and compile on the current ARM64
+  machine, but FAST-LIO2 is not executed in Stage A. The reviewed `mock_lio_node` uses
+  an independent cumulative motion input with configurable drift and noise; it is still
+  only a kinematic error model, not a LiDAR-inertial estimator.
 - `single_lidar_mapping.launch.py` exposes the FAST-LIO2 replacement boundary; a real
   FAST-LIO2 process cannot be launched until its pinned dependency and XT-M60 contract
   are available in Stage B.
 - `enable_online_visual_loop` is reserved but not implemented. RTAB-Map Stage A runs
   LiDAR-cloud ICP without image bag-of-words loop closure.
-- Offline replay is validated at `replay_rate:=1.0`. A 10x stress replay dropped
-  odometry callbacks and produced distorted geometry; high-rate replay is unsupported.
-- The custom ray-cast occupancy map is exported. RTAB-Map's occupancy state remains in
-  `rtabmap.db` and on its ROS topic; a second RTAB-generated PGM is not exported.
+- Offline replay is validated at `replay_rate:=1.0`. An 8x adversarial replay dropped
+  synchronized RTAB-Map inputs and exported distorted geometry, so RTAB-Map replay now
+  rejects rates above 1.0 and waits for backend settling before export.
+- The custom ray-cast occupancy map is exported from the local odometry accumulator,
+  while 3D geometry comes from RTAB-Map optimized keyframe poses. D1 must compare this
+  against the RTAB-Map grid and slam_toolbox using real dimensions.
+- Offline colorization has front-facing, image-boundary, simple z-buffer, and view-score
+  checks, but it does not apply lens distortion and has not been validated with real
+  images or calibrated camera poses.
+- Dual-LiDAR map-only pairing enforces a timestamp tolerance and full rigid transforms,
+  but does not motion-compensate paired frames. C3 must close this before moving tests.
 - `rtabmap.db` and files under `raw_bag/` are marked as externally managed in the map
   manifest and are not checksummed until their owning processes stop. Exporter-owned
   finalized products retain size and SHA-256 entries.
@@ -33,6 +42,9 @@
 - Workspace-wide `colcon test-result --verbose` is nonzero because the retained
   `src/third_party/livox_ros_driver2` package runs lint over vendored RapidJSON and has
   upstream copyright, cpplint, flake8, lint-cmake, and uncrustify failures. Mapping-v2's
-  isolated result is 43 tests with zero errors or failures; third-party sources were not
+  isolated result is 66 tests with zero errors or failures; third-party sources were not
   rewritten to hide this pre-existing exception.
+- The 66 mapping-v2 tests are unit/file-level tests. There is no automated
+  `launch_testing` suite yet; Stage A-R ROS graph, rosbag, RTAB-Map, and slam_toolbox
+  evidence was executed manually and recorded in the review report.
 - FD07-34R ultrasonic support is deliberately absent from mapping v2.
