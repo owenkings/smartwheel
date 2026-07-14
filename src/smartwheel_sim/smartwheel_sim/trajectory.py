@@ -24,6 +24,8 @@ class ClosedLoopTrajectory:
                 (7.0, 3.0),
                 (7.0, 5.0),
                 (1.0, 5.0),
+                (0.5, 5.0),
+                (0.5, 1.0),
                 (1.0, 1.0),
             )
         self.waypoints = np.asarray(waypoints, dtype=np.float64)
@@ -53,4 +55,3 @@ class ClosedLoopTrajectory:
         direction = self._segments[index]
         yaw = math.atan2(direction[1], direction[0])
         return Pose2D(float(point[0]), float(point[1]), yaw)
-

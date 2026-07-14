@@ -17,6 +17,10 @@ setup(
     description="Deterministic no-Gazebo indoor mapping simulator.",
     license="Apache-2.0",
     tests_require=["pytest"],
-    entry_points={"console_scripts": ["indoor_sim_node = smartwheel_sim.node:main"]},
+    entry_points={
+        "console_scripts": [
+            "indoor_sim_node = smartwheel_sim.node:main",
+            "adversarial_review = smartwheel_sim.adversarial:main",
+        ]
+    },
 )
-

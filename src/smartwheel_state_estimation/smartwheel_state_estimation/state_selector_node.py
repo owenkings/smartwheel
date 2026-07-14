@@ -63,7 +63,7 @@ class StateSelectorNode(Node):
 
     def _broadcast(self, odom: Odometry) -> None:
         transform = TransformStamped()
-        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.stamp = odom.header.stamp
         transform.header.frame_id = "odom"
         transform.child_frame_id = "base_link"
         transform.transform.translation.x = odom.pose.pose.position.x

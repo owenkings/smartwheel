@@ -8,7 +8,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, Imu, PointCloud2
-from smartwheel_interfaces.msg import HardwareStatus, WheelEncoder
+from smartwheel_interfaces.msg import HardwareStatus, SimMotion, WheelEncoder
 from std_msgs.msg import Bool, Header
 
 from smartwheel_sensor_api import pointcloud2_from_xyz
@@ -44,8 +44,24 @@ class IndoorSimNode(Node):
         self.declare_parameter("left_drop_every_n", 37)
         self.declare_parameter("right_drop_every_n", 43)
         self.declare_parameter("camera_drop_every_n", 31)
+        self.declare_parameter("imu_drop_every_n", 0)
+        self.declare_parameter("wheel_drop_every_n", 0)
         self.declare_parameter("occlusion_every_n", 19)
         self.declare_parameter("blur_every_n", 17)
+        self.declare_parameter("imu_time_offset_sec", 0.0)
+        self.declare_parameter("imu_gyro_noise_stddev_rps", 0.002)
+        self.declare_parameter("imu_gyro_bias_rps", 0.0)
+        self.declare_parameter("imu_accel_noise_stddev_mps2", 0.02)
+        self.declare_parameter("imu_accel_bias_xyz", [0.0, 0.0, 0.0])
+        self.declare_parameter("wheel_common_scale", 1.0)
+        self.declare_parameter("wheel_left_scale", 1.0)
+        self.declare_parameter("wheel_right_scale", 1.0)
+        self.declare_parameter("wheel_slip_ratio", 0.0)
+        self.declare_parameter("wheel_slip_start_fraction", 0.35)
+        self.declare_parameter("wheel_slip_end_fraction", 0.45)
+        self.declare_parameter("lidar_noise_stddev_m", 0.008)
+        self.declare_parameter("lidar_horizontal_fov_deg", 120.0)
+        self.declare_parameter("lidar_vertical_fov_deg", 45.0)
         self.declare_parameter("wheel_radius_m", 0.16)
         self.declare_parameter("track_width_m", 0.58)
         self.declare_parameter("encoder_cpr", 2048)
@@ -72,10 +88,16 @@ class IndoorSimNode(Node):
         self._left_model = LidarModel(
             tuple(self.get_parameter("left_lidar_xyz").value),
             tuple(self.get_parameter("left_lidar_rpy").value),
+            horizontal_fov_deg=float(self.get_parameter("lidar_horizontal_fov_deg").value),
+            vertical_fov_deg=float(self.get_parameter("lidar_vertical_fov_deg").value),
+            noise_stddev_m=float(self.get_parameter("lidar_noise_stddev_m").value),
         )
         self._right_model = LidarModel(
             tuple(self.get_parameter("right_lidar_xyz").value),
             tuple(self.get_parameter("right_lidar_rpy").value),
+            horizontal_fov_deg=float(self.get_parameter("lidar_horizontal_fov_deg").value),
+            vertical_fov_deg=float(self.get_parameter("lidar_vertical_fov_deg").value),
+            noise_stddev_m=float(self.get_parameter("lidar_noise_stddev_m").value),
         )
         self._lidar_period = max(1, int(round(1.0 / (float(self.get_parameter("lidar_rate_hz").value) * self._step))))
         self._wheel_period = max(1, int(round(1.0 / (float(self.get_parameter("wheel_rate_hz").value) * self._step))))
@@ -85,8 +107,21 @@ class IndoorSimNode(Node):
         self._left_drop = int(self.get_parameter("left_drop_every_n").value)
         self._right_drop = int(self.get_parameter("right_drop_every_n").value)
         self._camera_drop = int(self.get_parameter("camera_drop_every_n").value)
+        self._imu_drop = int(self.get_parameter("imu_drop_every_n").value)
+        self._wheel_drop = int(self.get_parameter("wheel_drop_every_n").value)
         self._occlusion_every = int(self.get_parameter("occlusion_every_n").value)
         self._blur_every = int(self.get_parameter("blur_every_n").value)
+        self._imu_offset = float(self.get_parameter("imu_time_offset_sec").value)
+        self._imu_gyro_noise = float(self.get_parameter("imu_gyro_noise_stddev_rps").value)
+        self._imu_gyro_bias = float(self.get_parameter("imu_gyro_bias_rps").value)
+        self._imu_accel_noise = float(self.get_parameter("imu_accel_noise_stddev_mps2").value)
+        self._imu_accel_bias = np.asarray(self.get_parameter("imu_accel_bias_xyz").value, dtype=np.float64)
+        self._wheel_common_scale = float(self.get_parameter("wheel_common_scale").value)
+        self._wheel_left_scale = float(self.get_parameter("wheel_left_scale").value)
+        self._wheel_right_scale = float(self.get_parameter("wheel_right_scale").value)
+        self._wheel_slip_ratio = float(self.get_parameter("wheel_slip_ratio").value)
+        self._wheel_slip_start = float(self.get_parameter("wheel_slip_start_fraction").value)
+        self._wheel_slip_end = float(self.get_parameter("wheel_slip_end_fraction").value)
         self._wheel_radius = float(self.get_parameter("wheel_radius_m").value)
         self._track = float(self.get_parameter("track_width_m").value)
         self._cpr = int(self.get_parameter("encoder_cpr").value)
@@ -105,6 +140,7 @@ class IndoorSimNode(Node):
         self._imu_pub = self.create_publisher(Imu, "/imu/data_raw", qos_profile_sensor_data)
         self._encoder_pub = self.create_publisher(WheelEncoder, "/wheel/encoder_counts", 20)
         self._ground_truth_pub = self.create_publisher(Odometry, "/sim/ground_truth/odom", 20)
+        self._mock_lio_motion_pub = self.create_publisher(SimMotion, "/sim/mock_lio/motion", 20)
         self._completed_pub = self.create_publisher(Bool, "/sim/completed", latched)
         self._hardware_pub = self.create_publisher(HardwareStatus, "/hardware/status", latched)
         self._image_pubs = {}
@@ -127,6 +163,9 @@ class IndoorSimNode(Node):
         self._left_count = 0
         self._right_count = 0
         self._completed = False
+        self._mock_lio_distance = 0.0
+        self._mock_lio_yaw = 0.0
+        self._mock_lio_sequence = 0
         self._start_after = time.monotonic() + warmup_sec
         self._publish_hardware_status()
         self._timer = self.create_timer(self._step / playback_rate, self._tick)
@@ -143,9 +182,13 @@ class IndoorSimNode(Node):
         self._pending_distance += distance
         self._pending_yaw += dyaw
         self._publish_ground_truth(pose, stamp, distance / self._step, yaw_rate)
-        self._publish_imu(pose, stamp, yaw_rate)
+        self._publish_mock_lio_motion(distance, dyaw, stamp)
+        if not (self._imu_drop > 0 and self._index % self._imu_drop == 0 and self._index > 0):
+            self._publish_imu(pose, _time_message(stamp_sec + self._imu_offset), yaw_rate)
         if self._index % self._wheel_period == 0:
-            self._publish_encoder(self._pending_distance, self._pending_yaw, stamp)
+            wheel_frame = self._index // self._wheel_period
+            if not (self._wheel_drop > 0 and wheel_frame % self._wheel_drop == 0 and wheel_frame > 0):
+                self._publish_encoder(self._pending_distance, self._pending_yaw, stamp)
             self._pending_distance = 0.0
             self._pending_yaw = 0.0
         if self._index % self._lidar_period == 0:
@@ -158,7 +201,10 @@ class IndoorSimNode(Node):
         if self._sim_time >= self._duration:
             final_pose = self._trajectory.sample(self._duration, self._duration)
             final_stamp = self.get_clock().now().to_msg()
+            final_distance = math.hypot(final_pose.x - pose.x, final_pose.y - pose.y)
+            final_dyaw = _angle_delta(final_pose.yaw, pose.yaw)
             self._publish_ground_truth(final_pose, final_stamp, 0.0, 0.0)
+            self._publish_mock_lio_motion(final_distance, final_dyaw, final_stamp)
             self._completed = True
             self._completed_pub.publish(Bool(data=True))
             self.get_logger().info("deterministic closed-loop simulation completed")
@@ -183,10 +229,14 @@ class IndoorSimNode(Node):
         message.header.frame_id = "imu_link"
         message.orientation.z = math.sin(pose.yaw * 0.5)
         message.orientation.w = math.cos(pose.yaw * 0.5)
-        message.angular_velocity.z = yaw_rate + float(rng.normal(0.0, 0.002))
-        message.linear_acceleration.x = float(rng.normal(0.0, 0.02))
-        message.linear_acceleration.y = float(rng.normal(0.0, 0.02))
-        message.linear_acceleration.z = 9.80665 + float(rng.normal(0.0, 0.02))
+        message.angular_velocity.z = (
+            yaw_rate + self._imu_gyro_bias + float(rng.normal(0.0, self._imu_gyro_noise))
+        )
+        acceleration = self._imu_accel_bias + rng.normal(0.0, self._imu_accel_noise, 3)
+        acceleration[2] += 9.80665
+        message.linear_acceleration.x = float(acceleration[0])
+        message.linear_acceleration.y = float(acceleration[1])
+        message.linear_acceleration.z = float(acceleration[2])
         message.orientation_covariance[0] = 0.0025
         message.angular_velocity_covariance[0] = 0.0004
         message.linear_acceleration_covariance[0] = 0.0025
@@ -195,10 +245,11 @@ class IndoorSimNode(Node):
     def _publish_encoder(self, centre_distance: float, dyaw: float, stamp) -> None:
         left = centre_distance - dyaw * self._track * 0.5
         right = centre_distance + dyaw * self._track * 0.5
-        if 160 <= self._index % 420 <= 195:
-            left *= 1.08
-        if 280 <= self._index % 500 <= 310:
-            right *= 0.93
+        left *= self._wheel_common_scale * self._wheel_left_scale
+        right *= self._wheel_common_scale * self._wheel_right_scale
+        phase = self._sim_time / self._duration
+        if self._wheel_slip_start <= phase <= self._wheel_slip_end:
+            left *= 1.0 + self._wheel_slip_ratio
         self._left_distance += left
         self._right_distance += right
         counts_per_metre = self._cpr * self._gear / (2.0 * math.pi * self._wheel_radius)
@@ -227,6 +278,17 @@ class IndoorSimNode(Node):
             )
             header = Header(stamp=_time_message(stamp_sec + self._right_offset), frame_id="xtm60_right_link")
             self._right_pub.publish(pointcloud2_from_xyz(header, points, intensity))
+
+    def _publish_mock_lio_motion(self, distance: float, dyaw: float, stamp) -> None:
+        self._mock_lio_distance += distance
+        self._mock_lio_yaw += dyaw
+        message = SimMotion()
+        message.stamp = stamp
+        message.sequence = self._mock_lio_sequence
+        message.cumulative_distance_m = self._mock_lio_distance
+        message.cumulative_yaw_rad = self._mock_lio_yaw
+        self._mock_lio_motion_pub.publish(message)
+        self._mock_lio_sequence += 1
 
     def _publish_cameras(self, stamp) -> None:
         camera_frame = self._index // self._camera_period

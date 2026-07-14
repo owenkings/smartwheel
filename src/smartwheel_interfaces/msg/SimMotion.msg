@@ -1,0 +1,4 @@
+builtin_interfaces/Time stamp
+uint64 sequence
+float64 cumulative_distance_m
+float64 cumulative_yaw_rad

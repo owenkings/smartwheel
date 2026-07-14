@@ -8,6 +8,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HardwareStatus.msg"
   "msg/MappingStatus.msg"
+  "msg/SimMotion.msg"
   "msg/WheelEncoder.msg"
   "srv/MapTask.srv"
   DEPENDENCIES builtin_interfaces
@@ -15,4 +16,3 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
-
