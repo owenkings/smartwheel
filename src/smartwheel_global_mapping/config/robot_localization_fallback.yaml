@@ -9,6 +9,8 @@ ekf_filter_node:
     base_link_frame: base_link
     odom0: /wheel/odom
     odom0_config: [false, false, false, false, false, false, true, true, false, false, false, true, false, false, false]
-    # H30 IMU is intentionally absent here. It is already consumed by FAST-LIO2
-    # in lio_primary mode and must not be fused twice.
-
+    imu0: /imu/data_raw
+    imu0_config: [false, false, false, false, false, true, false, false, false, false, false, true, false, false, false]
+    imu0_remove_gravitational_acceleration: true
+    # This configuration is launched only in wheel_imu_fallback mode. The
+    # lio_primary path never feeds H30 into robot_localization a second time.

@@ -20,6 +20,10 @@ setup(
     description="FAST-LIO2 input contract and mutually exclusive global mapping backends.",
     license="Apache-2.0",
     tests_require=["pytest"],
-    entry_points={"console_scripts": ["lio_input_adapter = smartwheel_global_mapping.lio_adapter_node:main"]},
+    entry_points={
+        "console_scripts": [
+            "lio_input_adapter = smartwheel_global_mapping.lio_adapter_node:main",
+            "cloud_to_scan_node = smartwheel_global_mapping.cloud_to_scan_node:main",
+        ]
+    },
 )
-

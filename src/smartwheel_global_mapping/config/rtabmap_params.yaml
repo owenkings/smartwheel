@@ -20,9 +20,9 @@ rtabmap:
     RGBD/CreateOccupancyGrid: "true"
     RGBD/ProximityBySpace: "true"
     RGBD/ProximityPathMaxNeighbors: "2"
+    Rtabmap/DetectionRate: "5.0"
     Reg/Strategy: "1"
     Grid/FromDepth: "false"
     Grid/3D: "true"
     Grid/RayTracing: "true"
     Grid/CellSize: "0.05"
-
