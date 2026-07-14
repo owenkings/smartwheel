@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>smartwheel_mapping_manager</name>
+  <version>0.1.0</version>
+  <description>Mapping lifecycle state machine and Stage A health checks.</description>
+  <maintainer email="todo@example.com">SmartWheel team</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>smartwheel_interfaces</exec_depend>
+  <exec_depend>smartwheel_sensor_api</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <test_depend>ament_pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
+

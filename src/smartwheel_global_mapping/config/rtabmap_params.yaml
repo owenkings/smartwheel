@@ -1,0 +1,28 @@
+rtabmap:
+  ros__parameters:
+    subscribe_depth: false
+    subscribe_rgb: false
+    subscribe_stereo: false
+    subscribe_scan: false
+    subscribe_scan_cloud: true
+    subscribe_odom_info: false
+    frame_id: base_link
+    map_frame_id: map
+    odom_frame_id: ""
+    publish_tf: true
+    approx_sync: true
+    topic_queue_size: 20
+    sync_queue_size: 20
+    qos_scan: 2
+    qos_odom: 1
+    Mem/IncrementalMemory: "true"
+    Mem/InitWMWithAllNodes: "false"
+    RGBD/CreateOccupancyGrid: "true"
+    RGBD/ProximityBySpace: "true"
+    RGBD/ProximityPathMaxNeighbors: "2"
+    Reg/Strategy: "1"
+    Grid/FromDepth: "false"
+    Grid/3D: "true"
+    Grid/RayTracing: "true"
+    Grid/CellSize: "0.05"
+
