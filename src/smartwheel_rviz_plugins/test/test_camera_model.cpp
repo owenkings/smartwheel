@@ -20,4 +20,3 @@ TEST(CameraPanelModel, DetectsOfflineThreshold)
 }
 
 }  // namespace smartwheel_rviz_plugins
-

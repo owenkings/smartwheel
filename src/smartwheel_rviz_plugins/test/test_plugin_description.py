@@ -20,4 +20,3 @@ def test_all_panels_are_registered_once():
 def test_camera_plugin_is_reusable_not_four_hard_coded_classes():
     text = (Path(__file__).parents[1] / "plugin_description.xml").read_text(encoding="utf-8")
     assert text.count("smartwheel_rviz_plugins::CameraPanel") == 1
-

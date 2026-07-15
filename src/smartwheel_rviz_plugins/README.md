@@ -7,4 +7,3 @@ callbacks retain at most one pending GUI update.
 The package does not open hardware devices and the teleop panel publishes only
 `/teleop/cmd_vel`. The mock workbench safety node is the sole publisher of
 `/cmd_vel_safe`; no panel publishes a motor command.
-

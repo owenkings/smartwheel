@@ -59,4 +59,3 @@ private:
 }  // namespace smartwheel_rviz_plugins
 
 #endif  // SMARTWHEEL_RVIZ_PLUGINS__MAP_PRODUCTS_PANEL_HPP_
-

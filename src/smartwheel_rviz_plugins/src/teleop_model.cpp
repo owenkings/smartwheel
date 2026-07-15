@@ -101,4 +101,3 @@ bool TeleopModel::timedOut() const
 }
 
 }  // namespace smartwheel_rviz_plugins
-

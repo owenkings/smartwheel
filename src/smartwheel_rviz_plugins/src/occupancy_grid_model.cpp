@@ -75,4 +75,3 @@ bool OccupancyGridModel::valid() const
 }
 
 }  // namespace smartwheel_rviz_plugins
-

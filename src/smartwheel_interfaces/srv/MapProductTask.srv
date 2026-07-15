@@ -12,4 +12,3 @@ string selected_version
 string[] versions
 string[] available_files
 string quality_summary
-

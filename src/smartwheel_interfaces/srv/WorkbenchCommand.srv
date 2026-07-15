@@ -18,4 +18,3 @@ bool accepted
 string state
 string reason
 string version_directory
-

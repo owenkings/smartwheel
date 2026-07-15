@@ -13,4 +13,3 @@ PLUGINLIB_EXPORT_CLASS(smartwheel_rviz_plugins::TeleopPanel, rviz_common::Panel)
 PLUGINLIB_EXPORT_CLASS(smartwheel_rviz_plugins::MappingControlPanel, rviz_common::Panel)
 PLUGINLIB_EXPORT_CLASS(smartwheel_rviz_plugins::SystemStatusPanel, rviz_common::Panel)
 PLUGINLIB_EXPORT_CLASS(smartwheel_rviz_plugins::MapProductsPanel, rviz_common::Panel)
-

@@ -34,4 +34,3 @@ private:
 }  // namespace smartwheel_rviz_plugins
 
 #endif  // SMARTWHEEL_RVIZ_PLUGINS__OCCUPANCY_GRID_MODEL_HPP_
-

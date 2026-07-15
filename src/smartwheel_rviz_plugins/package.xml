@@ -31,4 +31,3 @@
     <rviz_common plugin="${prefix}/plugin_description.xml"/>
   </export>
 </package>
-

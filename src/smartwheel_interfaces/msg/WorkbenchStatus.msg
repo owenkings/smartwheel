@@ -15,4 +15,3 @@ bool map_saved
 string quality_result
 string failure_reason
 string active_operation
-

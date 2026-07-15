@@ -57,4 +57,3 @@ private:
 }  // namespace smartwheel_rviz_plugins
 
 #endif  // SMARTWHEEL_RVIZ_PLUGINS__SYSTEM_STATUS_PANEL_HPP_
-
