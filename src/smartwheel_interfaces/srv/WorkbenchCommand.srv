@@ -1,0 +1,21 @@
+uint8 PREFLIGHT=0
+uint8 START_RECORDING=1
+uint8 START_MAPPING=2
+uint8 PAUSE_MAPPING=3
+uint8 RESUME_MAPPING=4
+uint8 FINISH_MAPPING=5
+uint8 OPTIMIZE=6
+uint8 SAVE_MAP=7
+uint8 EXPORT_PRODUCTS=8
+uint8 PREVIEW_SAVED_MAP=9
+uint8 CANCEL=10
+uint8 RESET_SESSION=11
+uint8 command
+string map_name
+string argument
+---
+bool accepted
+string state
+string reason
+string version_directory
+

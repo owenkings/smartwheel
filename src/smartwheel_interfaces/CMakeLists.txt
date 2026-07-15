@@ -9,8 +9,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HardwareStatus.msg"
   "msg/MappingStatus.msg"
   "msg/SimMotion.msg"
+  "msg/WorkbenchStatus.msg"
   "msg/WheelEncoder.msg"
   "srv/MapTask.srv"
+  "srv/MapProductTask.srv"
+  "srv/WorkbenchCommand.srv"
   DEPENDENCIES builtin_interfaces
 )
 
