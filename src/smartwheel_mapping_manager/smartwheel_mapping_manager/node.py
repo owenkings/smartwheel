@@ -356,9 +356,12 @@ def main(args=None) -> None:
     node = MappingManagerNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
+    except (RuntimeError, SystemError):
+        if rclpy.ok(context=node.context):
+            raise
     finally:
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        if rclpy.ok(context=node.context):
+            rclpy.shutdown(context=node.context)

@@ -17,6 +17,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Path as PathMessage
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.exceptions import InvalidHandle
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rtabmap_msgs.msg import Info
@@ -270,6 +271,15 @@ class WorkbenchNode(Node):
             self._preview_timer = self.create_timer(1.0, self._publish_initial_preview)
         self._publish_status()
 
+    def _safe_publish(self, publisher, message) -> bool:
+        try:
+            publisher.publish(message)
+            return True
+        except (InvalidHandle, RuntimeError):
+            if rclpy.ok(context=self.context):
+                raise
+            return False
+
     def _publish_initial_preview(self) -> None:
         try:
             loaded = load_map_version(self._selected_version)
@@ -322,7 +332,9 @@ class WorkbenchNode(Node):
             return
         try:
             xyz, colors = normalize_cloud(message)
-            self._cloud_pub.publish(xyzrgb_message(message.header, xyz, colors))
+            self._safe_publish(
+                self._cloud_pub, xyzrgb_message(message.header, xyz, colors)
+            )
             self._last_cloud_publish_monotonic = now
         except (AssertionError, ValueError) as error:
             self.get_logger().error(f"FAILED to normalize /map_cloud source: {error}")
@@ -332,13 +344,13 @@ class WorkbenchNode(Node):
         if message.info.width == 0 or message.info.height == 0 or not message.data:
             return
         self._latest_map = message
-        self._map_pub.publish(message)
+        self._safe_publish(self._map_pub, message)
 
     def _on_path(self, message: PathMessage) -> None:
         self._observe("/mapping/optimized_path_source", message)
         self._trajectory_length = _path_length(message.poses)
         self._latest_path = message
-        self._path_pub.publish(message)
+        self._safe_publish(self._path_pub, message)
 
     def _on_rtabmap_info(self, message: Info) -> None:
         self._keyframes = max(self._keyframes, len(message.wm_state))
@@ -445,7 +457,7 @@ class WorkbenchNode(Node):
         ]
         self._bag_process = subprocess.Popen(command, start_new_session=True)
         self._bag_path = str(bag)
-        self._bag_path_pub.publish(String(data=self._bag_path))
+        self._safe_publish(self._bag_path_pub, String(data=self._bag_path))
         self._bag_size_bytes = 0
         self._bag_write_rate_bytes_per_sec = 0.0
         self._last_bag_measure_bytes = 0
@@ -698,12 +710,12 @@ class WorkbenchNode(Node):
                 reason = f"preview published: {loaded.directory}"
             elif command == WorkbenchCommand.Request.CANCEL:
                 self._stop_bag()
-                self._teleop_stop_pub.publish(Twist())
+                self._safe_publish(self._teleop_stop_pub, Twist())
                 reason = "mock session cancelled and zero velocity published"
             elif command == WorkbenchCommand.Request.RESET_SESSION:
                 self._stop_bag()
                 self._bag_path = ""
-                self._bag_path_pub.publish(String())
+                self._safe_publish(self._bag_path_pub, String())
                 if self._mapping_client.service_is_ready():
                     self._request_mapping(MapTask.Request.RESET)
                 self._trajectory_length = 0.0
@@ -782,7 +794,7 @@ class WorkbenchNode(Node):
         message = xyzrgb_message(header, loaded.points, colors)
         self._latest_cloud = message
         self._map_points = int(loaded.points.shape[0])
-        self._cloud_pub.publish(message)
+        self._safe_publish(self._cloud_pub, message)
 
     def _publish_loaded_occupancy(self, loaded) -> None:
         message = OccupancyGrid()
@@ -798,7 +810,7 @@ class WorkbenchNode(Node):
         message.info.origin.orientation.w = math.cos(loaded.origin_yaw * 0.5)
         message.data = loaded.cells.ravel().tolist()
         self._latest_map = message
-        self._map_pub.publish(message)
+        self._safe_publish(self._map_pub, message)
 
     def _publish_loaded_path(self, loaded) -> None:
         message = PathMessage()
@@ -815,7 +827,7 @@ class WorkbenchNode(Node):
             pose.pose.orientation.w = math.cos(yaw * 0.5)
             message.poses.append(pose)
         self._latest_path = message
-        self._path_pub.publish(message)
+        self._safe_publish(self._path_pub, message)
 
     def _publish_loaded_map(self, loaded) -> None:
         self._publish_loaded_cloud(loaded)
@@ -854,7 +866,7 @@ class WorkbenchNode(Node):
         message.quality_result = self._quality_result
         message.failure_reason = self._session.failure_reason
         message.active_operation = self._active_operation
-        self._status_pub.publish(message)
+        self._safe_publish(self._status_pub, message)
 
     def _publish_diagnostics(self) -> None:
         now = time.monotonic()
@@ -966,14 +978,11 @@ class WorkbenchNode(Node):
             hardware_id="MOCK_ONLY",
         )
         array.status = [runtime, motor, estop, disk, bag, tf_status]
-        self._diagnostics_pub.publish(array)
+        self._safe_publish(self._diagnostics_pub, array)
 
     def shutdown(self) -> None:
         if rclpy.ok(context=self.context):
-            try:
-                self._teleop_stop_pub.publish(Twist())
-            except rclpy.executors.ExternalShutdownException:
-                pass
+            self._safe_publish(self._teleop_stop_pub, Twist())
         self._stop_bag()
 
 
@@ -984,11 +993,11 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
         node.shutdown()
         executor.shutdown(timeout_sec=3.0)
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        if rclpy.ok(context=node.context):
+            rclpy.shutdown(context=node.context)
