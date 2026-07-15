@@ -13,6 +13,7 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Trigger
 
+from smartwheel_map_products.accumulator import VoxelAccumulator
 from smartwheel_map_products.colorizer import CameraFrame, colorize_points
 from smartwheel_map_products.metrics import evaluate_trajectory
 from smartwheel_map_products.occupancy import raycast_occupancy
@@ -52,6 +53,7 @@ class MapProductsNode(Node):
         self.declare_parameter("bag_path", "")
         self.declare_parameter("resolution_m", 0.05)
         self.declare_parameter("voxel_size_m", 0.05)
+        self.declare_parameter("maximum_accumulated_points", 500000)
         self.declare_parameter("min_obstacle_z", 0.1)
         self.declare_parameter("max_obstacle_z", 2.2)
         self.declare_parameter("export_delay_sec", 1.0)
@@ -101,8 +103,11 @@ class MapProductsNode(Node):
             )
             for name in CAMERAS
         }
-        self._points = []
-        self._origins = []
+        self._accumulator = VoxelAccumulator(
+            self._voxel,
+            int(self.get_parameter("maximum_accumulated_points").value),
+        )
+        self._accumulation_failure = ""
         self._poses = []
         self._ground_truth = []
         self._backend_points = None
@@ -159,17 +164,23 @@ class MapProductsNode(Node):
         self._bag_path = message.data.strip()
 
     def _on_odom(self, message: Odometry) -> None:
+        if self._exported:
+            return
         stamp = _stamp_seconds(message.header.stamp)
         pose = message.pose.pose
         self._poses.append((stamp, pose.position.x, pose.position.y, _yaw_from_quaternion(pose.orientation)))
 
     def _on_ground_truth(self, message: Odometry) -> None:
+        if self._exported:
+            return
         pose = message.pose.pose
         self._ground_truth.append(
             (_stamp_seconds(message.header.stamp), pose.position.x, pose.position.y, _yaw_from_quaternion(pose.orientation))
         )
 
     def _on_backend_cloud(self, message: PointCloud2) -> None:
+        if self._exported:
+            return
         try:
             points, _ = pointcloud2_to_xyz(message)
         except ValueError as exc:
@@ -187,6 +198,8 @@ class MapProductsNode(Node):
         return pose if abs(pose[0] - stamp) <= self._maximum_pose_delta else None
 
     def _on_cloud(self, message: PointCloud2) -> None:
+        if self._exported or self._accumulation_failure:
+            return
         pose = self._nearest_pose(_stamp_seconds(message.header.stamp))
         if pose is None:
             self._rejected_pose_associations += 1
@@ -198,14 +211,21 @@ class MapProductsNode(Node):
             return
         map_from_base = transform_matrix([pose[1], pose[2], 0.0], [0.0, 0.0, pose[3]])
         world = apply_transform(points, map_from_base)
-        self._points.append(world)
-        self._origins.append(np.tile(np.array([pose[1], pose[2], 0.0]), (world.shape[0], 1)))
+        origins = np.tile(np.array([pose[1], pose[2], 0.0]), (world.shape[0], 1))
+        try:
+            self._accumulator.add(world, origins)
+        except (OverflowError, ValueError) as exc:
+            self._accumulation_failure = str(exc)
+            self._failure_pub.publish(String(data=self._accumulation_failure))
+            self.get_logger().error(self._accumulation_failure)
 
     def _on_camera_info(self, name: str, message: CameraInfo) -> None:
         if message.k[0] > 0.0 and message.k[4] > 0.0:
             self._camera_info[name] = np.asarray(message.k, dtype=np.float64).reshape(3, 3)
 
     def _on_image(self, name: str, message: Image) -> None:
+        if self._exported:
+            return
         if name not in self._camera_info or message.encoding not in ("rgb8", "bgr8"):
             return
         pose = self._nearest_pose(_stamp_seconds(message.header.stamp))
@@ -233,6 +253,7 @@ class MapProductsNode(Node):
 
     def _on_export_request(self, _request, response):
         if self._exported:
+            self._complete_pub.publish(String(data=str(self._directory)))
             response.success = True
             response.message = f"already exported: {self._directory}"
             return response
@@ -249,16 +270,9 @@ class MapProductsNode(Node):
         return response
 
     def _current_products(self):
-        if not self._points:
+        if self._accumulation_failure or len(self._accumulator) == 0:
             return None
-        local_points = np.vstack(self._points)
-        origins = np.vstack(self._origins)
-        if self._voxel > 0.0:
-            keys = np.floor(local_points / self._voxel).astype(np.int64)
-            _, first = np.unique(keys, axis=0, return_index=True)
-            first.sort()
-            local_points = local_points[first]
-            origins = origins[first]
+        local_points, origins = self._accumulator.arrays()
         grid = raycast_occupancy(
             local_points,
             origins,
@@ -277,7 +291,9 @@ class MapProductsNode(Node):
         return geometry, origins, grid, geometry_source
 
     def _missing_products_reason(self) -> str:
-        if not self._points:
+        if self._accumulation_failure:
+            return self._accumulation_failure
+        if len(self._accumulator) == 0:
             return "no merged point cloud has been received"
         if self._require_backend_cloud and self._backend_points is None:
             return f"required backend cloud has not been received: {self._backend_cloud_topic}"
