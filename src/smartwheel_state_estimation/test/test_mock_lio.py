@@ -1,6 +1,10 @@
 import pytest
 
-from smartwheel_state_estimation.mock_lio_node import CumulativeMotionDecoder, MockLioIntegrator
+from smartwheel_state_estimation.mock_lio_node import (
+    CumulativeMotionDecoder,
+    MockLioIntegrator,
+    PathRateLimiter,
+)
 
 
 def model(seed=7, scale=1.0, bias=0.0):
@@ -42,3 +46,14 @@ def test_cumulative_motion_rejects_replayed_sequence():
     decoder.update(3, 1.0, 0.0, 0.0)
     with pytest.raises(ValueError, match="sequence"):
         decoder.update(3, 2.0, 1.0, 0.0)
+
+
+def test_path_rate_limiter_does_not_throttle_odometry_timestamps():
+    limiter = PathRateLimiter(2.0)
+    selected = [stamp for stamp in (1.0, 1.02, 1.49, 1.50, 1.99, 2.0) if limiter.ready(stamp)]
+    assert selected == [1.0, 1.5, 2.0]
+
+
+def test_path_rate_limiter_rejects_invalid_rate():
+    with pytest.raises(ValueError, match="positive"):
+        PathRateLimiter(0.0)

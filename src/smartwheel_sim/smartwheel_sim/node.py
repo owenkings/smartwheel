@@ -4,7 +4,9 @@ import time
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Time
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, Imu, PointCloud2
@@ -13,7 +15,7 @@ from std_msgs.msg import Bool, Header
 
 from smartwheel_sensor_api import pointcloud2_from_xyz
 from smartwheel_sim.environment import IndoorScene, LidarModel
-from smartwheel_sim.trajectory import ClosedLoopTrajectory
+from smartwheel_sim.trajectory import ClosedLoopTrajectory, Pose2D
 
 
 CAMERAS = ("front", "left", "right", "rear")
@@ -73,6 +75,8 @@ class IndoorSimNode(Node):
         self.declare_parameter("enable_cameras", True)
         self.declare_parameter("camera_width", 160)
         self.declare_parameter("camera_height", 120)
+        self.declare_parameter("enable_external_cmd_vel", False)
+        self.declare_parameter("external_cmd_timeout_sec", 0.35)
 
         self._seed = int(self.get_parameter("seed").value)
         self._duration = float(self.get_parameter("duration_sec").value)
@@ -129,6 +133,10 @@ class IndoorSimNode(Node):
         self._enable_cameras = bool(self.get_parameter("enable_cameras").value)
         self._camera_width = int(self.get_parameter("camera_width").value)
         self._camera_height = int(self.get_parameter("camera_height").value)
+        self._enable_external_cmd = bool(self.get_parameter("enable_external_cmd_vel").value)
+        self._external_cmd_timeout = float(self.get_parameter("external_cmd_timeout_sec").value)
+        if self._external_cmd_timeout <= 0.0:
+            raise ValueError("external command timeout must be positive")
 
         latched = QoSProfile(
             depth=1,
@@ -143,6 +151,7 @@ class IndoorSimNode(Node):
         self._mock_lio_motion_pub = self.create_publisher(SimMotion, "/sim/mock_lio/motion", 20)
         self._completed_pub = self.create_publisher(Bool, "/sim/completed", latched)
         self._hardware_pub = self.create_publisher(HardwareStatus, "/hardware/status", latched)
+        self._diagnostics_pub = self.create_publisher(DiagnosticArray, "/diagnostics", 20)
         self._image_pubs = {}
         self._info_pubs = {}
         for name in CAMERAS:
@@ -166,14 +175,32 @@ class IndoorSimNode(Node):
         self._mock_lio_distance = 0.0
         self._mock_lio_yaw = 0.0
         self._mock_lio_sequence = 0
+        self._command = Twist()
+        self._command_received_monotonic = 0.0
+        self._source_counts = {
+            "/lidar/left/points_raw": 0,
+            "/lidar/right/points_raw": 0,
+            "/imu/data_raw": 0,
+            "/wheel/encoder_counts": 0,
+            **{f"/camera/{name}/image_raw": 0 for name in CAMERAS},
+        }
+        self._source_last_publish = {}
+        self._diagnostic_previous_counts = dict(self._source_counts)
+        self._diagnostic_previous_monotonic = time.monotonic()
+        self._teleop_offset_x = 0.0
+        self._teleop_offset_y = 0.0
+        self._teleop_offset_yaw = 0.0
+        if self._enable_external_cmd:
+            self.create_subscription(Twist, "/cmd_vel_safe", self._on_external_command, 10)
         self._start_after = time.monotonic() + warmup_sec
         self._publish_hardware_status()
         self._timer = self.create_timer(self._step / playback_rate, self._tick)
+        self._diagnostic_timer = self.create_timer(1.0, self._publish_source_diagnostics)
 
     def _tick(self) -> None:
         if self._completed or time.monotonic() < self._start_after:
             return
-        pose = self._trajectory.sample(self._sim_time, self._duration)
+        pose = self._effective_pose(self._trajectory.sample(self._sim_time, self._duration))
         stamp_sec = self.get_clock().now().nanoseconds * 1e-9
         stamp = _time_message(stamp_sec)
         distance = math.hypot(pose.x - self._previous_pose.x, pose.y - self._previous_pose.y)
@@ -199,7 +226,7 @@ class IndoorSimNode(Node):
         self._index += 1
         self._sim_time = min(self._duration, self._sim_time + self._step)
         if self._sim_time >= self._duration:
-            final_pose = self._trajectory.sample(self._duration, self._duration)
+            final_pose = self._effective_pose(self._trajectory.sample(self._duration, self._duration), integrate=False)
             final_stamp = self.get_clock().now().to_msg()
             final_distance = math.hypot(final_pose.x - pose.x, final_pose.y - pose.y)
             final_dyaw = _angle_delta(final_pose.yaw, pose.yaw)
@@ -208,6 +235,34 @@ class IndoorSimNode(Node):
             self._completed = True
             self._completed_pub.publish(Bool(data=True))
             self.get_logger().info("deterministic closed-loop simulation completed")
+
+    def _on_external_command(self, message: Twist) -> None:
+        if not math.isfinite(message.linear.x) or not math.isfinite(message.angular.z):
+            self.get_logger().error("ignored non-finite mock /cmd_vel_safe")
+            self._command = Twist()
+            return
+        self._command = message
+        self._command_received_monotonic = time.monotonic()
+
+    def _effective_pose(self, nominal: Pose2D, integrate: bool = True) -> Pose2D:
+        command_fresh = (
+            self._enable_external_cmd
+            and time.monotonic() - self._command_received_monotonic <= self._external_cmd_timeout
+        )
+        if integrate and command_fresh:
+            self._teleop_offset_yaw += float(self._command.angular.z) * self._step
+            heading = nominal.yaw + self._teleop_offset_yaw
+            distance = float(self._command.linear.x) * self._step
+            self._teleop_offset_x += distance * math.cos(heading)
+            self._teleop_offset_y += distance * math.sin(heading)
+        return Pose2D(
+            nominal.x + self._teleop_offset_x,
+            nominal.y + self._teleop_offset_y,
+            math.atan2(
+                math.sin(nominal.yaw + self._teleop_offset_yaw),
+                math.cos(nominal.yaw + self._teleop_offset_yaw),
+            ),
+        )
 
     def _publish_ground_truth(self, pose, stamp, linear: float, angular: float) -> None:
         message = Odometry()
@@ -241,6 +296,7 @@ class IndoorSimNode(Node):
         message.angular_velocity_covariance[0] = 0.0004
         message.linear_acceleration_covariance[0] = 0.0025
         self._imu_pub.publish(message)
+        self._record_source_publish("/imu/data_raw")
 
     def _publish_encoder(self, centre_distance: float, dyaw: float, stamp) -> None:
         left = centre_distance - dyaw * self._track * 0.5
@@ -262,6 +318,7 @@ class IndoorSimNode(Node):
         message.valid = True
         message.source = "deterministic_stage_a_simulator"
         self._encoder_pub.publish(message)
+        self._record_source_publish("/wheel/encoder_counts")
 
     def _publish_lidars(self, pose, stamp_sec: float) -> None:
         lidar_frame = self._index // self._lidar_period
@@ -272,12 +329,14 @@ class IndoorSimNode(Node):
             )
             header = Header(stamp=_time_message(stamp_sec + self._left_offset), frame_id="xtm60_left_link")
             self._left_pub.publish(pointcloud2_from_xyz(header, points, intensity))
+            self._record_source_publish("/lidar/left/points_raw")
         if not (self._right_drop > 0 and lidar_frame % self._right_drop == 0 and lidar_frame > 0):
             points, intensity = self._right_model.observe(
                 self._scene.points, pose, self._seed + 29, lidar_frame, occluded=False
             )
             header = Header(stamp=_time_message(stamp_sec + self._right_offset), frame_id="xtm60_right_link")
             self._right_pub.publish(pointcloud2_from_xyz(header, points, intensity))
+            self._record_source_publish("/lidar/right/points_raw")
 
     def _publish_mock_lio_motion(self, distance: float, dyaw: float, stamp) -> None:
         self._mock_lio_distance += distance
@@ -313,6 +372,7 @@ class IndoorSimNode(Node):
             message.step = self._camera_width * 3
             message.data = image.tobytes()
             self._image_pubs[name].publish(message)
+            self._record_source_publish(f"/camera/{name}/image_raw")
             info = CameraInfo()
             info.header = message.header
             info.height = self._camera_height
@@ -323,6 +383,73 @@ class IndoorSimNode(Node):
             info.distortion_model = "plumb_bob"
             info.d = [0.0] * 5
             self._info_pubs[name].publish(info)
+
+    def _record_source_publish(self, topic: str) -> None:
+        self._source_counts[topic] += 1
+        self._source_last_publish[topic] = time.monotonic()
+
+    def _publish_source_diagnostics(self) -> None:
+        now = time.monotonic()
+        elapsed = max(now - self._diagnostic_previous_monotonic, 1e-6)
+        expected_rates = {
+            "/lidar/left/points_raw": float(self.get_parameter("lidar_rate_hz").value),
+            "/lidar/right/points_raw": float(self.get_parameter("lidar_rate_hz").value),
+            "/imu/data_raw": 1.0 / self._step,
+            "/wheel/encoder_counts": float(self.get_parameter("wheel_rate_hz").value),
+            **{
+                f"/camera/{name}/image_raw": float(self.get_parameter("camera_rate_hz").value)
+                for name in CAMERAS
+            },
+        }
+        diagnostic_names = {
+            "/lidar/left/points_raw": "left_lidar",
+            "/lidar/right/points_raw": "right_lidar",
+            "/imu/data_raw": "h30_imu",
+            "/wheel/encoder_counts": "wheel_odometry",
+            **{f"/camera/{name}/image_raw": f"{name}_camera" for name in CAMERAS},
+        }
+        array = DiagnosticArray()
+        array.header.stamp = self.get_clock().now().to_msg()
+        for topic, count in self._source_counts.items():
+            previous = self._diagnostic_previous_counts[topic]
+            frequency = (count - previous) / elapsed
+            last_publish = self._source_last_publish.get(topic)
+            age = float("inf") if last_publish is None else now - last_publish
+            expected = expected_rates[topic]
+            enabled = self._enable_cameras or "/camera/" not in topic
+            stale_limit = max(1.0, 3.0 / max(expected, 1e-6))
+            healthy = enabled and count > 0 and not self._completed and age <= stale_limit
+            if not enabled:
+                level = DiagnosticStatus.STALE
+                message = "DISABLED by mock configuration"
+                hardware_id = "DISABLED"
+            elif healthy:
+                level = DiagnosticStatus.OK
+                message = f"MOCK source publishing at {frequency:.2f} Hz"
+                hardware_id = "MOCK_ONLY"
+            else:
+                level = DiagnosticStatus.WARN
+                message = "MOCK source completed" if self._completed else "MOCK source has no fresh data"
+                hardware_id = "MOCK_ONLY"
+            status = DiagnosticStatus(
+                level=level,
+                name=f"smartwheel_sim/{diagnostic_names[topic]}",
+                message=message,
+                hardware_id=hardware_id,
+            )
+            status.values = [
+                KeyValue(key=f"frequency:{topic}", value=f"{frequency:.2f} Hz"),
+                KeyValue(
+                    key=f"last_message_age:{topic}",
+                    value="never" if not math.isfinite(age) else f"{age:.3f} s",
+                ),
+                KeyValue(key=f"message_count:{topic}", value=str(count)),
+                KeyValue(key=f"expected_frequency:{topic}", value=f"{expected:.2f} Hz"),
+            ]
+            array.status.append(status)
+        self._diagnostics_pub.publish(array)
+        self._diagnostic_previous_counts = dict(self._source_counts)
+        self._diagnostic_previous_monotonic = now
 
     def _publish_hardware_status(self) -> None:
         message = HardwareStatus()

@@ -184,6 +184,9 @@ class MappingManagerNode(Node):
 
     def _update_backend_checks(self) -> None:
         self._checks["backend_map_received"] = self._backend_map_seen
+        self._checks["backend_tf_dynamic"] = self._tf_buffer.can_transform(
+            "map", "base_link", Time(), timeout=Duration(seconds=0.01)
+        )
         if self._backend == "rtabmap":
             self._checks["backend_minimum_nodes"] = self._backend_nodes >= self._minimum_backend_nodes
             self._checks["backend_loop_evidence"] = not self._require_loop or bool(self._loop_events)
@@ -260,9 +263,7 @@ class MappingManagerNode(Node):
             elif self._finalization_timed_out():
                 self._machine.fail(self._backend_failure_reason())
         elif state is MappingState.OPTIMIZING:
-            if self._backend_ready():
-                self._machine.advance()
-            elif self._finalization_timed_out():
+            if not self._backend_ready() and self._finalization_timed_out():
                 self._machine.fail(self._backend_failure_reason())
         elif state is MappingState.EXPORTING and self._export_path:
             self._machine.advance()
@@ -324,6 +325,9 @@ class MappingManagerNode(Node):
             while self._machine.state is not MappingState.EXPORTING:
                 self._machine.advance()
             if self._export_client.service_is_ready():
+                self._export_path = ""
+                self._export_failure = ""
+                self._finalization_started = time.monotonic()
                 self._export_client.call_async(Trigger.Request())
                 response.accepted = True
                 response.reason = "export requested"

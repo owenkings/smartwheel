@@ -67,6 +67,24 @@ class CumulativeMotionDecoder:
         return result
 
 
+class PathRateLimiter:
+    """Select bounded-rate poses for the GUI path without throttling odometry."""
+
+    def __init__(self, rate_hz: float) -> None:
+        if not math.isfinite(rate_hz) or rate_hz <= 0.0:
+            raise ValueError("path publish rate must be positive and finite")
+        self._period = 1.0 / rate_hz
+        self._last_stamp = None
+
+    def ready(self, stamp_sec: float) -> bool:
+        if not math.isfinite(stamp_sec):
+            raise ValueError("path timestamp must be finite")
+        if self._last_stamp is None or stamp_sec - self._last_stamp >= self._period - 1e-9:
+            self._last_stamp = stamp_sec
+            return True
+        return False
+
+
 class MockLioIntegrator:
     """Deterministic local-odometry error model driven by synthetic motion increments."""
 
@@ -134,6 +152,7 @@ class MockLioNode(Node):
         self.declare_parameter("odom_frame_id", "odom")
         self.declare_parameter("base_frame_id", "base_link")
         self.declare_parameter("max_path_poses", 5000)
+        self.declare_parameter("path_publish_rate_hz", 2.0)
         self.declare_parameter("seed", 20260714)
         self.declare_parameter("linear_scale", 0.997)
         self.declare_parameter("angular_scale", 1.002)
@@ -145,6 +164,11 @@ class MockLioNode(Node):
         self._frame = str(self.get_parameter("odom_frame_id").value)
         self._base_frame = str(self.get_parameter("base_frame_id").value)
         self._max_path = int(self.get_parameter("max_path_poses").value)
+        if self._max_path <= 0:
+            raise ValueError("max_path_poses must be positive")
+        self._path_rate_limiter = PathRateLimiter(
+            float(self.get_parameter("path_publish_rate_hz").value)
+        )
         self._drop_every = int(self.get_parameter("drop_every_n").value)
         self._input_count = 0
         self._motion_decoder = CumulativeMotionDecoder()
@@ -209,6 +233,8 @@ class MockLioNode(Node):
         odom.twist.twist.linear.x = pose.linear
         odom.twist.twist.angular.z = pose.angular
         self._odom_pub.publish(odom)
+        if not self._path_rate_limiter.ready(stamp_sec):
+            return
         stamped_pose = PoseStamped()
         stamped_pose.header = odom.header
         stamped_pose.pose = odom.pose.pose
