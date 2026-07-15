@@ -97,6 +97,10 @@ def _setup(context):
     colorization = _as_bool(LaunchConfiguration("enable_offline_colorization").perform(context))
     record_bag = _as_bool(LaunchConfiguration("record_bag").perform(context))
     enable_loop_closure = _as_bool(LaunchConfiguration("enable_loop_closure").perform(context))
+    workbench_topic_aliases = _as_bool(LaunchConfiguration("workbench_topic_aliases").perform(context))
+    backend_map_topic = "/mapping_backend/map" if backend == "slam_toolbox" and workbench_topic_aliases else (
+        "/rtabmap/map" if backend == "rtabmap" else "/map"
+    )
     camera_params = {}
     for name in ("front", "left", "right", "rear"):
         camera = cameras[name]
@@ -137,6 +141,7 @@ def _setup(context):
                             "enable_cameras": enable_cameras,
                             "camera_width": int(cameras["front"]["width"]),
                             "camera_height": int(cameras["front"]["height"]),
+                            "enable_external_cmd_vel": workbench_topic_aliases,
                         }
                     ],
                 )
@@ -253,8 +258,11 @@ def _setup(context):
                     "bag_path": str(bag_path) if record_bag else "",
                     "checking_timeout_sec": float(LaunchConfiguration("startup_delay_sec").perform(context)) + 10.0,
                     "mapping_backend": backend,
-                    "backend_map_topic": "/rtabmap/map" if backend == "rtabmap" else "/map",
+                    "backend_map_topic": backend_map_topic,
                     "require_loop_closure": enable_loop_closure if backend == "rtabmap" else False,
+                    "finalization_timeout_sec": float(
+                        LaunchConfiguration("finalization_timeout_sec").perform(context)
+                    ),
                 }
             ],
         ),
@@ -297,6 +305,7 @@ def _setup(context):
             output="screen",
             condition=IfCondition(PythonExpression(["'", backend, "' == 'slam_toolbox'"])),
             parameters=[str(Path(get_package_share_directory("smartwheel_global_mapping")) / "config" / "slam_toolbox_params.yaml")],
+            remappings=[("map", backend_map_topic)],
         ),
         ExecuteProcess(
             cmd=[
@@ -339,6 +348,8 @@ def generate_launch_description():
             DeclareLaunchArgument("sim_duration_sec", default_value="12.0"),
             DeclareLaunchArgument("playback_rate", default_value="2.0"),
             DeclareLaunchArgument("startup_delay_sec", default_value="6.0"),
+            DeclareLaunchArgument("finalization_timeout_sec", default_value="15.0"),
+            DeclareLaunchArgument("workbench_topic_aliases", default_value="false", choices=["true", "false"]),
             OpaqueFunction(function=_setup),
         ]
     )

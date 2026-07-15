@@ -1,0 +1,382 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /SmartWheel 3D Mapping1
+      Splitter Ratio: 0.5
+    Tree Height: 420
+  - Class: SmartWheel/Mapping Control
+    CommandService: /workbench/command
+    MapName: workbench_map
+    Name: Mapping Control
+    StatusTopic: /workbench/status
+  - AccelerationLimitMps2: 0.25
+    AngularAccelerationLimitRadps2: 0.5
+    AngularSpeedMaxRadps: 0.25
+    AngularSpeedRadps: 0.25
+    Class: SmartWheel/Teleop
+    CommandRateHz: 20
+    CommandTimeoutMs: 350
+    LinearSpeedMaxMps: 0.15
+    LinearSpeedMps: 0.1
+    Name: SmartWheel Teleop
+    Topic: /teleop/cmd_vel
+  - Class: SmartWheel/2D Occupancy Map
+    MapTopic: /map
+    Name: SmartWheel 2D Map
+    OdomTopic: /odom/fused
+    PathTopic: /mapping/optimized_path
+    ShowOrigin: false
+    StaleThresholdSec: 3.0
+  - CameraInfoTopic: /camera/front/camera_info
+    Class: SmartWheel/Camera
+    ImageTopic: /camera/front/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 12.0
+    Mirror: false
+    Name: Front Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 0
+    ShowFps: true
+    ShowTimestamp: true
+  - CameraInfoTopic: /camera/left/camera_info
+    Class: SmartWheel/Camera
+    ImageTopic: /camera/left/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 12.0
+    Mirror: false
+    Name: Left Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 0
+    ShowFps: true
+    ShowTimestamp: true
+  - CameraInfoTopic: /camera/right/camera_info
+    Class: SmartWheel/Camera
+    ImageTopic: /camera/right/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 12.0
+    Mirror: false
+    Name: Right Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 0
+    ShowFps: true
+    ShowTimestamp: true
+  - CameraInfoTopic: /camera/rear/camera_info
+    Class: SmartWheel/Camera
+    ImageTopic: /camera/rear/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 12.0
+    Mirror: false
+    Name: Rear Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 0
+    ShowFps: true
+    ShowTimestamp: true
+  - Class: SmartWheel/System Status
+    DiagnosticsTopic: /diagnostics
+    Name: SmartWheel System Status
+  - Class: SmartWheel/Map Products
+    Name: SmartWheel Map Products
+    SelectedVersion: ""
+    TaskService: /map_products/task
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 1
+          Class: rviz_default_plugins/RobotModel
+          Description Source: Topic
+          Description Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /robot_description
+          Enabled: true
+          Name: RobotModel
+          Visual Enabled: true
+        - Class: rviz_default_plugins/TF
+          Enabled: true
+          Frame Timeout: 15
+          Marker Scale: 0.5
+          Name: TF
+          Show Arrows: true
+          Show Axes: true
+          Show Names: false
+          Value: true
+        - Alpha: 0.55
+          Cell Size: 1
+          Class: rviz_default_plugins/Grid
+          Color: 140; 145; 150
+          Enabled: true
+          Name: Grid
+          Plane: XY
+          Plane Cell Count: 40
+          Reference Frame: map
+          Value: true
+        - Alpha: 0.8
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.25
+          Enabled: false
+          Name: Left LiDAR Raw
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.02
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/left/points_raw
+          Use Fixed Frame: true
+          Value: false
+        - Alpha: 0.8
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.25
+          Enabled: false
+          Name: Right LiDAR Raw
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.02
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/right/points_raw
+          Use Fixed Frame: true
+          Value: false
+        - Alpha: 0.8
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.25
+          Enabled: false
+          Name: Primary LiDAR LIO Input
+          Position Transformer: XYZ
+          Size (Pixels): 2
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/primary/points_lio
+          Value: false
+        - Alpha: 0.8
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.25
+          Enabled: false
+          Name: Left LiDAR Registered
+          Position Transformer: XYZ
+          Size (Pixels): 2
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/left/points_registered
+          Value: false
+        - Alpha: 0.8
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.25
+          Enabled: false
+          Name: Right LiDAR Registered
+          Position Transformer: XYZ
+          Size (Pixels): 2
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/right/points_registered
+          Value: false
+        - Alpha: 0.9
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.35
+          Enabled: true
+          Name: Dual LiDAR Merged
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.025
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/merged/points
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.75
+          Axis: Z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: AxisColor
+          Decay Time: 0.5
+          Enabled: false
+          Name: Local Registered Cloud
+          Position Transformer: XYZ
+          Size (Pixels): 2
+          Style: Points
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lio/cloud_registered
+          Value: false
+        - Alpha: 1
+          Axis: Z
+          Autocompute Value Bounds:
+            Max Value: 2.5
+            Min Value: 0
+            Value: true
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: RGB8
+          Decay Time: 0
+          Enabled: true
+          Name: Optimized Global Map
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.03
+          Style: Points
+          Topic:
+            Depth: 1
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /map_cloud
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 20; 220; 120
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.04
+          Name: LIO Path
+          Topic:
+            Depth: 10
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /lio/path
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 255; 100; 30
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.06
+          Name: Optimized Path
+          Topic:
+            Depth: 1
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /mapping/optimized_path
+          Value: true
+        - Class: rviz_default_plugins/Odometry
+          Enabled: false
+          Keep: 50
+          Name: Wheel Odometry
+          Topic:
+            Depth: 10
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /wheel/odom
+          Value: false
+        - Class: rviz_default_plugins/Odometry
+          Enabled: true
+          Keep: 50
+          Name: Fused Odometry
+          Topic:
+            Depth: 10
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /odom/fused
+          Value: true
+      Enabled: true
+      Name: SmartWheel 3D Mapping
+  Enabled: true
+  Global Options:
+    Background Color: 35; 39; 42
+    Fixed Frame: map
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 255; 180; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 14
+      Focal Point:
+        X: 6
+        Y: 3
+        Z: 0
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.9
+      Target Frame: map
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 1.0
+    Saved:
+      - Class: rviz_default_plugins/TopDownOrtho
+        Name: 2D Overview
+        Scale: 25
+        Target Frame: map
+        Value: TopDownOrtho (rviz_default_plugins)
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1080
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Mapping Control:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd00000002000000000000014a0000042cfc0200000004fb000000100044006900730070006c00610079007301000000000000012c0000001700fffffffb0000001e004d0061007000700069006e006700200043006f006e00740072006f006c01000000000000014a0000001700fffffffb000000220053006d0061007200740057006800650065006c002000540065006c0065006f007001000000000000014a0000001700fffffffb0000000a0056006900650077007301000000000000005a0000001700ffffff000000010000026c000003eefc0200000002fb000000220053006d0061007200740057006800650065006c0020003200440020004d006100700100000000000001f40000001700fffffffc00000000000001f40000003801000020fa000000000200000006fb0000001800460072006f006e0074002000430061006d0065007200610100000000ffffffff0000001700fffffffb00000016004c006500660074002000430061006d0065007200610100000000ffffffff0000001700fffffffb0000001800520069006700680074002000430061006d0065007200610100000000ffffffff0000001700fffffffb000000160052006500610072002000430061006d0065007200610100000000ffffffff0000001700fffffffb000000300053006d0061007200740057006800650065006c002000530079007300740065006d00200053007400610074007500730100000000ffffffff0000001700fffffffb0000002e0053006d0061007200740057006800650065006c0020004d00610070002000500072006f006400750063007400730100000000ffffffff0000001700ffffff000000000000000000000004000000040000000800000008fc00000000
+  SmartWheel 2D Map:
+    collapsed: false
+  SmartWheel Teleop:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1920
+  X: 0
+  Y: 0

@@ -21,7 +21,11 @@
   <exec_depend>smartwheel_map_products</exec_depend>
   <exec_depend>smartwheel_mapping_manager</exec_depend>
   <exec_depend>smartwheel_teleop</exec_depend>
+  <exec_depend>smartwheel_workbench</exec_depend>
+  <exec_depend>smartwheel_rviz_plugins</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <test_depend>ament_pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>
