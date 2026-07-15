@@ -99,6 +99,14 @@ def _directory_size_bytes(directory: str) -> int:
     return size
 
 
+def _finish_manager_action(state: str) -> str:
+    if state == "MAPPING":
+        return "STOP"
+    if state in ("LOOP_CLOSING", "OPTIMIZING"):
+        return "WAIT"
+    raise ValueError(f"mapping manager cannot finish from {state or 'UNKNOWN'}")
+
+
 class WorkbenchNode(Node):
     def __init__(self) -> None:
         super().__init__("smartwheel_workbench")
@@ -656,7 +664,12 @@ class WorkbenchNode(Node):
                     self._call(self._resume_client, request_message)
                 self._stop_bag()
                 self._session.recording = False
-                reason = self._request_mapping(MapTask.Request.STOP)
+                manager_state = self._mapping_status.state if self._mapping_status else ""
+                finish_action = _finish_manager_action(manager_state)
+                if finish_action == "STOP":
+                    reason = self._request_mapping(MapTask.Request.STOP)
+                else:
+                    reason = f"mapping manager already finalizing in {manager_state}"
             elif command == WorkbenchCommand.Request.OPTIMIZE:
                 if self._backend == "rtabmap" and self._keyframes == 0:
                     raise RuntimeError("RTAB-Map has no keyframe evidence to optimize")

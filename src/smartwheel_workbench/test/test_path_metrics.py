@@ -1,6 +1,12 @@
 from geometry_msgs.msg import PoseStamped
 
-from smartwheel_workbench.node import _directory_size_bytes, _path_length
+import pytest
+
+from smartwheel_workbench.node import (
+    _directory_size_bytes,
+    _finish_manager_action,
+    _path_length,
+)
 
 
 def pose(x, y):
@@ -31,3 +37,11 @@ def test_bag_size_only_counts_selected_directory(tmp_path):
     (bag / "metadata.yaml").write_bytes(b"1234")
     (bag / "data.db3.zstd").write_bytes(b"123456")
     assert _directory_size_bytes(str(bag)) == 10
+
+
+def test_finish_accepts_manager_that_already_started_finalizing():
+    assert _finish_manager_action("MAPPING") == "STOP"
+    assert _finish_manager_action("LOOP_CLOSING") == "WAIT"
+    assert _finish_manager_action("OPTIMIZING") == "WAIT"
+    with pytest.raises(ValueError, match="cannot finish"):
+        _finish_manager_action("READY")
