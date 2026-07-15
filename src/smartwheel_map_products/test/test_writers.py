@@ -22,7 +22,7 @@ def test_map_bundle_contains_nonempty_products(tmp_path):
         np.full((3, 3), 127, dtype=np.uint8),
         str(profile),
         {"backend": "test"},
-        "",
+        "/tmp/smartwheel_experiment/rosbag",
         {"point_count": 3},
     )
     expected = (
@@ -46,5 +46,10 @@ def test_map_bundle_contains_nonempty_products(tmp_path):
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["complete"] is True
     assert manifest["externally_managed_files"] == []
+    assert (output / "bag_path.txt").read_text(encoding="utf-8").strip() == (
+        "/tmp/smartwheel_experiment/rosbag"
+    )
+    bag_manifest = next(item for item in manifest["files"] if item["path"] == "bag_path.txt")
+    assert bag_manifest["bytes"] == (output / "bag_path.txt").stat().st_size
     map_yaml = yaml.safe_load((output / "map_2d.yaml").read_text(encoding="utf-8"))
     assert map_yaml["resolution"] == 0.1

@@ -24,7 +24,7 @@ from sensor_msgs.msg import PointCloud2
 from slam_toolbox.srv import Pause
 from smartwheel_interfaces.msg import HardwareStatus, MappingStatus, WorkbenchStatus
 from smartwheel_interfaces.srv import MapProductTask, MapTask, WorkbenchCommand
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 from std_srvs.srv import Empty
 
 from smartwheel_workbench.cloud_color import colors_for_cloud, normalize_cloud, pack_rgb, xyzrgb_message
@@ -188,6 +188,7 @@ class WorkbenchNode(Node):
         self._map_pub = self.create_publisher(OccupancyGrid, "/map", latched)
         self._cloud_pub = self.create_publisher(PointCloud2, "/map_cloud", latched)
         self._path_pub = self.create_publisher(PathMessage, "/mapping/optimized_path", latched)
+        self._bag_path_pub = self.create_publisher(String, "/workbench/bag_path", latched)
         self._teleop_stop_pub = self.create_publisher(Twist, "/teleop/cmd_vel", 1)
         self._diagnostics_pub = self.create_publisher(DiagnosticArray, "/diagnostics", 20)
 
@@ -442,6 +443,7 @@ class WorkbenchNode(Node):
         ]
         self._bag_process = subprocess.Popen(command, start_new_session=True)
         self._bag_path = str(bag)
+        self._bag_path_pub.publish(String(data=self._bag_path))
         self._bag_size_bytes = 0
         self._bag_write_rate_bytes_per_sec = 0.0
         self._last_bag_measure_bytes = 0
@@ -695,6 +697,8 @@ class WorkbenchNode(Node):
                 reason = "mock session cancelled and zero velocity published"
             elif command == WorkbenchCommand.Request.RESET_SESSION:
                 self._stop_bag()
+                self._bag_path = ""
+                self._bag_path_pub.publish(String())
                 if self._mapping_client.service_is_ready():
                     self._request_mapping(MapTask.Request.RESET)
                 self._trajectory_length = 0.0

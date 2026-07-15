@@ -112,6 +112,7 @@ class MapProductsNode(Node):
         self._completed_at = None
         self._exported = False
         self._rejected_pose_associations = 0
+        self._bag_path = str(self.get_parameter("bag_path").value).strip()
 
         latched = QoSProfile(
             depth=1,
@@ -122,6 +123,7 @@ class MapProductsNode(Node):
         self._map_pub = self.create_publisher(OccupancyGrid, "/map_products/occupancy", latched)
         self._complete_pub = self.create_publisher(String, "/map_export/completed", latched)
         self._failure_pub = self.create_publisher(String, "/map_export/failed", latched)
+        self.create_subscription(String, "/workbench/bag_path", self._on_bag_path, latched)
         self.create_service(Trigger, "/map_export/export", self._on_export_request)
         self.create_subscription(PointCloud2, "/lidar/merged/points", self._on_cloud, qos_profile_sensor_data)
         odom_qos = QoSProfile(depth=500, reliability=ReliabilityPolicy.RELIABLE)
@@ -152,6 +154,9 @@ class MapProductsNode(Node):
                     qos_profile_sensor_data,
                 )
         self.create_timer(0.5, self._tick)
+
+    def _on_bag_path(self, message: String) -> None:
+        self._bag_path = message.data.strip()
 
     def _on_odom(self, message: Odometry) -> None:
         stamp = _stamp_seconds(message.header.stamp)
@@ -363,7 +368,7 @@ class MapProductsNode(Node):
             colors,
             str(self.get_parameter("hardware_profile_path").value),
             profile,
-            str(self.get_parameter("bag_path").value),
+            self._bag_path,
             quality,
         )
         self._exported = True
