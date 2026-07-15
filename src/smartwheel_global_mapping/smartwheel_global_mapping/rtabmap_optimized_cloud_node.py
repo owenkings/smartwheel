@@ -206,8 +206,11 @@ def main(args=None) -> None:
     node = RtabmapOptimizedCloudNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
+    except SystemError:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():
