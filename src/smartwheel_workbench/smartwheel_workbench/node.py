@@ -118,6 +118,7 @@ class WorkbenchNode(Node):
         self.declare_parameter("bag_compression_mode", "file")
         self.declare_parameter("bag_compression_format", "zstd")
         self.declare_parameter("map_cloud_gui_rate_hz", 1.0)
+        self.declare_parameter("map_export_timeout_sec", 300.0)
         if self.get_parameter("mode").value != "mock":
             raise RuntimeError("operator workbench backend permits mode:=mock only")
         if bool(self.get_parameter("hardware_enabled").value):
@@ -159,6 +160,9 @@ class WorkbenchNode(Node):
         if cloud_rate <= 0.0:
             raise ValueError("map_cloud_gui_rate_hz must be positive")
         self._cloud_publish_period = 1.0 / cloud_rate
+        self._map_export_timeout = float(self.get_parameter("map_export_timeout_sec").value)
+        if self._map_export_timeout <= 0.0:
+            raise ValueError("map_export_timeout_sec must be positive")
         self._last_cloud_publish_monotonic = float("-inf")
         self._counts = {}
         self._receive_times = {}
@@ -579,7 +583,7 @@ class WorkbenchNode(Node):
 
     def _export(self) -> str:
         self._request_mapping(MapTask.Request.EXPORT)
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + self._map_export_timeout
         while time.monotonic() < deadline:
             status = self._mapping_status
             if status is not None and status.state == "FAILED":
@@ -588,7 +592,10 @@ class WorkbenchNode(Node):
                 break
             time.sleep(0.05)
         else:
-            raise RuntimeError("mapping manager export did not reach READY within 60 seconds")
+            raise RuntimeError(
+                f"mapping manager export did not reach READY within "
+                f"{self._map_export_timeout:.0f} seconds"
+            )
         latest = self._map_root / "latest_path.txt"
         if not latest.is_file():
             raise RuntimeError("mapping manager reached READY without latest_path.txt")

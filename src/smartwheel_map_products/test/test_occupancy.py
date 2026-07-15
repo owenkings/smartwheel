@@ -19,3 +19,12 @@ def test_floor_and_ceiling_points_do_not_become_obstacles():
     grid = raycast_occupancy(endpoints, origins, resolution=0.5, min_obstacle_z=0.1, max_obstacle_z=2.0)
     assert np.count_nonzero(grid.cells == 100) == 1
 
+
+def test_duplicate_voxel_rays_do_not_change_occupancy():
+    endpoint = np.array([[2.0, 1.0, 0.5]])
+    origin = np.zeros_like(endpoint)
+    single = raycast_occupancy(endpoint, origin, resolution=0.5)
+    repeated = raycast_occupancy(
+        np.repeat(endpoint, 100, axis=0), np.repeat(origin, 100, axis=0), resolution=0.5
+    )
+    np.testing.assert_array_equal(repeated.cells, single.cells)

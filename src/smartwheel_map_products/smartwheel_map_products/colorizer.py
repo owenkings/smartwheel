@@ -57,13 +57,11 @@ def colorize_points(
         if candidates.size == 0:
             continue
         pixel_id = v[candidates] * width + u[candidates]
-        nearest = {}
-        for index, pixel in zip(candidates, pixel_id):
-            nearest[pixel] = min(nearest.get(pixel, np.inf), depth[index])
-        visible = np.array(
-            [index for index, pixel in zip(candidates, pixel_id) if depth[index] <= nearest[pixel] + occlusion_tolerance_m],
-            dtype=np.int64,
-        )
+        nearest = np.full(height * width, np.inf, dtype=np.float64)
+        np.minimum.at(nearest, pixel_id, depth[candidates])
+        visible = candidates[
+            depth[candidates] <= nearest[pixel_id] + occlusion_tolerance_m
+        ]
         distance = np.linalg.norm(camera_points[visible], axis=1)
         view_cosine = depth[visible] / np.maximum(distance, 1e-9)
         sharpness, exposure = _image_quality(frame.image_rgb)
@@ -75,4 +73,3 @@ def colorize_points(
             best_score[selected] = score[better]
             colored[selected] = True
     return colors, colored
-

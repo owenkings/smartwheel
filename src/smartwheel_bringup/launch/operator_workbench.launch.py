@@ -82,7 +82,7 @@ def _setup(context):
             "sim_duration_sec": LaunchConfiguration("sim_duration_sec").perform(context),
             "playback_rate": "1.0",
             "startup_delay_sec": "3.0",
-            "finalization_timeout_sec": "60.0",
+            "finalization_timeout_sec": "300.0",
             "workbench_topic_aliases": "true",
         }.items(),
     )
@@ -103,6 +103,7 @@ def _setup(context):
             "hardware_profile": str(profile),
             "algorithm_profile": f"mapping-v2-workbench-{backend}",
             "git_commit": git_commit,
+            "map_export_timeout_sec": 300.0,
         }],
     )
     safety_supervisor = Node(

@@ -75,7 +75,9 @@ def raycast_occupancy(
 
     endpoint_cells = index(points[:, :2])
     origin_cells = index(origins[:, :2])
-    for (ex, ey), (ox, oy) in zip(endpoint_cells, origin_cells):
+    ray_cells = np.column_stack((origin_cells, endpoint_cells))
+    ray_cells = np.unique(ray_cells, axis=0)
+    for ox, oy, ex, ey in ray_cells:
         ray = list(bresenham(int(ox), int(oy), int(ex), int(ey)))
         for x, y in ray[:-1]:
             if 0 <= x < width and 0 <= y < height and cells[y, x] != 100:
@@ -83,4 +85,3 @@ def raycast_occupancy(
         if 0 <= ex < width and 0 <= ey < height:
             cells[ey, ex] = 100
     return OccupancyGridData(cells, float(resolution), float(minimum[0]), float(minimum[1]))
-
