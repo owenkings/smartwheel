@@ -43,5 +43,6 @@ def test_finish_accepts_manager_that_already_started_finalizing():
     assert _finish_manager_action("MAPPING") == "STOP"
     assert _finish_manager_action("LOOP_CLOSING") == "WAIT"
     assert _finish_manager_action("OPTIMIZING") == "WAIT"
+    assert _finish_manager_action("READY") == "DONE"
     with pytest.raises(ValueError, match="cannot finish"):
-        _finish_manager_action("READY")
+        _finish_manager_action("FAILED")

@@ -104,6 +104,8 @@ def _finish_manager_action(state: str) -> str:
         return "STOP"
     if state in ("LOOP_CLOSING", "OPTIMIZING"):
         return "WAIT"
+    if state == "READY":
+        return "DONE"
     raise ValueError(f"mapping manager cannot finish from {state or 'UNKNOWN'}")
 
 
@@ -592,20 +594,21 @@ class WorkbenchNode(Node):
         return response.reason
 
     def _export(self) -> str:
-        self._request_mapping(MapTask.Request.EXPORT)
-        deadline = time.monotonic() + self._map_export_timeout
-        while time.monotonic() < deadline:
-            status = self._mapping_status
-            if status is not None and status.state == "FAILED":
-                raise RuntimeError(f"mapping manager export failed: {status.failure_reason}")
-            if status is not None and status.state == "READY":
-                break
-            time.sleep(0.05)
-        else:
-            raise RuntimeError(
-                f"mapping manager export did not reach READY within "
-                f"{self._map_export_timeout:.0f} seconds"
-            )
+        if self._mapping_status is None or self._mapping_status.state != "READY":
+            self._request_mapping(MapTask.Request.EXPORT)
+            deadline = time.monotonic() + self._map_export_timeout
+            while time.monotonic() < deadline:
+                status = self._mapping_status
+                if status is not None and status.state == "FAILED":
+                    raise RuntimeError(f"mapping manager export failed: {status.failure_reason}")
+                if status is not None and status.state == "READY":
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    f"mapping manager export did not reach READY within "
+                    f"{self._map_export_timeout:.0f} seconds"
+                )
         latest = self._map_root / "latest_path.txt"
         if not latest.is_file():
             raise RuntimeError("mapping manager reached READY without latest_path.txt")
@@ -670,6 +673,8 @@ class WorkbenchNode(Node):
                 finish_action = _finish_manager_action(manager_state)
                 if finish_action == "STOP":
                     reason = self._request_mapping(MapTask.Request.STOP)
+                elif finish_action == "DONE":
+                    reason = "mapping manager already finalized in READY"
                 else:
                     reason = f"mapping manager already finalizing in {manager_state}"
             elif command == WorkbenchCommand.Request.OPTIMIZE:
