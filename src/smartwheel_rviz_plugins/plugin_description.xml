@@ -1,0 +1,21 @@
+<library path="smartwheel_rviz_plugins">
+  <class name="SmartWheel/2D Occupancy Map" type="smartwheel_rviz_plugins::OccupancyGridPanel" base_class_type="rviz_common::Panel">
+    <description>Interactive 2D occupancy map with robot pose and optimized trajectory.</description>
+  </class>
+  <class name="SmartWheel/Camera" type="smartwheel_rviz_plugins::CameraPanel" base_class_type="rviz_common::Panel">
+    <description>Reusable bounded-buffer camera monitor panel.</description>
+  </class>
+  <class name="SmartWheel/Teleop" type="smartwheel_rviz_plugins::TeleopPanel" base_class_type="rviz_common::Panel">
+    <description>Deadman keyboard and mouse teleoperation for the mock safety chain.</description>
+  </class>
+  <class name="SmartWheel/Mapping Control" type="smartwheel_rviz_plugins::MappingControlPanel" base_class_type="rviz_common::Panel">
+    <description>Service-backed mapping session controls and state machine status.</description>
+  </class>
+  <class name="SmartWheel/System Status" type="smartwheel_rviz_plugins::SystemStatusPanel" base_class_type="rviz_common::Panel">
+    <description>Authoritative diagnostics, hardware-mode, mapping and safety status.</description>
+  </class>
+  <class name="SmartWheel/Map Products" type="smartwheel_rviz_plugins::MapProductsPanel" base_class_type="rviz_common::Panel">
+    <description>Saved map product browser and republish controls.</description>
+  </class>
+</library>
+
