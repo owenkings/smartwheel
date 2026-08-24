@@ -6,14 +6,17 @@ xtm60_left_adapter_node:
     serial_port: ""
     image_type: 4
     frame_id: xtm60_left_link
-    publish_rate_hz: 10.0
+    # This is the host polling timer, not a forced output rate. Poll at 20 Hz
+    # so the latest-frame buffer does not regularly miss the 10 Hz SDK stream.
+    publish_rate_hz: 20.0
     use_sdk_timestamps: false
 
     point_unit_scale: 1.0
     # Match the XT-Toffuture upper-computer M60 default "PointCloud+Amp" view:
     # Min Show Distance = 0 cm, Max Show Distance = 5000 cm (no practical cutoff).
-    # The raw /xtm60/left/points topic is therefore shown UNFILTERED, exactly
-    # like the upper-computer. Mapping is unaffected: dual_lidar_cloud_fusion_node
+    # The raw /xtm60/left/points topic therefore has no additional range cutoff.
+    # Vendor invalid-amplitude pixels (>=64000) are still published as NaN rather
+    # than false obstacles. Mapping is unaffected: dual_lidar_cloud_fusion_node
     # re-applies the trustworthy 0.3-12 m band on /points_merged for RTAB-Map.
     range_min: 0.0
     range_max: 50.0
@@ -28,7 +31,13 @@ xtm60_left_adapter_node:
     # SDK device-side filters matched to dev_scene.ini [M60.Scene1.Filters]:
     #   medianSize=3, edgeThreshold=150, kalmanFactor=0.30 (=300/1000),
     #   kalmanThreshold=300.
-    enable_sdk_filters: true
+    # Keep the optional SDK-side filter chain disabled in production until its
+    # per-device behaviour is understood. A 2026-07-28 A/B check found that
+    # ImageType(4) raw frames from this unit had a plausible 1.278 m median,
+    # while the same stream with the extra filter chain enabled was displaced
+    # to a 36.356 m median and disappeared from the near-field RViz view.
+    # This does not change the device's saved imaging configuration.
+    enable_sdk_filters: false
     kalman_factor: 300
     kalman_threshold: 300
     kalman_range: 2000
@@ -47,15 +56,24 @@ xtm60_left_adapter_node:
     reflective_enable: true
     reflective_th_min: 0.5        # ref_th_min (multipath / strong-reflection)
     reflective_th_max: 2.0        # ref_th_max
-    # --- Device-side IMAGING params, pushed to the radar on connect, mirroring
-    #     the upper-computer "Config Device" flow and xtsdk_py/xintan.xtcfg.
-    #     Previously the adapter left these at the radar's power-on defaults, so
-    #     ROS clouds were dimmer/sparser than the tuned upper-computer view.
-    #     Values copied from the exported xintan.xtcfg:
+    # --- Optional device-side IMAGING params, mirroring the upper-computer
+    #     "Config Device" flow and xtsdk_py/xintan.xtcfg.
+    #     The 2026-07-28 user-authorized right-to-left mirror established the
+    #     current production exposure set:
     #       intgs=2000 int1=1600 int2=200 int3=30 int4=1600
-    #       HDR=1 minLSB=70 maxfps=10 freq4=3 freq5=3
-    #     Set apply_device_config:false to keep the device's stored settings. ---
-    apply_device_config: true
+    #     This intentionally supersedes the older Windows export's int3=20.
+    #       HDR=1 minLSB=70 maxfps=10 freq1..4=0,0,0,3
+    #     Official SDK examples pass enum 2 as the fifth setMultiModFreq argument;
+    #     their config path does not consume the export's freq5 key.
+    #     B1 verified the stored device values and intentionally ran with this
+    #     false. Change to true only for an explicit, documented configuration
+    #     operation; normal bring-up must not rewrite the radar automatically. ---
+    apply_device_config: false
+    # Read-only startup guard: never publish from the wrong unit or silently
+    # continue after the stored imaging parameters drift.
+    verify_device_config: true
+    require_device_config_match: true
+    expected_serial: "XTM60B20250324000151"
     int_time_gs: 2000
     int_time_1: 1600
     int_time_2: 200
@@ -72,6 +90,29 @@ xtm60_left_adapter_node:
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0
+    # Host-side optical-interference mitigation: align sdk.start() to a common
+    # 100 ms host-monotonic grid. The left flash starts at offset 0 and the
+    # right starts 50 ms later, matching the measured low-interference order.
+    # Both streams briefly stop/start every 30 s to reset independent-clock
+    # drift. This does not write either device configuration.
+    phase_mode: grid
+    phase_period_sec: 0.1
+    phase_offset_sec: 0.0
+    phase_realign_interval_sec: 30.0
+    # /xtm60/left/points carries accepted production frames. Transient frames
+    # with implausible whole-frame range jumps, severe validity loss, or
+    # non-monotonic receive time are diverted to /points_rejected; compact
+    # per-frame metrics remain available on /quality.
+    quality_gate_enabled: true
+    # Formal mapping must not learn the left unit's current 46-60% degraded
+    # state as a valid baseline. Frames below 75% are quarantined.
+    quality_min_valid_fraction: 0.75
+    quality_min_relative_valid_fraction: 0.75
+    quality_baseline_window_frames: 30
+    quality_max_median_range_delta: 0.10
+    quality_max_p95_range_delta: 0.75
+    quality_min_overlap_fraction: 0.20
+    quality_reset_after_gap_sec: 0.50
     # The vendor SDK locally listens on UDP 7687. sensors.launch.py pins each
     # process to the host IP on its radar subnet with libxt_bindshim.so.
     udp_dest_ip: "192.168.0.100"

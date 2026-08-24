@@ -54,7 +54,12 @@ def validate_quality_bundle(
     checks["occupancy_has_free"] = int(quality.get("free_cells", 0)) > 0
     checks["occupancy_has_unknown"] = int(quality.get("unknown_cells", 0)) > 0
     rmse = quality.get("trajectory_ground_truth_rmse_m")
-    checks["trajectory_rmse_available"] = isinstance(rmse, (int, float)) and math.isfinite(rmse)
+    checks["trajectory_rmse_available"] = (
+        isinstance(rmse, (int, float))
+        and not isinstance(rmse, bool)
+        and math.isfinite(rmse)
+        and rmse >= 0.0
+    )
     checks["trajectory_rmse_within_limit"] = (
         checks["trajectory_rmse_available"] and float(rmse) <= maximum_rmse_m
     )

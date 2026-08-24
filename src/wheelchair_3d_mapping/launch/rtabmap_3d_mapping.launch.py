@@ -56,6 +56,7 @@ def _setup(context, *args, **kwargs):
     subscribe_rgb = flag("subscribe_rgb")
     use_colorizer = flag("use_colorizer")
     localization = flag("localization")
+    enable_loop_closure = flag("enable_loop_closure")
     use_sim = s("use_sim_time")
     qsize = int(s("queue_size"))
     common = {"use_sim_time": use_sim == "true"}
@@ -70,7 +71,7 @@ def _setup(context, *args, **kwargs):
                 "mode": "real", "enable_xtm60": "false",
                 "enable_xtm60_left": s("enable_xtm60_left"),
                 "enable_xtm60_right": s("enable_xtm60_right"),
-                "enable_imu": "true",
+                "enable_imu": s("enable_imu"),
                 "enable_ultrasonic": "true" if flag("enable_ultrasonic") else "false",
                 "enable_camera": "true" if (subscribe_rgb or use_colorizer) else "false",
             }.items()))
@@ -79,6 +80,8 @@ def _setup(context, *args, **kwargs):
             launch_arguments={
                 "use_sim_time": use_sim,
                 "allow_single_lidar_fallback": s("allow_single_lidar_fallback"),
+                "enable_left_input": s("enable_xtm60_left"),
+                "enable_right_input": s("enable_xtm60_right"),
             }.items()))
 
     # ICP odometry owns odom->base_link (skipped in external-odom mode).
@@ -105,17 +108,20 @@ def _setup(context, *args, **kwargs):
     # the node. Keep cfg first for any params that do load; dict overrides win.
     # This dict is the authoritative source (D041: 双真值源隐患已消除 — yaml 标注「dict 为准」).
     essential = {
-        # === 纯 EKF 位姿 / 零几何配准 (req 1.2, 1.3) ===
-        # Reg/Strategy=0: 关闭 ICP 配准。XT-M60 窄视场(120°) 在平墙方向 ICP 无约束会滑移
-        # 并旋转 yaw，产生 Triangle_Distortion。关闭后 RTAB-Map 直接采信 EKF 位姿堆叠点云。
-        "Reg/Strategy": "0",           # 0=无配准; 原值=1(ICP) — task1/req1.2
-        "Reg/Force3DoF": "true",       # 平面轮椅；锁 z/roll/pitch 防地图倾斜；与零配准不冲突
+        # RTAB-Map upstream definition: Reg/Strategy 0=visual, 1=ICP,
+        # 2=visual+ICP. This LiDAR-only route therefore needs strategy 1 for
+        # geometric proximity/loop constraints. It stays opt-in until a real
+        # right-lidar small-loop bag can reject false constraints.
+        "Reg/Strategy": "1" if enable_loop_closure else "0",
+        "Reg/Force3DoF": "true",       # Planar chair: constrain loop registration to x/y/yaw.
         "Mem/IncrementalMemory": "true",
         "Mem/STMSize": "30",
-        # ICP 相邻帧精修与空间邻近回环全部关闭，否则仍会通过 ICP 反向改写 EKF 位姿。
-        "RGBD/NeighborLinkRefining": "false",   # 原值=true  — task1/req1.2
-        "RGBD/ProximityBySpace": "false",       # 原值=true  — task1/req1.2
-        "RGBD/ProximityPathMaxNeighbors": "0",  # 原值=10    — task1/req1.2
+        # Neighbor refinement stays off so ICP cannot rewrite every odometry
+        # edge. The guarded switch only enables spatial proximity constraints.
+        "RGBD/NeighborLinkRefining": "false",
+        "RGBD/ProximityBySpace": "true" if enable_loop_closure else "false",
+        "RGBD/ProximityPathMaxNeighbors": "10" if enable_loop_closure else "0",
+        "RGBD/ProximityOdomGuess": "true" if enable_loop_closure else "false",
         "RGBD/LocalRadius": "3.0",
         "RGBD/AngularUpdate": "0.05",
         "RGBD/LinearUpdate": "0.05",
@@ -192,6 +198,11 @@ def generate_launch_description():
         DeclareLaunchArgument("points_topic", default_value="/points_merged",
                               description="Merged XT-M60 cloud (base_link). Real raw topics: /xtm60/left|right/points."),
         DeclareLaunchArgument("imu_topic", default_value="/imu/data"),
+        DeclareLaunchArgument(
+            "enable_imu",
+            default_value="false",
+            description="Start H30 when bringup_sensors is true. Current right-only baseline leaves it off.",
+        ),
         DeclareLaunchArgument("odom_topic", default_value="/rtabmap/odom",
                               description="icp mode: icp_odometry output; external mode: existing odom e.g. /wheel/odom."),
         DeclareLaunchArgument("odom_mode", default_value="icp", description="icp | external"),
@@ -200,20 +211,28 @@ def generate_launch_description():
                               description="Experimental: synchronize one RGB camera into RTAB-Map. Keep false for robust LiDAR 3D mapping."),
         DeclareLaunchArgument("rgb_topic", default_value="/camera/left/image_raw"),
         DeclareLaunchArgument("camera_info_topic", default_value="/camera/left/camera_info"),
-        DeclareLaunchArgument("use_colorizer", default_value="true",
+        DeclareLaunchArgument("use_colorizer", default_value="false",
                               description="Publish /rgb_cloud_map using the two forward cameras for map coloring."),
-        DeclareLaunchArgument("enable_ultrasonic", default_value="true",
+        DeclareLaunchArgument("enable_ultrasonic", default_value="false",
                               description="Start ultrasonic adapter when bringup_sensors is true."),
-        DeclareLaunchArgument("enable_xtm60_left", default_value="true",
-                              description="Start the left XT-M60 when bringup_sensors is true."),
+        DeclareLaunchArgument("enable_xtm60_left", default_value="false",
+                              description="Start the left XT-M60 when bringup_sensors is true. Disabled in the current baseline."),
         DeclareLaunchArgument("enable_xtm60_right", default_value="true",
-                              description="Start the right XT-M60 when bringup_sensors is true."),
+                              description="Start the right XT-M60 when bringup_sensors is true. Current mapping baseline."),
         DeclareLaunchArgument("allow_single_lidar_fallback", default_value="true",
                               description="Allow mapping from one lidar. Enable only for an approved single-lidar profile."),
         DeclareLaunchArgument("subscribe_scan_cloud", default_value="true"),
         DeclareLaunchArgument("approx_sync", default_value="true"),
         DeclareLaunchArgument("queue_size", default_value="10"),
         DeclareLaunchArgument("localization", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_loop_closure",
+            default_value="false",
+            description=(
+                "Enable guarded LiDAR ICP spatial loop constraints. Keep false "
+                "until a right-lidar small-loop bag is available for validation."
+            ),
+        ),
         DeclareLaunchArgument("delete_db_on_start", default_value="true",
                               description="Start a fresh map (ignored in localization mode)."),
         DeclareLaunchArgument("database_path", default_value=os.path.expanduser("~/.ros/rtabmap.db")),

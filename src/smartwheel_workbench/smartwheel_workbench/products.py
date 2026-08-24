@@ -150,6 +150,75 @@ def _load_trajectory(path: Path) -> list[tuple[float, float, float, float]]:
     return poses
 
 
+def _is_nonnegative_finite_number(value) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and bool(np.isfinite(value))
+        and value >= 0.0
+    )
+
+
+def _trajectory_evaluation_summary(quality: dict) -> str:
+    if "trajectory_evaluation" not in quality:
+        return "LEGACY_UNVERIFIED"
+    evaluation = quality["trajectory_evaluation"]
+    if not isinstance(evaluation, dict):
+        return "MALFORMED"
+    version = evaluation.get("schema_version")
+    if type(version) is int and version > 1:
+        return "UNSUPPORTED_SCHEMA"
+    if type(version) is not int or version != 1:
+        return "MALFORMED"
+    if "endpoint_displacement_m" not in evaluation or "loop_closure" not in evaluation:
+        return "MALFORMED"
+
+    endpoint = evaluation["endpoint_displacement_m"]
+    if endpoint is not None and not _is_nonnegative_finite_number(endpoint):
+        return "MALFORMED"
+    loop_closure = evaluation["loop_closure"]
+    if not isinstance(loop_closure, dict):
+        return "MALFORMED"
+    required_loop_keys = {"status", "position_error_m", "source"}
+    if not required_loop_keys.issubset(loop_closure):
+        return "MALFORMED"
+    status = loop_closure["status"]
+    position_error = loop_closure["position_error_m"]
+    source = loop_closure["source"]
+    if status == "UNAVAILABLE":
+        if position_error is not None or source is not None:
+            return "MALFORMED"
+        loop_summary = "UNAVAILABLE"
+    elif status == "MEASURED":
+        if (
+            not _is_nonnegative_finite_number(position_error)
+            or not isinstance(source, str)
+            or not source.strip()
+        ):
+            return "MALFORMED"
+        loop_summary = (
+            f"MEASURED(position_error_m={position_error},source={source.strip()})"
+        )
+    else:
+        return "MALFORMED"
+    endpoint_summary = "UNAVAILABLE" if endpoint is None else str(endpoint)
+    return (
+        "V1("
+        f"endpoint_displacement_m={endpoint_summary},"
+        f"loop_closure={loop_summary}"
+        ")"
+    )
+
+
+def _ground_truth_rmse_summary(quality: dict) -> str:
+    value = quality.get("trajectory_ground_truth_rmse_m")
+    if value is None:
+        return "UNAVAILABLE"
+    if not _is_nonnegative_finite_number(value):
+        return "MALFORMED"
+    return str(value)
+
+
 def load_map_version(directory: str | Path) -> LoadedMap:
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():
@@ -163,8 +232,19 @@ def load_map_version(directory: str | Path) -> LoadedMap:
             raise ValueError("map_colored.ply geometry does not match map_geometry.pcd")
     cells, resolution, origin_x, origin_y, origin_yaw = _load_occupancy(root)
     quality = json.loads((root / "quality_report.json").read_text(encoding="utf-8"))
-    keys = ("point_count", "loop_closure_position_error_m", "trajectory_rmse_m", "hardware_validated")
-    summary = " | ".join(f"{key}={quality.get(key, 'N/A')}" for key in keys)
+    if not isinstance(quality, dict):
+        raise ValueError("quality_report.json must contain an object")
+    summary = " | ".join(
+        (
+            f"point_count={quality.get('point_count', 'N/A')}",
+            f"trajectory_evaluation={_trajectory_evaluation_summary(quality)}",
+            (
+                "trajectory_ground_truth_rmse_m="
+                f"{_ground_truth_rmse_summary(quality)}"
+            ),
+            f"hardware_validated={quality.get('hardware_validated', 'N/A')}",
+        )
+    )
     files = [name for name in REQUIRED_PRODUCTS + OPTIONAL_PRODUCTS if (root / name).is_file()]
     return LoadedMap(
         root,

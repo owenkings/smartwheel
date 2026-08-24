@@ -1,0 +1,28 @@
+sensor_watchdog_node:
+  ros__parameters:
+    startup_grace_sec: 10.0
+    publish_rate_hz: 2.0
+    scan_timeout_sec: 0.8
+    odom_timeout_sec: 1.0
+    base_timeout_sec: 1.0
+    imu_timeout_sec: 1.5
+    imu_critical: false
+    ultrasonic_timeout_sec: 1.5
+    ultrasonic_topics: []
+    camera_timeout_sec: 5.0
+    camera_topics: []
+    points_timeout_sec: 1.5
+    points_topics:
+      - /xtm60/right/points
+    points_0_critical: true
+
+hardware_self_check_node:
+  ros__parameters:
+    run_once: true
+    period_sec: 10.0
+    scan_serial_ports: false
+    xtm60_sdk_root: "/home/nvidia/smartwheel/xtsdk_py"
+    xtm60_ip_address: 192.168.1.101
+    xtm60_ip_addresses:
+      - 192.168.1.101
+    xtm60_tcp_port: 0

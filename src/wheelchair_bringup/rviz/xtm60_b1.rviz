@@ -1,0 +1,65 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Left XT-M60 Raw Cloud1
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Global Options:
+    Background Color: 32; 32; 32
+    Fixed Frame: xtm60_left_link
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Sensor-frame Grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 40
+      Reference Frame: xtm60_left_link
+    - Class: rviz_default_plugins/Axes
+      Name: XT-M60 Axes
+      Enabled: true
+      Reference Frame: xtm60_left_link
+      Length: 1
+      Radius: 0.04
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Left XT-M60 Raw Cloud
+      Enabled: true
+      Topic:
+        Value: /xtm60/left/points
+        Depth: 5
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Flat Squares
+      Size (Pixels): 3
+      Size (m): 0.02
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Autocompute Intensity Bounds: true
+      Use Fixed Frame: true
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbit
+      Distance: 8
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 3
+      Pitch: 0.45
+      Yaw: 3.14
+      Target Frame: xtm60_left_link
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false

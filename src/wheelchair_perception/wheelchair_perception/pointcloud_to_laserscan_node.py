@@ -44,7 +44,12 @@ class ScanProjectionConfig:
 
     @property
     def beam_count(self) -> int:
-        return int(math.ceil((self.angle_max - self.angle_min) / self.angle_increment)) + 1
+        span_increments = (self.angle_max - self.angle_min) / self.angle_increment
+        return int(math.floor(span_increments + 1e-9)) + 1
+
+    @property
+    def realized_angle_max(self) -> float:
+        return self.angle_min + (self.beam_count - 1) * self.angle_increment
 
 
 def project_points_to_scan(
@@ -208,7 +213,7 @@ class PointCloudToLaserScanNode(Node):
             scan.header.stamp = header.stamp
         scan.header.frame_id = self.target_frame
         scan.angle_min = self.config.angle_min
-        scan.angle_max = self.config.angle_max
+        scan.angle_max = self.config.realized_angle_max
         scan.angle_increment = self.config.angle_increment
         scan.time_increment = 0.0
         scan.scan_time = self.scan_time

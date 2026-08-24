@@ -19,8 +19,14 @@ sensor_watchdog_node:
     ultrasonic_3_critical: true
     camera_timeout_sec: 5.0
     camera_topics:
+      - /camera/front/image_raw
       - /camera/left/image_raw
       - /camera/right/image_raw
+      - /camera/rear/image_raw
+    camera_0_critical: true
+    camera_1_critical: true
+    camera_2_critical: true
+    camera_3_critical: true
     points_timeout_sec: 1.5
     points_topics:
       - /xtm60/left/points

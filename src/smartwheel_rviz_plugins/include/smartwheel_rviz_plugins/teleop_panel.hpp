@@ -3,6 +3,8 @@
 
 #include "smartwheel_rviz_plugins/teleop_model.hpp"
 
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <set>
 
@@ -46,6 +48,7 @@ private Q_SLOTS:
 
 private:
   void setKeyboardDirection(char key, bool pressed);
+  void scheduleKeyboardRelease(char key);
   void setMouseDirection(char key, bool pressed);
   void applyDirectionState();
   void publishZero();
@@ -67,6 +70,7 @@ private:
   double angular_acceleration_limit_{0.5};
   QString topic_{"/teleop/cmd_vel"};
   std::set<char> keyboard_directions_;
+  std::map<char, std::uint64_t> keyboard_generations_;
   std::set<char> mouse_directions_;
 
   QLineEdit * topic_edit_{nullptr};

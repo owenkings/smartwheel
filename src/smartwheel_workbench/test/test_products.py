@@ -38,13 +38,30 @@ def _write_version(root: Path) -> Path:
         "1.0 0 0 0 0 0 0 1\n2.0 1 0 0 0 0 0.70710678 0.70710678\n",
         encoding="ascii",
     )
-    (version / "quality_report.json").write_text(
-        json.dumps({"point_count": 2, "hardware_validated": False}), encoding="utf-8"
-    )
+    _write_quality(version, {"point_count": 2, "hardware_validated": False})
     for name in ("map_geometry.ply", "quality_report.md"):
         (version / name).write_text("test\n", encoding="utf-8")
     (version / "manifest.json").write_text('{"complete": true}\n', encoding="utf-8")
     return version
+
+
+def _write_quality(version: Path, quality: dict) -> None:
+    (version / "quality_report.json").write_text(
+        json.dumps(quality),
+        encoding="utf-8",
+    )
+
+
+def _v1_evaluation(endpoint=None, status="UNAVAILABLE", error=None, source=None):
+    return {
+        "schema_version": 1,
+        "endpoint_displacement_m": endpoint,
+        "loop_closure": {
+            "status": status,
+            "position_error_m": error,
+            "source": source,
+        },
+    }
 
 
 def _add_colored_ply(version: Path):
@@ -65,6 +82,8 @@ def test_load_map_version_preserves_geometry_and_unknown_cells(tmp_path):
     assert {int(value) for value in loaded.cells.ravel()} == {-1, 0, 100}
     assert loaded.origin_yaw == pytest.approx(0.25)
     assert len(loaded.trajectory) == 2
+    assert "trajectory_evaluation=LEGACY_UNVERIFIED" in loaded.quality_summary
+    assert "trajectory_ground_truth_rmse_m=UNAVAILABLE" in loaded.quality_summary
 
 
 def test_list_only_complete_versions(tmp_path):
@@ -94,3 +113,126 @@ def test_pcd_count_mismatch_is_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match="point count mismatch"):
         read_ascii_pcd(path)
+
+
+def test_v1_unavailable_and_measured_evaluations_are_summarized(tmp_path):
+    version = _write_version(tmp_path)
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_ground_truth_rmse_m": 0.25,
+            "trajectory_evaluation": _v1_evaluation(endpoint=5.0),
+            "loop_closure_position_error_m": 0.0,
+            "trajectory_rmse_m": 0.0,
+        },
+    )
+    summary = load_map_version(version).quality_summary
+    assert (
+        "trajectory_evaluation=V1(endpoint_displacement_m=5.0,"
+        "loop_closure=UNAVAILABLE)" in summary
+    )
+    assert "trajectory_ground_truth_rmse_m=0.25" in summary
+    assert "loop_closure_position_error_m" not in summary
+    assert "trajectory_rmse_m" not in summary
+
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_evaluation": _v1_evaluation(
+                endpoint=0.0,
+                status="MEASURED",
+                error=0.12,
+                source="  loop-bag-17  ",
+            ),
+        },
+    )
+    summary = load_map_version(version).quality_summary
+    assert "loop_closure=MEASURED(position_error_m=0.12,source=loop-bag-17)" in summary
+
+
+@pytest.mark.parametrize(
+    "evaluation",
+    (
+        None,
+        [],
+        {"schema_version": True},
+        {"schema_version": 0},
+        {"schema_version": 1.0},
+        {"schema_version": 1, "endpoint_displacement_m": None},
+        _v1_evaluation(endpoint=True),
+        _v1_evaluation(endpoint=-0.1),
+        _v1_evaluation(endpoint=float("inf")),
+        _v1_evaluation(endpoint=float("nan")),
+        _v1_evaluation(status="UNAVAILABLE", error=0.0),
+        _v1_evaluation(status="UNAVAILABLE", source="legacy"),
+        _v1_evaluation(status="MEASURED", error=True, source="bag"),
+        _v1_evaluation(status="MEASURED", error=-1.0, source="bag"),
+        _v1_evaluation(status="MEASURED", error=0.1, source="  "),
+        _v1_evaluation(status="UNKNOWN"),
+    ),
+)
+def test_present_invalid_trajectory_evaluation_is_malformed(tmp_path, evaluation):
+    version = _write_version(tmp_path)
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_evaluation": evaluation,
+        },
+    )
+    assert "trajectory_evaluation=MALFORMED" in load_map_version(version).quality_summary
+
+
+def test_future_positive_trajectory_schema_is_unsupported(tmp_path):
+    version = _write_version(tmp_path)
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_evaluation": {"schema_version": 2},
+        },
+    )
+    assert (
+        "trajectory_evaluation=UNSUPPORTED_SCHEMA"
+        in load_map_version(version).quality_summary
+    )
+
+
+@pytest.mark.parametrize("value", (True, -0.1, float("inf"), float("nan"), "0.1"))
+def test_ground_truth_rmse_invalid_values_are_malformed(tmp_path, value):
+    version = _write_version(tmp_path)
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_ground_truth_rmse_m": value,
+        },
+    )
+    assert (
+        "trajectory_ground_truth_rmse_m=MALFORMED"
+        in load_map_version(version).quality_summary
+    )
+
+
+def test_legacy_rmse_fields_do_not_replace_missing_ground_truth_rmse(tmp_path):
+    version = _write_version(tmp_path)
+    _write_quality(
+        version,
+        {
+            "point_count": 2,
+            "hardware_validated": False,
+            "trajectory_rmse_m": 0.0,
+            "endpoint_position_error_m": 0.0,
+            "loop_closure_position_error_m": 0.0,
+        },
+    )
+    summary = load_map_version(version).quality_summary
+    assert "trajectory_ground_truth_rmse_m=UNAVAILABLE" in summary
+    assert "trajectory_evaluation=LEGACY_UNVERIFIED" in summary

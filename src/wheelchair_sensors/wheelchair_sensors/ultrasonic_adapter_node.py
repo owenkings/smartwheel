@@ -1,7 +1,7 @@
 import struct
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
     import serial
@@ -88,13 +88,27 @@ class UltrasonicArrayAdapter:
         timeout_sec: float = 0.08,
         register: int = 0x0001,
         sensors: Optional[Sequence[UltrasonicSensor]] = None,
+        inter_sensor_delay_sec: float = 0.11,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        monotonic_fn: Callable[[], float] = time.monotonic,
     ):
         self.port = port
         self.baud_rate = baud_rate
         self.timeout_sec = timeout_sec
         self.register = register
         self.sensors = list(sensors or [])
+        self.inter_sensor_delay_sec = float(inter_sensor_delay_sec)
+        self._sleep = sleep_fn
+        self._monotonic = monotonic_fn
+        self._last_request_started_at: Optional[float] = None
         self._serial = None
+
+        minimum_delay = {0x0001: 0.100, 0x0002: 0.300}.get(self.register)
+        if minimum_delay is not None and self.inter_sensor_delay_sec <= minimum_delay:
+            raise ValueError(
+                f"register 0x{self.register:04x} requires an inter-sensor delay greater "
+                f"than {minimum_delay:.3f}s"
+            )
 
     def open(self):
         if self._serial is not None:
@@ -118,21 +132,36 @@ class UltrasonicArrayAdapter:
     def read_ranges(self) -> Dict[int, float]:
         self.open()
         values: Dict[int, float] = {}
-        for sensor in self.sensors:
-            if not sensor.enabled:
-                continue
+        enabled_sensors = [sensor for sensor in self.sensors if sensor.enabled]
+        for sensor in enabled_sensors:
             try:
                 request = build_read_holding_registers(sensor.address, self.register, 1)
                 self._serial.reset_input_buffer()
+                self._wait_for_request_slot()
                 self._serial.write(request)
                 response = self._serial.read(7)
                 _, registers = parse_read_holding_registers_response(response, sensor.address)
                 distance_mm = registers[0]
                 values[sensor.index] = max(0.0, distance_mm / 1000.0)
-                time.sleep(0.01)
             except Exception:
-                continue
+                pass
         return values
+
+    def _wait_for_request_slot(self):
+        """Pace request starts, including the boundary between polling cycles."""
+        while self._last_request_started_at is not None:
+            now = self._monotonic()
+            remaining = (
+                self.inter_sensor_delay_sec
+                - (now - self._last_request_started_at)
+            )
+            # Avoid an endless re-sleep on sub-microsecond floating-point
+            # residue. The configured 110 ms interval retains almost 10 ms of
+            # margin over the vendor's strict >100 ms requirement.
+            if remaining <= 1e-6:
+                break
+            self._sleep(remaining)
+        self._last_request_started_at = self._monotonic()
 
 
 def make_sensor_list(addresses: Iterable[int], indices: Iterable[int], enabled_count: int) -> List[UltrasonicSensor]:
@@ -153,11 +182,12 @@ class UltrasonicAdapterNode(Node):
     def __init__(self):
         super().__init__("ultrasonic_adapter_node")
         self.declare_parameter("mode", "real")
-        self.declare_parameter("publish_rate_hz", 20.0)
+        self.declare_parameter("publish_rate_hz", 2.0)
         self.declare_parameter("serial_port", "/dev/smartwheel_ultrasonic")
         self.declare_parameter("baud_rate", 9600)
         self.declare_parameter("serial_timeout_sec", 0.08)
         self.declare_parameter("register", 0x0001)
+        self.declare_parameter("inter_sensor_delay_sec", 0.11)
         self.declare_parameter("sensor_addresses", [1])
         self.declare_parameter("sensor_indices", [0])
         self.declare_parameter("enabled_count", 1)
@@ -180,6 +210,9 @@ class UltrasonicAdapterNode(Node):
             timeout_sec=float(self.get_parameter("serial_timeout_sec").value),
             register=int(self.get_parameter("register").value),
             sensors=self.sensors,
+            inter_sensor_delay_sec=float(
+                self.get_parameter("inter_sensor_delay_sec").value
+            ),
         )
         self.enabled_sensors = [sensor for sensor in self.sensors if sensor.enabled]
         self.pubs = {
@@ -192,6 +225,8 @@ class UltrasonicAdapterNode(Node):
             + ", ".join(
                 f"range_{sensor.index}@addr{sensor.address}" for sensor in self.enabled_sensors
             )
+            + f", register=0x{self.adapter.register:04x}, "
+            + f"inter_sensor_delay={self.adapter.inter_sensor_delay_sec:.3f}s"
         )
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter("publish_rate_hz").value), self.tick

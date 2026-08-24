@@ -10,6 +10,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     config = LaunchConfiguration("config")
     allow_single_lidar_fallback = LaunchConfiguration("allow_single_lidar_fallback")
+    enable_left_input = LaunchConfiguration("enable_left_input")
+    enable_right_input = LaunchConfiguration("enable_right_input")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument(
@@ -22,6 +24,8 @@ def generate_launch_description():
             default_value="true",
             description="Allow mapping to continue from one lidar for an approved hardware profile.",
         ),
+        DeclareLaunchArgument("enable_left_input", default_value="true"),
+        DeclareLaunchArgument("enable_right_input", default_value="true"),
         Node(
             package="wheelchair_3d_mapping",
             executable="dual_lidar_cloud_fusion_node",
@@ -32,6 +36,8 @@ def generate_launch_description():
                 {
                     "use_sim_time": use_sim_time,
                     "allow_single_lidar_fallback": allow_single_lidar_fallback,
+                    "enable_left_input": enable_left_input,
+                    "enable_right_input": enable_right_input,
                 },
             ],
         ),

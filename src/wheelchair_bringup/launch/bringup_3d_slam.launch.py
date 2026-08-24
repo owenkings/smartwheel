@@ -1,7 +1,7 @@
 """Top-level LiDAR-Visual-Inertial-Wheel 3D SLAM bring-up.
 
-Orchestrates: real sensors (dual XT-M60 + IMU + cameras + ultrasonic) ->
-dual-lidar fusion -> external LIVO backend -> wheel/IMU/LIVO EKF + consistency
+Orchestrates: real sensors (right XT-M60 + IMU + cameras + ultrasonic) ->
+single-fallback fusion -> external LIVO backend -> wheel/IMU/LIVO EKF + consistency
 monitor -> 3D->2D occupancy projection -> optional RGB colorizer.
 
 TF safety: exactly ONE node publishes odom->base_link, selected by tf_owner:
@@ -66,13 +66,13 @@ def _setup(context, *args, **kwargs):
     actions = [LogInfo(msg=f"[bringup_3d_slam] backend={backend or 'none'} main_camera={main_camera} "
                            f"tf_owner={tf_owner} (single odom->base_link owner enforced)")]
 
-    # 1. Real sensors: dual XT-M60 + IMU + cameras + ultrasonic.
+    # 1. Real sensors: current baseline is right XT-M60 only.
     if _b(context, "enable_sensors"):
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "sensors.launch.py")),
             launch_arguments={
                 "mode": "real", "enable_xtm60": "false",
-                "enable_xtm60_left": "true", "enable_xtm60_right": "true",
+                "enable_xtm60_left": "false", "enable_xtm60_right": "true",
                 "enable_imu": "true", "enable_camera": "true", "enable_ultrasonic": "true",
             }.items(),
         ))

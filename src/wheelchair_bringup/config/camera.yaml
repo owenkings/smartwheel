@@ -5,10 +5,14 @@ camera_adapter_node:
     # MJPG + modest fps keeps USB bandwidth low so two cameras coexist on one bus.
     # If bandwidth is still tight, drop to width:320 height:240 or fps:10.
     fourcc: "MJPG"
+    publish_raw: true
+    publish_compressed: true
+    jpeg_quality: 85
     publish_rate_hz: 12.0
     width: 640
     height: 480
     fps: 15.0
+    camera_reconnect_interval_sec: 3.0
     # Two identical UVC cameras expose capture nodes on EVEN /dev/video indices
     # (0,2); ODD indices (1,3) are metadata-only and CANNOT capture. Verified on
     # this Orin (2026-06-11): both cameras present -> /dev/video0 (left) and

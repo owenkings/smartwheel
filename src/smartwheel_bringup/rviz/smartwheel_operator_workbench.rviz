@@ -33,46 +33,50 @@ Panels:
     Class: SmartWheel/Camera
     ImageTopic: /camera/front/image_raw
     KeepAspectRatio: true
-    MaxDisplayFps: 12.0
+    MaxDisplayFps: 10.0
     Mirror: false
-    Name: Front Camera
+    Name: Left-Side Camera
     OfflineThresholdSec: 2.0
-    RotationDegrees: 0
+    RotationDegrees: 180
     ShowFps: true
     ShowTimestamp: true
+    TransportHint: compressed
   - CameraInfoTopic: /camera/left/camera_info
     Class: SmartWheel/Camera
     ImageTopic: /camera/left/image_raw
     KeepAspectRatio: true
-    MaxDisplayFps: 12.0
+    MaxDisplayFps: 10.0
     Mirror: false
-    Name: Left Camera
+    Name: Left-Front Camera
     OfflineThresholdSec: 2.0
-    RotationDegrees: 0
+    RotationDegrees: 180
     ShowFps: true
     ShowTimestamp: true
+    TransportHint: compressed
   - CameraInfoTopic: /camera/right/camera_info
     Class: SmartWheel/Camera
     ImageTopic: /camera/right/image_raw
     KeepAspectRatio: true
-    MaxDisplayFps: 12.0
+    MaxDisplayFps: 10.0
     Mirror: false
-    Name: Right Camera
+    Name: Right-Front Camera
     OfflineThresholdSec: 2.0
-    RotationDegrees: 0
+    RotationDegrees: 180
     ShowFps: true
     ShowTimestamp: true
+    TransportHint: compressed
   - CameraInfoTopic: /camera/rear/camera_info
     Class: SmartWheel/Camera
     ImageTopic: /camera/rear/image_raw
     KeepAspectRatio: true
-    MaxDisplayFps: 12.0
+    MaxDisplayFps: 10.0
     Mirror: false
-    Name: Rear Camera
+    Name: Right-Side Camera
     OfflineThresholdSec: 2.0
-    RotationDegrees: 0
+    RotationDegrees: 270
     ShowFps: true
     ShowTimestamp: true
+    TransportHint: compressed
   - Class: SmartWheel/System Status
     DiagnosticsTopic: /diagnostics
     Name: SmartWheel System Status

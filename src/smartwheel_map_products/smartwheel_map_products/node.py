@@ -15,7 +15,7 @@ from std_srvs.srv import Trigger
 
 from smartwheel_map_products.accumulator import VoxelAccumulator
 from smartwheel_map_products.colorizer import CameraFrame, colorize_points
-from smartwheel_map_products.metrics import evaluate_trajectory
+from smartwheel_map_products.metrics import build_trajectory_evaluation, evaluate_trajectory
 from smartwheel_map_products.occupancy import raycast_occupancy
 from smartwheel_map_products.writers import export_map_bundle
 from smartwheel_sensor_api import apply_transform, pointcloud2_from_xyz, pointcloud2_to_xyz
@@ -61,6 +61,11 @@ class MapProductsNode(Node):
         self.declare_parameter("ground_truth_topic", "")
         self.declare_parameter("backend_cloud_topic", "")
         self.declare_parameter("require_backend_cloud", False)
+        self.declare_parameter("cloud_topic", "/lidar/merged/points")
+        self.declare_parameter("odom_topic", "/odom/fused")
+        self.declare_parameter("validation_stage", "A_SYNTHETIC")
+        self.declare_parameter("hardware_validated", False)
+        self.declare_parameter("mock_lio", True)
         self.declare_parameter("maximum_evaluation_time_delta_sec", 0.1)
         self.declare_parameter("maximum_pose_time_delta_sec", 0.15)
         camera_defaults = {
@@ -92,6 +97,13 @@ class MapProductsNode(Node):
         self._color_enabled = bool(self.get_parameter("enable_offline_colorization").value)
         self._backend_cloud_topic = str(self.get_parameter("backend_cloud_topic").value).strip()
         self._require_backend_cloud = bool(self.get_parameter("require_backend_cloud").value)
+        self._cloud_topic = str(self.get_parameter("cloud_topic").value).strip()
+        self._odom_topic = str(self.get_parameter("odom_topic").value).strip()
+        if not self._cloud_topic or not self._odom_topic:
+            raise ValueError("cloud_topic and odom_topic must be non-empty")
+        self._validation_stage = str(self.get_parameter("validation_stage").value).strip()
+        self._hardware_validated = bool(self.get_parameter("hardware_validated").value)
+        self._mock_lio = bool(self.get_parameter("mock_lio").value)
         self._maximum_evaluation_delta = float(
             self.get_parameter("maximum_evaluation_time_delta_sec").value
         )
@@ -125,14 +137,24 @@ class MapProductsNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._cloud_pub = self.create_publisher(PointCloud2, "/map_products/cloud", latched)
+        self._cloud_amp_pub = self.create_publisher(
+            PointCloud2,
+            "/map_products/cloud_amp",
+            latched,
+        )
         self._map_pub = self.create_publisher(OccupancyGrid, "/map_products/occupancy", latched)
         self._complete_pub = self.create_publisher(String, "/map_export/completed", latched)
         self._failure_pub = self.create_publisher(String, "/map_export/failed", latched)
         self.create_subscription(String, "/workbench/bag_path", self._on_bag_path, latched)
         self.create_service(Trigger, "/map_export/export", self._on_export_request)
-        self.create_subscription(PointCloud2, "/lidar/merged/points", self._on_cloud, qos_profile_sensor_data)
+        self.create_subscription(
+            PointCloud2,
+            self._cloud_topic,
+            self._on_cloud,
+            qos_profile_sensor_data,
+        )
         odom_qos = QoSProfile(depth=500, reliability=ReliabilityPolicy.RELIABLE)
-        self.create_subscription(Odometry, "/odom/fused", self._on_odom, odom_qos)
+        self.create_subscription(Odometry, self._odom_topic, self._on_odom, odom_qos)
         ground_truth_topic = str(self.get_parameter("ground_truth_topic").value).strip()
         if ground_truth_topic:
             self.create_subscription(Odometry, ground_truth_topic, self._on_ground_truth, odom_qos)
@@ -205,7 +227,7 @@ class MapProductsNode(Node):
             self._rejected_pose_associations += 1
             return
         try:
-            points, _ = pointcloud2_to_xyz(message)
+            points, intensity = pointcloud2_to_xyz(message)
         except ValueError as exc:
             self.get_logger().error(str(exc))
             return
@@ -213,7 +235,7 @@ class MapProductsNode(Node):
         world = apply_transform(points, map_from_base)
         origins = np.tile(np.array([pose[1], pose[2], 0.0]), (world.shape[0], 1))
         try:
-            self._accumulator.add(world, origins)
+            self._accumulator.add(world, origins, intensity)
         except (OverflowError, ValueError) as exc:
             self._accumulation_failure = str(exc)
             self._failure_pub.publish(String(data=self._accumulation_failure))
@@ -263,7 +285,7 @@ class MapProductsNode(Node):
             response.message = self._missing_products_reason()
             self._failure_pub.publish(String(data=response.message))
             return response
-        self._publish(products[0], products[2])
+        self._publish(products[0], products[2], products[4], products[5])
         self._export(*products)
         response.success = True
         response.message = str(self._directory)
@@ -272,7 +294,9 @@ class MapProductsNode(Node):
     def _current_products(self):
         if self._accumulation_failure or len(self._accumulator) == 0:
             return None
-        local_points, origins = self._accumulator.arrays()
+        local_points, origins, local_intensity = (
+            self._accumulator.arrays_with_intensity()
+        )
         grid = raycast_occupancy(
             local_points,
             origins,
@@ -288,7 +312,14 @@ class MapProductsNode(Node):
         else:
             geometry = local_points
             geometry_source = "local_odometry_accumulator"
-        return geometry, origins, grid, geometry_source
+        return (
+            geometry,
+            origins,
+            grid,
+            geometry_source,
+            local_points,
+            local_intensity,
+        )
 
     def _missing_products_reason(self) -> str:
         if self._accumulation_failure:
@@ -309,14 +340,18 @@ class MapProductsNode(Node):
         ):
             products = self._current_products()
             if products is not None:
-                self._publish(products[0], products[2])
+                self._publish(products[0], products[2], products[4], products[5])
                 self._export(*products)
             else:
                 self._failure_pub.publish(String(data=self._missing_products_reason()))
 
-    def _publish(self, points, grid) -> None:
+    def _publish(self, points, grid, intensity_points, intensity) -> None:
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
         self._cloud_pub.publish(pointcloud2_from_xyz(header, points))
+        if intensity is not None:
+            self._cloud_amp_pub.publish(
+                pointcloud2_from_xyz(header, intensity_points, intensity)
+            )
         message = OccupancyGrid()
         message.header = header
         message.info.map_load_time = header.stamp
@@ -329,7 +364,15 @@ class MapProductsNode(Node):
         message.data = grid.cells.ravel().astype(np.int8).tolist()
         self._map_pub.publish(message)
 
-    def _export(self, points, _origins, grid, geometry_source: str) -> None:
+    def _export(
+        self,
+        points,
+        _origins,
+        grid,
+        geometry_source: str,
+        intensity_points,
+        intensity,
+    ) -> None:
         colors = None
         colored_count = 0
         if self._color_enabled and self._camera_frames:
@@ -339,18 +382,24 @@ class MapProductsNode(Node):
         occupied = int(np.count_nonzero(grid.cells == 100))
         free = int(np.count_nonzero(grid.cells == 0))
         unknown = int(np.count_nonzero(grid.cells == -1))
-        loop_error = None
-        if len(self._poses) >= 2:
-            loop_error = math.hypot(self._poses[-1][1] - self._poses[0][1], self._poses[-1][2] - self._poses[0][2])
         trajectory_metrics = evaluate_trajectory(
             self._poses,
             self._ground_truth,
             max_time_delta_sec=self._maximum_evaluation_delta,
         )
+        trajectory_evaluation = build_trajectory_evaluation(self._poses)
         minimum = points.min(axis=0)
         maximum = points.max(axis=0)
+        amplitude_metrics = {
+            "pointcloud_amp_preserved": intensity is not None,
+            "pointcloud_amp_point_count": 0 if intensity is None else int(intensity.shape[0]),
+            "pointcloud_amp_min": None if intensity is None else float(np.min(intensity)),
+            "pointcloud_amp_median": None if intensity is None else float(np.median(intensity)),
+            "pointcloud_amp_p95": None if intensity is None else float(np.percentile(intensity, 95.0)),
+            "pointcloud_amp_max": None if intensity is None else float(np.max(intensity)),
+        }
         quality = {
-            "stage": "A_SYNTHETIC",
+            "stage": self._validation_stage,
             "point_count": int(points.shape[0]),
             "colored_point_count": colored_count,
             "occupied_cells": occupied,
@@ -359,14 +408,15 @@ class MapProductsNode(Node):
             "trajectory_pose_count": len(self._poses),
             "ground_truth_pose_count": len(self._ground_truth),
             "rejected_pose_associations": self._rejected_pose_associations,
-            "loop_closure_position_error_m": loop_error,
+            "trajectory_evaluation": trajectory_evaluation,
             "geometry_source": geometry_source,
             "raycast_occupancy_source": "local_odometry_accumulator",
             **trajectory_metrics,
             "map_bounds_min_m": minimum.tolist(),
             "map_bounds_max_m": maximum.tolist(),
             "tf_conflict_runtime_check": "NOT_PERFORMED_BY_EXPORTER",
-            "hardware_validated": False,
+            "hardware_validated": self._hardware_validated,
+            **amplitude_metrics,
         }
         profile = {
             "mapping_backend": str(self.get_parameter("mapping_backend").value),
@@ -374,7 +424,9 @@ class MapProductsNode(Node):
             "lidar_mode": str(self.get_parameter("lidar_mode").value),
             "resolution_m": self._resolution,
             "voxel_size_m": self._voxel,
-            "mock_lio": True,
+            "cloud_topic": self._cloud_topic,
+            "odom_topic": self._odom_topic,
+            "mock_lio": self._mock_lio,
         }
         export_map_bundle(
             self._directory,
@@ -386,6 +438,8 @@ class MapProductsNode(Node):
             profile,
             self._bag_path,
             quality,
+            intensity_points=intensity_points,
+            intensity=intensity,
         )
         self._exported = True
         self._complete_pub.publish(String(data=str(self._directory)))

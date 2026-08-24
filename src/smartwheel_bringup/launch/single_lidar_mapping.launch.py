@@ -19,7 +19,7 @@ def generate_launch_description():
             DeclareLaunchArgument("mode", default_value="mock", choices=["mock", "real"]),
             DeclareLaunchArgument("state_mode", default_value="lio_primary", choices=["lio_primary", "wheel_imu_fallback"]),
             DeclareLaunchArgument("hardware_enabled", default_value="false", choices=["true", "false"]),
-            DeclareLaunchArgument("primary_lidar", default_value="left", choices=["left", "right"]),
+            DeclareLaunchArgument("primary_lidar", default_value="right", choices=["left", "right"]),
             Node(
                 package="smartwheel_global_mapping",
                 executable="lio_input_adapter",

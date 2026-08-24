@@ -1,11 +1,15 @@
 ultrasonic_adapter_node:
   ros__parameters:
     mode: real
-    publish_rate_hz: 10.0
+    # Register 0x0001 is the actual value. The documented working interval is
+    # strictly greater than 100 ms; request starts are scheduled 110 ms apart.
+    # Response time counts toward the interval; this is not an extra post-read sleep.
+    publish_rate_hz: 2.0
     serial_port: /dev/smartwheel_ultrasonic
     baud_rate: 9600
     serial_timeout_sec: 0.2
     register: 1
+    inter_sensor_delay_sec: 0.11
 
     # Full stage-1 hardware layout: two side boxes, front + side ultrasonic on each box.
     # Re-address the four RS485 sensors to 1..4 before using this profile.

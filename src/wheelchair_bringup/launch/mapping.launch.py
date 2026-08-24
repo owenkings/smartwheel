@@ -43,8 +43,11 @@ def generate_launch_description():
     use_real_dual_xtm60 = PythonExpression(
         ["'", use_mock, "' == 'false' and '", enable_dual_xtm60, "' == 'true'"]
     )
-    use_single_scan_projection = PythonExpression(
-        ["'", use_mock, "' == 'true' or '", enable_dual_xtm60, "' == 'false'"]
+    use_mock_scan_projection = PythonExpression(
+        ["'", use_mock, "' == 'true'"]
+    )
+    use_real_right_scan_projection = PythonExpression(
+        ["'", use_mock, "' == 'false' and '", enable_dual_xtm60, "' == 'false'"]
     )
     # When EKF runs, base must not publish odom -> base_link TF.
     base_publish_tf = PythonExpression(
@@ -58,7 +61,11 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_ui", default_value="false"),
             DeclareLaunchArgument("enable_native_gui", default_value="false"),
             DeclareLaunchArgument("ui_port", default_value="8080"),
-            DeclareLaunchArgument("enable_dual_xtm60", default_value="true"),
+            DeclareLaunchArgument(
+                "enable_dual_xtm60",
+                default_value="false",
+                description="Legacy dual-radar opt-in. Current mapping baseline is right-only.",
+            ),
             DeclareLaunchArgument(
                 "use_ekf",
                 default_value="false",
@@ -78,6 +85,9 @@ def generate_launch_description():
                 launch_arguments={
                     "mode": "real",
                     "publish_description": "false",
+                    "enable_xtm60": "false",
+                    "enable_xtm60_left": "false",
+                    "enable_xtm60_right": "true",
                 }.items(),
                 condition=IfCondition(
                     PythonExpression(
@@ -141,7 +151,27 @@ def generate_launch_description():
                 parameters=[
                     PathJoinSubstitution([bringup_share, "config", "pointcloud_to_scan.yaml"])
                 ],
-                condition=IfCondition(use_single_scan_projection),
+                condition=IfCondition(use_mock_scan_projection),
+            ),
+            Node(
+                package="wheelchair_perception",
+                executable="pointcloud_to_laserscan_node",
+                name="pointcloud_to_laserscan_right_node",
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution([bringup_share, "config", "pointcloud_to_scan_right.yaml"])
+                ],
+                condition=IfCondition(use_real_right_scan_projection),
+            ),
+            Node(
+                package="wheelchair_perception",
+                executable="scan_merger_node",
+                name="scan_merger_right_only_node",
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution([bringup_share, "config", "scan_merger_right_only.yaml"])
+                ],
+                condition=IfCondition(use_real_right_scan_projection),
             ),
             Node(
                 package="wheelchair_perception",

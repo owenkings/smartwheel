@@ -84,33 +84,43 @@
     <origin xyz="0.45 0.0 0.65" rpy="0.0 -0.0873 0.0"/>
   </joint>
 
-  <!-- ============================================================
-       xtm60_left_link: TF edge base_link→xtm60_left_link is now OWNED by
-       ground_plane_calibrator_node (StaticTransformBroadcaster), which
-       calibrates the radar height (z) and pitch from the ground plane at
-       runtime (see .kiro/specs/ekf-pose-mapping, design 方案 A, req 2.4/2.7).
-       The former fixed joint (xyz=[0.45,0.24,0.45] rpy=[1.5708,0,1.5708],
-       z=0.45 placeholder) is removed here to avoid double-publishing the
-       same TF edge.  The calibrator reproduces the verified sensor
-       convention (z fwd, y up, x left) as R_CONV and adds calibrated pitch.
-       The xtm60_left_link visual box is dropped with the joint to keep the
-       URDF tree fully connected (the frame still exists via the calibrator's
-       TF broadcast). DO NOT re-add a fixed joint for this edge.
-       ============================================================ -->
+  <!-- XT-M60 SDK coordinates are +z forward, +x left and +y up. The historical
+       ground_plane_calibrator source/executable is absent from this branch, so
+       robot_state_publisher is the single TF owner again. Lateral separation
+       (~0.60 m) and optical-centre height (0.735 m) are user measurements;
+       x=0.45 m remains the previous unverified longitudinal estimate. -->
+  <xacro:macro name="xtm60_link" params="name xyz rpy">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.037 0.075 0.055"/>
+        </geometry>
+        <material name="laser_red"/>
+      </visual>
+    </link>
+    <joint name="${name}_fixed_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
 
-  <!-- ============================================================
-       xtm60_right_link: TF edge base_link→xtm60_right_link is now OWNED by
-       ground_plane_calibrator_node (StaticTransformBroadcaster), same design
-       方案 A as the left radar. The calibrator auto-derives the right radar
-       height (z) and pitch from the ground plane (RANSAC on the first frames),
-       so the radar can be moved / re-aimed without editing this URDF. The
-       calibrator reproduces the verified sensor convention (z fwd, y up,
-       x left) as R_CONV and adds the calibrated pitch. The link visual box is
-       dropped with the joint to keep the URDF tree fully connected (the frame
-       still exists via the calibrator's TF broadcast). DO NOT re-add a fixed
-       joint for this edge. amp_view (which does NOT run the calibrator)
-       publishes a nominal static TF for this edge itself.
-       ============================================================ -->
+  <!-- Left roll/pitch retains the last reliable floor-visible calibration from
+       feature/fastlio-narrow-fov-mapping (45b1163); current left floor fitting
+       selected a non-floor surface, so it was not used to overwrite this. -->
+  <xacro:xtm60_link
+    name="xtm60_left_link"
+    xyz="0.45 0.30 0.735"
+    rpy="1.5515153364 -0.0136154207 1.5709313394"/>
+
+  <!-- Right roll/pitch comes from the 2026-07-24 30-frame ground-plane repeat.
+       Horizontal yaw is constrained to optical-forward = base +x, not measured;
+       final dual-LiDAR yaw/xyz calibration remains required before fusion. -->
+  <xacro:xtm60_link
+    name="xtm60_right_link"
+    xyz="0.45 -0.30 0.735"
+    rpy="1.7071165220 0.0265268546 1.5744345976"/>
 
   <link name="imu_link">
     <visual>
@@ -126,7 +136,9 @@
   <joint name="imu_fixed_joint" type="fixed">
     <parent link="base_link"/>
     <child link="imu_link"/>
-    <origin xyz="0.0 0.0 0.45" rpy="0.0 0.0 0.0"/>
+    <!-- Roll/pitch from the 2026-07-22 user-confirmed level 60 s gravity
+         capture. Yaw and xyz remain uncalibrated estimates. -->
+    <origin xyz="0.0 0.0 0.45" rpy="0.0098981264 0.0011002597 0.0"/>
   </joint>
 
   <xacro:macro name="camera_link" params="name xyz rpy">

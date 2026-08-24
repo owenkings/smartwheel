@@ -144,8 +144,35 @@ def test_left_lidar_diagnostics_only_requires_left_points():
     assert all(parameters[f"ultrasonic_{index}_critical"] for index in range(4))
 
 
-def test_right_lidar_lab_profile_is_explicitly_reserved():
-    context = LaunchContext()
-    context.launch_configurations.update(launch_values("right_lidar_lab"))
-    with pytest.raises(RuntimeError, match="reserved but not implemented"):
-        load_launch_module()._setup(context)
+def test_right_lidar_lab_profile_disables_left_chain():
+    includes, names, parameter_files, nodes = expand("right_lidar_lab")
+    rtabmap_args = includes[0]
+    reactive = node_parameters(nodes, "reactive_explorer_node")
+
+    assert rtabmap_args["enable_xtm60_left"] == "false"
+    assert rtabmap_args["enable_xtm60_right"] == "true"
+    assert rtabmap_args["enable_imu"] == "false"
+    assert rtabmap_args["odom_topic"] == "/wheel/odom"
+    assert rtabmap_args["allow_single_lidar_fallback"] == "true"
+    assert "ekf_filter_node" not in names
+    assert "pointcloud_to_laserscan_left_node" not in names
+    assert "pointcloud_to_laserscan_right_node" in names
+    assert any(path.endswith("scan_merger_right_only.yaml") for path in parameter_files)
+    assert any(path.endswith("diagnostics_right_lidar_mapping.yaml") for path in parameter_files)
+    assert reactive["forward_speed"] == pytest.approx(0.03)
+    assert reactive["turn_speed"] == pytest.approx(0.18)
+
+
+def test_right_lidar_diagnostics_only_requires_right_points():
+    path = (
+        Path(__file__).parents[2]
+        / "wheelchair_bringup"
+        / "config"
+        / "diagnostics_right_lidar_mapping.yaml"
+    )
+    parameters = yaml.safe_load(path.read_text())["sensor_watchdog_node"]["ros__parameters"]
+
+    assert parameters["points_topics"] == ["/xtm60/right/points"]
+    assert parameters["points_0_critical"] is True
+    assert parameters["ultrasonic_topics"] == []
+    assert parameters["camera_topics"] == []

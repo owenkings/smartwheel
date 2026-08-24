@@ -7,9 +7,18 @@ frames:
   laser_link:
     xyz: [0.45, 0.0, 0.65]
     rpy: [0.0, -0.0873, 0.0]
+  xtm60_left_link:
+    # y/z measured; x provisional. Historical reliable left floor calibration.
+    xyz: [0.45, 0.30, 0.735]
+    rpy: [1.5515153364, -0.0136154207, 1.5709313394]
+  xtm60_right_link:
+    # 2026-07-24 ground roll/pitch; horizontal yaw is constrained, not measured.
+    xyz: [0.45, -0.30, 0.735]
+    rpy: [1.7071165220, 0.0265268546, 1.5744345976]
   imu_link:
     xyz: [0.0, 0.0, 0.45]
-    rpy: [0.0, 0.0, 0.0]
+    # 2026-07-22 level static gravity calibration; yaw/xyz remain estimates.
+    rpy: [0.0098981264, 0.0011002597, 0.0]
   camera_front_link:
     xyz: [0.40, 0.0, 0.80]
     rpy: [0.0, 0.0, 0.0]

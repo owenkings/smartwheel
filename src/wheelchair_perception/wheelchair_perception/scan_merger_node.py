@@ -32,7 +32,12 @@ class MergeConfig:
 
     @property
     def beam_count(self) -> int:
-        return int(math.ceil((self.angle_max - self.angle_min) / self.angle_increment)) + 1
+        span_increments = (self.angle_max - self.angle_min) / self.angle_increment
+        return int(math.floor(span_increments + 1e-9)) + 1
+
+    @property
+    def realized_angle_max(self) -> float:
+        return self.angle_min + (self.beam_count - 1) * self.angle_increment
 
 
 def merge_scan_slices(scans: Iterable[ScanSlice], config: MergeConfig) -> List[float]:
@@ -138,7 +143,7 @@ class ScanMergerNode(Node):
         output.header.stamp = now.to_msg()
         output.header.frame_id = str(self.get_parameter("frame_id").value)
         output.angle_min = self.config.angle_min
-        output.angle_max = self.config.angle_max
+        output.angle_max = self.config.realized_angle_max
         output.angle_increment = self.config.angle_increment
         output.time_increment = 0.0
         output.scan_time = float(self.get_parameter("scan_time").value)

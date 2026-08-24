@@ -1,26 +1,56 @@
-camera_adapter_node:
+/**:
   ros__parameters:
     mode: real
     # Four USB3.0 cameras. MJPG keeps bandwidth manageable even on USB3.
     fourcc: "MJPG"
+    # JPEG is the normal four-view display transport. Raw publishers remain
+    # available but frames are serialized only while a mapping/calibration raw
+    # subscriber is connected, avoiding four continuous BGR streams over DDS.
+    publish_raw: true
+    publish_compressed: true
+    # Publish the UVC camera's original MJPEG payload for the normal four-view
+    # path. This avoids OpenCV decode -> rotate -> JPEG re-encode in the adapter.
+    # A raw subscriber still triggers bounded on-demand decode and the per-role
+    # rotate_deg below. Normal RViz rotation is configured in its Camera panels.
+    compressed_passthrough: true
+    # Separate-log testing localized repeated MJPEG restart-marker warnings to
+    # the installed right-front chain (legacy role `right`, USB 2-3.4). Repair
+    # only that stream in GStreamer before DDS publication. Quality 40 gave the
+    # best measured sustained rate while producing complete JPEG payloads.
+    compressed_repair_cameras: [right]
+    jpeg_quality: 40
+    # Used by the OpenCV fallback path. The normal GStreamer path uses a
+    # latest-frame condition-variable dispatcher and publishes no duplicates.
     publish_rate_hz: 30.0
-    width: 640
-    height: 480
+    # 320x240 is a camera-advertised native MJPEG mode and is the qualified
+    # four-view RViz profile. Use a separate calibrated capture profile for
+    # future mapping/colorization work that requires 640x480 detail.
+    width: 320
+    height: 240
     fps: 30.0
-    # Four physical cameras mapped to the four roles. Device indices come from
-    # `python3 auto_test/probe_cameras.py` (use the CAPTURE-able even/30fps
-    # nodes; some cameras also expose a 60fps node — pick ONE node per physical
-    # camera). Default 0/2/4/6 = the four 30fps capture nodes. If two panels show
-    # the SAME camera, swap one index for 5 or 7 until all four differ.
+    camera_reconnect_interval_sec: 3.0
+    # User-confirmed physical mapping on 2026-07-23. All cameras share the same
+    # USB serial, and /dev/videoN changes after reconnect, so production must
+    # use the video-index0 /dev/v4l/by-path links below.
+    #
+    # Keep the legacy adapter/topic slots for compatibility:
+    #   left  -> left-front   (USB 2-3.1)
+    #   right -> right-front  (USB 2-3.4)
+    #   front -> left-side    (USB 2-3.2)
+    #   rear  -> right-side   (USB 2-3.3)
+    # "front" and "rear" are compatibility slot names here; they do not mean
+    # that the wheelchair has center-front or rear-facing physical cameras.
     enabled_cameras: [front, left, right, rear]
-    front_device: "0"
-    left_device: "2"
-    right_device: "4"
-    rear_device: "6"
-    front_rotate_deg: 0
-    left_rotate_deg: 0
-    right_rotate_deg: 0
-    rear_rotate_deg: 0
+    front_device: "/dev/v4l/by-path/platform-3610000.usb-usb-0:3.2:1.0-video-index0"
+    left_device: "/dev/v4l/by-path/platform-3610000.usb-usb-0:3.1:1.0-video-index0"
+    right_device: "/dev/v4l/by-path/platform-3610000.usb-usb-0:3.4:1.0-video-index0"
+    rear_device: "/dev/v4l/by-path/platform-3610000.usb-usb-0:3.3:1.0-video-index0"
+    # Measured from the saved four-camera frames. Recheck these in the labelled
+    # live view before accepting the installation.
+    front_rotate_deg: 180
+    left_rotate_deg: 180
+    right_rotate_deg: 180
+    rear_rotate_deg: 270
     front_camera_info_url: ""
     left_camera_info_url: ""
     right_camera_info_url: ""

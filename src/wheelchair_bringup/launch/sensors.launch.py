@@ -1,7 +1,12 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
@@ -16,6 +21,7 @@ def generate_launch_description():
     enable_imu = LaunchConfiguration("enable_imu")
     enable_ultrasonic = LaunchConfiguration("enable_ultrasonic")
     enable_camera = LaunchConfiguration("enable_camera")
+    split_camera_processes = LaunchConfiguration("split_camera_processes")
     xtm60_config = LaunchConfiguration("xtm60_config")
     xtm60_left_config = LaunchConfiguration("xtm60_left_config")
     xtm60_right_config = LaunchConfiguration("xtm60_right_config")
@@ -57,15 +63,31 @@ def generate_launch_description():
                 default_value="true",
                 description="Start robot_state_publisher for the wheelchair URDF.",
             ),
-            DeclareLaunchArgument("enable_xtm60", default_value="true"),
+            DeclareLaunchArgument(
+                "enable_xtm60",
+                default_value="false",
+                description="Legacy single XT-M60 route. Disabled by default; select an explicit side.",
+            ),
             DeclareLaunchArgument("enable_xtm60_left", default_value="false"),
-            DeclareLaunchArgument("enable_xtm60_right", default_value="false"),
+            DeclareLaunchArgument(
+                "enable_xtm60_right",
+                default_value="false",
+                description="Explicit right XT-M60 route used by the current mapping baseline.",
+            ),
             DeclareLaunchArgument("xtm60_left_bind_ip", default_value="192.168.0.100"),
             DeclareLaunchArgument("xtm60_right_bind_ip", default_value="192.168.1.100"),
             DeclareLaunchArgument("xtm60_bind_port", default_value="7687"),
             DeclareLaunchArgument("enable_imu", default_value="true"),
             DeclareLaunchArgument("enable_ultrasonic", default_value="true"),
             DeclareLaunchArgument("enable_camera", default_value="true"),
+            DeclareLaunchArgument(
+                "split_camera_processes",
+                default_value="false",
+                description=(
+                    "Run one isolated adapter process per camera. Use with "
+                    "camera_quad.yaml so one damaged stream cannot stall the others."
+                ),
+            ),
             DeclareLaunchArgument(
                 "xtm60_config",
                 default_value=PathJoinSubstitution([bringup_share, "config", "xtm60_sdk.yaml"]),
@@ -117,6 +139,7 @@ def generate_launch_description():
                 remappings=[
                     ("/xtm60/points", "/xtm60/left/points"),
                     ("/xtm60/status", "/xtm60/left/status"),
+                    ("/xtm60/phase", "/xtm60/left/phase"),
                 ],
                 additional_env={
                     "LD_PRELOAD": xt_bindshim,
@@ -137,6 +160,7 @@ def generate_launch_description():
                 remappings=[
                     ("/xtm60/points", "/xtm60/right/points"),
                     ("/xtm60/status", "/xtm60/right/status"),
+                    ("/xtm60/phase", "/xtm60/right/phase"),
                 ],
                 additional_env={
                     "LD_PRELOAD": xt_bindshim,
@@ -176,7 +200,36 @@ def generate_launch_description():
                     camera_config,
                     {"mode": mode},
                 ],
-                condition=IfCondition(enable_camera),
+                condition=IfCondition(
+                    PythonExpression(
+                        [
+                            "'", enable_camera, "' == 'true' and '",
+                            split_camera_processes, "' != 'true'",
+                        ]
+                    )
+                ),
             ),
+            *[
+                Node(
+                    package="wheelchair_sensors",
+                    executable="camera_adapter_node",
+                    namespace=f"camera_{role}_worker",
+                    name="camera_adapter_node",
+                    output="screen",
+                    parameters=[
+                        camera_config,
+                        {"mode": mode, "enabled_cameras": [role]},
+                    ],
+                    condition=IfCondition(
+                        PythonExpression(
+                            [
+                                "'", enable_camera, "' == 'true' and '",
+                                split_camera_processes, "' == 'true'",
+                            ]
+                        )
+                    ),
+                )
+                for role in ("front", "left", "right", "rear")
+            ],
         ]
     )

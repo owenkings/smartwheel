@@ -38,6 +38,8 @@ class DualLidarCloudFusionNode(Node):
         super().__init__("dual_lidar_cloud_fusion_node")
         self.declare_parameter("left_points_topic", "/xtm60/left/points")
         self.declare_parameter("right_points_topic", "/xtm60/right/points")
+        self.declare_parameter("enable_left_input", True)
+        self.declare_parameter("enable_right_input", True)
         self.declare_parameter("target_frame", "base_link")
         self.declare_parameter("output_topic", "/points_merged")
         self.declare_parameter("status_topic", "/points_merged/status")
@@ -61,6 +63,10 @@ class DualLidarCloudFusionNode(Node):
         self.fallback = bool(self.get_parameter("allow_single_lidar_fallback").value)
         self.input_timeout = float(self.get_parameter("input_timeout_sec").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
+        self.left_enabled = bool(self.get_parameter("enable_left_input").value)
+        self.right_enabled = bool(self.get_parameter("enable_right_input").value)
+        if not self.left_enabled and not self.right_enabled:
+            raise ValueError("at least one lidar input must be enabled")
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -73,18 +79,21 @@ class DualLidarCloudFusionNode(Node):
         if bool(self.get_parameter("publish_diagnostics").value):
             self.status_pub = self.create_publisher(String, self.get_parameter("status_topic").value, 10)
 
-        self.create_subscription(
-            PointCloud2, self.get_parameter("left_points_topic").value,
-            lambda m: self._on_cloud(m, self.left), qos_profile_sensor_data)
-        self.create_subscription(
-            PointCloud2, self.get_parameter("right_points_topic").value,
-            lambda m: self._on_cloud(m, self.right), qos_profile_sensor_data)
+        if self.left_enabled:
+            self.create_subscription(
+                PointCloud2, self.get_parameter("left_points_topic").value,
+                lambda m: self._on_cloud(m, self.left), qos_profile_sensor_data)
+        if self.right_enabled:
+            self.create_subscription(
+                PointCloud2, self.get_parameter("right_points_topic").value,
+                lambda m: self._on_cloud(m, self.right), qos_profile_sensor_data)
 
         period = 1.0 / max(1.0, float(self.get_parameter("output_rate_hz").value))
         self.timer = self.create_timer(period, self._publish_merged)
         self.get_logger().info(
             f"dual_lidar_cloud_fusion: target_frame={self.target_frame} "
-            f"voxel={self.voxel} fallback={self.fallback}")
+            f"voxel={self.voxel} fallback={self.fallback} "
+            f"left_enabled={self.left_enabled} right_enabled={self.right_enabled}")
 
     def _warn(self, key: str, msg: str, period: float = 5.0):
         now = time.monotonic()
@@ -153,7 +162,8 @@ class DualLidarCloudFusionNode(Node):
         return state.xyz is not None and (time.monotonic() - state.recv_time) <= self.input_timeout
 
     def _publish_merged(self):
-        left_ok, right_ok = self._fresh(self.left), self._fresh(self.right)
+        left_ok = self.left_enabled and self._fresh(self.left)
+        right_ok = self.right_enabled and self._fresh(self.right)
         parts_xyz, parts_i = [], []
         have_intensity = True
         for ok, st in ((left_ok, self.left), (right_ok, self.right)):
@@ -163,7 +173,9 @@ class DualLidarCloudFusionNode(Node):
                     have_intensity = False
                 parts_i.append(st.inten)
 
-        fallback_active = (left_ok != right_ok)
+        enabled_count = int(self.left_enabled) + int(self.right_enabled)
+        fresh_count = int(left_ok) + int(right_ok)
+        fallback_active = fresh_count < enabled_count
         if not parts_xyz:
             self._warn("no_input", "no fresh lidar input on either topic")
             self._publish_status(left_ok, right_ok, 0, False)
@@ -202,6 +214,7 @@ class DualLidarCloudFusionNode(Node):
             return
         status = {
             "target_frame": self.target_frame,
+            "left_enabled": self.left_enabled, "right_enabled": self.right_enabled,
             "left_fresh": bool(left_ok), "right_fresh": bool(right_ok),
             "left_hz": round(self.left.rate_hz, 2), "right_hz": round(self.right.rate_hz, 2),
             "left_raw_points": self.left.raw_points, "right_raw_points": self.right.raw_points,

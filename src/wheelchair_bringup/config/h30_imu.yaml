@@ -2,10 +2,18 @@ imu_adapter_node:
   ros__parameters:
     mode: real
     frame_id: imu_link
-    publish_rate_hz: 100.0
+    # Keep H30 data in its physical sensor frame. The user-confirmed level
+    # 60 s gravity calibration is represented by base_link -> imu_link in the
+    # URDF (roll +0.567121 deg, pitch +0.063040 deg), not by rewriting samples
+    # or sending an undocumented persistent attitude-reset command.
+    # The connected H30 stream was measured at 200 Hz during B2. Poll at the
+    # same rate to avoid publishing two serial samples in a 100 Hz burst.
+    publish_rate_hz: 200.0
     serial_port: /dev/smartwheel_h30_imu
     baud_rate: 460800
     serial_timeout_sec: 0.01
+    # This H30 profile does not emit a device timestamp TLV; use ROS host time.
+    use_device_timestamp: false
     orientation_covariance: [0.05, 0.05, 0.10]
     angular_velocity_covariance: [0.02, 0.02, 0.02]
     linear_acceleration_covariance: [0.05, 0.05, 0.08]

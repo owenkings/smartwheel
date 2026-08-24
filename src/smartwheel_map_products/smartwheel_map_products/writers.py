@@ -12,39 +12,83 @@ import yaml
 from smartwheel_map_products.occupancy import OccupancyGridData
 
 
-def write_pcd(path: Path, points: np.ndarray) -> None:
+def _validated_intensity(
+    points: np.ndarray,
+    intensity: np.ndarray | None,
+) -> np.ndarray | None:
+    if intensity is None:
+        return None
+    amplitudes = np.asarray(intensity, dtype=np.float32).reshape(-1)
+    if amplitudes.shape[0] != points.shape[0]:
+        raise ValueError("intensity length must match points")
+    if not np.isfinite(amplitudes).all():
+        raise ValueError("intensity must be finite")
+    return amplitudes
+
+
+def write_pcd(
+    path: Path,
+    points: np.ndarray,
+    intensity: np.ndarray | None = None,
+) -> None:
     xyz = np.asarray(points, dtype=np.float64)
+    amplitudes = _validated_intensity(xyz, intensity)
+    fields = "x y z intensity" if amplitudes is not None else "x y z"
+    values_per_point = 4 if amplitudes is not None else 3
+    sizes = " ".join(["4"] * values_per_point)
+    types = " ".join(["F"] * values_per_point)
+    counts = " ".join(["1"] * values_per_point)
     header = (
         "# .PCD v0.7 - Point Cloud Data file format\n"
-        "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
-        f"WIDTH {xyz.shape[0]}\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\n"
+        f"VERSION 0.7\nFIELDS {fields}\nSIZE {sizes}\nTYPE {types}\n"
+        f"COUNT {counts}\nWIDTH {xyz.shape[0]}\nHEIGHT 1\n"
+        "VIEWPOINT 0 0 0 1 0 0 0\n"
         f"POINTS {xyz.shape[0]}\nDATA ascii\n"
     )
     with path.open("w", encoding="ascii") as stream:
         stream.write(header)
-        np.savetxt(stream, xyz, fmt="%.6f %.6f %.6f")
+        if amplitudes is None:
+            np.savetxt(stream, xyz, fmt="%.6f %.6f %.6f")
+        else:
+            np.savetxt(
+                stream,
+                np.column_stack((xyz, amplitudes)),
+                fmt="%.6f %.6f %.6f %.6f",
+            )
 
 
-def write_ply(path: Path, points: np.ndarray, colors: np.ndarray | None = None) -> None:
+def write_ply(
+    path: Path,
+    points: np.ndarray,
+    colors: np.ndarray | None = None,
+    intensity: np.ndarray | None = None,
+) -> None:
     xyz = np.asarray(points, dtype=np.float64)
+    amplitudes = _validated_intensity(xyz, intensity)
+    rgb = None
+    if colors is not None:
+        rgb = np.asarray(colors, dtype=np.uint8)
+        if rgb.shape != xyz.shape:
+            raise ValueError("colors must match points")
     with path.open("w", encoding="ascii") as stream:
         stream.write("ply\nformat ascii 1.0\n")
         stream.write(f"element vertex {xyz.shape[0]}\n")
         stream.write("property float x\nproperty float y\nproperty float z\n")
-        if colors is not None:
+        if amplitudes is not None:
+            stream.write("property float intensity\n")
+        if rgb is not None:
             stream.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
         stream.write("end_header\n")
-        if colors is None:
+        if rgb is None and amplitudes is None:
             np.savetxt(stream, xyz, fmt="%.6f %.6f %.6f")
-        else:
-            rgb = np.asarray(colors, dtype=np.uint8)
-            if rgb.shape != xyz.shape:
-                raise ValueError("colors must match points")
-            for point, color in zip(xyz, rgb):
-                stream.write(
-                    f"{point[0]:.6f} {point[1]:.6f} {point[2]:.6f} "
-                    f"{int(color[0])} {int(color[1])} {int(color[2])}\n"
-                )
+            return
+        for index, point in enumerate(xyz):
+            values = [f"{point[0]:.6f}", f"{point[1]:.6f}", f"{point[2]:.6f}"]
+            if amplitudes is not None:
+                values.append(f"{float(amplitudes[index]):.6f}")
+            if rgb is not None:
+                values.extend(str(int(value)) for value in rgb[index])
+            stream.write(" ".join(values) + "\n")
 
 
 def _map_image(cells: np.ndarray) -> np.ndarray:
@@ -95,6 +139,41 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _replace_none_for_markdown(value):
+    if value is None:
+        return "UNAVAILABLE"
+    if isinstance(value, dict):
+        return {
+            str(key): _replace_none_for_markdown(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_replace_none_for_markdown(item) for item in value]
+    return value
+
+
+def _markdown_value(value) -> str:
+    if value is None:
+        return "UNAVAILABLE"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(
+            _replace_none_for_markdown(value),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    return str(value)
+
+
+def _flatten_markdown_items(value: dict, prefix: str = ""):
+    for key in sorted(value, key=str):
+        item = value[key]
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(item, dict) and item:
+            yield from _flatten_markdown_items(item, path)
+        else:
+            yield path, _markdown_value(item)
+
+
 def export_map_bundle(
     directory: str | Path,
     points: np.ndarray,
@@ -105,7 +184,29 @@ def export_map_bundle(
     algorithm_profile: dict,
     bag_path: str,
     quality: dict,
+    intensity_points: np.ndarray | None = None,
+    intensity: np.ndarray | None = None,
 ) -> Path:
+    quality_json = json.dumps(
+        quality,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ) + "\n"
+    markdown_lines = [
+        "# Map Quality Report",
+        "",
+        (
+            f"Validation stage: {_markdown_value(quality.get('stage', 'UNSPECIFIED'))}; "
+            f"hardware validated: {bool(quality.get('hardware_validated', False))}."
+        ),
+        "",
+    ]
+    markdown_lines.extend(
+        f"- `{key}`: `{value}`" for key, value in _flatten_markdown_items(quality)
+    )
+    quality_markdown = "\n".join(markdown_lines) + "\n"
+
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
     (output / "logs").mkdir(exist_ok=True)
@@ -113,6 +214,13 @@ def export_map_bundle(
     write_ply(output / "map_geometry.ply", points)
     if colors is not None:
         write_ply(output / "map_colored.ply", points, colors)
+    if intensity_points is not None and intensity is not None:
+        write_pcd(output / "map_pointcloud_amp.pcd", intensity_points, intensity)
+        write_ply(
+            output / "map_pointcloud_amp.ply",
+            intensity_points,
+            intensity=intensity,
+        )
     write_occupancy(output, grid)
     write_trajectory(output, poses)
     profile_source = Path(hardware_profile_path)
@@ -122,14 +230,9 @@ def export_map_bundle(
     with (output / "algorithm_profile_used.yaml").open("w", encoding="utf-8") as stream:
         yaml.safe_dump(algorithm_profile, stream, sort_keys=True)
     (output / "bag_path.txt").write_text((bag_path or "NOT_RECORDED") + "\n", encoding="utf-8")
-    with (output / "quality_report.json").open("w", encoding="utf-8") as stream:
-        json.dump(quality, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    with (output / "quality_report.md").open("w", encoding="utf-8") as stream:
-        stream.write("# Map Quality Report\n\n")
-        stream.write("Stage A synthetic result; this is not real hardware validation.\n\n")
-        for key, value in sorted(quality.items()):
-            stream.write(f"- `{key}`: `{value}`\n")
+    (output / "quality_report.json").write_text(quality_json, encoding="utf-8")
+    (output / "quality_report.md").write_text(quality_markdown, encoding="utf-8")
+
     files = []
     externally_managed_files = []
     for path in sorted(output.rglob("*")):
@@ -147,12 +250,16 @@ def export_map_bundle(
             )
     manifest = {
         "format_version": 1,
-        "stage": "A_SYNTHETIC",
+        "stage": quality.get("stage", "UNSPECIFIED"),
         "complete": True,
         "files": files,
         "externally_managed_files": externally_managed_files,
     }
-    with (output / "manifest.json").open("w", encoding="utf-8") as stream:
-        json.dump(manifest, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    manifest_json = json.dumps(
+        manifest,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ) + "\n"
+    (output / "manifest.json").write_text(manifest_json, encoding="utf-8")
     return output

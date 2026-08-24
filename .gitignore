@@ -1,10 +1,59 @@
-# ROS2 build artifacts
+# =============================================================================
+# SmartWheel .gitignore
+# Rule of thumb: source, config and written docs are tracked; anything a build,
+# a launch or a diagnostic run regenerates is not.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ROS 2 / colcon build artifacts
+# -----------------------------------------------------------------------------
 build/
 install/
 log/
+logs/
 .ros/
+rosbag2_*/
+*.db3-shm
+*.db3-wal
 
-# Python cache
+# -----------------------------------------------------------------------------
+# Logs and captured command output
+# -----------------------------------------------------------------------------
+*.log
+*.log.[0-9]*
+*.out
+*.err
+*.stdout
+*.stderr
+nohup.out
+
+# -----------------------------------------------------------------------------
+# Temp / scratch / cache
+# -----------------------------------------------------------------------------
+tmp/
+temp/
+.tmp/
+.cache/
+*.tmp
+*.temp
+*.pid
+*.orig
+*.rej
+
+# -----------------------------------------------------------------------------
+# Crash dumps and profiling output (Orin resets leave these behind)
+# -----------------------------------------------------------------------------
+core.[0-9]*
+*.core
+*.dmp
+*.stackdump
+*.prof
+*.nsys-rep
+*.qdrep
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.pyo
@@ -13,29 +62,56 @@ __pycache__/
 *.egg-info/
 dist/
 *.egg
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.tox/
 
-# pytest
+# pytest / coverage
 .pytest_cache/
 pytest-of-*/
 .coverage
+.coverage.*
 htmlcov/
 
-# rosbag
+# -----------------------------------------------------------------------------
+# Recorded data: rosbags, point clouds, experiment runs
+# -----------------------------------------------------------------------------
 bags/
 /experiments/
 *.db3
 *.mcap
+*.bag
+*.pcd
+*.ply
+*.las
+*.laz
+*.bt
+*.ot
 
+# -----------------------------------------------------------------------------
 # Maps - ignore generated maps/artifacts; keep dir placeholder + version manifest
+# -----------------------------------------------------------------------------
 maps/*
 !maps/.gitkeep
 !maps/map_versions.json
 
-# Backups and compiled shared objects (rebuild from source; never commit blobs)
+# -----------------------------------------------------------------------------
+# Archives and compiled blobs (rebuild/re-download; never commit binaries)
+# -----------------------------------------------------------------------------
 *.bak*
 *.so
+*.zip
+*.tar
+*.tar.*
+*.tgz
+*.7z
+*.rar
 
-# IDE / AI agents
+# -----------------------------------------------------------------------------
+# IDE / AI agents / OS
+# -----------------------------------------------------------------------------
 .vscode/
 .idea/
 .agents/
@@ -44,21 +120,26 @@ maps/*
 *.code-workspace
 *.swp
 *.swo
+*.swn
 *~
+.DS_Store
+Thumbs.db
+.directory
+desktop.ini
 
 # Local scratch files kept at repo root during bringup/debugging
-/.*.log
 /.*.txt
 /.*.py
 
-# OS
-.DS_Store
-Thumbs.db
-
+# -----------------------------------------------------------------------------
 # Secrets / device config overrides
+# -----------------------------------------------------------------------------
 *.env
 local_config.yaml
 
+# -----------------------------------------------------------------------------
+# Vendored / externally installed trees
+# -----------------------------------------------------------------------------
 # Vendor SDK (too large, install separately)
 xtsdk_py/
 
@@ -67,22 +148,36 @@ xtsdk_py/
 # at commit 2fffc57; apply patches/apply_fastlio_patches.sh after clone.
 src/third_party/
 
-# XT-M60 logs
-xtlog/
-
-# doc
-docs/camera_snapshots
-docs/*.png
-
 # Vendor host program (XT-Toffuture) - large, not source
 tools/*
 # ...but keep version-controlled off-ground hardware test scripts
 !tools/hardware_bringup/
 
+# XT-M60 SDK runtime logs
+xtlog/
+
+# -----------------------------------------------------------------------------
+# Generated evidence / run output under docs
+# -----------------------------------------------------------------------------
+# Diagnostic runs drop raw dumps (json / stdout / log / png / pgm) into
+# docs/**/evidence/. Written reports (*.md) next to them stay tracked; the raw
+# dumps are reproducible by re-running the scripts in scripts/hardware/.
+# Need one specific artifact in git? `git add -f <path>`.
+docs/**/evidence/**
+!docs/**/evidence/**/
+!docs/**/evidence/**/*.md
+docs/camera_snapshots/
+docs/*.png
+
+# Screenshots taken by desktop-automation tooling
+captures/
+
 # raw calibration captures (keep the .yaml, not the image tarball)
 calib/*.tar.gz
 
+# -----------------------------------------------------------------------------
 # auto_test: keep only templates and README
+# -----------------------------------------------------------------------------
 auto_test/*
 !auto_test/README.md
 !auto_test/templates/

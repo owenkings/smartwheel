@@ -42,7 +42,9 @@ def test_project_points_to_scan_uses_nearest_range_per_angle_bin():
 def test_scan_projection_uses_expected_laserscan_beam_count():
     config = ScanProjectionConfig()
 
-    assert config.beam_count == 242
+    assert config.beam_count == 241
+    assert config.realized_angle_max <= config.angle_max
+    assert config.realized_angle_max + config.angle_increment > config.angle_max
 
 
 def test_pointcloud_subscription_accepts_best_effort_sensor_qos():

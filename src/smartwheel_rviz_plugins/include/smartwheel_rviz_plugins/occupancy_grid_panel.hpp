@@ -27,6 +27,8 @@ class QGraphicsView;
 class QLabel;
 class QLineEdit;
 class QTimer;
+class QToolButton;
+class QWidget;
 
 namespace smartwheel_rviz_plugins
 {
@@ -62,6 +64,7 @@ private:
   void onOdom(const nav_msgs::msg::Odometry::ConstSharedPtr message);
   void onPath(const nav_msgs::msg::Path::ConstSharedPtr message);
   QPointF worldToScene(double x, double y) const;
+  void updateProductLabel();
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_subscription_;
@@ -79,10 +82,14 @@ private:
   QString odom_topic_{"/odom/fused"};
   QString path_topic_{"/mapping/optimized_path"};
   QString status_topic_{"/mapping/status"};
+  QString product_path_;
   QLineEdit * map_topic_edit_{nullptr};
   QLineEdit * odom_topic_edit_{nullptr};
   QLineEdit * path_topic_edit_{nullptr};
   QCheckBox * show_origin_{nullptr};
+  QCheckBox * auto_fit_{nullptr};
+  QWidget * settings_widget_{nullptr};
+  QToolButton * settings_toggle_{nullptr};
   QGraphicsView * view_{nullptr};
   QGraphicsScene * scene_{nullptr};
   QGraphicsPixmapItem * map_item_{nullptr};
@@ -95,6 +102,7 @@ private:
   QLabel * dimensions_label_{nullptr};
   QLabel * zoom_label_{nullptr};
   QLabel * mapping_label_{nullptr};
+  QLabel * product_label_{nullptr};
   QTimer * freshness_timer_{nullptr};
 };
 

@@ -1,0 +1,287 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Live Hardware1
+      Splitter Ratio: 0.5
+    Tree Height: 430
+  - AccelerationLimitMps2: 0.25
+    AngularAccelerationLimitRadps2: 0.5
+    AngularSpeedMaxRadps: 0.25
+    AngularSpeedRadps: 0.25
+    Class: SmartWheel/Teleop
+    CommandRateHz: 20
+    CommandTimeoutMs: 350
+    LinearSpeedMaxMps: 0.15
+    LinearSpeedMps: 0.1
+    Name: SmartWheel Teleop
+    Topic: /teleop/cmd_vel
+  - Class: SmartWheel/2D Occupancy Map
+    AutoFit: true
+    MapTopic: /map
+    Name: SmartWheel 2D Map
+    OdomTopic: /odometry/filtered
+    PathTopic: /mapping/optimized_path
+    ProductPath: ""
+    SettingsExpanded: false
+    ShowOrigin: false
+    StaleThresholdSec: 3.0
+  - CameraInfoTopic: /camera/front/camera_info
+    Class: SmartWheel/Camera
+    DetailsExpanded: false
+    ImageTopic: /camera/front/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 10.0
+    Mirror: false
+    Name: Front Camera
+    PhysicalLabel: Left-Side Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 180
+    ShowFps: true
+    ShowTimestamp: true
+    TransportHint: compressed
+  - CameraInfoTopic: /camera/left/camera_info
+    Class: SmartWheel/Camera
+    DetailsExpanded: false
+    ImageTopic: /camera/left/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 10.0
+    Mirror: false
+    Name: Left Camera
+    PhysicalLabel: Left-Front Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 180
+    ShowFps: true
+    ShowTimestamp: true
+    TransportHint: compressed
+  - CameraInfoTopic: /camera/right/camera_info
+    Class: SmartWheel/Camera
+    DetailsExpanded: false
+    ImageTopic: /camera/right/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 10.0
+    Mirror: false
+    Name: Right Camera
+    PhysicalLabel: Right-Front Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 180
+    ShowFps: true
+    ShowTimestamp: true
+    TransportHint: compressed
+  - CameraInfoTopic: /camera/rear/camera_info
+    Class: SmartWheel/Camera
+    DetailsExpanded: false
+    ImageTopic: /camera/rear/image_raw
+    KeepAspectRatio: true
+    MaxDisplayFps: 10.0
+    Mirror: false
+    Name: Rear Camera
+    PhysicalLabel: Right-Side Camera
+    OfflineThresholdSec: 2.0
+    RotationDegrees: 270
+    ShowFps: true
+    ShowTimestamp: true
+    TransportHint: compressed
+  - Class: SmartWheel/System Status
+    DiagnosticsTopic: /diagnostics
+    Name: SmartWheel System Status
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.45
+          Class: rviz_default_plugins/RobotModel
+          Description Source: Topic
+          Description Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /robot_description
+          Enabled: true
+          Name: Robot Model
+          Visual Enabled: true
+        - Class: rviz_default_plugins/TF
+          Enabled: true
+          Frame Timeout: 15
+          Marker Scale: 0.4
+          Name: Sensor TF
+          Show Arrows: true
+          Show Axes: true
+          Show Names: false
+          Value: true
+        - Alpha: 0.45
+          Cell Size: 0.5
+          Class: rviz_default_plugins/Grid
+          Color: 140; 145; 150
+          Enabled: true
+          Name: Ground Grid
+          Plane: XY
+          Plane Cell Count: 40
+          Reference Frame: base_link
+          Value: true
+        - Alpha: 1
+          Autocompute Intensity Bounds: false
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: false
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 700
+          Min Color: 0; 0; 0
+          Min Intensity: 50
+          Name: Left XT-M60 PointCloud+Amp (disabled)
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.02
+          Style: Flat Squares
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /xtm60/left/points
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: false
+        - Alpha: 1
+          Autocompute Intensity Bounds: false
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 1600
+          Min Color: 0; 0; 0
+          Min Intensity: 50
+          Name: Right XT-M60 PointCloud+Amp (current frame)
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.02
+          Style: Flat Squares
+          Topic:
+            Depth: 3
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /xtm60/right/points
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 1
+          Class: rviz_default_plugins/LaserScan
+          Color: 255; 80; 80
+          Decay Time: 0.3
+          Enabled: true
+          Name: Merged Live 2D Scan
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 4
+          Style: Flat Squares
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /scan
+          Value: true
+        - Class: rviz_default_plugins/Odometry
+          Enabled: false
+          Keep: 50
+          Name: Wheel Odometry (disabled; no valid feedback)
+          Topic:
+            Depth: 10
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /wheel/odom
+          Value: false
+      Enabled: true
+      Name: Live Sensor Preview (not accumulated mapping)
+  Enabled: true
+  Global Options:
+    Background Color: 18; 18; 20
+    Fixed Frame: base_link
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 255; 180; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 5
+      Focal Point:
+        X: 0.8
+        Y: 0
+        Z: 0.4
+      Name: Live Sensor Preview
+      Near Clip Distance: 0.01
+      Pitch: 0.65
+      Target Frame: base_link
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 1.57
+    Saved:
+      - Class: rviz_default_plugins/Orbit
+        Distance: 5
+        Focal Point:
+          X: 0.8
+          Y: 0
+          Z: 0.4
+        Name: Live Sensor Preview
+        Near Clip Distance: 0.01
+        Pitch: 0.65
+        Target Frame: base_link
+        Value: Orbit (rviz_default_plugins)
+        Yaw: 1.57
+      - Class: rviz_default_plugins/TopDownOrtho
+        Angle: 0
+        Name: Live 2D Overview
+        Scale: 45
+        Target Frame: base_link
+        Value: TopDownOrtho (rviz_default_plugins)
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1080
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd00000002000000000000016d00000438fc0200000003fb00000016004c006500660074002000430061006d006500720061010000000000000143000000b300fffffffb0000001800460072006f006e0074002000430061006d006500720061010000014900000142000000b300fffffffc00000291000001a7000001340100001cfa000000000200000004fb000000220053006d0061007200740057006800650065006c002000540065006c0065006f00700100000000ffffffff0000011700fffffffb000000100044006900730070006c0061007900730100000000ffffffff0000011700fffffffb0000000a005600690065007700730100000000ffffffff0000011700fffffffb000000300053006d0061007200740057006800650065006c002000530079007300740065006d00200053007400610074007500730100000000ffffffff0000011700ffffff000000010000020d00000438fc0200000003fb0000001800520069006700680074002000430061006d006500720061010000000000000116000000b300fffffffb000000160052006500610072002000430061006d006500720061010000011c00000116000000b300fffffffb000000220053006d0061007200740057006800650065006c0020003200440020004d006100700100000238000002000000015300ffffff000003fa0000043800000004000000040000000800000008fc00000000
+  SmartWheel Teleop:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1920
+  X: 0
+  Y: 0

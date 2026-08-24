@@ -26,3 +26,11 @@ def test_merge_scan_slices_filters_invalid_and_out_of_range_values():
     assert math.isinf(merged[0])
     assert math.isinf(merged[1])
     assert merged[2] == pytest.approx(2.0)
+
+
+def test_nonintegral_span_never_creates_a_beam_past_angle_max():
+    config = MergeConfig(angle_min=-1.5708, angle_max=1.5708, angle_increment=0.0087)
+
+    assert config.beam_count == 362
+    assert config.realized_angle_max <= config.angle_max
+    assert config.realized_angle_max + config.angle_increment > config.angle_max

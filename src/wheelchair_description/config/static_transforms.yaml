@@ -8,16 +8,21 @@ transforms:
     rpy: [0.0, -0.0873, 0.0]
   - parent: base_link
     child: xtm60_left_link
-    xyz: [0.45, 0.24, 0.65]
-    rpy: [0.0, -0.0873, 0.0]
+    # y/z are current user measurements. x and horizontal yaw remain provisional.
+    # Rotation keeps the last reliable floor-visible left calibration (45b1163).
+    xyz: [0.45, 0.30, 0.735]
+    rpy: [1.5515153364, -0.0136154207, 1.5709313394]
   - parent: base_link
     child: xtm60_right_link
-    xyz: [0.45, -0.24, 0.65]
-    rpy: [0.0, -0.0873, 0.0]
+    # Ground roll/pitch fitted 2026-07-24; yaw constrained forward, not calibrated.
+    xyz: [0.45, -0.30, 0.735]
+    rpy: [1.7071165220, 0.0265268546, 1.5744345976]
   - parent: base_link
     child: imu_link
     xyz: [0.0, 0.0, 0.45]
-    rpy: [0.0, 0.0, 0.0]
+    # Measured from gravity on a user-confirmed level chassis, 60 s capture.
+    # Roll/pitch only; yaw and xyz are not calibrated by this measurement.
+    rpy: [0.0098981264, 0.0011002597, 0.0]
   - parent: base_link
     child: camera_front_link
     xyz: [0.40, 0.0, 0.80]

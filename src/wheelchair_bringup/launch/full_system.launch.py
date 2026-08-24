@@ -55,7 +55,11 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_web_ui", default_value="true"),
             DeclareLaunchArgument("enable_native_gui", default_value="false"),
             DeclareLaunchArgument("enable_voice_agent", default_value="true"),
-            DeclareLaunchArgument("enable_dual_xtm60", default_value="true"),
+            DeclareLaunchArgument(
+                "enable_dual_xtm60",
+                default_value="false",
+                description="Legacy dual-radar opt-in. Current production baseline is right-only.",
+            ),
             DeclareLaunchArgument(
                 "nav_params_file",
                 default_value=PathJoinSubstitution([bringup_share, "config", "nav2_params.yaml"]),
@@ -109,7 +113,9 @@ def generate_launch_description():
                 ),
                 launch_arguments={
                     "mode": "real",
-                    "enable_xtm60": enable_xtm60_radar,
+                    "enable_xtm60": "false",
+                    "enable_xtm60_left": "false",
+                    "enable_xtm60_right": enable_xtm60_radar,
                 }.items(),
                 condition=UnlessCondition(enable_dual_xtm60),
             ),
@@ -128,10 +134,20 @@ def generate_launch_description():
             Node(
                 package="wheelchair_perception",
                 executable="pointcloud_to_laserscan_node",
-                name="pointcloud_to_laserscan_node",
+                name="pointcloud_to_laserscan_right_node",
                 output="screen",
                 parameters=[
-                    PathJoinSubstitution([bringup_share, "config", "pointcloud_to_scan.yaml"])
+                    PathJoinSubstitution([bringup_share, "config", "pointcloud_to_scan_right.yaml"])
+                ],
+                condition=IfCondition(single_radar_active),
+            ),
+            Node(
+                package="wheelchair_perception",
+                executable="scan_merger_node",
+                name="scan_merger_right_only_node",
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution([bringup_share, "config", "scan_merger_right_only.yaml"])
                 ],
                 condition=IfCondition(single_radar_active),
             ),

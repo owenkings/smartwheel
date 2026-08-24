@@ -1,0 +1,2 @@
+# Preserve vendor upper-computer exports byte-for-byte as evidence.
+docs/hardware/vendor/*.xtcfg binary

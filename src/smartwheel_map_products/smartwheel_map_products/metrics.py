@@ -59,3 +59,47 @@ def evaluate_trajectory(
         "endpoint_position_error_m": float(position_errors[-1]),
         "endpoint_yaw_error_rad": float(abs(yaw_errors[-1])),
     }
+
+
+def build_trajectory_evaluation(poses: object) -> dict:
+    """Build the versioned producer-owned trajectory evaluation summary."""
+    endpoint_displacement = None
+    try:
+        if not isinstance(poses, (list, tuple)) or len(poses) < 2:
+            raise ValueError("at least two poses are required")
+        endpoints = (poses[0], poses[-1])
+        coordinates = []
+        for pose in endpoints:
+            if not isinstance(pose, (list, tuple)) or len(pose) < 3:
+                raise ValueError("pose must contain timestamp, x, and y")
+            x, y = pose[1], pose[2]
+            if (
+                isinstance(x, bool)
+                or isinstance(y, bool)
+                or not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+            ):
+                raise ValueError("pose x/y must be numeric and not boolean")
+            x_value = float(x)
+            y_value = float(y)
+            if not math.isfinite(x_value) or not math.isfinite(y_value):
+                raise ValueError("pose x/y must be finite")
+            coordinates.append((x_value, y_value))
+        endpoint_displacement = math.hypot(
+            coordinates[1][0] - coordinates[0][0],
+            coordinates[1][1] - coordinates[0][1],
+        )
+        if not math.isfinite(endpoint_displacement):
+            endpoint_displacement = None
+    except (IndexError, OverflowError, TypeError, ValueError):
+        endpoint_displacement = None
+
+    return {
+        "schema_version": 1,
+        "endpoint_displacement_m": endpoint_displacement,
+        "loop_closure": {
+            "status": "UNAVAILABLE",
+            "position_error_m": None,
+            "source": None,
+        },
+    }

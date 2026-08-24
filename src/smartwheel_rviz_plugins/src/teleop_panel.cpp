@@ -23,6 +23,15 @@
 
 namespace smartwheel_rviz_plugins
 {
+namespace
+{
+
+// Remote desktops can synthesize a held key as rapid press/release pairs. Keep a
+// short release grace period so those pairs remain one continuous command while
+// still stopping quickly after the final release.
+constexpr int kKeyboardReleaseGraceMs = 120;
+
+}  // namespace
 
 TeleopPanel::TeleopPanel(QWidget * parent)
 : rviz_common::Panel(parent)
@@ -110,6 +119,7 @@ TeleopPanel::TeleopPanel(QWidget * parent)
   linear_label_ = new QLabel("linear.x 0.000 m/s");
   angular_label_ = new QLabel("angular.z 0.000 rad/s");
   keys_label_ = new QLabel("Keys NONE");
+  keys_label_->setObjectName("teleopKeysLabel");
   deadman_label_ = new QLabel("Deadman RELEASED");
   hardware_label_ = new QLabel("hardware_enabled=false");
   emergency_label_ = new QLabel("emergency_stop=UNKNOWN");
@@ -189,11 +199,26 @@ double TeleopPanel::approach(double current, double target, double maximum_delta
 void TeleopPanel::setKeyboardDirection(char key, bool pressed)
 {
   if (pressed) {
+    ++keyboard_generations_[key];
     keyboard_directions_.insert(key);
   } else {
     keyboard_directions_.erase(key);
   }
   applyDirectionState();
+}
+
+void TeleopPanel::scheduleKeyboardRelease(char key)
+{
+  const auto generation = keyboard_generations_[key];
+  QTimer::singleShot(kKeyboardReleaseGraceMs, this, [this, key, generation]() {
+    const auto current = keyboard_generations_.find(key);
+    if (current == keyboard_generations_.end() || current->second != generation ||
+      keyboard_directions_.count(key) == 0)
+    {
+      return;
+    }
+    setKeyboardDirection(key, false);
+  });
 }
 
 void TeleopPanel::setMouseDirection(char key, bool pressed)
@@ -218,6 +243,7 @@ void TeleopPanel::applyDirectionState()
     current_angular_ = 0.0;
     publishZero();
   }
+  updateLabels(current_linear_, current_angular_);
 }
 
 void TeleopPanel::publishTick()
@@ -268,6 +294,9 @@ void TeleopPanel::publishZero()
 
 void TeleopPanel::stopNow()
 {
+  for (const char key : {'w', 'a', 's', 'd'}) {
+    ++keyboard_generations_[key];
+  }
   keyboard_directions_.clear();
   mouse_directions_.clear();
   model_.stop(nowSeconds());
@@ -323,13 +352,20 @@ bool TeleopPanel::eventFilter(QObject * object, QEvent * event)
   }
   if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && isVisible()) {
     auto * key_event = static_cast<QKeyEvent *>(event);
-    if (key_event->isAutoRepeat()) {return true;}
     const bool pressed = event->type() == QEvent::KeyPress;
     switch (key_event->key()) {
-      case Qt::Key_W: setKeyboardDirection('w', pressed); return true;
-      case Qt::Key_A: setKeyboardDirection('a', pressed); return true;
-      case Qt::Key_S: setKeyboardDirection('s', pressed); return true;
-      case Qt::Key_D: setKeyboardDirection('d', pressed); return true;
+      case Qt::Key_W:
+        pressed ? setKeyboardDirection('w', true) : scheduleKeyboardRelease('w');
+        return true;
+      case Qt::Key_A:
+        pressed ? setKeyboardDirection('a', true) : scheduleKeyboardRelease('a');
+        return true;
+      case Qt::Key_S:
+        pressed ? setKeyboardDirection('s', true) : scheduleKeyboardRelease('s');
+        return true;
+      case Qt::Key_D:
+        pressed ? setKeyboardDirection('d', true) : scheduleKeyboardRelease('d');
+        return true;
       case Qt::Key_Space: if (pressed) {stopNow();} return true;
       default: break;
     }

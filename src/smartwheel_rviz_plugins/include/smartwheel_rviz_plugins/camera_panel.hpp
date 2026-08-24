@@ -13,6 +13,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rviz_common/panel.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 class QCheckBox;
@@ -20,7 +21,10 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
+class QScrollArea;
 class QTimer;
+class QToolButton;
+class QWidget;
 
 namespace smartwheel_rviz_plugins
 {
@@ -38,6 +42,7 @@ public:
 
   static bool isOffline(double now_sec, double last_frame_sec, double threshold_sec);
   static bool frameAllowed(double now_sec, double last_gui_sec, double max_fps);
+  static std::string compressedTopic(const std::string & image_topic);
 
 Q_SIGNALS:
   void frameReady(
@@ -56,11 +61,13 @@ private Q_SLOTS:
 
 private:
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr & message);
+  void onCompressedImage(const sensor_msgs::msg::CompressedImage::ConstSharedPtr & message);
   void resizeEvent(QResizeEvent * event) override;
   void refreshPixmap();
 
   rclcpp::Node::SharedPtr node_;
   image_transport::Subscriber image_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_subscription_;
   std::atomic_bool frame_pending_{false};
   std::atomic_bool keep_aspect_{true};
@@ -77,8 +84,19 @@ private:
 
   QString image_topic_{"/camera/front/image_raw"};
   QString info_topic_{"/camera/front/camera_info"};
+  QString physical_label_;
+  // Four simultaneous 640x480 raw BGR topics overload the RViz/DDS display
+  // path on the Orin. The camera adapter publishes JPEG transport explicitly;
+  // make it the safe workbench default while retaining raw as an opt-in choice
+  // for bounded calibration tasks.
+  QString transport_hint_{"compressed"};
   QLineEdit * image_topic_edit_{nullptr};
   QLineEdit * info_topic_edit_{nullptr};
+  QComboBox * transport_combo_{nullptr};
+  QToolButton * details_toggle_{nullptr};
+  QScrollArea * details_scroll_{nullptr};
+  QWidget * details_widget_{nullptr};
+  QLabel * physical_label_widget_{nullptr};
   QLabel * image_label_{nullptr};
   QLabel * topic_label_{nullptr};
   QLabel * resolution_label_{nullptr};

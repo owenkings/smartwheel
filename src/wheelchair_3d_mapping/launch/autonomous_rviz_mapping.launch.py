@@ -41,34 +41,37 @@ def _setup(context, *args, **kwargs):
         raise RuntimeError(
             "hardware_profile must be dual_lidar, left_lidar_lab, or right_lidar_lab"
         )
-    if hardware_profile == "right_lidar_lab":
-        raise RuntimeError(
-            "hardware_profile=right_lidar_lab is reserved but not implemented in this release"
-        )
-
     left_lidar_lab = hardware_profile == "left_lidar_lab"
-    enable_left_lidar = True
-    enable_right_lidar = not left_lidar_lab
-    allow_single_lidar_fallback = left_lidar_lab or not enable_motion
+    right_lidar_lab = hardware_profile == "right_lidar_lab"
+    single_lidar_lab = left_lidar_lab or right_lidar_lab
+    use_h30_ekf = not right_lidar_lab
+    enable_left_lidar = hardware_profile in ("dual_lidar", "left_lidar_lab")
+    enable_right_lidar = hardware_profile in ("dual_lidar", "right_lidar_lab")
+    allow_single_lidar_fallback = single_lidar_lab or not enable_motion
 
     exploration_mode = s("exploration_mode").lower()
     if exploration_mode == "auto":
-        exploration_mode = "reactive" if left_lidar_lab else "frontier"
+        exploration_mode = "reactive" if single_lidar_lab else "frontier"
     if exploration_mode not in ("frontier", "reactive"):
         raise RuntimeError("exploration_mode must be auto, frontier, or reactive")
 
     linear_arg = s("max_linear_speed").lower()
     angular_arg = s("max_angular_speed").lower()
-    max_linear_speed = (0.03 if left_lidar_lab else 0.05) if linear_arg == "auto" else float(linear_arg)
-    max_angular_speed = (0.18 if left_lidar_lab else 0.22) if angular_arg == "auto" else float(angular_arg)
-    if left_lidar_lab:
+    max_linear_speed = (0.03 if single_lidar_lab else 0.05) if linear_arg == "auto" else float(linear_arg)
+    max_angular_speed = (0.18 if single_lidar_lab else 0.22) if angular_arg == "auto" else float(angular_arg)
+    if single_lidar_lab:
         max_linear_speed = min(max_linear_speed, 0.04)
         max_angular_speed = min(max_angular_speed, 0.18)
 
-    diagnostics_config = (
-        "diagnostics_left_lidar_lab.yaml" if left_lidar_lab else "diagnostics.yaml"
-    )
-    scan_merger_config = "scan_merger_left_only.yaml" if left_lidar_lab else "scan_merger.yaml"
+    if left_lidar_lab:
+        diagnostics_config = "diagnostics_left_lidar_lab.yaml"
+        scan_merger_config = "scan_merger_left_only.yaml"
+    elif right_lidar_lab:
+        diagnostics_config = "diagnostics_right_lidar_mapping.yaml"
+        scan_merger_config = "scan_merger_right_only.yaml"
+    else:
+        diagnostics_config = "diagnostics.yaml"
+        scan_merger_config = "scan_merger.yaml"
     rviz_config = "left_lidar_lab_mapping.rviz" if left_lidar_lab else "autonomous_3d_mapping.rviz"
     explore_active = enable_motion and autonomous
 
@@ -77,6 +80,11 @@ def _setup(context, *args, **kwargs):
         actions.append(LogInfo(
             msg="[left_lidar_lab] RIGHT XT-M60 is disabled / under repair. "
                 "Single-left-lidar autonomous mapping demo mode."
+        ))
+    elif right_lidar_lab:
+        actions.append(LogInfo(
+            msg="[right_lidar_lab] LEFT XT-M60 is disabled. "
+                "Current single-right-lidar mapping baseline."
         ))
     actions.append(LogInfo(
         msg=f"[autonomous_rviz_mapping] hardware_profile={hardware_profile} "
@@ -102,13 +110,14 @@ def _setup(context, *args, **kwargs):
             "bringup_sensors": s("bringup_sensors"),
             "enable_xtm60_left": "true" if enable_left_lidar else "false",
             "enable_xtm60_right": "true" if enable_right_lidar else "false",
+            "enable_imu": "true" if use_h30_ekf else "false",
             "points_topic": "/points_merged",
             "imu_topic": "/imu/data",
             # Wheel+H30 EKF is the odom->base_link source. icp_odometry is not
             # run: the 120-degree flash-LiDAR cloud has insufficient overlap for
             # reliable standalone ICP odometry during pivots.
             "odom_mode": "external",
-            "odom_topic": "/odometry/filtered",
+            "odom_topic": "/odometry/filtered" if use_h30_ekf else "/wheel/odom",
             "subscribe_scan_cloud": "true",
             "subscribe_rgb": "false",          # camera not in geometry SLAM
             "use_colorizer": "true" if use_colorizer else "false",
@@ -121,8 +130,12 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # B. /scan for Nav2 and safety. The lab profile never starts the absent right chain.
-    scan_converters = [("pointcloud_to_laserscan_left_node", "pointcloud_to_scan_left.yaml")]
+    # B. /scan for Nav2 and safety. Single-radar profiles never start the absent chain.
+    scan_converters = []
+    if enable_left_lidar:
+        scan_converters.append(
+            ("pointcloud_to_laserscan_left_node", "pointcloud_to_scan_left.yaml")
+        )
     if enable_right_lidar:
         scan_converters.append(
             ("pointcloud_to_laserscan_right_node", "pointcloud_to_scan_right.yaml")
@@ -153,13 +166,15 @@ def _setup(context, *args, **kwargs):
         }.items(),
     ))
 
-    # Fuse wheel odometry with the H30 yaw/yaw-rate in planar mode. The EKF is
-    # the sole odom->base_link TF owner; RTAB-Map and Nav2 consume its output.
-    actions.append(Node(
-        package="robot_localization", executable="ekf_node", name="ekf_filter_node",
-        output="screen",
-        parameters=[os.path.join(bringup, "config", "robot_localization_ekf.yaml")],
-    ))
+    # H30 remains outside the current right-only baseline. Legacy dual/left
+    # profiles retain the wheel+H30 EKF path; right-only uses wheel odometry
+    # and the base driver owns odom->base_link.
+    if use_h30_ekf:
+        actions.append(Node(
+            package="robot_localization", executable="ekf_node", name="ekf_filter_node",
+            output="screen",
+            parameters=[os.path.join(bringup, "config", "robot_localization_ekf.yaml")],
+        ))
 
     # Fail closed before safety can release velocity. Sensor criticality comes
     # entirely from the selected profile config; do not hard-code a right lidar.
@@ -175,14 +190,14 @@ def _setup(context, *args, **kwargs):
         PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "base.launch.py")),
         launch_arguments={
             "mode": s("base_mode"),
-            "publish_tf": "false",
+            "publish_tf": "false" if use_h30_ekf else "true",
             "motion_control_enabled": "true" if enable_motion else "false",
             "hold_zero_before_motion_init": "false",
         }.items(),
     ))
 
-    # G. Explorer. The single-left-lidar lab profile defaults to reactive mode;
-    # the dual-lidar profile keeps the existing frontier default.
+    # G. Explorer. Single-radar lab profiles default to reactive mode; the
+    # explicit dual-lidar profile keeps the existing frontier default.
     if exploration_mode == "frontier":
         actions.append(Node(
             package="wheelchair_navigation", executable="frontier_explorer_node",
@@ -229,8 +244,8 @@ def _setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
-            "hardware_profile", default_value="dual_lidar",
-            description="dual_lidar | left_lidar_lab | right_lidar_lab (reserved)",
+            "hardware_profile", default_value="right_lidar_lab",
+            description="right_lidar_lab (current) | dual_lidar | left_lidar_lab",
         ),
         DeclareLaunchArgument("enable_motion", default_value="false",
                               description="HIGH RISK. true allows the base to write motor speeds."),
@@ -246,15 +261,15 @@ def generate_launch_description():
                               description="Colorize the cloud with the cameras (visual only)."),
         DeclareLaunchArgument(
             "max_linear_speed", default_value="auto",
-            description="auto: 0.05 dual-lidar, 0.03 left-lidar lab (lab capped at 0.04).",
+            description="auto: 0.05 dual-lidar, 0.03 single-lidar lab (lab capped at 0.04).",
         ),
         DeclareLaunchArgument(
             "max_angular_speed", default_value="auto",
-            description="auto: 0.22 dual-lidar, 0.18 left-lidar lab (lab capped at 0.18).",
+            description="auto: 0.22 dual-lidar, 0.18 single-lidar lab (lab capped at 0.18).",
         ),
         DeclareLaunchArgument(
             "exploration_mode", default_value="auto",
-            description="auto | frontier | reactive. auto selects frontier for dual and reactive for left-lidar lab.",
+            description="auto | frontier | reactive. auto selects frontier for dual and reactive for single-lidar lab.",
         ),
         DeclareLaunchArgument("require_enable_signal", default_value="true",
                               description="Require an explicit true message on /autonomy/enable before exploration starts."),

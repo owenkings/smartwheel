@@ -1,22 +1,25 @@
 ultrasonic_adapter_node:
   ros__parameters:
     mode: real
-    # 4 sensors share ONE USB-RS485 bus, polled sequentially, so the realistic
-    # rate is limited (~10 Hz), not 20. addr -> index -> position:
-    #   addr 1 -> range_0 = left-front,  addr 2 -> range_1 = left,
-    #   addr 3 -> range_2 = right-front, addr 4 -> range_3 = right.
+    # 4 sensors share ONE USB-RS485 bus and are polled sequentially. The
+    # FD07-34R documentation requires >100 ms for actual-value register 0x0001
+    # (>300 ms for processed-value register 0x0002). The adapter schedules
+    # request starts 110 ms apart; the ~94 ms response time counts toward that
+    # interval instead of being followed by another unconditional 110 ms sleep.
+    # Address-to-physical-position mapping is not yet independently verified.
     # Read cmd per sensor: <addr> 03 00 01 00 01 + CRC (e.g. 01 03 00 01 00 01 D5 CA).
     # The 01 06 00 03 00 0X write commands are one-time address provisioning, not runtime.
-    publish_rate_hz: 10.0
+    publish_rate_hz: 2.0
     serial_port: /dev/smartwheel_ultrasonic
     baud_rate: 9600
-    # The FD07-34 bus responds reliably around 0.2s on the current RS485
+    # The FD07-34R bus responds reliably around 0.2s on the current RS485
     # adapter; 0.08s caused intermittent stale WARN even though the sensors
     # answered direct probes.
     serial_timeout_sec: 0.2
     # FD07-34 commonly exposes actual distance in holding register 0x0001.
     # If your sensor is configured to use the processed value, change to 0x0002.
     register: 1
+    inter_sensor_delay_sec: 0.11
     # 4 RS485 sensors -> /ultrasonic/range_0..3, matching safety_params.yaml.
     # Re-address the sensors to 1..4 first. A sensor that fails to read is simply
     # not published (it goes stale) rather than faking max range.

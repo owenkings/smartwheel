@@ -29,3 +29,28 @@ def test_accumulator_rejects_invalid_shapes_and_values():
         accumulator.add(np.zeros((2, 2)), np.zeros((2, 2)))
     with pytest.raises(ValueError, match="finite"):
         accumulator.add(np.array([[np.nan, 0.0, 0.0]]), np.zeros((1, 3)))
+
+
+def test_accumulator_preserves_intensity_for_selected_voxel_samples():
+    accumulator = VoxelAccumulator(0.1, 10)
+    points = np.array([[0.01, 0.01, 0.01], [0.09, 0.09, 0.09], [0.11, 0.0, 0.0]])
+    origins = np.zeros_like(points)
+    intensity = np.array([101.0, 999.0, 202.0], dtype=np.float32)
+
+    assert accumulator.add(points, origins, intensity) == 2
+    accumulated_points, accumulated_origins, accumulated_intensity = (
+        accumulator.arrays_with_intensity()
+    )
+    assert accumulated_points.shape == (2, 3)
+    assert accumulated_origins.shape == (2, 3)
+    assert accumulated_intensity.tolist() == [101.0, 202.0]
+
+
+def test_accumulator_rejects_mismatched_or_nonfinite_intensity():
+    accumulator = VoxelAccumulator(0.1, 10)
+    points = np.zeros((2, 3))
+    origins = np.zeros_like(points)
+    with pytest.raises(ValueError, match="length must match"):
+        accumulator.add(points, origins, np.ones(1))
+    with pytest.raises(ValueError, match="intensity must be finite"):
+        accumulator.add(points, origins, np.array([1.0, np.nan]))
