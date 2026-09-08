@@ -26,7 +26,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -67,13 +67,30 @@ def generate_launch_description():
                 "rviz": "false",
                 "enable_ekf": "false",       # Task 8: FAST-LIO owns odom/pose, not EKF.
                 "radar": "left",
+                # manual_mapping_lio_left.rviz embeds wheelchair_bringup/TeleopPanel,
+                # which publishes /cmd_vel_nav (not the workbench /teleop/cmd_vel).
+                "teleop_topic": "/cmd_vel_nav",
+                # Task 8 for real: FAST-LIO owns base_link via body->base_link, so the
+                # wheel base must not broadcast odom->base_link as well.
+                "base_publish_tf": "false",
+                # slam_toolbox needs odom->base_link (now unowned) and neither RViz
+                # layout uses /map; the 2D grid comes from cloud_to_occupancy_grid.
+                "enable_2d_mapping": "false",
             }.items(),
         ),
 
-        # 2. FAST-LIO chain (adapter + fastlio + frame bridges).
+        # 2. FAST-LIO chain (adapter + fastlio + frame bridges). The identity
+        #    map->camera_init bridge is enabled only without RTAB-Map; with the
+        #    loop backend, RTAB-Map alone owns that corrected map edge.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(fast_lio_launch),
-            launch_arguments={"rviz": "false"}.items(),
+            launch_arguments={
+                "rviz": "false",
+                "publish_map_tf": PythonExpression(
+                    ["'", enable_loop_backend, "' != 'true'"]
+                ),
+                "publish_radar_tf": "false",
+            }.items(),
         ),
 
         # 3. 3D -> 2D occupancy projection for Nav2 (Task 9), fed by FAST-LIO's

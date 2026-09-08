@@ -5,10 +5,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 BRINGUP = ROOT / "wheelchair_bringup"
+DESCRIPTION = ROOT / "wheelchair_description"
 CONTRACT_PATH = (
     BRINGUP / "config" / "right_lidar_stage1_calibration_contract.json"
 )
 LAUNCH_PATH = BRINGUP / "launch" / "right_lidar_stage1_mapping.launch.py"
+MANUAL_LIO_RIGHT_PATH = (
+    BRINGUP / "launch" / "manual_mapping_lio_right.launch.py"
+)
+SENSORS_LAUNCH_PATH = BRINGUP / "launch" / "sensors.launch.py"
+URDF_PATH = DESCRIPTION / "urdf" / "wheelchair.urdf.xacro"
 SCRIPT_PATH = (
     ROOT.parent
     / "scripts"
@@ -198,3 +204,69 @@ def test_static_acceptance_script_is_exact_permanent_blocker():
         b"printf '%s\\n' 'BLOCKED_CONFLICT' >&2\n"
         b"exit 78\n"
     )
+
+
+def test_manual_right_lio_entry_delegates_only_to_strict_blocker():
+    source = MANUAL_LIO_RIGHT_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert "right_lidar_stage1_mapping.launch.py" in source
+    assert "manual_teleop.launch.py" not in source
+    assert "fast_lio_mapping.launch.py" not in source
+
+    forbidden = {
+        "Node",
+        "OpaqueFunction",
+        "DeclareLaunchArgument",
+        "ExecuteProcess",
+        "TimerAction",
+        "LaunchConfiguration",
+    }
+    referenced_names = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    assert forbidden.isdisjoint(referenced_names)
+
+    generator = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "generate_launch_description"
+    )
+    returns = [node for node in ast.walk(generator) if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert source.count("IncludeLaunchDescription(") == 1
+
+
+def test_sensor_entry_blocks_all_real_right_lidar_routes_before_nodes():
+    source = SENSORS_LAUNCH_PATH.read_text(encoding="utf-8")
+
+    assert "def _block_unapproved_right_lidar" in source
+    assert 'mode == "real" and right_requested' in source
+    assert '_flag(context, "enable_xtm60")' in source
+    assert '_flag(\n        context, "enable_xtm60_right"\n    )' in source
+    assert "BLOCKED_CONFLICT" in source
+    assert "right_lidar_stage1_calibration" in source
+    assert "allow_blocked" not in source
+    assert "bypass" not in source.lower()
+
+    gate = "OpaqueFunction(function=_block_unapproved_right_lidar)"
+    assert source.count(gate) == 1
+    assert source.index(gate) < source.index("Node(")
+
+
+def test_default_urdf_omits_blocked_right_tf_and_sensor_launch_only_enables_it_for_mock():
+    urdf = URDF_PATH.read_text(encoding="utf-8")
+    sensor_launch = SENSORS_LAUNCH_PATH.read_text(encoding="utf-8")
+
+    assert (
+        '<xacro:arg name="include_blocked_right_lidar_for_mock" default="false"/>'
+        in urdf
+    )
+    assert '<xacro:if value="$(arg include_blocked_right_lidar_for_mock)">' in urdf
+    assert "MOCK-ONLY historical candidate" in urdf
+
+    assert '" include_blocked_right_lidar_for_mock:="' in sensor_launch
+    assert "include_mock_right_tf = PythonExpression(" in sensor_launch
+    assert '"\' == \'mock\' and (\'"' in sensor_launch
+    assert "enable_xtm60_right" in sensor_launch

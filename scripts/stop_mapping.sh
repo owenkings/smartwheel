@@ -19,11 +19,19 @@ patterns=(
   "manual_mapping_left.launch.py"
   "manual_mapping_lio_left.launch.py"
   "manual_mapping_lio_right.launch.py"
+  # Right-radar diagnostic route (scripts/run_right_diag_mapping.sh). Without
+  # this pattern its nodes survive teardown and the next run hits a busy serial
+  # port / duplicate publishers.
+  "right_lidar_diag_mapping.launch.py"
   "fast_lio_mapping.launch.py"
   "rviz2 -d .*manual_mapping_left.rviz"
   "rviz2 -d .*manual_mapping_lio_left.rviz"
   "rviz2 -d .*manual_mapping_lio_right.rviz"
+  "rviz2 -d .*right_diag_mapping.rviz"
   "rviz2 -d .*map_2d.rviz"
+  # Camera workers run under a per-role namespace, so they do not match the
+  # wheelchair_sensors/lib pattern in every ps form.
+  "camera_adapter_node"
   "fast_lio/lib"
   "fastlio_mapping"
   "lio_cloud_adapter"
@@ -34,6 +42,11 @@ patterns=(
   "wheelchair_3d_mapping/lib"
   "wheelchair_diagnostics/lib"
   "rtabmap_slam/rtabmap"
+  # slam_toolbox is started by manual_teleop.launch.py (enable_2d_mapping). It was
+  # missing here, so a leftover instance survived teardown and kept publishing
+  # map->odom into the next session.
+  "slam_toolbox/async_slam_toolbox_node"
+  "async_slam_toolbox_node"
   "robot_localization/ekf_node"
   "robot_localization/lib"
   "robot_state_publisher --ros-args"

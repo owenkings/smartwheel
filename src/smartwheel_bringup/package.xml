@@ -23,6 +23,7 @@
   <exec_depend>smartwheel_teleop</exec_depend>
   <exec_depend>smartwheel_workbench</exec_depend>
   <exec_depend>smartwheel_rviz_plugins</exec_depend>
+  <exec_depend>wheelchair_bringup</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>

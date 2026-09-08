@@ -22,10 +22,19 @@ rtabmap:
     RGBD/CreateOccupancyGrid: "true"
     RGBD/ProximityBySpace: "true"
     RGBD/ProximityByTime: "false"
+    # ICP-only proximity needs a non-null initial transform. Without this,
+    # RTAB-Map tries visual registration to create a guess and warns because
+    # scan-cloud mode intentionally has no visual features.
+    RGBD/ProximityOdomGuess: "true"
     RGBD/ProximityAngle: "180"
     RGBD/ProximityMaxGraphDepth: "0"
     RGBD/ProximityPathMaxNeighbors: "2"
     Rtabmap/DetectionRate: "5.0"
+    # Pure scan-cloud mode has no visual words. A threshold of 0 accepts every
+    # appearance hypothesis; 1 disables those hypotheses while retaining
+    # RGBD/ProximityBySpace for ICP loop closures.
+    Rtabmap/LoopThr: "1.0"
+    RGBD/AggressiveLoopThr: "1.0"
     Reg/Strategy: "1"
     Icp/MaxCorrespondenceDistance: "0.2"
     Icp/MaxTranslation: "0.5"

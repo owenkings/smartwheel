@@ -5,8 +5,17 @@ from pathlib import Path
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    ExecuteProcess,
+    OpaqueFunction,
+    RegisterEventHandler,
+    TimerAction,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
@@ -97,6 +106,7 @@ def _setup(context):
     colorization = _as_bool(LaunchConfiguration("enable_offline_colorization").perform(context))
     record_bag = _as_bool(LaunchConfiguration("record_bag").perform(context))
     enable_loop_closure = _as_bool(LaunchConfiguration("enable_loop_closure").perform(context))
+    shutdown_on_completion = _as_bool(LaunchConfiguration("shutdown_on_completion").perform(context))
     workbench_topic_aliases = _as_bool(LaunchConfiguration("workbench_topic_aliases").perform(context))
     backend_map_topic = "/mapping_backend/map" if backend == "slam_toolbox" and workbench_topic_aliases else (
         "/rtabmap/map" if backend == "rtabmap" else "/map"
@@ -106,6 +116,28 @@ def _setup(context):
         camera = cameras[name]
         camera_params[f"{name}_camera_xyz"] = [camera[key] for key in ("x_m", "y_m", "z_m")]
         camera_params[f"{name}_camera_rpy"] = [_rad(camera[key]) for key in ("roll_deg", "pitch_deg", "yaw_deg")]
+
+    mapping_manager = Node(
+        package="smartwheel_mapping_manager",
+        executable="mapping_manager_node",
+        name="stage_a_mapping_manager",
+        output="screen",
+        parameters=[
+            {
+                "map_name": map_name,
+                "record_bag": record_bag,
+                "bag_path": str(bag_path) if record_bag else "",
+                "checking_timeout_sec": float(LaunchConfiguration("startup_delay_sec").perform(context)) + 10.0,
+                "mapping_backend": backend,
+                "backend_map_topic": backend_map_topic,
+                "require_loop_closure": enable_loop_closure if backend == "rtabmap" else False,
+                "finalization_timeout_sec": float(
+                    LaunchConfiguration("finalization_timeout_sec").perform(context)
+                ),
+                "shutdown_on_terminal_state": shutdown_on_completion,
+            }
+        ],
+    )
 
     nodes = [
         Node(
@@ -246,26 +278,7 @@ def _setup(context):
             output="screen",
             condition=IfCondition(PythonExpression(["'", backend, "' == 'slam_toolbox'"])),
         ),
-        Node(
-            package="smartwheel_mapping_manager",
-            executable="mapping_manager_node",
-            name="stage_a_mapping_manager",
-            output="screen",
-            parameters=[
-                {
-                    "map_name": map_name,
-                    "record_bag": record_bag,
-                    "bag_path": str(bag_path) if record_bag else "",
-                    "checking_timeout_sec": float(LaunchConfiguration("startup_delay_sec").perform(context)) + 10.0,
-                    "mapping_backend": backend,
-                    "backend_map_topic": backend_map_topic,
-                    "require_loop_closure": enable_loop_closure if backend == "rtabmap" else False,
-                    "finalization_timeout_sec": float(
-                        LaunchConfiguration("finalization_timeout_sec").perform(context)
-                    ),
-                }
-            ],
-        ),
+        mapping_manager,
         Node(
             package="smartwheel_global_mapping",
             executable="rtabmap_optimized_cloud_node",
@@ -324,6 +337,21 @@ def _setup(context):
             condition=IfCondition(LaunchConfiguration("record_bag")),
         ),
     ]
+    if shutdown_on_completion:
+        nodes.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=mapping_manager,
+                    on_exit=[
+                        EmitEvent(
+                            event=Shutdown(
+                                reason="mapping manager reached a terminal state"
+                            )
+                        )
+                    ],
+                )
+            )
+        )
     return nodes
 
 
@@ -349,6 +377,7 @@ def generate_launch_description():
             DeclareLaunchArgument("playback_rate", default_value="2.0"),
             DeclareLaunchArgument("startup_delay_sec", default_value="6.0"),
             DeclareLaunchArgument("finalization_timeout_sec", default_value="15.0"),
+            DeclareLaunchArgument("shutdown_on_completion", default_value="true", choices=["true", "false"]),
             DeclareLaunchArgument("workbench_topic_aliases", default_value="false", choices=["true", "false"]),
             OpaqueFunction(function=_setup),
         ]

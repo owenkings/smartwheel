@@ -48,10 +48,29 @@ def _setup(context, *args, **kwargs):
     # which pointcloud_to_laserscan nodes run, and which scan_merger config is used.
     radar = s("radar").lower()
     if radar not in ("left", "right", "both"):
-        radar = "right"
+        raise RuntimeError(
+            f"INVALID_RADAR_SELECTION: {radar!r}; expected left, right, or both"
+        )
     use_left = radar in ("left", "both")
     use_right = radar in ("right", "both")
     enable_ekf = s("enable_ekf").lower() == "true"
+
+    # odom->base_link ownership. "auto" keeps the historical rule (the wheel base
+    # publishes it whenever the EKF is not running). That rule is WRONG when a
+    # third party already owns base_link: FAST-LIO publishes body->base_link, so
+    # letting the base also publish odom->base_link gives base_link two parents
+    # and tf2 flips between them (~50 Hz jitter on everything under base_link).
+    # Those profiles pass base_publish_tf:="false" explicitly.
+    base_publish_tf_mode = s("base_publish_tf").lower()
+    if base_publish_tf_mode not in ("auto", "true", "false"):
+        raise RuntimeError(
+            "INVALID_BASE_PUBLISH_TF: "
+            f"{base_publish_tf_mode!r}; expected auto, true, or false"
+        )
+    if base_publish_tf_mode == "auto":
+        base_publish_tf = "false" if enable_ekf else "true"
+    else:
+        base_publish_tf = base_publish_tf_mode
 
     motion_control_enabled = LaunchConfiguration("motion_control_enabled")
     use_rviz = LaunchConfiguration("rviz")
@@ -159,7 +178,7 @@ def _setup(context, *args, **kwargs):
         launch_arguments={
             "mode": "real",
             "motion_control_enabled": motion_control_enabled,
-            "publish_tf": "false" if enable_ekf else "true",
+            "publish_tf": base_publish_tf,
         }.items(),
     ))
 
@@ -206,11 +225,23 @@ def generate_launch_description():
             "radar", default_value="right",
             description="Which XT-M60(s) to use: left | right | both. Selects the "
                         "radar drivers, the pointcloud_to_laserscan nodes and the "
-                        "scan_merger config. Current production default: right."),
+                        "scan_merger config. The historical right default is "
+                        "currently blocked by its calibration contract."),
+        DeclareLaunchArgument(
+            "base_publish_tf", default_value="auto",
+            description="Whether the wheel base broadcasts odom->base_link. "
+                        "auto = publish only when the EKF is off (historical rule). "
+                        "Pass false when an external odometry source already owns "
+                        "base_link (FAST-LIO publishes body->base_link) - two "
+                        "publishers on the same child frame make TF flip."),
         DeclareLaunchArgument(
             "teleop_topic", default_value="/teleop/cmd_vel",
-            description="Input to the safety supervisor. The SmartWheel RViz panel is "
-                        "locked to /teleop/cmd_vel."),
+            description="Input topic of the safety supervisor. MUST match the topic the "
+                        "RViz teleop panel in rviz_config publishes on, otherwise the "
+                        "supervisor never sees a command and the chair will not move: "
+                        "SmartWheel/Teleop is locked to /teleop/cmd_vel, while "
+                        "wheelchair_bringup/TeleopPanel (the LIO mapping layouts) "
+                        "publishes /cmd_vel_nav."),
         DeclareLaunchArgument(
             "camera_config",
             default_value=PathJoinSubstitution(

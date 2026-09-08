@@ -17,6 +17,11 @@ from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
+from smartwheel_mapping_manager.finalization import (
+    FinalizationAction,
+    finalization_action,
+    should_shutdown_on_terminal_state,
+)
 from smartwheel_mapping_manager.state_machine import MappingState, MappingStateMachine
 from smartwheel_mapping_manager.quality_gate import validate_quality_bundle
 from smartwheel_sensor_api import TimestampMonitor, pointcloud2_to_xyz, validate_pointcloud_fields
@@ -45,6 +50,7 @@ class MappingManagerNode(Node):
         self.declare_parameter("minimum_trajectory_poses", 10)
         self.declare_parameter("maximum_trajectory_rmse_m", 1.0)
         self.declare_parameter("finalization_timeout_sec", 15.0)
+        self.declare_parameter("shutdown_on_terminal_state", False)
         self._map_name = str(self.get_parameter("map_name").value)
         self._timeout = float(self.get_parameter("checking_timeout_sec").value)
         self._minimum_disk = float(self.get_parameter("minimum_free_disk_gb").value)
@@ -68,6 +74,9 @@ class MappingManagerNode(Node):
         self._minimum_poses = int(self.get_parameter("minimum_trajectory_poses").value)
         self._maximum_rmse = float(self.get_parameter("maximum_trajectory_rmse_m").value)
         self._finalization_timeout = float(self.get_parameter("finalization_timeout_sec").value)
+        self._shutdown_on_terminal = bool(self.get_parameter("shutdown_on_terminal_state").value)
+        self._terminal_shutdown_timer = None
+        self._terminal_shutdown_requested = False
         self._machine = MappingStateMachine()
         self._checks = {}
         self._seen = {"left": 0, "right": 0, "imu": 0, "wheel": 0}
@@ -263,8 +272,22 @@ class MappingManagerNode(Node):
             elif self._finalization_timed_out():
                 self._machine.fail(self._backend_failure_reason())
         elif state is MappingState.OPTIMIZING:
-            if not self._backend_ready() and self._finalization_timed_out():
+            action = finalization_action(
+                state,
+                backend_ready=self._backend_ready(),
+                export_service_ready=self._export_client.service_is_ready(),
+                timed_out=self._finalization_timed_out(),
+            )
+            if action is FinalizationAction.REQUEST_EXPORT:
+                self._machine.advance()
+                self._export_path = ""
+                self._export_failure = ""
+                self._finalization_started = time.monotonic()
+                self._export_client.call_async(Trigger.Request())
+            elif action is FinalizationAction.FAIL_BACKEND:
                 self._machine.fail(self._backend_failure_reason())
+            elif action is FinalizationAction.FAIL_EXPORT_SERVICE:
+                self._machine.fail("map export service is unavailable")
         elif state is MappingState.EXPORTING and self._export_path:
             self._machine.advance()
         elif state is MappingState.EXPORTING and self._finalization_timed_out():
@@ -349,13 +372,32 @@ class MappingManagerNode(Node):
         message.failure_reason = self._machine.failure_reason
         message.checks = [f"{name}={'PASS' if value else 'FAIL'}" for name, value in sorted(self._checks.items())]
         self._publisher.publish(message)
+        if (
+            should_shutdown_on_terminal_state(self._machine.state, self._shutdown_on_terminal)
+            and self._terminal_shutdown_timer is None
+        ):
+            self._terminal_shutdown_timer = self.create_timer(0.5, self._shutdown_after_terminal_status)
+
+    def _shutdown_after_terminal_status(self) -> None:
+        self._terminal_shutdown_timer.cancel()
+        self.get_logger().info(
+            f"terminal mapping state {self._machine.state.value}; requesting clean shutdown"
+        )
+        # Do not call rclpy.shutdown() from this executor callback. On Humble,
+        # shutdown may wait for the currently-running callback and deadlock.
+        # Let the callback return, then have main() leave its spin loop.
+        self._terminal_shutdown_requested = True
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = MappingManagerNode()
     try:
-        rclpy.spin(node)
+        while (
+            rclpy.ok(context=node.context)
+            and not node._terminal_shutdown_requested
+        ):
+            rclpy.spin_once(node)
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     except (RuntimeError, SystemError):

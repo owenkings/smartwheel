@@ -13,11 +13,11 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, Header, String
 from std_srvs.srv import Trigger
 
-from smartwheel_map_products.accumulator import VoxelAccumulator
 from smartwheel_map_products.colorizer import CameraFrame, colorize_points
 from smartwheel_map_products.metrics import build_trajectory_evaluation, evaluate_trajectory
 from smartwheel_map_products.occupancy import raycast_occupancy
-from smartwheel_map_products.writers import export_map_bundle
+from smartwheel_map_products.session import SessionCapture, SessionCaptureError
+from smartwheel_map_products.writers import export_map_bundle, publish_latest_path
 from smartwheel_sensor_api import apply_transform, pointcloud2_from_xyz, pointcloud2_to_xyz
 from smartwheel_sensor_api.pointcloud import transform_matrix
 
@@ -63,6 +63,9 @@ class MapProductsNode(Node):
         self.declare_parameter("require_backend_cloud", False)
         self.declare_parameter("cloud_topic", "/lidar/merged/points")
         self.declare_parameter("odom_topic", "/odom/fused")
+        self.declare_parameter("cloud_frame_mode", "base_frame")
+        self.declare_parameter("expected_cloud_frame", "")
+        self.declare_parameter("require_session_stop", True)
         self.declare_parameter("validation_stage", "A_SYNTHETIC")
         self.declare_parameter("hardware_validated", False)
         self.declare_parameter("mock_lio", True)
@@ -79,6 +82,7 @@ class MapProductsNode(Node):
             self.declare_parameter(f"{name}_camera_rpy", rpy)
 
         root = Path(str(self.get_parameter("output_root").value)).expanduser().resolve()
+        self._output_root = root
         explicit = str(self.get_parameter("version_directory").value).strip()
         if explicit:
             self._directory = Path(explicit).expanduser().resolve()
@@ -87,7 +91,6 @@ class MapProductsNode(Node):
             self._directory = root / f"{self.get_parameter('map_name').value}_{stamp}"
         self._directory.mkdir(parents=True, exist_ok=True)
         root.mkdir(parents=True, exist_ok=True)
-        (root / "latest_path.txt").write_text(str(self._directory) + "\n", encoding="utf-8")
 
         self._resolution = float(self.get_parameter("resolution_m").value)
         self._voxel = float(self.get_parameter("voxel_size_m").value)
@@ -101,6 +104,13 @@ class MapProductsNode(Node):
         self._odom_topic = str(self.get_parameter("odom_topic").value).strip()
         if not self._cloud_topic or not self._odom_topic:
             raise ValueError("cloud_topic and odom_topic must be non-empty")
+        self._cloud_frame_mode = str(self.get_parameter("cloud_frame_mode").value).strip()
+        if self._cloud_frame_mode not in ("base_frame", "world_registered"):
+            raise ValueError("cloud_frame_mode must be base_frame or world_registered")
+        self._expected_cloud_frame = str(self.get_parameter("expected_cloud_frame").value).strip()
+        if self._cloud_frame_mode == "world_registered" and not self._expected_cloud_frame:
+            raise ValueError("expected_cloud_frame is required for world_registered clouds")
+        self._require_session_stop = bool(self.get_parameter("require_session_stop").value)
         self._validation_stage = str(self.get_parameter("validation_stage").value).strip()
         self._hardware_validated = bool(self.get_parameter("hardware_validated").value)
         self._mock_lio = bool(self.get_parameter("mock_lio").value)
@@ -115,10 +125,13 @@ class MapProductsNode(Node):
             )
             for name in CAMERAS
         }
-        self._accumulator = VoxelAccumulator(
+        self._session = SessionCapture(
             self._voxel,
             int(self.get_parameter("maximum_accumulated_points").value),
+            expected_frame_id=self._expected_cloud_frame,
         )
+        self._session.start()
+        self._accumulator = self._session.accumulator
         self._accumulation_failure = ""
         self._poses = []
         self._ground_truth = []
@@ -128,6 +141,7 @@ class MapProductsNode(Node):
         self._camera_frames: list[CameraFrame] = []
         self._completed_at = None
         self._exported = False
+        self._export_failure = ""
         self._rejected_pose_associations = 0
         self._bag_path = str(self.get_parameter("bag_path").value).strip()
 
@@ -147,6 +161,7 @@ class MapProductsNode(Node):
         self._failure_pub = self.create_publisher(String, "/map_export/failed", latched)
         self.create_subscription(String, "/workbench/bag_path", self._on_bag_path, latched)
         self.create_service(Trigger, "/map_export/export", self._on_export_request)
+        self.create_service(Trigger, "/map_session/stop", self._on_stop_request)
         self.create_subscription(
             PointCloud2,
             self._cloud_topic,
@@ -186,14 +201,14 @@ class MapProductsNode(Node):
         self._bag_path = message.data.strip()
 
     def _on_odom(self, message: Odometry) -> None:
-        if self._exported:
+        if self._exported or self._session.state != SessionCapture.CAPTURING:
             return
         stamp = _stamp_seconds(message.header.stamp)
         pose = message.pose.pose
         self._poses.append((stamp, pose.position.x, pose.position.y, _yaw_from_quaternion(pose.orientation)))
 
     def _on_ground_truth(self, message: Odometry) -> None:
-        if self._exported:
+        if self._exported or self._session.state != SessionCapture.CAPTURING:
             return
         pose = message.pose.pose
         self._ground_truth.append(
@@ -220,23 +235,41 @@ class MapProductsNode(Node):
         return pose if abs(pose[0] - stamp) <= self._maximum_pose_delta else None
 
     def _on_cloud(self, message: PointCloud2) -> None:
-        if self._exported or self._accumulation_failure:
+        if (
+            self._exported
+            or self._accumulation_failure
+            or self._session.state != SessionCapture.CAPTURING
+        ):
             return
+        stamp = _stamp_seconds(message.header.stamp)
         pose = self._nearest_pose(_stamp_seconds(message.header.stamp))
         if pose is None:
             self._rejected_pose_associations += 1
+            self._session.reject_frame()
             return
         try:
             points, intensity = pointcloud2_to_xyz(message)
         except ValueError as exc:
-            self.get_logger().error(str(exc))
+            self._accumulation_failure = str(exc)
+            self._session.fail(self._accumulation_failure)
+            self._failure_pub.publish(String(data=self._accumulation_failure))
+            self.get_logger().error(self._accumulation_failure)
             return
-        map_from_base = transform_matrix([pose[1], pose[2], 0.0], [0.0, 0.0, pose[3]])
-        world = apply_transform(points, map_from_base)
+        if self._cloud_frame_mode == "base_frame":
+            map_from_base = transform_matrix([pose[1], pose[2], 0.0], [0.0, 0.0, pose[3]])
+            world = apply_transform(points, map_from_base)
+        else:
+            world = points
         origins = np.tile(np.array([pose[1], pose[2], 0.0]), (world.shape[0], 1))
         try:
-            self._accumulator.add(world, origins, intensity)
-        except (OverflowError, ValueError) as exc:
+            self._session.add_frame(
+                stamp,
+                message.header.frame_id,
+                world,
+                origins,
+                intensity,
+            )
+        except SessionCaptureError as exc:
             self._accumulation_failure = str(exc)
             self._failure_pub.publish(String(data=self._accumulation_failure))
             self.get_logger().error(self._accumulation_failure)
@@ -271,7 +304,28 @@ class MapProductsNode(Node):
 
     def _on_completed(self, message: Bool) -> None:
         if message.data and self._completed_at is None:
+            if self._session.state is SessionCapture.CAPTURING:
+                self._session.stop()
             self._completed_at = time.monotonic()
+
+    def _on_stop_request(self, _request, response):
+        if self._session.state is SessionCapture.STOPPED:
+            response.success = True
+            response.message = "map session already stopped"
+            return response
+        if self._session.state is SessionCapture.FAILED:
+            response.success = False
+            response.message = self._session.failure_reason or "map session failed"
+            return response
+        try:
+            self._session.stop()
+        except SessionCaptureError as exc:
+            response.success = False
+            response.message = str(exc)
+            return response
+        response.success = True
+        response.message = "map session stopped; call /map_export/export to finalize"
+        return response
 
     def _on_export_request(self, _request, response):
         if self._exported:
@@ -279,14 +333,24 @@ class MapProductsNode(Node):
             response.success = True
             response.message = f"already exported: {self._directory}"
             return response
+        if self._require_session_stop and self._session.state is not SessionCapture.STOPPED:
+            response.success = False
+            response.message = (
+                self._session.failure_reason
+                or "map session is still capturing; call /map_session/stop first"
+            )
+            self._failure_pub.publish(String(data=response.message))
+            return response
         products = self._current_products()
         if products is None:
             response.success = False
             response.message = self._missing_products_reason()
             self._failure_pub.publish(String(data=response.message))
             return response
-        self._publish(products[0], products[2], products[4], products[5])
-        self._export(*products)
+        if not self._try_export(products):
+            response.success = False
+            response.message = self._export_failure
+            return response
         response.success = True
         response.message = str(self._directory)
         return response
@@ -324,6 +388,10 @@ class MapProductsNode(Node):
     def _missing_products_reason(self) -> str:
         if self._accumulation_failure:
             return self._accumulation_failure
+        if self._session.state is SessionCapture.FAILED:
+            return self._session.failure_reason or "map session failed"
+        if self._require_session_stop and self._session.state is not SessionCapture.STOPPED:
+            return "map session is still capturing; call /map_session/stop first"
         if len(self._accumulator) == 0:
             return "no merged point cloud has been received"
         if self._require_backend_cloud and self._backend_points is None:
@@ -336,14 +404,25 @@ class MapProductsNode(Node):
         if (
             self._completed_at is not None
             and not self._exported
+            and not self._export_failure
             and time.monotonic() - self._completed_at >= self._export_delay
         ):
             products = self._current_products()
             if products is not None:
-                self._publish(products[0], products[2], products[4], products[5])
-                self._export(*products)
+                self._try_export(products)
             else:
                 self._failure_pub.publish(String(data=self._missing_products_reason()))
+
+    def _try_export(self, products) -> bool:
+        try:
+            self._publish(products[0], products[2], products[4], products[5])
+            self._export(*products)
+        except Exception as exc:
+            self._export_failure = f"map export failed: {exc}"
+            self._failure_pub.publish(String(data=self._export_failure))
+            self.get_logger().error(self._export_failure)
+            return False
+        return True
 
     def _publish(self, points, grid, intensity_points, intensity) -> None:
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
@@ -426,8 +505,11 @@ class MapProductsNode(Node):
             "voxel_size_m": self._voxel,
             "cloud_topic": self._cloud_topic,
             "odom_topic": self._odom_topic,
+            "cloud_frame_mode": self._cloud_frame_mode,
+            "expected_cloud_frame": self._expected_cloud_frame,
             "mock_lio": self._mock_lio,
         }
+        quality["session"] = self._session.summary().as_dict()
         export_map_bundle(
             self._directory,
             points,
@@ -441,6 +523,7 @@ class MapProductsNode(Node):
             intensity_points=intensity_points,
             intensity=intensity,
         )
+        publish_latest_path(self._output_root, self._directory)
         self._exported = True
         self._complete_pub.publish(String(data=str(self._directory)))
         self.get_logger().info(f"map products exported to {self._directory}")

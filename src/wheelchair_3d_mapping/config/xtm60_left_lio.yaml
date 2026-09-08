@@ -6,11 +6,9 @@
 # per-point time, NO ring, ~10 Hz, narrow 120x90 FOV. It is fed via the
 # lio_cloud_adapter_node on /lio/cloud_in (Task 3), NOT a Livox/Velodyne driver.
 #
-# DESKEW OFF: FAST-LIO's Velodyne path (lidar_type=2) normally uses a per-point
-# 'time' field for motion de-skew. XT-M60 has no per-point time, so the adapter
-# emits a zero 'time' field (add_zero_time_field=true) -> every point shares the
-# frame stamp -> de-skew degenerates to "no intra-frame correction", which is
-# exactly what we want for a flash snapshot. time_sync_en=false.
+# DESKEW OFF: lidar_type=5 selects FAST-LIO's generic PointCloud2 path. XT-M60
+# flash frames have no per-point time or ring; the adapter forwards XYZI without
+# synthesizing either field. time_sync_en=false.
 /**:
     ros__parameters:
         feature_extract_enable: false
@@ -29,12 +27,10 @@
             time_offset_lidar_to_imu: 0.0
 
         preprocess:
-            lidar_type: 2                # 2 = Velodyne/standard PointCloud2 XYZI path (NOT Livox/AVIA)
+            lidar_type: 5                # 5 = generic PointCloud2 XYZI path (NOT Velodyne/Livox)
             scan_line: 90                # XT-M60 organized-cloud vertical lines (approx; refined in Task 7)
             scan_rate: 10                # Hz
-            timestamp_unit: 0            # 0=seconds; adapter ramps per-point time 0..0.1s
-                                         # so FAST-LIO's sync_packages batches a full
-                                         # 10Hz IMU window per frame (Task 7 fix B).
+            timestamp_unit: 0            # unused by generic whole-frame XYZI path
             blind: 0.1                   # near-clip (m); XT-M60 near surface/noise
 
         mapping:
@@ -47,7 +43,11 @@
             # and trust the gyro more (gyr_cov 0.1 -> 0.5). acc bias also stiffened.
             acc_cov: 0.5
             gyr_cov: 0.5
-            b_acc_cov: 0.00001
+            # b_acc_cov restored to the upstream default: at 1e-5 the accel-bias state
+            # is frozen and the H30's few-mg thermal drift goes unmodelled, which with
+            # LASER_POINT_COV=100 diverges over hours. See the right-radar config for
+            # the measured numbers. b_gyr_cov stays 1e-7 (the Task-7 yaw fix).
+            b_acc_cov: 0.0001
             b_gyr_cov: 0.0000001
             fov_degree: 120.0            # XT-M60 horizontal FOV ~120 deg (narrow; NOT 360)
             det_range: 20.0              # XT-M60 effective indoor range (m)
@@ -69,11 +69,16 @@
                             0.013615, 0.999721, 0.019278 ]
 
         publish:
+            map_en: false                # do not publish unbounded /Laser_map
             path_en: true                # publish /path for RViz trajectory (req 4 / Task 10)
             scan_publish_en: true        # publish registered cloud
             dense_publish_en: true
             scan_bodyframe_pub_en: true
 
         pcd_save:
-            pcd_save_en: true            # accumulate full map; saved via /map_save service (Task 13)
-            interval: -1                 # all frames in ONE pcd
+            # OFF: with interval < 0 laserMapping.cpp:536 never flushes, so the cloud
+            # accumulates in RAM for the whole session. Saving is done out-of-process
+            # by scripts/lio_save_cloud.py (/cloud_registered), which is decoupled
+            # from this flag.
+            pcd_save_en: false
+            interval: -1                 # all frames in ONE pcd (unused while disabled)

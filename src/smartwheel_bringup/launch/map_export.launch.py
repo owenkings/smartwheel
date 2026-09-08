@@ -21,6 +21,11 @@ def generate_launch_description():
             DeclareLaunchArgument("lidar_mode", default_value="dual_map_only", choices=["single", "dual_map_only", "dual_lio"]),
             DeclareLaunchArgument("bag_path", default_value=""),
             DeclareLaunchArgument("enable_offline_colorization", default_value="true", choices=["true", "false"]),
+            DeclareLaunchArgument("cloud_topic", default_value="/lidar/merged/points"),
+            DeclareLaunchArgument("odom_topic", default_value="/odom/fused"),
+            DeclareLaunchArgument("cloud_frame_mode", default_value="base_frame", choices=["base_frame", "world_registered"]),
+            DeclareLaunchArgument("expected_cloud_frame", default_value=""),
+            DeclareLaunchArgument("require_session_stop", default_value="true", choices=["true", "false"]),
             Node(
                 package="smartwheel_map_products",
                 executable="map_products_node",
@@ -35,6 +40,11 @@ def generate_launch_description():
                         "lidar_mode": LaunchConfiguration("lidar_mode"),
                         "bag_path": LaunchConfiguration("bag_path"),
                         "enable_offline_colorization": LaunchConfiguration("enable_offline_colorization"),
+                        "cloud_topic": LaunchConfiguration("cloud_topic"),
+                        "odom_topic": LaunchConfiguration("odom_topic"),
+                        "cloud_frame_mode": LaunchConfiguration("cloud_frame_mode"),
+                        "expected_cloud_frame": LaunchConfiguration("expected_cloud_frame"),
+                        "require_session_stop": LaunchConfiguration("require_session_stop"),
                     }
                 ],
             ),

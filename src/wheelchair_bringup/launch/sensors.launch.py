@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import (
     Command,
@@ -10,6 +10,28 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
+
+
+def _flag(context, name):
+    return LaunchConfiguration(name).perform(context).strip().lower() == "true"
+
+
+def _block_unapproved_right_lidar(context, *args, **kwargs):
+    mode = LaunchConfiguration("mode").perform(context).strip().lower()
+    if mode not in ("real", "mock"):
+        raise RuntimeError(f"INVALID_SENSOR_MODE: {mode!r}")
+
+    # The legacy single-radar config points to the same right unit
+    # (192.168.1.101), so it is covered by the same contract gate.
+    right_requested = _flag(context, "enable_xtm60") or _flag(
+        context, "enable_xtm60_right"
+    )
+    if mode == "real" and right_requested:
+        raise RuntimeError(
+            "BLOCKED_CONFLICT: right_lidar_stage1_calibration has no "
+            "runtime-eligible transform"
+        )
+    return []
 
 
 def generate_launch_description():
@@ -37,6 +59,17 @@ def generate_launch_description():
         [bringup_prefix, "lib", "wheelchair_bringup", "libxt_bindshim.so"]
     )
     description_share = FindPackageShare("wheelchair_description")
+    include_mock_right_tf = PythonExpression(
+        [
+            "'",
+            mode,
+            "' == 'mock' and ('",
+            enable_xtm60,
+            "' == 'true' or '",
+            enable_xtm60_right,
+            "' == 'true')",
+        ]
+    )
     robot_description = {
         "robot_description": ParameterValue(
             Command(
@@ -45,6 +78,8 @@ def generate_launch_description():
                     PathJoinSubstitution(
                         [description_share, "urdf", "wheelchair.urdf.xacro"]
                     ),
+                    " include_blocked_right_lidar_for_mock:=",
+                    include_mock_right_tf,
                 ]
             ),
             value_type=str,
@@ -108,6 +143,9 @@ def generate_launch_description():
                 "camera_config",
                 default_value=PathJoinSubstitution([bringup_share, "config", "camera.yaml"]),
             ),
+            # Central fail-closed gate. It executes after launch arguments are
+            # declared and before any robot_state_publisher or sensor process.
+            OpaqueFunction(function=_block_unapproved_right_lidar),
             Node(
                 package="robot_state_publisher",
                 executable="robot_state_publisher",

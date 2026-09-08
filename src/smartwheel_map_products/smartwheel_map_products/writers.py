@@ -2,7 +2,10 @@ import csv
 import hashlib
 import json
 import math
+import os
 import shutil
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import cv2
@@ -10,6 +13,80 @@ import numpy as np
 import yaml
 
 from smartwheel_map_products.occupancy import OccupancyGridData
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist directory entries when the platform exposes directory fsync."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(str(directory), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _atomic_path(path: Path, mode: str, encoding: str | None = None):
+    """Yield a temporary file stream and atomically publish it on success."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    temporary = Path(temporary_name)
+    stream = None
+    try:
+        if "b" in mode:
+            stream = os.fdopen(descriptor, mode)
+        else:
+            stream = os.fdopen(descriptor, mode, encoding=encoding or "utf-8")
+        descriptor = -1
+        yield stream
+        stream.flush()
+        os.fsync(stream.fileno())
+        stream.close()
+        stream = None
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        if stream is not None:
+            stream.close()
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def _atomic_binary_path(path: Path):
+    with _atomic_path(path, "wb") as stream:
+        yield stream
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    with _atomic_binary_path(destination) as stream:
+        with source.open("rb") as input_stream:
+            shutil.copyfileobj(input_stream, stream)
+
+
+def publish_latest_path(output_root: str | Path, directory: str | Path) -> Path:
+    """Publish the latest completed bundle pointer atomically."""
+
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    pointer = root / "latest_path.txt"
+    with _atomic_path(pointer, "w", encoding="utf-8") as stream:
+        stream.write(str(Path(directory).resolve()) + "\n")
+    return pointer
 
 
 def _validated_intensity(
@@ -45,7 +122,7 @@ def write_pcd(
         "VIEWPOINT 0 0 0 1 0 0 0\n"
         f"POINTS {xyz.shape[0]}\nDATA ascii\n"
     )
-    with path.open("w", encoding="ascii") as stream:
+    def write(stream) -> None:
         stream.write(header)
         if amplitudes is None:
             np.savetxt(stream, xyz, fmt="%.6f %.6f %.6f")
@@ -55,6 +132,8 @@ def write_pcd(
                 np.column_stack((xyz, amplitudes)),
                 fmt="%.6f %.6f %.6f %.6f",
             )
+    with _atomic_path(path, "w", encoding="ascii") as stream:
+        write(stream)
 
 
 def write_ply(
@@ -70,7 +149,7 @@ def write_ply(
         rgb = np.asarray(colors, dtype=np.uint8)
         if rgb.shape != xyz.shape:
             raise ValueError("colors must match points")
-    with path.open("w", encoding="ascii") as stream:
+    def write(stream) -> None:
         stream.write("ply\nformat ascii 1.0\n")
         stream.write(f"element vertex {xyz.shape[0]}\n")
         stream.write("property float x\nproperty float y\nproperty float z\n")
@@ -89,6 +168,8 @@ def write_ply(
             if rgb is not None:
                 values.extend(str(int(value)) for value in rgb[index])
             stream.write(" ".join(values) + "\n")
+    with _atomic_path(path, "w", encoding="ascii") as stream:
+        write(stream)
 
 
 def _map_image(cells: np.ndarray) -> np.ndarray:
@@ -100,11 +181,33 @@ def _map_image(cells: np.ndarray) -> np.ndarray:
 
 def write_occupancy(directory: Path, grid: OccupancyGridData) -> None:
     image = _map_image(grid.cells)
-    with (directory / "map_2d.pgm").open("wb") as stream:
+    with _atomic_binary_path(directory / "map_2d.pgm") as stream:
         stream.write(f"P5\n{grid.width} {grid.height}\n255\n".encode("ascii"))
         stream.write(image.tobytes())
-    if not cv2.imwrite(str(directory / "map_2d.png"), image):
-        raise RuntimeError("failed to write map_2d.png")
+    png_path = directory / "map_2d.png"
+    descriptor, temporary_name = tempfile.mkstemp(
+        # OpenCV selects the encoder from the temporary path extension.  Keep
+        # the final suffix as `.png` while the hidden prefix still marks the
+        # file as an in-progress artifact until the atomic rename.
+        prefix=f".{png_path.name}.", suffix=".png", dir=str(png_path.parent)
+    )
+    os.close(descriptor)
+    temporary_png = Path(temporary_name)
+    try:
+        if not cv2.imwrite(str(temporary_png), image):
+            raise RuntimeError("failed to write map_2d.png")
+        try:
+            with temporary_png.open("r+b") as stream:
+                os.fsync(stream.fileno())
+        except OSError:
+            # Some Windows file handles do not permit fsync after an external
+            # encoder has closed and reopened the path; the atomic rename still
+            # prevents a partially written final filename.
+            pass
+        os.replace(temporary_png, png_path)
+        _fsync_directory(png_path.parent)
+    finally:
+        temporary_png.unlink(missing_ok=True)
     metadata = {
         "image": "map_2d.pgm",
         "resolution": grid.resolution,
@@ -113,18 +216,18 @@ def write_occupancy(directory: Path, grid: OccupancyGridData) -> None:
         "occupied_thresh": 0.65,
         "free_thresh": 0.196,
     }
-    with (directory / "map_2d.yaml").open("w", encoding="utf-8") as stream:
+    with _atomic_path(directory / "map_2d.yaml", "w", encoding="utf-8") as stream:
         yaml.safe_dump(metadata, stream, sort_keys=False)
 
 
 def write_trajectory(directory: Path, poses: list[tuple[float, float, float, float]]) -> None:
-    with (directory / "trajectory.tum").open("w", encoding="ascii") as tum:
+    with _atomic_path(directory / "trajectory.tum", "w", encoding="ascii") as tum:
         for stamp, x, y, yaw in poses:
             tum.write(
                 f"{stamp:.9f} {x:.6f} {y:.6f} 0.000000 0.000000 0.000000 "
                 f"{math.sin(yaw / 2.0):.9f} {math.cos(yaw / 2.0):.9f}\n"
             )
-    with (directory / "poses.csv").open("w", encoding="ascii", newline="") as csv_file:
+    with _atomic_path(directory / "poses.csv", "w", encoding="ascii") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(("timestamp", "x_m", "y_m", "z_m", "roll_rad", "pitch_rad", "yaw_rad"))
         for stamp, x, y, yaw in poses:
@@ -209,36 +312,64 @@ def export_map_bundle(
 
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
-    (output / "logs").mkdir(exist_ok=True)
-    write_pcd(output / "map_geometry.pcd", points)
-    write_ply(output / "map_geometry.ply", points)
-    if colors is not None:
-        write_ply(output / "map_colored.ply", points, colors)
-    if intensity_points is not None and intensity is not None:
-        write_pcd(output / "map_pointcloud_amp.pcd", intensity_points, intensity)
-        write_ply(
-            output / "map_pointcloud_amp.ply",
-            intensity_points,
-            intensity=intensity,
+    manifest_path = output / "manifest.json"
+    incomplete_path = output / ".incomplete"
+    if manifest_path.exists():
+        raise FileExistsError(f"map bundle is already complete: {output}")
+    existing_files = [
+        path
+        for path in output.rglob("*")
+        if path.is_file()
+        and path.name != ".incomplete"
+        and path.name != "rtabmap.db"
+        and "raw_bag" not in path.relative_to(output).parts
+    ]
+    if existing_files and not incomplete_path.exists():
+        raise FileExistsError(
+            f"refusing to overwrite non-empty map bundle without {incomplete_path.name}: {output}"
         )
-    write_occupancy(output, grid)
-    write_trajectory(output, poses)
-    profile_source = Path(hardware_profile_path)
-    if not profile_source.is_file():
-        raise FileNotFoundError(f"hardware profile does not exist: {profile_source}")
-    shutil.copyfile(profile_source, output / "hardware_profile_used.yaml")
-    with (output / "algorithm_profile_used.yaml").open("w", encoding="utf-8") as stream:
-        yaml.safe_dump(algorithm_profile, stream, sort_keys=True)
-    (output / "bag_path.txt").write_text((bag_path or "NOT_RECORDED") + "\n", encoding="utf-8")
-    (output / "quality_report.json").write_text(quality_json, encoding="utf-8")
-    (output / "quality_report.md").write_text(quality_markdown, encoding="utf-8")
+    with _atomic_path(incomplete_path, "w", encoding="ascii") as stream:
+        stream.write("map export in progress\n")
+    (output / "logs").mkdir(exist_ok=True)
+    _fsync_directory(output)
+    try:
+        write_pcd(output / "map_geometry.pcd", points)
+        write_ply(output / "map_geometry.ply", points)
+        if colors is not None:
+            write_ply(output / "map_colored.ply", points, colors)
+        if intensity_points is not None and intensity is not None:
+            write_pcd(output / "map_pointcloud_amp.pcd", intensity_points, intensity)
+            write_ply(
+                output / "map_pointcloud_amp.ply",
+                intensity_points,
+                intensity=intensity,
+            )
+        write_occupancy(output, grid)
+        write_trajectory(output, poses)
+        profile_source = Path(hardware_profile_path)
+        if not profile_source.is_file():
+            raise FileNotFoundError(f"hardware profile does not exist: {profile_source}")
+        _atomic_copy(profile_source, output / "hardware_profile_used.yaml")
+        with _atomic_path(output / "algorithm_profile_used.yaml", "w", encoding="utf-8") as stream:
+            yaml.safe_dump(algorithm_profile, stream, sort_keys=True)
+        with _atomic_path(output / "bag_path.txt", "w", encoding="utf-8") as stream:
+            stream.write((bag_path or "NOT_RECORDED") + "\n")
+        with _atomic_path(output / "quality_report.json", "w", encoding="utf-8") as stream:
+            stream.write(quality_json)
+        with _atomic_path(output / "quality_report.md", "w", encoding="utf-8") as stream:
+            stream.write(quality_markdown)
+    except BaseException:
+        _fsync_directory(output)
+        raise
 
     files = []
     externally_managed_files = []
     for path in sorted(output.rglob("*")):
         if path.is_file() and path.name != "manifest.json":
             relative = path.relative_to(output)
-            if path.name == "rtabmap.db" or "raw_bag" in relative.parts:
+            if path.name in ("manifest.json", ".incomplete") or "raw_bag" in relative.parts:
+                continue
+            if path.name == "rtabmap.db":
                 externally_managed_files.append(str(relative))
                 continue
             files.append(
@@ -261,5 +392,8 @@ def export_map_bundle(
         sort_keys=True,
         allow_nan=False,
     ) + "\n"
-    (output / "manifest.json").write_text(manifest_json, encoding="utf-8")
+    incomplete_path.unlink(missing_ok=True)
+    _fsync_directory(output)
+    with _atomic_path(manifest_path, "w", encoding="utf-8") as stream:
+        stream.write(manifest_json)
     return output

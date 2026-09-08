@@ -13,6 +13,7 @@ def test_operator_launch_is_mock_only_and_fail_closed():
     assert "hardware_enabled" in source
     assert '"workbench_topic_aliases": "true"' in source
     assert '"record_bag": "false"' in source
+    assert '"shutdown_on_completion": "false"' in source
 
 
 def test_workbench_launch_declares_required_arguments():
@@ -46,6 +47,24 @@ def test_rviz_config_has_six_plugin_types_and_four_camera_instances():
         "SmartWheel/Map Products",
     ):
         assert classes.count(panel_class) == 1
+
+
+def test_mock_workbench_overrides_camera_transport_without_changing_base_config():
+    launch_source = (
+        BRINGUP / "launch" / "operator_workbench.launch.py"
+    ).read_text(encoding="utf-8")
+    assert 'LaunchConfiguration("mode").perform(context) == "mock"' in launch_source
+    assert 'panel["TransportHint"] = "raw"' in launch_source
+
+    config = yaml.safe_load(
+        (BRINGUP / "rviz" / "smartwheel_operator_workbench.rviz").read_text(encoding="utf-8")
+    )
+    camera_panels = [
+        panel for panel in config["Panels"]
+        if panel.get("Class") == "SmartWheel/Camera"
+    ]
+    assert len(camera_panels) == 4
+    assert all(panel["TransportHint"] == "compressed" for panel in camera_panels)
 
 
 def test_central_render_view_uses_map_without_fallback():

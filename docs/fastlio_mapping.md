@@ -313,8 +313,27 @@ deskew off、`extrinsic_est_en=false`、fov 120、blind 0.1)。
 
 ### 6.3 启动、地图保存、RTAB-Map 后端开关
 
-启动见 §7.2（右雷达,当前默认入口）。地图保存见 `scripts/save_mapping_result.sh`
-（累积 `/cloud_registered` → PLY + `/map_2d_from_3d` → PGM/YAML）。
+启动见 §7.2（右雷达,当前默认入口）。完整会话地图保存必须在建图开始前启动
+`map_products_node`，结束时再调用 `scripts/save_mapping_result.sh`；脚本会先调用
+`/map_session/stop`，再调用 `/map_export/export`，只接受正式会话的原子产品包。
+旧的 `lio_save_cloud.py` 仍可用于短时固定窗口诊断，但不再被视为完整地图保存器，
+也不会被 `save_mapping_result.sh` 在结束时偷偷启动。
+
+手动 FAST-LIO 的软件编排示例（仅说明会话合同，不构成真实右雷达或车辆测试授权）：
+
+```bash
+ros2 launch smartwheel_bringup manual_mapping_lio_left_session.launch.py \
+  map_name:=manual_lio_left \
+  output_root:=maps/versions \
+  motion_control_enabled:=false
+
+# 上面的包装入口会先启动保存节点，再启动左侧 FAST-LIO；建图结束后、
+# 关闭 launch 前执行：
+bash scripts/save_mapping_result.sh
+```
+
+若正式服务不可用，保存脚本会失败关闭，不会退回六秒末尾采集。右雷达合同仍为
+`BLOCKED_CONFLICT`；任何真实传感器、电机或车辆操作必须另行经过硬件安全批准。
 
 **RTAB-Map 可选回环后端**（`enable_loop_backend:=true`,默认 off）:
 - 以 external-odom 模式消费 FAST-LIO 位姿（`odom_topic=/Odometry`、`points_topic=/cloud_registered`、
@@ -382,6 +401,47 @@ colcon build --packages-select fast_lio
 ```
 - patch:`patches/fastlio_laser_point_cov.patch`
 - 若 re-clone 后建图又变漩涡/偏航不动,**第一件事就是跑这个脚本**。
+
+---
+
+## 8.1 ZUPT(零速度更新)缓解:WASD 驾驶后位姿持续漂移(20260903)
+
+**症状**:短暂 WASD 驾驶(`MOTION=true`,真实电机转动)之后,按 Space/松键停止操作,rviz 里
+`/path`(青蓝色 "LIO Path")与 `/Odometry` 仍在不规则漂移变化,而轮椅本体已经物理静止。
+
+**根因**(诊断会话,未做真机复测前的静态代码排查,详见该次对话记录):
+右雷达路线没有 robot_localization EKF、没有轮速融合,位姿完全来自 FAST-LIO2 自身的 IMU-LiDAR
+紧耦合 iEKF。WASD 引入的真实动态加速度会扰动 iEKF 的速度/加速度计 bias 状态;
+`xtm60_right_lio.yaml` 里 Task-7 遗留的注释记录过真实测过的 accel-bias 漂移(静止场景
+0.3 mm/s → 234 mm/s,4.7 h),当前"修复"(`b_acc_cov` 恢复上游默认值)只在长时间静止场景验证过,
+从未验证"运动后状态如何收敛"。同时 `laserMapping.cpp` 的 `LASER_POINT_COV=100` 是 Task 7
+故意调大的(让 IMU 主导姿态、削弱 LiDAR 校正力),一旦速度状态被运动扰动,LiDAR 更新本身就弱到
+拉不回来。IKFoM 库里唯一像样的跳变限幅函数 `check_safe_update()`
+(`include/IKFoM_toolkit/esekfom/esekfom.hpp`)从未被任何调用点使用,是死代码——整条链路没有
+任何机制在停止后主动把被扰动的状态拉回。
+
+**缓解**(`patches/fastlio_zupt.patch`,已生效,默认关闭,只在右雷达路线开启):
+用 `/wheel/odom`(`zlac8030_driver_node` 无条件发布的真实轮速反馈,配置了反馈寄存器时是编码器
+实测值,否则是指令值的开环估计)作为"轮子自认为没转"的信号。一旦该信号连续
+`zupt.hold_time_sec`(默认 0.3 s)保持在阈值以下,`laserMapping.cpp` 每帧把 iEKF 的速度状态
+`s.vel` 清零,并把速度分量的协方差裁到 `zupt.velocity_cov_reset`(默认 1e-4)以内,防止残余
+速度被二次积分成位置漂移。`/wheel/odom` 超过 `zupt.stale_timeout_sec`(默认 1.0 s)没更新则
+判定失效,ZUPT 暂停(什么都不做),不会把"数据陈旧"误判成"静止"。
+
+**局限,诚实说明**:
+- `/wheel/odom` 是"驱动认为轮子没转",不是独立的地面真值——如果外部把静止的轮椅推动、或
+  `invert_left`/`invert_right` 符号配错导致驱动误判零速,ZUPT 不会发现。
+- 这只处理"速度状态"这一个自由度,不处理 accel-bias 本身的收敛速度,也不处理窄视场沿墙退化
+  这个更根本的几何约束缺失问题(`.kiro/specs/fastlio-narrow-fov-mapping/design.md` §风险与已知限制)。
+- **尚未用真实驾驶复测确认效果**。已验证的范围:(1) `colcon build --packages-select fast_lio`
+  编译通过;(2) 独立启动 `fastlio_mapping`(无雷达/IMU 数据)确认新增的 `zupt.*` 参数被正确解析、
+  `/wheel/odom` 订阅被创建;(3) 用 `ros2 topic pub` 向 `/wheel/odom` 灌入近零速度消息持续数秒,
+  节点保持响应、无崩溃无死锁;(4) `patches/fastlio_zupt.patch` 在干净的上游 `2fffc57` checkout
+  上应用 `apply_fastlio_patches.sh` 后,产物与当前树逐字节一致,幂等重跑验证过。**没有**做过真实
+  WASD 驾驶 + 停止后观察漂移是否收敛的端到端复测——下次真机测试时请重点验证这一点。
+
+配置开关:`src/wheelchair_3d_mapping/config/xtm60_right_lio.yaml` 的 `zupt:` 块。
+左雷达 (`xtm60_left_lio.yaml`)、双雷达、mock 均未开启,行为不变。
 
 ---
 

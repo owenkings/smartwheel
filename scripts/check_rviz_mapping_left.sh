@@ -70,7 +70,7 @@ fi
 echo
 echo "PASS=$pass FAIL=$fail"
 if [[ "$fail" -eq 0 ]]; then
-  echo "STAGE1_OK: mapping stack healthy. Drive slowly to grow the map, then run save_mapping_result.sh."
+  echo "STAGE1_OK: mapping stack healthy. Start map_products_node before driving; stop the session, then run save_mapping_result.sh."
 else
   echo "STAGE1_CHECK: review FAIL items. cloud_map/grid_map/map->odom often appear only after a few seconds of motion."
 fi

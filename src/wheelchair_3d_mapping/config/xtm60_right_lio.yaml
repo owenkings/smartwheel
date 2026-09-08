@@ -6,9 +6,9 @@
 # the adapter to /lio/cloud_in), and the extrinsic is the RIGHT radar's measured
 # mount (height 0.510 m, pitch -1.04 deg, roll -9.1 deg; plane residual 4.3 mm).
 #
-# Same flash-ToF handling as left: lidar_type=2 (Velodyne XYZI path), de-skew off
-# via the adapter's per-point time ramp (timestamp_unit=0), and the Task-7
-# LASER_POINT_COV fix lives in vendored source (see docs/fastlio_mapping.md).
+# Same flash-ToF handling as left: lidar_type=5 generic PointCloud2 path, with
+# no synthetic per-point time or ring; the adapter forwards whole-frame XYZI.
+# LiDAR covariance and update safety gates are explicit parameters below.
 /**:
     ros__parameters:
         feature_extract_enable: false
@@ -27,20 +27,40 @@
             time_offset_lidar_to_imu: 0.0
 
         preprocess:
-            lidar_type: 2                # Velodyne/standard PointCloud2 XYZI path
+            lidar_type: 5                # generic PointCloud2 XYZI path (NOT Velodyne/Livox)
             scan_line: 90
             scan_rate: 10
-            timestamp_unit: 0            # seconds; adapter ramps per-point time 0..0.1s
+            timestamp_unit: 0            # unused by generic whole-frame XYZI path
             blind: 0.1
 
         mapping:
-            # Task-7 covariance tuning (same rationale as left): stiff gyro bias +
-            # higher gyr/acc cov so the narrow-FOV LiDAR update can't soak the real
-            # rotation into bias. Pairs with LASER_POINT_COV=100 in vendored source.
-            acc_cov: 0.5
-            gyr_cov: 0.5
-            b_acc_cov: 0.00001
-            b_gyr_cov: 0.0000001
+            # Restore the upstream FAST-LIO2 process-noise baseline. The former
+            # route used acc/gyr=0.5, b_gyr=1e-7 and a hard-coded LiDAR R=100.
+            # The 2026-09-04 static reproduction showed a 87.4 deg / 4.63 m
+            # one-frame correction followed by 1.75 km net false motion, so that
+            # yaw-only tuning is not safe for this narrow-FOV input.
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            # Upstream FAST-LIO2's per-point covariance. This was previously
+            # hard-coded to 100.0 in laserMapping.cpp (100,000x larger).
+            laser_point_cov: 0.001
+            # Reject an unsafe LiDAR correction before it can alter state or be
+            # inserted into the ikd-tree. Thresholds are deliberately bounded
+            # and remain runtime parameters for recorded-data validation.
+            update_guard:
+                enabled: true
+                min_effective_features: 50
+                max_mean_residual_m: 0.25
+                min_observability_ratio: 0.000001
+                # At the safety-clamped 0.08 m/s route speed, one 10 Hz frame
+                # advances about 8 mm. A 5 cm correction still leaves >6x margin
+                # while rejecting the 7.4-17.2 cm recovery jumps measured after
+                # multi-second estimator output gaps in the first live fix run.
+                max_position_correction_m: 0.05
+                max_rotation_correction_deg: 2.0
+                max_velocity_correction_mps: 0.5
             fov_degree: 120.0
             det_range: 20.0
             extrinsic_est_en: false
@@ -57,11 +77,46 @@
                            -0.155782, 0.987743, -0.009782 ]
 
         publish:
+            map_en: false                # do not publish unbounded /Laser_map
             path_en: true
             scan_publish_en: true
             dense_publish_en: true
             scan_bodyframe_pub_en: true
 
+        # ZUPT is a secondary stationary aid, not the primary rejection gate.
+        # The 2026-09-04 bag proved the previous latest-sample comparison used a
+        # future wheel timestamp on every LiDAR frame and therefore never ran.
+        # The implementation now selects the newest wheel sample at or before
+        # the LiDAR timestamp from this bounded history.
+        zupt:
+            enabled: true
+            wheel_odom_topic: "/wheel/odom"
+            # Both thresholds are well under the real driving speeds this route
+            # uses (teleop_panel.hpp defaults 0.25 m/s / 0.6 rad/s), so normal
+            # driving never trips it.
+            linear_speed_thresh_mps: 0.02
+            angular_speed_thresh_rps: 0.02
+            # Debounce: /wheel/odom must read apparent-zero continuously for
+            # this long before ZUPT engages, so a brief stop mid-maneuver (e.g.
+            # between W and A) does not zero velocity while the chair is
+            # actually still moving under LiDAR/IMU estimation lag.
+            hold_time_sec: 0.3
+            # Fail closed: if /wheel/odom has not been heard from this
+            # recently, ZUPT is suspended (does nothing) rather than assuming
+            # stationary from stale data.
+            stale_timeout_sec: 1.0
+            history_sec: 10.0
+            # Velocity-state covariance is clamped to at most this after each
+            # reset, so the filter does not instantly re-inflate uncertainty
+            # back to its pre-reset value on the very next predict step.
+            velocity_cov_reset: 0.0001
+
         pcd_save:
-            pcd_save_en: true
+            # OFF. With interval < 0 laserMapping.cpp:536 never flushes, so
+            # pcl_wait_save grows in RAM for the whole session and is dumped as one
+            # giant PCD at shutdown (measured 615 MB RSS after 4.7 h of standing
+            # still). Saving is done out-of-process by scripts/lio_save_cloud.py,
+            # which subscribes to /cloud_registered and is explicitly decoupled from
+            # this flag (see scripts/save_mapping_result.sh).
+            pcd_save_en: false
             interval: -1

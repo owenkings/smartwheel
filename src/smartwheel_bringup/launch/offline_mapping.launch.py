@@ -95,6 +95,7 @@ def _setup(context):
                     "require_backend_cloud": backend == "rtabmap",
                 },
             ],
+            remappings=[("/sim/completed", "/offline/recorded_sim_completed")],
         ),
         Node(
             package="smartwheel_global_mapping",

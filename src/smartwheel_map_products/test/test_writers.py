@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 from smartwheel_map_products.occupancy import raycast_occupancy
-from smartwheel_map_products.writers import export_map_bundle
+from smartwheel_map_products.writers import export_map_bundle, publish_latest_path
 
 
 def _inputs(tmp_path):
@@ -112,3 +112,74 @@ def test_nonfinite_quality_is_rejected_before_manifest_is_created(tmp_path):
         )
     assert not (output / "manifest.json").exists()
     assert not (output / "quality_report.json").exists()
+
+
+def test_writer_failure_leaves_incomplete_marker_and_no_manifest(tmp_path, monkeypatch):
+    points, grid, profile = _inputs(tmp_path)
+    output = tmp_path / "failed-map"
+
+    def fail_after_first_product(*_args, **_kwargs):
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr("smartwheel_map_products.writers.write_ply", fail_after_first_product)
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        export_map_bundle(
+            output,
+            points,
+            grid,
+            [(1.0, 0.0, 0.0, 0.0)],
+            None,
+            str(profile),
+            {"backend": "test"},
+            "",
+            {"stage": "TEST"},
+        )
+    assert (output / ".incomplete").is_file()
+    assert not (output / "manifest.json").exists()
+
+
+def test_successful_writer_removes_incomplete_marker(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    output = tmp_path / "complete-map"
+    export_map_bundle(
+        output,
+        points,
+        grid,
+        [(1.0, 0.0, 0.0, 0.0)],
+        None,
+        str(profile),
+        {"backend": "test"},
+        "",
+        {"stage": "TEST"},
+    )
+    assert not (output / ".incomplete").exists()
+    assert (output / "manifest.json").is_file()
+
+
+def test_latest_path_is_published_atomically(tmp_path):
+    output = tmp_path / "versions" / "map_1"
+    pointer = publish_latest_path(tmp_path / "versions", output)
+    assert pointer.read_text(encoding="utf-8") == str(output.resolve()) + "\n"
+    assert not list(pointer.parent.glob(".latest_path.txt.*.tmp"))
+
+
+def test_writer_preserves_preexisting_external_rtabmap_database(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    output = tmp_path / "rtabmap-map"
+    output.mkdir()
+    database = output / "rtabmap.db"
+    database.write_bytes(b"external database")
+    export_map_bundle(
+        output,
+        points,
+        grid,
+        [(1.0, 0.0, 0.0, 0.0)],
+        None,
+        str(profile),
+        {"backend": "test"},
+        "",
+        {"stage": "TEST"},
+    )
+    assert database.read_bytes() == b"external database"
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["externally_managed_files"] == ["rtabmap.db"]

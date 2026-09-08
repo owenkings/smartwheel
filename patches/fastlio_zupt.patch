@@ -1,0 +1,186 @@
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index 6b95029..5fd3841 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -80,6 +80,20 @@ int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delet
+ bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+ /**************************/
+ 
++/*** ZUPT (zero-velocity update) mitigation, off by default (see xtm60_right_lio.yaml
++ *** "zupt:" block and apply_zupt_if_stationary() below for the diagnosis this fixes). ***/
++bool   zupt_en = false;
++double zupt_linear_speed_thresh = 0.02;
++double zupt_angular_speed_thresh = 0.02;
++double zupt_hold_time_sec = 0.3;
++double zupt_stale_timeout_sec = 1.0;
++double zupt_velocity_cov_reset = 0.0001;
++string zupt_wheel_odom_topic = "/wheel/odom";
++double zupt_stationary_since = -1.0;   // wheel-odom timestamp when apparent-zero began, -1 = not currently zero
++double zupt_last_odom_stamp = -1.0;    // wheel-odom timestamp of the most recent message received
++bool   zupt_confirmed_stationary = false;
++bool   zupt_was_active = false;
++
+ float res_last[100000] = {0.0};
+ float DET_RANGE = 300.0f;
+ const float MOV_THRESHOLD = 1.5f;
+@@ -382,6 +396,90 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
+     sig_buffer.notify_all();
+ }
+ 
++// ZUPT support: track how long /wheel/odom has reported near-zero speed.
++// zlac8030_driver_node publishes this unconditionally (real encoder feedback
++// when feedback registers are configured, open-loop-from-command otherwise),
++// so "apparent zero" here means the base driver believes the wheels are not
++// turning - it does not by itself prove the chair is stationary (e.g. it
++// would miss the wheels being spun by an external push while under a
++// mismatched invert_left/invert_right sign). Combined with a hold_time_sec
++// debounce and a staleness timeout (see apply_zupt_if_stationary), this is a
++// deliberately conservative "safe to assume stationary" signal, not a
++// certified stationary detector.
++void wheel_odom_cbk(const nav_msgs::msg::Odometry::SharedPtr msg)
++{
++    double stamp = get_time_sec(msg->header.stamp);
++    bool apparent_zero = abs(msg->twist.twist.linear.x) < zupt_linear_speed_thresh &&
++                          abs(msg->twist.twist.angular.z) < zupt_angular_speed_thresh;
++
++    mtx_buffer.lock();
++    zupt_last_odom_stamp = stamp;
++    if (apparent_zero) {
++        if (zupt_stationary_since < 0.0) {
++            zupt_stationary_since = stamp;
++        }
++        zupt_confirmed_stationary = (stamp - zupt_stationary_since) >= zupt_hold_time_sec;
++    } else {
++        zupt_stationary_since = -1.0;
++        zupt_confirmed_stationary = false;
++    }
++    mtx_buffer.unlock();
++}
++
++// If ZUPT is enabled and /wheel/odom has confirmed the chair has been at
++// apparent-zero speed for at least hold_time_sec, zero the iEKF velocity
++// state so residual velocity error stops being integrated into position
++// drift every subsequent frame. No-op (and logs once) if /wheel/odom has
++// gone stale, so a dead odom topic fails closed to "do nothing" rather than
++// silently freezing velocity forever.
++void apply_zupt_if_stationary(double current_time)
++{
++    if (!zupt_en) return;
++
++    bool confirmed;
++    double odom_age;
++    {
++        std::lock_guard<mutex> lock(mtx_buffer);
++        confirmed = zupt_confirmed_stationary;
++        odom_age = (zupt_last_odom_stamp < 0.0) ? -1.0 : (current_time - zupt_last_odom_stamp);
++    }
++
++    if (odom_age < 0.0 || odom_age > zupt_stale_timeout_sec) {
++        if (zupt_was_active) {
++            std::cout << "[ZUPT] /wheel/odom stale (age=" << odom_age
++                      << "s) - ZUPT suspended until it resumes" << std::endl;
++            zupt_was_active = false;
++        }
++        return;
++    }
++    if (!confirmed) {
++        zupt_was_active = false;
++        return;
++    }
++
++    state_ikfom s = kf.get_x();
++    s.vel = V3D(0, 0, 0);
++    kf.change_x(s);
++
++    // Shrink the velocity block of P alongside the state so the filter does
++    // not immediately re-inflate uncertainty back to the pre-reset value on
++    // the next predict step; matches the tight init_P treatment IMU_init uses
++    // for other states it pins during initialization.
++    auto P = kf.get_P();
++    for (int i = 0; i < 3; i++) {
++        if (P(12 + i, 12 + i) > zupt_velocity_cov_reset) {
++            P(12 + i, 12 + i) = zupt_velocity_cov_reset;
++        }
++    }
++    kf.change_P(P);
++
++    if (!zupt_was_active) {
++        std::cout << "[ZUPT] confirmed stationary via " << zupt_wheel_odom_topic
++                  << " - zeroing iEKF velocity state" << std::endl;
++        zupt_was_active = true;
++    }
++}
++
+ double lidar_mean_scantime = 0.0;
+ int    scan_num = 0;
+ bool sync_packages(MeasureGroup &meas)
+@@ -837,6 +935,17 @@ public:
+         this->declare_parameter<int>("pcd_save.interval", -1);
+         this->declare_parameter<vector<double>>("mapping.extrinsic_T", vector<double>());
+         this->declare_parameter<vector<double>>("mapping.extrinsic_R", vector<double>());
++        // ZUPT (zero-velocity update) mitigation. Off by default (matches upstream
++        // behaviour on every other route: left/dual radar, mock). See
++        // xtm60_right_lio.yaml "zupt:" block for why this exists and where it is
++        // turned on, and docs/fastlio_mapping.md for the drift-after-teleop diagnosis.
++        this->declare_parameter<bool>("zupt.enabled", false);
++        this->declare_parameter<string>("zupt.wheel_odom_topic", "/wheel/odom");
++        this->declare_parameter<double>("zupt.linear_speed_thresh_mps", 0.02);
++        this->declare_parameter<double>("zupt.angular_speed_thresh_rps", 0.02);
++        this->declare_parameter<double>("zupt.hold_time_sec", 0.3);
++        this->declare_parameter<double>("zupt.stale_timeout_sec", 1.0);
++        this->declare_parameter<double>("zupt.velocity_cov_reset", 0.0001);
+ 
+         this->get_parameter_or<bool>("publish.path_en", path_en, true);
+         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
+@@ -873,8 +982,18 @@ public:
+         this->get_parameter_or<int>("pcd_save.interval", pcd_save_interval, -1);
+         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
+         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
++        this->get_parameter_or<bool>("zupt.enabled", zupt_en, false);
++        this->get_parameter_or<string>("zupt.wheel_odom_topic", zupt_wheel_odom_topic, "/wheel/odom");
++        this->get_parameter_or<double>("zupt.linear_speed_thresh_mps", zupt_linear_speed_thresh, 0.02);
++        this->get_parameter_or<double>("zupt.angular_speed_thresh_rps", zupt_angular_speed_thresh, 0.02);
++        this->get_parameter_or<double>("zupt.hold_time_sec", zupt_hold_time_sec, 0.3);
++        this->get_parameter_or<double>("zupt.stale_timeout_sec", zupt_stale_timeout_sec, 1.0);
++        this->get_parameter_or<double>("zupt.velocity_cov_reset", zupt_velocity_cov_reset, 0.0001);
+ 
+         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
++        RCLCPP_INFO(this->get_logger(), "zupt.enabled %s (topic=%s, lin<%.3f m/s, ang<%.3f rad/s, hold=%.2fs)",
++                    zupt_en ? "true" : "false", zupt_wheel_odom_topic.c_str(),
++                    zupt_linear_speed_thresh, zupt_angular_speed_thresh, zupt_hold_time_sec);
+ 
+         path.header.stamp = this->get_clock()->now();
+         path.header.frame_id ="camera_init";
+@@ -931,6 +1050,10 @@ public:
+             sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
+         }
+         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
++        if (zupt_en) {
++            sub_wheel_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
++                zupt_wheel_odom_topic, 10, wheel_odom_cbk);
++        }
+         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
+         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
+         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
+@@ -1064,6 +1187,13 @@ private:
+ 
+             double t_update_end = omp_get_wtime();
+ 
++            /*** ZUPT: zero the velocity state if /wheel/odom confirms the chair
++             *** is stationary. Must run after the iEKF update and before
++             *** publish_odometry/publish_path read state_point, otherwise the
++             *** correction would show up one frame late. ***/
++            apply_zupt_if_stationary(Measures.lidar_end_time);
++            state_point = kf.get_x();
++
+             /******* Publish odometry *******/
+             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+ 
+@@ -1140,6 +1270,7 @@ private:
+     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
+     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_wheel_odom_;
+     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
+     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
+ 

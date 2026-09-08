@@ -152,6 +152,11 @@ def _setup(context, *args, **kwargs):
     }
     rtab_params = [cfg, common, essential, {
         "frame_id": frame_id,
+        # RTAB-Map owns the global correction. With external FAST-LIO odometry,
+        # the odometry message names camera_init as its parent frame, so this is
+        # map->camera_init. The FAST-LIO identity bridge must be disabled then.
+        "map_frame_id": "map",
+        "publish_tf": True,
         "subscribe_scan_cloud": flag("subscribe_scan_cloud"),
         "subscribe_rgb": subscribe_rgb,
         # RTAB-Map defaults subscribe_depth=true; for LiDAR-only mapping we must

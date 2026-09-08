@@ -16,6 +16,7 @@ def _as_bool(value: str) -> bool:
 
 
 def _filtered_rviz_config(source: Path, context) -> str:
+    mock_camera_transport = LaunchConfiguration("mode").perform(context) == "mock"
     toggles = {
         "SmartWheel/Camera": _as_bool(LaunchConfiguration("enable_cameras").perform(context)),
         "SmartWheel/Teleop": _as_bool(LaunchConfiguration("enable_teleop").perform(context)),
@@ -23,13 +24,17 @@ def _filtered_rviz_config(source: Path, context) -> str:
         "SmartWheel/System Status": _as_bool(LaunchConfiguration("enable_status_panel").perform(context)),
         "SmartWheel/Map Products": _as_bool(LaunchConfiguration("enable_map_products").perform(context)),
     }
-    if all(toggles.values()):
+    if all(toggles.values()) and not mock_camera_transport:
         return str(source)
     data = yaml.safe_load(source.read_text(encoding="utf-8"))
     data["Panels"] = [
         panel for panel in data.get("Panels", [])
         if toggles.get(panel.get("Class"), True)
     ]
+    if mock_camera_transport:
+        for panel in data["Panels"]:
+            if panel.get("Class") == "SmartWheel/Camera":
+                panel["TransportHint"] = "raw"
     output = Path("/tmp") / f"smartwheel_operator_workbench_{os.getpid()}.rviz"
     output.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return str(output)
@@ -83,6 +88,9 @@ def _setup(context):
             "playback_rate": "1.0",
             "startup_delay_sec": "3.0",
             "finalization_timeout_sec": "300.0",
+            # Keep the interactive workbench open at READY so the operator can
+            # inspect products; standalone sim_mapping exits automatically.
+            "shutdown_on_completion": "false",
             "workbench_topic_aliases": "true",
         }.items(),
     )

@@ -16,6 +16,10 @@
   <xacro:property name="base_height" value="0.22"/>
   <xacro:property name="wheel_radius" value="0.16"/>
   <xacro:property name="wheel_width" value="0.05"/>
+  <!-- Fail closed: the right-LiDAR calibration contract has no approved
+       runtime transform. Synthetic tests may opt in explicitly, but the
+       default robot model must not publish this provisional TF. -->
+  <xacro:arg name="include_blocked_right_lidar_for_mock" default="false"/>
 
   <link name="base_link">
     <visual>
@@ -114,13 +118,16 @@
     xyz="0.45 0.30 0.735"
     rpy="1.5515153364 -0.0136154207 1.5709313394"/>
 
-  <!-- Right roll/pitch comes from the 2026-07-24 30-frame ground-plane repeat.
-       Horizontal yaw is constrained to optical-forward = base +x, not measured;
-       final dual-LiDAR yaw/xyz calibration remains required before fusion. -->
-  <xacro:xtm60_link
-    name="xtm60_right_link"
-    xyz="0.45 -0.30 0.735"
-    rpy="1.7071165220 0.0265268546 1.5744345976"/>
+  <xacro:if value="$(arg include_blocked_right_lidar_for_mock)">
+    <!-- MOCK-ONLY historical candidate. It is not runtime-eligible for real
+         hardware: longitudinal x/yaw are uncalibrated and the strict contract
+         remains BLOCKED_CONFLICT. Keep it available only so synthetic
+         right-frame tests can exercise the graph without claiming approval. -->
+    <xacro:xtm60_link
+      name="xtm60_right_link"
+      xyz="0.606 -0.24 0.499"
+      rpy="1.5806995918 0.1564194958 1.5715764604"/>
+  </xacro:if>
 
   <link name="imu_link">
     <visual>

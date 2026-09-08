@@ -6,6 +6,7 @@ try:
     import rclpy
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from nav_msgs.msg import Odometry
+    from rclpy.exceptions import ParameterUninitializedException
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image, Imu, LaserScan, PointCloud2, Range
@@ -13,6 +14,7 @@ try:
 except ImportError:
     rclpy = None
     Node = object
+    ParameterUninitializedException = Exception
     DiagnosticArray = None
     DiagnosticStatus = None
     KeyValue = None
@@ -63,6 +65,24 @@ class SensorWatchdogNode(Node):
         rate = max(0.5, float(self.get_parameter("publish_rate_hz").value))
         self.timer = self.create_timer(1.0 / rate, self.tick)
 
+    def _topic_list_param(self, name):
+        """Read a string-array parameter, tolerating an empty YAML list.
+
+        `camera_topics: []` in a params file carries no inferable type, so rcl
+        delivers the parameter as PARAMETER_NOT_SET and `.value` raises
+        ParameterUninitializedException. That killed this node outright on the
+        right-lidar profile, which sets both camera_topics and ultrasonic_topics
+        to [] (diagnostics_right_lidar_mapping.yaml). An empty list means "watch
+        nothing here", so honour that instead of crashing.
+        """
+        try:
+            value = self.get_parameter(name).value
+        except ParameterUninitializedException:
+            return []
+        if value is None:
+            return []
+        return [str(item) for item in value]
+
     def _make_rules(self):
         rules = [
             TopicRule("/scan", float(self.get_parameter("scan_timeout_sec").value), True, "2D scan"),
@@ -75,7 +95,7 @@ class SensorWatchdogNode(Node):
                 "H30 IMU",
             ),
         ]
-        for index, topic in enumerate(self.get_parameter("camera_topics").value):
+        for index, topic in enumerate(self._topic_list_param("camera_topics")):
             rules.append(
                 TopicRule(
                     str(topic),
@@ -84,7 +104,7 @@ class SensorWatchdogNode(Node):
                     f"camera {index}",
                 )
             )
-        for index, topic in enumerate(self.get_parameter("points_topics").value):
+        for index, topic in enumerate(self._topic_list_param("points_topics")):
             critical_name = f"points_{index}_critical"
             critical = (
                 bool(self.get_parameter(critical_name).value)
@@ -99,7 +119,7 @@ class SensorWatchdogNode(Node):
                     f"XT-M60 points {index}",
                 )
             )
-        for index, topic in enumerate(self.get_parameter("ultrasonic_topics").value):
+        for index, topic in enumerate(self._topic_list_param("ultrasonic_topics")):
             critical_name = f"ultrasonic_{index}_critical"
             critical = (
                 bool(self.get_parameter(critical_name).value)
@@ -123,11 +143,11 @@ class SensorWatchdogNode(Node):
             "/base/status": String,
             "/imu/data": Imu,
         }
-        for topic in self.get_parameter("camera_topics").value:
+        for topic in self._topic_list_param("camera_topics"):
             topic_types[str(topic)] = Image
-        for topic in self.get_parameter("points_topics").value:
+        for topic in self._topic_list_param("points_topics"):
             topic_types[str(topic)] = PointCloud2
-        for topic in self.get_parameter("ultrasonic_topics").value:
+        for topic in self._topic_list_param("ultrasonic_topics"):
             topic_types[str(topic)] = Range
         for topic, msg_type in topic_types.items():
             qos = (
