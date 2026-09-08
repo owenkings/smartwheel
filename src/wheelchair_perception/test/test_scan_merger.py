@@ -6,7 +6,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wheelchair_perception.scan_merger_node import MergeConfig, ScanSlice, merge_scan_slices  # noqa: E402
+from wheelchair_perception.scan_merger_node import (  # noqa: E402
+    MergeConfig,
+    ScanSlice,
+    merge_scan_slices,
+    newest_nonzero_stamp,
+)
 
 
 def test_merge_scan_slices_keeps_nearest_range():
@@ -34,3 +39,28 @@ def test_nonintegral_span_never_creates_a_beam_past_angle_max():
     assert config.beam_count == 362
     assert config.realized_angle_max <= config.angle_max
     assert config.realized_angle_max + config.angle_increment > config.angle_max
+
+class _Stamp:
+    def __init__(self, sec, nanosec):
+        self.sec = sec
+        self.nanosec = nanosec
+
+
+class _Message:
+    def __init__(self, sec, nanosec):
+        self.header = type("Header", (), {})()
+        self.header.stamp = _Stamp(sec, nanosec)
+
+
+def test_newest_nonzero_stamp_uses_capture_stamp_not_timer_time():
+    messages = [_Message(10, 900), _Message(11, 100)]
+
+    stamp = newest_nonzero_stamp(messages)
+
+    assert (stamp.sec, stamp.nanosec) == (11, 100)
+
+
+def test_newest_nonzero_stamp_ignores_zero_and_malformed_stamps():
+    messages = [_Message(0, 0), _Message(-1, 0), _Message(12, 1_000_000_000)]
+
+    assert newest_nonzero_stamp(messages) is None

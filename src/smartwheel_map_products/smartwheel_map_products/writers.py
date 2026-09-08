@@ -12,6 +12,10 @@ import cv2
 import numpy as np
 import yaml
 
+from smartwheel_map_products.formal_acceptance import (
+    template as formal_acceptance_template,
+    validate_hardware_evidence_binding,
+)
 from smartwheel_map_products.occupancy import OccupancyGridData
 
 
@@ -103,12 +107,21 @@ def _validated_intensity(
     return amplitudes
 
 
+def _validated_xyz(points: np.ndarray) -> np.ndarray:
+    xyz = np.asarray(points, dtype=np.float64)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3)")
+    if not np.isfinite(xyz).all():
+        raise ValueError("points must be finite")
+    return xyz
+
+
 def write_pcd(
     path: Path,
     points: np.ndarray,
     intensity: np.ndarray | None = None,
 ) -> None:
-    xyz = np.asarray(points, dtype=np.float64)
+    xyz = _validated_xyz(points)
     amplitudes = _validated_intensity(xyz, intensity)
     fields = "x y z intensity" if amplitudes is not None else "x y z"
     values_per_point = 4 if amplitudes is not None else 3
@@ -142,7 +155,7 @@ def write_ply(
     colors: np.ndarray | None = None,
     intensity: np.ndarray | None = None,
 ) -> None:
-    xyz = np.asarray(points, dtype=np.float64)
+    xyz = _validated_xyz(points)
     amplitudes = _validated_intensity(xyz, intensity)
     rgb = None
     if colors is not None:
@@ -220,18 +233,73 @@ def write_occupancy(directory: Path, grid: OccupancyGridData) -> None:
         yaml.safe_dump(metadata, stream, sort_keys=False)
 
 
-def write_trajectory(directory: Path, poses: list[tuple[float, float, float, float]]) -> None:
+def _trajectory_sample(sample) -> tuple[float, float, float, float, float, float, float, float]:
+    """Normalize legacy planar or full 6-DoF trajectory samples.
+
+    The historical exporter accepted ``(stamp, x, y, yaw)``.  Formal RTAB-Map
+    products use ``(stamp, x, y, z, qx, qy, qz, qw)`` so the optimized graph's
+    roll, pitch and height are not silently replaced with zeros.
+    """
+
+    values = tuple(float(value) for value in sample)
+    if len(values) == 4:
+        stamp, x, y, yaw = values
+        z = qx = qy = 0.0
+        qz = math.sin(yaw / 2.0)
+        qw = math.cos(yaw / 2.0)
+    elif len(values) == 8:
+        stamp, x, y, z, qx, qy, qz, qw = values
+    else:
+        raise ValueError("trajectory samples must contain 4 planar or 8 full-pose values")
+    result = (stamp, x, y, z, qx, qy, qz, qw)
+    if not all(math.isfinite(value) for value in result):
+        raise ValueError("trajectory samples must be finite")
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm < 1.0e-9:
+        raise ValueError("trajectory quaternion must be non-zero")
+    return stamp, x, y, z, qx / norm, qy / norm, qz / norm, qw / norm
+
+
+def _rpy_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> tuple[float, float, float]:
+    roll = math.atan2(
+        2.0 * (qw * qx + qy * qz),
+        1.0 - 2.0 * (qx * qx + qy * qy),
+    )
+    pitch_term = 2.0 * (qw * qy - qz * qx)
+    pitch = math.asin(max(-1.0, min(1.0, pitch_term)))
+    yaw = math.atan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz),
+    )
+    return roll, pitch, yaw
+
+
+def write_trajectory(directory: Path, poses) -> None:
+    normalized = [_trajectory_sample(sample) for sample in poses]
+    if any(current[0] <= previous[0] for previous, current in zip(normalized, normalized[1:])):
+        raise ValueError("trajectory timestamps must be strictly increasing")
     with _atomic_path(directory / "trajectory.tum", "w", encoding="ascii") as tum:
-        for stamp, x, y, yaw in poses:
+        for stamp, x, y, z, qx, qy, qz, qw in normalized:
             tum.write(
-                f"{stamp:.9f} {x:.6f} {y:.6f} 0.000000 0.000000 0.000000 "
-                f"{math.sin(yaw / 2.0):.9f} {math.cos(yaw / 2.0):.9f}\n"
+                f"{stamp:.9f} {x:.6f} {y:.6f} {z:.6f} "
+                f"{qx:.9f} {qy:.9f} {qz:.9f} {qw:.9f}\n"
             )
     with _atomic_path(directory / "poses.csv", "w", encoding="ascii") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(("timestamp", "x_m", "y_m", "z_m", "roll_rad", "pitch_rad", "yaw_rad"))
-        for stamp, x, y, yaw in poses:
-            writer.writerow((f"{stamp:.9f}", f"{x:.6f}", f"{y:.6f}", "0.0", "0.0", "0.0", f"{yaw:.9f}"))
+        for stamp, x, y, z, qx, qy, qz, qw in normalized:
+            roll, pitch, yaw = _rpy_from_quaternion(qx, qy, qz, qw)
+            writer.writerow(
+                (
+                    f"{stamp:.9f}",
+                    f"{x:.6f}",
+                    f"{y:.6f}",
+                    f"{z:.6f}",
+                    f"{roll:.9f}",
+                    f"{pitch:.9f}",
+                    f"{yaw:.9f}",
+                )
+            )
 
 
 def _sha256(path: Path) -> str:
@@ -289,6 +357,8 @@ def export_map_bundle(
     quality: dict,
     intensity_points: np.ndarray | None = None,
     intensity: np.ndarray | None = None,
+    trajectory_poses=None,
+    calibration_contract_path: str = "",
 ) -> Path:
     quality_json = json.dumps(
         quality,
@@ -316,6 +386,11 @@ def export_map_bundle(
     incomplete_path = output / ".incomplete"
     if manifest_path.exists():
         raise FileExistsError(f"map bundle is already complete: {output}")
+    existing_symlinks = [path for path in output.rglob("*") if path.is_symlink()]
+    if existing_symlinks:
+        raise ValueError(
+            f"refusing map bundle containing a symlink: {existing_symlinks[0]}"
+        )
     existing_files = [
         path
         for path in output.rglob("*")
@@ -345,17 +420,42 @@ def export_map_bundle(
                 intensity=intensity,
             )
         write_occupancy(output, grid)
-        write_trajectory(output, poses)
+        write_trajectory(output, poses if trajectory_poses is None else trajectory_poses)
         profile_source = Path(hardware_profile_path)
         if not profile_source.is_file():
             raise FileNotFoundError(f"hardware profile does not exist: {profile_source}")
         _atomic_copy(profile_source, output / "hardware_profile_used.yaml")
+        if calibration_contract_path:
+            contract_source = Path(calibration_contract_path).expanduser()
+            if not contract_source.is_file():
+                raise FileNotFoundError(
+                    f"calibration contract does not exist: {contract_source}"
+                )
+            _atomic_copy(contract_source, output / "calibration_contract_used.json")
         with _atomic_path(output / "algorithm_profile_used.yaml", "w", encoding="utf-8") as stream:
             yaml.safe_dump(algorithm_profile, stream, sort_keys=True)
         with _atomic_path(output / "bag_path.txt", "w", encoding="utf-8") as stream:
             stream.write((bag_path or "NOT_RECORDED") + "\n")
         with _atomic_path(output / "quality_report.json", "w", encoding="utf-8") as stream:
             stream.write(quality_json)
+        formal_evidence = quality.get("formal_acceptance")
+        if not isinstance(formal_evidence, dict):
+            formal_evidence = formal_acceptance_template()
+        with _atomic_path(output / "formal_acceptance.json", "w", encoding="utf-8") as stream:
+            json.dump(formal_evidence, stream, indent=2, sort_keys=True, allow_nan=False)
+            stream.write("\n")
+        if quality.get("hardware_validated") is True:
+            provenance_ok, provenance_reason = validate_hardware_evidence_binding(
+                formal_evidence,
+                hardware_profile_path=output / "hardware_profile_used.yaml",
+                calibration_contract_path=output
+                / "calibration_contract_used.json",
+            )
+            if not provenance_ok:
+                raise ValueError(
+                    "copied formal provenance snapshot is invalid: "
+                    + provenance_reason
+                )
         with _atomic_path(output / "quality_report.md", "w", encoding="utf-8") as stream:
             stream.write(quality_markdown)
     except BaseException:
@@ -365,6 +465,8 @@ def export_map_bundle(
     files = []
     externally_managed_files = []
     for path in sorted(output.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"refusing to include a symlink in map manifest: {path}")
         if path.is_file() and path.name != "manifest.json":
             relative = path.relative_to(output)
             if path.name in ("manifest.json", ".incomplete") or "raw_bag" in relative.parts:
@@ -392,8 +494,12 @@ def export_map_bundle(
         sort_keys=True,
         allow_nan=False,
     ) + "\n"
-    incomplete_path.unlink(missing_ok=True)
-    _fsync_directory(output)
+    # Publish the manifest while the in-progress marker still exists.  If the
+    # process dies between these operations, validators can distinguish an
+    # interrupted export and a complete bundle instead of leaving an orphaned
+    # directory that appears resumable but has no marker.
     with _atomic_path(manifest_path, "w", encoding="utf-8") as stream:
         stream.write(manifest_json)
+    incomplete_path.unlink(missing_ok=True)
+    _fsync_directory(output)
     return output

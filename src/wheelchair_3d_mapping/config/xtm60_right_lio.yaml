@@ -53,7 +53,15 @@
                 enabled: true
                 min_effective_features: 50
                 max_mean_residual_m: 0.25
+                # Eigenvalue ratio is now the observable-subspace cutoff, not an
+                # all-or-nothing frame rejection. Preserve constrained directions
+                # and reject only if fewer than three 6-DoF directions remain.
                 min_observability_ratio: 0.000001
+                min_observable_directions: 3
+                project_degenerate_directions: true
+                # The first frame after a long input gap is prediction-only. The
+                # following normally spaced frame may re-enter through all gates.
+                reject_after_lidar_gap_sec: 0.5
                 # At the safety-clamped 0.08 m/s route speed, one 10 Hz frame
                 # advances about 8 mm. A 5 cm correction still leaves >6x margin
                 # while rejecting the 7.4-17.2 cm recovery jumps measured after
@@ -61,6 +69,13 @@
                 max_position_correction_m: 0.05
                 max_rotation_correction_deg: 2.0
                 max_velocity_correction_mps: 0.5
+                # If only the increment gate fails, retry from the exact saved
+                # state with R=.004/.016/.064. The accepted correction must still
+                # remain below all limits; this enables gradual reacquisition
+                # without reviving the retired global R=100 behaviour.
+                adaptive_retry_enabled: true
+                adaptive_retry_max: 3
+                adaptive_retry_covariance_scale: 4.0
             fov_degree: 120.0
             det_range: 20.0
             extrinsic_est_en: false
@@ -79,9 +94,23 @@
         publish:
             map_en: false                # do not publish unbounded /Laser_map
             path_en: true
+            path_stride: 10
+            path_max_poses: 600          # bounded full-Path DDS/RViz payload
             scan_publish_en: true
             dense_publish_en: true
-            scan_bodyframe_pub_en: true
+            # /cloud_registered is the intensity-preserving product. Avoid a
+            # second large body-frame cloud unless a bounded diagnostic needs it.
+            scan_bodyframe_pub_en: false
+
+        imu_init:
+            # Require a continuous, stationary two-second H30 window. Motion or
+            # touch restarts the window instead of contaminating gravity/bias.
+            min_samples: 400
+            min_duration_sec: 2.0
+            max_gyro_norm_rps: 0.10
+            max_accel_deviation_mps2: 1.0
+            max_gyro_std_rps: 0.05
+            max_accel_std_mps2: 0.50
 
         # ZUPT is a secondary stationary aid, not the primary rejection gate.
         # The 2026-09-04 bag proved the previous latest-sample comparison used a
@@ -106,10 +135,18 @@
             # stationary from stale data.
             stale_timeout_sec: 1.0
             history_sec: 10.0
-            # Velocity-state covariance is clamped to at most this after each
-            # reset, so the filter does not instantly re-inflate uncertainty
-            # back to its pre-reset value on the very next predict step.
-            velocity_cov_reset: 0.0001
+            # ZUPT is a standard zero-velocity pseudo-measurement. It is disabled
+            # unless the controller confirms the Modbus feedback read is healthy
+            # and a time-aligned H30 sample is stationary.
+            velocity_measurement_variance: 0.0001
+            require_feedback_healthy: true
+            feedback_health_topic: "/base/wheel_feedback_healthy"
+            feedback_health_timeout_sec: 0.25
+            require_imu_stationary: true
+            imu_gyro_thresh_rps: 0.05
+            imu_accel_tolerance_mps2: 0.50
+            imu_stale_timeout_sec: 0.10
+            imu_window_sec: 0.20
 
         pcd_save:
             # OFF. With interval < 0 laserMapping.cpp:536 never flushes, so

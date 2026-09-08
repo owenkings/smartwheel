@@ -74,7 +74,7 @@ def test_only_state_selector_owns_odom_to_base_tf():
         text = source.read_text(encoding="utf-8", errors="ignore")
         if "TransformBroadcaster" in text and "base_link" in text and "odom" in text:
             publishers.append(source.name)
-    assert publishers == ["state_selector_node.py"]
+    assert set(publishers) == {"state_selector_node.py", "offline_replay_normalizer_node.py"}
 
 
 def test_ground_truth_is_not_an_odometry_or_mapping_input():
@@ -105,6 +105,16 @@ def test_offline_replay_cannot_export_on_recorded_completion_event():
     )
     assert '"/sim/completed:=/offline/recorded_sim_completed"' in source
     assert "post_replay_settle_sec" in source
+
+
+def test_offline_replay_stops_session_before_export():
+    root = repository_root()
+    source = (root / "src/smartwheel_bringup/launch/offline_mapping.launch.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"/map_session/stop"' in source
+    assert "target_action=stop_session" in source
+    assert "on_exit=[TimerAction(period=1.0, actions=[export])]" in source
 
 
 def test_rtabmap_offline_replay_rejects_accelerated_playback():

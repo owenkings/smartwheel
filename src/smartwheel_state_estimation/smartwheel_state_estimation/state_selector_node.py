@@ -18,12 +18,19 @@ class StateSelectorNode(Node):
         self.declare_parameter("wheel_topic", "/wheel/odom")
         self.declare_parameter("output_topic", "/odom/fused")
         self.declare_parameter("source_timeout_sec", 0.5)
+        self.declare_parameter("publish_tf", True)
         self.declare_parameter("max_linear_residual", 0.25)
         self.declare_parameter("max_angular_residual", 0.5)
         self._mode = str(self.get_parameter("state_mode").value)
         if self._mode not in ("lio_primary", "wheel_imu_fallback"):
             raise ValueError("state_mode must be lio_primary or wheel_imu_fallback")
         self._timeout = float(self.get_parameter("source_timeout_sec").value)
+        self._publish_tf = str(self.get_parameter("publish_tf").value).lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
         self._selected_source = "lio" if self._mode == "lio_primary" else "wheel"
         self._monitor = ResidualMonitor(
             float(self.get_parameter("max_linear_residual").value),
@@ -62,6 +69,8 @@ class StateSelectorNode(Node):
             self._publish_residual(result)
 
     def _broadcast(self, odom: Odometry) -> None:
+        if not self._publish_tf:
+            return
         transform = TransformStamped()
         transform.header.stamp = odom.header.stamp
         transform.header.frame_id = "odom"

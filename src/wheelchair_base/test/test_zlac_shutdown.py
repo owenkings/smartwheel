@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from wheelchair_base.zlac8030_driver_node import Zlac8030DriverNode, ZlacRegisterMap
 
 
@@ -29,6 +31,38 @@ class FakeLogger:
         self.messages.append(message)
 
 
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+
+class FakeTime:
+    def __init__(self, nanoseconds):
+        self.nanoseconds = nanoseconds
+
+    def __sub__(self, other):
+        return FakeTime(self.nanoseconds - other.nanoseconds)
+
+
+class FakeClock:
+    def __init__(self, nanoseconds):
+        self._now = FakeTime(nanoseconds)
+
+    def now(self):
+        return self._now
+
+
+class FakeDriveModel:
+    def clamp_twist(self, linear, angular):
+        return linear, angular
+
+    def twist_to_wheel_rpm(self, linear, angular):
+        return 1.0, 1.0
+
+
 def make_node(single_slave_dual_axis=False):
     node = object.__new__(Zlac8030DriverNode)
     node.mode = "real"
@@ -36,6 +70,8 @@ def make_node(single_slave_dual_axis=False):
     node.right_slave_id = 2
     node.single_slave_dual_axis = single_slave_dual_axis
     node.rpm_to_register_scale = 1.0
+    node.invert_left = False
+    node.invert_right = False
     node.motion_control_enabled = True
     node.write_dual_axis_command_together = False
     node.initialize_motion_on_first_command = False
@@ -192,3 +228,42 @@ def test_zero_command_holds_servo_when_release_disabled():
 
     assert node.motion_initialized is True
     assert node.modbus.writes == [(1, 10, 0), (1, 11, 0)]
+
+
+def test_feedback_health_topic_distinguishes_failed_read_from_zero_speed():
+    node = make_node(single_slave_dual_axis=True)
+    node.feedback_health_pub = FakePublisher()
+    node.feedback_healthy = False
+
+    node._publish_feedback_health()
+
+    assert len(node.feedback_health_pub.messages) == 1
+    assert node.feedback_health_pub.messages[0].data is False
+
+
+def test_failed_configured_feedback_does_not_publish_zero_odometry():
+    node = make_node(single_slave_dual_axis=True)
+    node.registers.feedback_left_register = 100
+    node.registers.feedback_right_register = 101
+    node.model = FakeDriveModel()
+    node.last_cmd = SimpleNamespace(
+        linear=SimpleNamespace(x=0.0), angular=SimpleNamespace(z=0.0)
+    )
+    node.last_cmd_time = FakeTime(0)
+    node.last_odom_time = FakeTime(0)
+    node.command_timeout_sec = 0.5
+    node.get_clock = lambda: FakeClock(20_000_000)
+    node._write_wheel_commands = lambda left, right: True
+    node._read_feedback = lambda: None
+    health = []
+    statuses = []
+    odometry = []
+    node._publish_feedback_health = lambda: health.append(node.feedback_healthy)
+    node._publish_status = lambda age: statuses.append(age)
+    node._publish_odom = lambda *args: odometry.append(args)
+
+    node.tick()
+
+    assert health == [False]
+    assert len(statuses) == 1
+    assert odometry == []

@@ -30,7 +30,7 @@ systematic longitudinal/heading offset. Do not promote maps made here.
 
 TF OWNERSHIP (single parent for base_link)
   camera_init -> body        FAST-LIO (dynamic)
-  body        -> base_link   static bridge, inverse of base->imu [0,0,0.45]
+  body        -> base_link   static bridge, full inverse of calibrated base->imu
   map         -> camera_init identity bridge
   base_link   -> xtm60_right_link   URDF / robot_state_publisher
 No EKF, and the wheel base runs with publish_tf:=false, so nothing else claims
@@ -133,11 +133,23 @@ def _setup(context, *args, **kwargs):
             name="xtm60_right_adapter_node", output="screen",
             parameters=[
                 os.path.join(bringup, "config", "xtm60_right.yaml"),
-                {"mode": "real", "phase_realign_interval_sec": 0.0},
+                {
+                    "mode": "real",
+                    "phase_realign_interval_sec": 0.0,
+                    # Same-pixel range deltas are a useful diagnostic while
+                    # stationary, but legitimate driving changes them. Keep the
+                    # absolute validity remains a hard gate; temporal and
+                    # relative changes are reported without dropping moving
+                    # frames on this route.
+                    "quality_temporal_hard_reject": False,
+                },
             ],
             remappings=[
                 ("/xtm60/points", "/xtm60/right/points"),
+                ("/xtm60/points_rejected", "/xtm60/right/points_rejected"),
+                ("/xtm60/quality", "/xtm60/right/quality"),
                 ("/xtm60/status", "/xtm60/right/status"),
+                ("/xtm60/timing", "/xtm60/right/timing"),
                 ("/xtm60/phase", "/xtm60/right/phase"),
             ],
             additional_env={
@@ -211,6 +223,9 @@ def _setup(context, *args, **kwargs):
                 "output_topic": "/lio/cloud_in",
                 "restamp_to_now": False,
                 "add_zero_time_field": False,
+                "min_range": 0.3,
+                "max_range": 12.0,
+                "output_qos": "best_effort",
             }],
         ),
         Node(
@@ -227,7 +242,13 @@ def _setup(context, *args, **kwargs):
         Node(
             package="tf2_ros", executable="static_transform_publisher",
             name="lio_body_to_base_link", output="screen",
-            arguments=["0", "0", "-0.45", "0", "0", "0", "body", "base_link"],
+            # Full inverse of base_link->imu_link, including the measured H30
+            # roll/pitch correction; quaternion form avoids Euler order ambiguity.
+            arguments=[
+                "0.000495116765", "-0.004454081453", "-0.449977683911",
+                "-0.004949042248", "-0.000550123085", "0.000002722616",
+                "0.999987602092", "body", "base_link",
+            ],
         ),
 
         # --- 2D: project FAST-LIO's registered cloud into an occupancy grid. ---

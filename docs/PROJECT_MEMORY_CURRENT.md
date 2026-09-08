@@ -11,7 +11,7 @@
 - `right_lidar_stage1_mapping.launch.py` 现在只有一个失败关闭的 `OpaqueFunction`，所有合同分支均失败，不再构造任何硬件或建图 action。`run_right_lidar_stage1_static_acceptance.sh` 固定打印 `BLOCKED_CONFLICT` 并以 `78` 退出。
 - 2026-07-29 的静态右雷达 evidence、bag、保存/重载与 PointCloud+Amp 产品继续作为历史事实保留，但它们不授权当前硬件运行，也不证明当前外参、动态建图、回环、FAST-LIO2、导航、地面运动、物理急停闭环或载人能力通过。
 
-更新时间：2026-07-29（Asia/Shanghai）
+更新时间：2026-09-08（Asia/Shanghai）
 状态：当前项目事实与工作边界
 最新版需求来源：`C:\Users\admin\Downloads\自动轮椅项目概述.md`
 来源导出时间：2026-07-22 18:22:51
@@ -432,3 +432,212 @@ B0 后仍需用户/厂家材料或实测确认：
   `enable_loop_closure` 默认关闭，必须等真实右雷达小闭环 bag 再验收。
 - 当前设计和实测报告：
   `docs/mapping/RIGHT_LIDAR_STAGE1_MAPPING_20260729.md`。
+
+## 13. 2026-09-04 FAST-LIO2 静止发散后的软件收口
+
+- 启动刷新确认主仓库位于 `feature/mapping-v2-rviz-workbench`，HEAD 与
+  origin 同为 `19188466ff48d9874bcd148a14da1e714b14732b`；嵌套
+  FAST-LIO2 位于 `src/third_party/FAST_LIO_ROS2`，HEAD
+  `2fffc570a25d0df172720bac034fbdb6a13d2162`。两仓均保留用户已有
+  staged/dirty 内容，本轮没有 stage、commit、push、checkout 或清理。
+- FAST-LIO2 的 `mapping.laser_point_cov` 已恢复并固定为 `0.001`。新增
+  特征数、残差、有限值、可观秩、输出空窗和状态增量门；拒绝时恢复更新前
+  状态/协方差并禁止写 ikd-tree。可观秩不少于 3 时把 6DoF Jacobian
+  投影到可观子空间；更严重时才整帧拒绝。只有几何质量全部合格而增量超限
+  时，才从同一快照用 `R=.004/.016/.064` 有界重算，最终仍必须满足
+  `5 cm / 2 deg / 0.5 m/s`。
+- ZUPT 不再硬改速度和清空交叉协方差，而是 Joseph-form 零速伪测量；轮速
+  样本选择为不晚于当前 LiDAR 时间的最新样本，并同时要求实时
+  `/base/wheel_feedback_healthy` 与连续 0.2 秒 IMU 静止窗口。ZLAC 反馈
+  读取失败会发布 `healthy=false`，且该周期不再发布/积分伪零速里程计。
+- IMU 初始化改为至少 400 样本和 2 秒连续静止，使用在线均值/方差并在
+  检出运动时重启窗口。Odometry 先填本帧 covariance 再发布；`/path`
+  每 10 帧追加且最多 600 pose；大点云 QoS 队列缩到 2，默认关闭重复的
+  body-frame registered cloud。
+- XT-M60 使用 SDK 回调入口的主机接收时刻，H30 使用串口读取边界时刻，
+  不再用更晚的 ROS 发布时刻；这仍不是真实采样时间，设备时钟语义、固定
+  延迟与漂移必须按 H1 实测后才能切换。动态入口只报告跨帧 temporal/
+  relative 变化，绝对有效点不足和非单调时间仍硬拒；左右 rejected/quality
+  话题已分别命名，避免双实例冲突。单雷达基础 phase realign 为 0，只有
+  明确双雷达入口可显式覆盖 30 秒。
+- `body→base_link` 已替换为当前已知 `base_link→imu_link` 的完整逆变换，
+  但纵向 x、yaw 和最终 LiDAR/IMU/车体外参仍保持
+  `BLOCKED_CONFLICT`，不得把 provisional 值升级为产品标定。
+- 持久化入口改为固定基线、fail-closed 的
+  `patches/apply_fastlio_patches.sh` 与单一
+  `fastlio_smartwheel_hardening.patch`；两个旧补丁均为不可应用 tombstone。
+  干净克隆应用成功、两份源码逐字节一致、重复执行幂等。FAST-LIO2 编译
+  成功；四个主包增量 build 成功；mapping/sensors/base 共 `49/40/16`
+  （105）项测试全部通过；launch `--show-args` 离线解析通过。
+- 未启动雷达、IMU 或电机。高负载实时性、动态门禁、质量门、设备采样
+  时间和最终外参仍需实机 H0-H4。步骤及阈值见
+  `docs/FASTLIO_HARDWARE_VALIDATION_PLAN.md`；只读采集工具为
+  `scripts/hardware/fastlio_acceptance_monitor.py`，缺少 odom、反馈健康、
+  STOP 窗口、registered cloud 或质量消息时均失败关闭。
+
+## 14. 2026-09-04 H0 静止基线通过
+
+- 用户回复 `H0就绪`，确认上一轮约定的水平、无人、无触碰条件。实际入口
+  固定 `motion_control_enabled=false`，并关闭 RViz、相机和超声波以降低
+  负载；未发送电机控制。
+- H30 在 401 样本/2.00021 秒后完成静止初始化；gyro/accel 标准差分别为
+  `0.000960867` 和 `0.00919983`。右雷达序列号/成像配置只读核对通过。
+- 正式监控 `120.0729 s`、1177 个 Odometry 样本、平均 `9.802 Hz`；最大
+  Odometry/registered-cloud 空窗为 `0.247693/0.247495 s`，最大单帧平移
+  `2.409 mm`、旋转 `0.1935 deg`，活动半径和健康 STOP 漂移均为
+  `2.984 cm`，全零 pose covariance 为 0。
+- 轮速全程为零；反馈健康为 `5997 true / 0 false`；1199 条点云质量消息
+  无拒绝、temporal jump 或 relative drop。会话末尾 FAST-LIO 为
+  `accepted=1626, rejected=0, projected=0, adapted=0, zupt=1626`，可观秩 6。
+- H0 `passed=true`。2.98 cm 低于 5 cm 门限，但高于历史约 1.12 cm；统计
+  时长/工具不完全相同，保留为后续同工具重复对照项，不能宣称性能已改善。
+- SIGINT 后无相关进程；两路 `192.168.0.100:7687`、
+  `192.168.1.100:7687` 各监听 3 秒均为 0 packet/0 byte。证据目录：
+  `/home/nvidia/smartwheel/auto_test/fastlio_h0_20260904_152735`；正式报告：
+  `docs/hardware/FASTLIO_H0_STATIONARY_20260904.md`。
+- H0 不解除 `BLOCKED_CONFLICT`。下一步是需要用户人工缓慢双向 yaw 激励的
+  H1 时间语义/延迟验证，之后才是 H2 最终外参；H3/H4 仍未完成。
+
+## 15. 2026-09-04/05 H1 formal conditional close and H2 offline preparation
+
+- 用户在现场逐步完成正式左右手动 yaw；正式 bag 为 `/home/nvidia/smartwheel/auto_test/h1_formal_20260904_213140/bag`，约 537.554 s / 185501 条消息。有效核心段 IMU 积分约 `+1.60/-1.96 rad`；timing/quality/点云/IMU/TF/Odometry 均可复核。
+- 用户明确要求跳过独立单设备/scan-to-scan 检查以推进 H1，因此 H1 记录为 `CONDITIONAL_PASS_BY_USER_WAIVER`。间接 lag 不写入 `time_offset_lidar_to_imu`；继续 `host_receive`、`time_sync_en=false`、offset `0.0`。这不等同于严格独立延迟验收。
+- H2 当前仅进行离线软件准备，未启动真实雷达、IMU、FAST-LIO、底盘或电机，未修改设备配置或最终外参。左 FAST-LIO YAML 历史 `extrinsic_T` 与当前 URDF 临时安装值不一致，保持审查状态，不擅自选值。
+- `offline_mapping.launch.py` 已增加 bag topic/storage/start-offset 参数，显式支持正式 bag 的嵌套 `bag/` 路径和 `sqlite3`，并真正传递 `state_mode`；`hardware_enabled=true` 在节点构造前 fail-closed。离线 slam 参数包含 1.0 s TF 等待、30 s buffer、50 帧 scan 缓冲。
+- 正式 bag 离线启动可打开数据库并发现点云、scan、fused odom、TF，但 `slam_toolbox` 仍报告 `Failed to compute odom pose`。进一步读取确认 `/tf_static` 包含 `body→base_link` 与 `base_link→xtm60_right_link`；问题仍在离线 `camera_init→body` 到 SLAM 消费链的时间/后端契约。不得用静态猜测 TF、设备写入或放宽外参来掩盖。
+- 下一步是增加明确、离线专用的 odom/frame 归一化与点云 frame 处理，在小段回放中验收后再考虑任何 H2 实机授权。所有本轮测试结束后无离线残留进程、无 XT-M60/FAST-LIO/ZLAC 进程，双 UDP 7687 静默。
+
+## 16. 2026-09-05 H2 offline normalizer follow-up
+
+- Added `offline_replay_normalizer_node` and a `publish_tf` switch on the state selector. The slam_toolbox offline path isolates recorded dynamic `/tf`, keeps one normalized `odom→body` owner, interpolates nearby recorded odometry at scan timestamps, and delays scan publication briefly after TF publication. The recorded static `body→base_link` and `base_link→xtm60_right_link` edges remain the explicit chain; no device configuration or hardware process was used.
+- The launch path keeps RTAB-Map behavior intact, defaults offline scan frame to `xtm60_right_link`, publishes normalized `/scan` with compatible reliable QoS, and remains fail-closed for `hardware_enabled=true`.
+- Three relevant packages build successfully; focused normalizer/mapping/bringup tests pass (`19` in the focused group). A short read-only replay aligned `115` odometry and `115` scan outputs; a TF probe resolved the odom-to-base/sensor chain for most scan timestamps and the QoS incompatibility warning was removed.
+- `slam_toolbox` still reports `Failed to compute odom pose` in the short replay. This remains a backend-consumer/timing acceptance failure, not a hardware or final-extrinsic result. The normalizer is therefore an unaccepted candidate pending a smaller isolated `getOdomPose` reproduction or explicit backend change.
+- A stale `manual_teleop` hardware process found during the session was stopped by exact PID; final process and UDP audits were empty. Do not leave hardware running after any offline test.
+
+
+## 17. 2026-09-06 H2 slam_toolbox 离线短回放验收
+
+- 读取正式 H1 bag 的 `metadata.yaml` 确认 `/tf_static` 的记录 QoS 为 volatile；当回放使用 `bag_start_offset_sec>0` 时，位于 bag 起点的静态 TF 会被跳过，导致 TF2 静态链不可用。
+- 新增离线专用 `offline_static_tf_relay_node`：将隔离的 `/offline/recorded_tf_static` 合并后以 reliable/transient-local QoS 发布到 `/tf_static`；离线入口对 `slam_toolbox` 拒绝非零 `bag_start_offset_sec`，避免静态 TF 被静默跳过。
+- 修正 `offline_replay_normalizer_node`：odom/scan TF 直接保留原始 ROS 秒/纳秒，不再经 float round-trip，消除 scan 时刻的纳秒级 extrapolation；离线 `slam_toolbox` 启动显式注入 `base_frame=base_link` 等关键参数，避免节点重命名后 YAML 顶层键不匹配而回退到默认 `base_footprint`。
+- 采用独立 `ROS_DOMAIN_ID` 的只读短回放验证：`/scan=32`、`/odom/fused=31`、`/map=1`，最终地图 `28x56 @ 0.05 m/cell`；无 `Failed to compute odom pose`、无 Message Filter 队列丢弃、无静态 TF QoS 告警。仅剩一次 TF buffer 时间回跳提示，未阻断短回放输出，需在完整回放中继续观察。
+- 量程参数已按 slam_toolbox 实际名称设为 `min_laser_range=0.2`、`max_laser_range=20.0`；相关三包构建通过，定向测试 `13 passed`，offset 门禁实测 fail-closed。
+- 本轮未启动真实雷达、IMU、FAST-LIO、底盘或电机；结束时无离线/硬件残留进程、无两路 XT-M60 UDP 流。H2 离线短回放现可记为 **PASS（短段）**，完整 537 s 回放和地图产品报告仍待完成。
+
+## 19. 2026-09-06 H2 离线完整回放与导出通过
+
+- 在不启动真实雷达、IMU、FAST-LIO、底盘或电机的前提下，使用正式 H1 bag `auto_test/h1_formal_20260904_213140/bag` 做独立 ROS domain 的 `slam_toolbox` 完整离线回放；`replay_rate=0.5`、`bag_start_offset_sec=0.0`、`hardware_enabled=false`。
+- 离线入口将 `maximum_accumulated_points` 做成显式有界参数。5,000,000 体素上限下，完整回放本体结束且未溢出；SLAM 日志中 `Failed to compute odom pose=0`、`Message Filter dropping=0`、`[ERROR]=0`，无 map-product 累计错误。
+- map-products 增加 8192 帧有界 pending cloud 队列，在后到的 odometry 到达后重试时间配对，避免 ROS 回调先后导致可配对点云被误拒。最终 session：`STOPPED/complete=true`、`frame_count=4777`、`rejected_frame_count=0`、`raw_point_count=42210296`、`voxel_point_count=4983459`、cloud span `494.887682 s`；质量报告记录 `rejected_pose_associations=174`，这 174 帧对应实测超出 `maximum_pose_time_delta_sec=0.15 s` 的时间窗，不是队列竞态。
+- 输出目录 `/home/nvidia/smartwheel/auto_test/h2_offline_full_20260906_021135/offline_map_20260906_021135_222732` 的 manifest 标记 `complete=true`，14 个文件的大小与 SHA256 全部复核一致；几何 PCD/PLY 与独立 `map_pointcloud_amp` PCD/PLY 均落盘，强度点数 `4983459`、`pointcloud_amp_preserved=true`，未做静默裁剪。二维产品为 `8510x6569 @ 0.05 m/cell`，occupied/free/unknown 分别 `386137/203073/55312980`。
+- 使用 `nav2_map_server` configure/activate 重载 `map_2d.yaml`，从 PGM 成功发布 `/map`，重载分辨率与尺寸与导出一致；随后停止 map_server、离线 launch 和监控进程，确认无 offline/SLAM/map_server 残留，两个 XT-M60 UDP 7687 端口静默。
+- 启动器收尾顺序已修复为 playback exit → `/map_session/stop` → 1 s → `/map_export/export`，并有 33.8 s 静态子包自动回归验证。相关四包构建通过；架构、地图产品、normalizer、static relay 和工作台定向测试 `54 passed`。
+- 本结果可记录为 **H2_OFFLINE_FULL_REPLAY_PASS_WITH_TIME_WINDOW_NOTE**。它只关闭 H2 离线软件准备，不代表 FAST-LIO2、最终外参、双雷达融合、地面运动、导航或载人安全通过；进入任何 H2 实机采集前仍需用户重新明确授权并重做安全条件确认。
+
+
+## 20. 2026-09-06 H2 实机外参与时间语义采集
+
+- 用户确认无人、清场、急停可达、操作者在场；采用 `right_lidar_diag_mapping.launch.py` 只读入口，`motion_control_enabled=false`、无相机/超声波、无电机控制写入。
+- 证据目录 `/home/nvidia/smartwheel/auto_test/h2_real_extrinsic_time_20260906_124524`，bag 约 1127.928 s、1.7 GiB、316186 条消息；包含初始/左右静止姿态、墙角静止、约 1 m 直行和约 45° 左转。
+- 右点云/quality/timing 各 11266，IMU 225443，Odometry 10350；右 quality 全部 accepted，valid fraction 中位 0.99427、范围 0.68552..0.99490。反馈健康全程 false=13704，wheel/odom=0。
+- XT-M60 SDK timestamp 单调、98..200 ms（中位 100 ms），但时间源仍为 `host_receive`；H30 IMU header 出现 2318 个重复时间戳，严格单调时间语义尚未通过。
+- 当前临时外参与不健康轮速下 FAST-LIO Odometry 长录制发散，不能做几何真值；尚缺机器可读动作标记、base 原点/IMU xyz 实测及独立墙面/地面拟合。
+- 结论为 **H2_REAL_COLLECTION_CAPTURED_NOT_ACCEPTED**；保留 `time_offset_lidar_to_imu=0.0`、`host_receive` 与 `BLOCKED_CONFLICT`。详情见 `docs/hardware/FASTLIO_H2_REAL_EXTRINSIC_TIME_20260906.md`。
+
+
+## 21. 2026-09-06 H2 双雷达加速尝试
+
+- 为加快 H2，启动只读双路原始入口（左右 XT-M60 + H30，独立 ROS domain），不启动 FAST-LIO、底盘或电机；证据 `/home/nvidia/smartwheel/auto_test/h2_real_dual_raw_20260906_132843`。
+- bag 时长 165.283 s、约 256.6 MiB、44043 条消息；右 points/timing/quality 各 1640，IMU 33054。
+- 左路仅有 2772 条 status：`waiting: XT-M60 SDK not running; waiting for ping 192.168.0.101`；左 points/timing/quality 均为 0，因此没有进行现场转动或双路外参采集。
+- 录包、左右适配器与 IMU 已停止；无相关进程、无 UDP 7687。
+- 结论：此前只用右雷达是因为右路稳定且已有 Stage 1 证据，而左路当前未 ping；不能用右路替代左路。下一步先做左路电源/链路/IP 单变量只读排查，恢复有效数据后再进行带 marker 的双路短采集。详情见 `docs/hardware/FASTLIO_H2_DUAL_RAW_20260906.md`。
+
+## 22. 2026-09-07 H30 时间戳软件收口与最新 H2 阻塞
+
+- 本轮只做软件修改和离线验证，未启动雷达、IMU、FAST-LIO、底盘或电机。H30 适配器现在保留原始串口读取边界字段 `host_receive_time_ns`/
+  `host_receive_monotonic_ns`，并按配置的 nominal rate（生产默认 `200 Hz`）生成逐样本
+  `host_interpolated_time_ns`/
+  `host_interpolated_monotonic_ns`；ROS 默认使用 `host_timestamp_mode=interpolated`，
+  以消除同一串口读取批内的重复 header 时间戳。原始边界仍可切回 `receive` 做诊断。
+- 这是主机侧估计时间，不是设备采样时间，也不解除 H1/H2 的固定延迟或设备时钟门禁。历史
+  H2 bag 仍保持当时 `host_receive` 的解释和 `H2_REAL_COLLECTION_CAPTURED_NOT_ACCEPTED` 结论。
+- 直接 H2 采集脚本的既有 `host_monotonic_ns`/`host_wall_ns` 字段现在使用估计逐样本时间，
+  同时保存原始读取边界字段；H30 传感器测试 `43 passed`，语法检查通过。
+- `h2_formal_direct_dual_20260906` 的两路短采集曾各 257 帧且子进程正常，但缺少带 marker 的
+  墙角/慢速 yaw、绝对 yaw 锚点和经验证的 H30 时间语义，候选分析仍为未接受。相位 A/B 短场景
+  的 `50 ms` 只可作为候选主机错相；后续 marked 运行出现左路低有效率/高温/连接超时和 H30
+  串口错误，右路相对稳定，左链路仍须一变量一项只读排查。
+- 主仓库和嵌套仓库仍保留既有 staged/unstaged/untracked 改动；本轮未 commit/push/reset/
+  checkout/clean/stash。下一步先做冷却后的左雷达/H30 只读健康检查，再做带 marker 双路短采集，
+  最后才进入外参、时间偏移、H3/H4 和任何运动/载人测试。
+
+## 23. 2026-09-07 软件时间戳链与 FAST-LIO 持久化收口
+
+- patches/apply_fastlio_patches.sh 现在锁定基线、权威补丁以及两个修改后 FAST-LIO 源文件的
+  SHA-256；在当前嵌套树上幂等通过，并已在临时干净基线验证补丁可应用且哈希一致。
+- scan_merger_node 使用主机 monotonic 时钟判断输入新鲜度，合并输出保留最新非零源 LaserScan
+  时间戳；三个 pointcloud-to-scan 配置关闭 restamp_output，避免用回调时刻覆盖采集时刻。
+- 相关包构建通过（wheelchair_sensors、wheelchair_perception、wheelchair_bringup、fast_lio）；
+  22 个测试目录逐目录隔离运行共 331 项通过。一次跨目录合并 pytest 会触发 rclpy 环境级
+  segfault，隔离运行无失败，不作为代码回归。
+- 本轮只做软件与离线验证；硬件保持停止，未启动雷达/IMU/FAST-LIO/底盘/电机，未写设备配置。
+- 文档 docs/fastlio_mapping.md 已将旧的“任务 5 外参完成”和单雷达默认部署改为历史/临时状态；
+  最终 LiDAR/IMU/base 外参、真实设备时间/固定延迟、动态门禁和 H3/H4 仍需用户授权后实机完成。
+
+## 24. 2026-09-08 正式 3D 产品软件链收口
+
+- 启动只读刷新确认主仓库仍在 `feature/mapping-v2-rviz-workbench`，HEAD 与
+  origin 均为 `19188466ff48d9874bcd148a14da1e714b14732b`；现有
+  staged/unstaged/untracked 内容全部保留，尤其未触碰 staged `docs/goal.md`。
+- 本轮未启动任何真实 XT-M60、H30、FAST-LIO 硬件会话、底盘或电机，未写
+  设备配置。默认 canonical calibration contract 仍为 `BLOCKED_CONFLICT`，
+  所以正式入口仍正确失败关闭。
+- `formal_3d_mapping.launch.py` 默认使用合同驱动
+  `contract_fastlio`。`formal_fast_lio.launch.py` 从同一 schema-1、
+  `scope=dual_lidar_imu`、installation-epoch-bound 合同计算 IMU 到主雷达外参
+  及完整 `body->base_link` 逆变换，关闭在线外参估计；右主雷达负责 LIO，
+  左右两路以严格同步、必须 XYZI、禁止 fallback 的方式共同进入 RTAB-Map。
+- 内置 formal 传感器自启路径强制 XT-M60 `sdk_epoch` 与 H30 必需设备 timestamp
+  TLV。XT uptime 形态时间、缺失 host_receive 边界、H30 无设备 timestamp 时
+  直接拒绝样本；生产配置仍如实保持 host time，不能宣称正式时钟已通过。
+- RTAB optimized assembler 同快照输出全局 XYZI cloud 与 full-6DoF path；
+  exporter 要求 stop 后新且匹配的 backend cloud/path，并写入真实 XYZ、XYZI、
+  TUM/CSV、profile、quality、`calibration_contract_used.json`、evidence 与完整
+  manifest。证据在 export 时重读并与固定 profile/合同重新校验；
+  `hardware_validated=true` 时 writer 还会验证 bundle 内实际复制的 profile、合同、
+  evidence 身份/epoch/合同 SHA，通过后才生成 manifest，错配保留 `.incomplete`。
+- 正式 TF 链固定为 `map->camera_init`、`camera_init->body`、
+  `body->base_link`，launch、algorithm profile、evidence 与 validator 精确一致，
+  每条边必须记录一个 publisher；非 canonical 的自洽伪 profile 也会拒绝。
+- validator 逐行解析 ASCII PCD/PLY 和完整轨迹，拒绝非有限/全零几何、
+  非有限/负值/全零 intensity、轨迹不一致、symbolic link、manifest/合同 SHA/
+  installation epoch/provenance 不一致；任何 single-lidar/no-loop/no-repeatability/
+  no-intensity 降级调用均保持 `formal_ready=false`。
+- formal 数据库现在必须显式指定尚不存在的绝对路径，
+  `delete_db_on_start=false`，并在节点构造前核对绝对可写 output root 与安全
+  map name，禁止覆盖或追加旧 RTAB 数据库。
+- 正式 hardware profile、canonical calibration contract 和 formal hardware
+  evidence 现在按同一 schema-1 hardware identity 三方绑定：左右 XT-M60 使用
+  已知厂家 serial，H30 使用稳定 installation asset ID，三者必须属于同一 epoch；
+  evidence 必须逐 role 记录 observed ID/model/kind/frame、identity source、
+  `match=true`，雷达另需 observed IP。左右互换、重复/缺失 ID/frame、epoch 不一致、
+  合同摘要改变或只有 PASS 状态都会在启动、导出、writer 快照及最终验收层
+  fail-closed。IP 仍只是辅助配置；
+  当前 H30 资产号还需操作者现场确认，不能用 `/dev/tty*` 代替。
+- 保存脚本有界执行 RTAB pause（若服务存在且类型正确）、session stop、等待
+  stop 后 backend 快照、export，并验证 transient-local completion 路径、
+  `.incomplete` 与 manifest。身份绑定改动后重新构建并通过完整包级回归：
+  wheelchair_3d_mapping `111 passed`、smartwheel_map_products `76 passed`；此前
+  smartwheel_global_mapping `21 passed`、wheelchair_sensors `46 passed` 为本轮
+  未改包的最近记录，五个相关包此前 build 通过。默认 formal launch
+  在节点构造前按 `BLOCKED_CONFLICT` 退出，随后相关进程审计为空。
+- FAST-LIO 持久化脚本仍锁定 `laser_point_cov=0.001`、正规 ZUPT、退化投影、
+  初始化、covariance 和有界 path 的当前源码哈希；不会重新引入 `R=100` 或旧
+  负-age ZUPT。
+
+正式产品仍必须等待人工/厂商证据：H30 稳定资产号和三设备身份现场确认，
+左右 XT-M60 与 H30 真实设备时间及固定
+延迟、最终 base/IMU/双雷达 xyz/rpy、动态四场景、负载实时性、至少一个闭环、
+三次重复路线及最终 operator attestation。未完成前只能输出 candidate。

@@ -1,0 +1,1109 @@
+diff --git a/src/IMU_Processing.hpp b/src/IMU_Processing.hpp
+index f35378f9d100843995e117a9fe8236294bd9b34e..980f8205ece09110ed533afaad40750eb478db6e 100644
+--- a/src/IMU_Processing.hpp
++++ b/src/IMU_Processing.hpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <cmath>
+ #include <math.h>
+ #include <deque>
+@@ -23,8 +24,6 @@
+ 
+ /// *************Preconfiguration
+ 
+-#define MAX_INI_COUNT (10)
+-
+ const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
+ 
+ /// *************IMU Process and undistortion
+@@ -46,6 +45,11 @@ class ImuProcess
+   void set_acc_cov(const V3D &scaler);
+   void set_gyr_bias_cov(const V3D &b_g);
+   void set_acc_bias_cov(const V3D &b_a);
++  void set_init_requirements(int min_samples, double min_duration_sec,
++                             double max_gyro_norm_rps,
++                             double max_accel_deviation_mps2,
++                             double max_gyro_std_rps,
++                             double max_accel_std_mps2);
+   Eigen::Matrix<double, 12, 12> Q;
+   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
+ 
+@@ -72,11 +76,21 @@ class ImuProcess
+   V3D Lidar_T_wrt_IMU;
+   V3D mean_acc;
+   V3D mean_gyr;
++  V3D init_acc_m2_;
++  V3D init_gyr_m2_;
+   V3D angvel_last;
+   V3D acc_s_last;
+   double start_timestamp_;
+   double last_lidar_end_time_;
+-  int    init_iter_num = 1;
++  int    init_iter_num = 0;
++  int    init_min_samples_ = 400;
++  double init_min_duration_sec_ = 2.0;
++  double init_max_gyro_norm_rps_ = 0.10;
++  double init_max_accel_deviation_mps2_ = 1.0;
++  double init_max_gyro_std_rps_ = 0.05;
++  double init_max_accel_std_mps2_ = 0.50;
++  double init_window_start_time_ = -1.0;
++  double init_window_last_time_ = -1.0;
+   bool   b_first_frame_ = true;
+   bool   imu_need_init_ = true;
+ };
+@@ -84,7 +98,7 @@ class ImuProcess
+ ImuProcess::ImuProcess()
+     : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1)
+ {
+-  init_iter_num = 1;
++  init_iter_num = 0;
+   Q = process_noise_cov();
+   cov_acc       = V3D(0.1, 0.1, 0.1);
+   cov_gyr       = V3D(0.1, 0.1, 0.1);
+@@ -92,6 +106,8 @@ ImuProcess::ImuProcess()
+   cov_bias_acc  = V3D(0.0001, 0.0001, 0.0001);
+   mean_acc      = V3D(0, 0, -1.0);
+   mean_gyr      = V3D(0, 0, 0);
++  init_acc_m2_  = Zero3d;
++  init_gyr_m2_  = Zero3d;
+   angvel_last     = Zero3d;
+   Lidar_T_wrt_IMU = Zero3d;
+   Lidar_R_wrt_IMU = Eye3d;
+@@ -108,7 +124,13 @@ void ImuProcess::Reset()
+   angvel_last       = Zero3d;
+   imu_need_init_    = true;
+   start_timestamp_  = -1;
+-  init_iter_num     = 1;
++  init_iter_num     = 0;
++  init_window_start_time_ = -1.0;
++  init_window_last_time_ = -1.0;
++  cov_acc = Zero3d;
++  cov_gyr = Zero3d;
++  init_acc_m2_ = Zero3d;
++  init_gyr_m2_ = Zero3d;
+   v_imu_.clear();
+   IMUpose.clear();
+   last_imu_.reset(new sensor_msgs::msg::Imu());
+@@ -153,6 +175,20 @@ void ImuProcess::set_acc_bias_cov(const V3D &b_a)
+   cov_bias_acc = b_a;
+ }
+ 
++void ImuProcess::set_init_requirements(int min_samples, double min_duration_sec,
++                                       double max_gyro_norm_rps,
++                                       double max_accel_deviation_mps2,
++                                       double max_gyro_std_rps,
++                                       double max_accel_std_mps2)
++{
++  init_min_samples_ = std::max(10, min_samples);
++  init_min_duration_sec_ = std::max(0.1, min_duration_sec);
++  init_max_gyro_norm_rps_ = std::max(0.0, max_gyro_norm_rps);
++  init_max_accel_deviation_mps2_ = std::max(0.0, max_accel_deviation_mps2);
++  init_max_gyro_std_rps_ = std::max(0.0, max_gyro_std_rps);
++  init_max_accel_std_mps2_ = std::max(0.0, max_accel_std_mps2);
++}
++
+ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N)
+ {
+   /** 1. initializing the gravity, gyro bias, acc and gyro covariance
+@@ -163,12 +199,8 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom,
+   if (b_first_frame_)
+   {
+     Reset();
+-    N = 1;
++    N = 0;
+     b_first_frame_ = false;
+-    const auto &imu_acc = meas.imu.front()->linear_acceleration;
+-    const auto &gyr_acc = meas.imu.front()->angular_velocity;
+-    mean_acc << imu_acc.x, imu_acc.y, imu_acc.z;
+-    mean_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
+     first_lidar_time = meas.lidar_beg_time;
+   }
+ 
+@@ -179,15 +211,72 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom,
+     cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
+     cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
+ 
+-    mean_acc      += (cur_acc - mean_acc) / N;
+-    mean_gyr      += (cur_gyr - mean_gyr) / N;
+-
+-    cov_acc = cov_acc * (N - 1.0) / N + (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) * (N - 1.0) / (N * N);
+-    cov_gyr = cov_gyr * (N - 1.0) / N + (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) * (N - 1.0) / (N * N);
++    const double sample_time = rclcpp::Time(imu->header.stamp).seconds();
++    const bool finite_sample = cur_acc.allFinite() && cur_gyr.allFinite() &&
++                               std::isfinite(sample_time);
++    if (!finite_sample)
++    {
++      N = 0;
++      cov_acc = Zero3d;
++      cov_gyr = Zero3d;
++      init_acc_m2_ = Zero3d;
++      init_gyr_m2_ = Zero3d;
++      init_window_start_time_ = -1.0;
++      init_window_last_time_ = -1.0;
++      continue;
++    }
++    const bool instantaneous_stationary =
++        cur_gyr.norm() <= init_max_gyro_norm_rps_ &&
++        std::abs(cur_acc.norm() - G_m_s2) <= init_max_accel_deviation_mps2_;
++    if (!instantaneous_stationary)
++    {
++      // A moving/touched sensor must start a fresh continuous stationary
++      // alignment window. Do not average motion into gravity or gyro bias.
++      N = 0;
++      mean_acc = Zero3d;
++      mean_gyr = Zero3d;
++      cov_acc = Zero3d;
++      cov_gyr = Zero3d;
++      init_acc_m2_ = Zero3d;
++      init_gyr_m2_ = Zero3d;
++      init_window_start_time_ = -1.0;
++      init_window_last_time_ = -1.0;
++      continue;
++    }
++    if (init_window_start_time_ < 0.0 || sample_time < init_window_last_time_)
++    {
++      N = 0;
++      mean_acc = Zero3d;
++      mean_gyr = Zero3d;
++      cov_acc = Zero3d;
++      cov_gyr = Zero3d;
++      init_acc_m2_ = Zero3d;
++      init_gyr_m2_ = Zero3d;
++      init_window_start_time_ = sample_time;
++    }
++    init_window_last_time_ = sample_time;
++
++    // Welford accumulation avoids the original short-window numerical bias and
++    // gives an actual per-axis sample variance for the stationarity gate.
++    N++;
++    const V3D acc_delta = cur_acc - mean_acc;
++    mean_acc += acc_delta / static_cast<double>(N);
++    init_acc_m2_ += acc_delta.cwiseProduct(cur_acc - mean_acc);
++    const V3D gyr_delta = cur_gyr - mean_gyr;
++    mean_gyr += gyr_delta / static_cast<double>(N);
++    init_gyr_m2_ += gyr_delta.cwiseProduct(cur_gyr - mean_gyr);
++    if (N > 1)
++    {
++      cov_acc = init_acc_m2_ / static_cast<double>(N - 1);
++      cov_gyr = init_gyr_m2_ / static_cast<double>(N - 1);
++    }
+ 
+     // cout<<"acc norm: "<<cur_acc.norm()<<" "<<mean_acc.norm()<<endl;
+ 
+-    N ++;
++  }
++  if (N <= 0 || !mean_acc.allFinite() || mean_acc.norm() < 1.0e-6)
++  {
++    return;
+   }
+   state_ikfom init_state = kf_state.get_x();
+   init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+@@ -293,7 +382,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
+   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
+   dt = note * (pcl_end_time - imu_end_time);
+   kf_state.predict(dt, Q, in);
+-  
++
+   imu_state = kf_state.get_x();
+   last_imu_ = meas.imu.back();
+   last_lidar_end_time_ = pcl_end_time;
+@@ -354,14 +443,25 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom,
+     last_imu_   = meas.imu.back();
+ 
+     state_ikfom imu_state = kf_state.get_x();
+-    if (init_iter_num > MAX_INI_COUNT)
++    const double init_duration = init_window_start_time_ >= 0.0 ?
++        init_window_last_time_ - init_window_start_time_ : -1.0;
++    const double gyro_std = cov_gyr.cwiseMax(0.0).cwiseSqrt().maxCoeff();
++    const double accel_std = cov_acc.cwiseMax(0.0).cwiseSqrt().maxCoeff();
++    const bool enough_stationary_data =
++        init_iter_num >= init_min_samples_ &&
++        init_duration >= init_min_duration_sec_ &&
++        gyro_std <= init_max_gyro_std_rps_ &&
++        accel_std <= init_max_accel_std_mps2_;
++    if (enough_stationary_data)
+     {
+       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
+       imu_need_init_ = false;
+ 
+       cov_acc = cov_acc_scale;
+       cov_gyr = cov_gyr_scale;
+-      std::cout << "IMU Initial Done" << std::endl;
++      std::cout << "IMU Initial Done after " << init_iter_num << " samples / "
++                << init_duration << " s (gyro_std=" << gyro_std
++                << ", accel_std=" << accel_std << ")" << std::endl;
+       // ROS_INFO("IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\
+       //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(), cov_bias_gyr[0], cov_bias_gyr[1], cov_bias_gyr[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
+       fout_imu.open(DEBUG_FILE_DIR("imu.txt"),ios::out);
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index d441261cf44a01649cb7f7ffcae19127521c18c0..db3b15e6fc1d303ce74ffd27c5265ae3921888cf 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -32,6 +32,7 @@
+ // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ // POSSIBILITY OF SUCH DAMAGE.
++#include <algorithm>
+ #include <omp.h>
+ #include <mutex>
+ #include <math.h>
+@@ -43,7 +44,9 @@
+ #include <Python.h>
+ #include <so3_math.h>
+ #include <rclcpp/rclcpp.hpp>
++#include <Eigen/Cholesky>
+ #include <Eigen/Core>
++#include <Eigen/Eigenvalues>
+ #include "IMU_Processing.hpp"
+ #include <nav_msgs/msg/odometry.hpp>
+ #include <nav_msgs/msg/path.hpp>
+@@ -55,6 +58,7 @@
+ #include <pcl/io/pcd_io.h>
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <sensor_msgs/msg/imu.hpp>
++#include <std_msgs/msg/bool.hpp>
+ #include <std_srvs/srv/trigger.hpp>
+ #include <tf2_ros/transform_broadcaster.h>
+ #include <geometry_msgs/msg/transform_stamped.hpp>
+@@ -64,7 +68,6 @@
+ #include <ikd-Tree/ikd_Tree.h>
+ 
+ #define INIT_TIME           (0.1)
+-#define LASER_POINT_COV     (0.001)
+ #define MAXN                (720000)
+ #define PUBFRAME_PERIOD     (20)
+ 
+@@ -74,8 +77,80 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
+ double match_time = 0, solve_time = 0, solve_const_H_time = 0;
+ int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
+ bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
++int    path_publish_stride = 10;
++int    path_max_poses = 600;
+ /**************************/
+ 
++/*** LiDAR update guard. The upstream per-point covariance is 0.001. The former
++ *** hard-coded value 100.0 weakened LiDAR by 100,000x and was selected using
++ *** yaw alone even though the same run had an 8.46 m translation error. Keep
++ *** it configurable and reject geometrically/numerically unsafe corrections
++ *** before they can enter the ikd-tree. ***/
++double laser_point_cov = 0.001;
++bool   update_guard_en = true;
++int    update_guard_min_effective_features = 50;
++double update_guard_max_mean_residual_m = 0.25;
++double update_guard_min_observability_ratio = 1.0e-6;
++int    update_guard_min_observable_directions = 3;
++bool   update_guard_project_degenerate_directions = true;
++double update_guard_reject_after_lidar_gap_sec = 0.5;
++double update_guard_max_position_correction_m = 0.25;
++double update_guard_max_rotation_correction_deg = 5.0;
++double update_guard_max_velocity_correction_mps = 1.0;
++bool   update_guard_adaptive_retry_en = true;
++int    update_guard_adaptive_retry_max = 3;
++double update_guard_adaptive_retry_covariance_scale = 4.0;
++double update_observability_ratio = 0.0;
++double update_observability_min_eigenvalue = 0.0;
++double update_observability_max_eigenvalue = 0.0;
++int    update_observable_rank = 0;
++Eigen::Matrix<double, 6, 6> update_observable_projection =
++    Eigen::Matrix<double, 6, 6>::Identity();
++uint64_t accepted_lidar_updates = 0;
++uint64_t rejected_lidar_updates = 0;
++uint64_t projected_lidar_updates = 0;
++uint64_t adapted_lidar_updates = 0;
++double last_lidar_update_time = -1.0;
++
++/*** ZUPT (zero-velocity update) mitigation, off by default (see xtm60_right_lio.yaml
++ *** "zupt:" block and apply_zupt_if_stationary() below for the diagnosis this fixes). ***/
++bool   zupt_en = false;
++double zupt_linear_speed_thresh = 0.02;
++double zupt_angular_speed_thresh = 0.02;
++double zupt_hold_time_sec = 0.3;
++double zupt_stale_timeout_sec = 1.0;
++double zupt_history_sec = 10.0;
++double zupt_velocity_measurement_variance = 0.0001;
++string zupt_wheel_odom_topic = "/wheel/odom";
++bool   zupt_require_feedback_healthy = true;
++string zupt_feedback_health_topic = "/base/wheel_feedback_healthy";
++double zupt_feedback_health_timeout_sec = 0.25;
++bool   zupt_feedback_healthy = false;
++double zupt_feedback_health_receive_time = -1.0;
++bool   zupt_require_imu_stationary = true;
++double zupt_imu_gyro_thresh_rps = 0.05;
++double zupt_imu_accel_tolerance_mps2 = 0.50;
++double zupt_imu_stale_timeout_sec = 0.10;
++double zupt_imu_window_sec = 0.20;
++double zupt_stationary_since = -1.0;   // wheel-odom timestamp when apparent-zero began, -1 = not currently zero
++double zupt_last_odom_stamp = -1.0;    // wheel-odom timestamp of the most recent message received
++bool   zupt_confirmed_stationary = false;
++bool   zupt_was_active = false;
++uint64_t zupt_applied_count = 0;
++struct ZuptOdomSample
++{
++    double stamp;
++    bool confirmed_stationary;
++    bool feedback_healthy;
++};
++deque<ZuptOdomSample> zupt_odom_history;
++struct ZuptImuSample
++{
++    double stamp;
++    bool stationary;
++};
++deque<ZuptImuSample> zupt_imu_history;
++
+ float res_last[100000] = {0.0};
+ float DET_RANGE = 300.0f;
+ const float MOV_THRESHOLD = 1.5f;
+@@ -347,6 +422,12 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
+     sig_buffer.notify_all();
+ }
+ 
++double steady_time_sec()
++{
++    return std::chrono::duration<double>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
+ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
+ {
+     publish_count ++;
+@@ -374,10 +455,228 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
+     last_timestamp_imu = timestamp;
+ 
+     imu_buffer.push_back(msg);
++    if (zupt_en && zupt_require_imu_stationary)
++    {
++        const auto &gyro = msg->angular_velocity;
++        const auto &accel = msg->linear_acceleration;
++        const double gyro_norm = std::sqrt(
++            gyro.x * gyro.x + gyro.y * gyro.y + gyro.z * gyro.z);
++        const double accel_norm = std::sqrt(
++            accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
++        const bool stationary = std::isfinite(gyro_norm) && std::isfinite(accel_norm) &&
++            gyro_norm <= zupt_imu_gyro_thresh_rps &&
++            std::abs(accel_norm - G_m_s2) <= zupt_imu_accel_tolerance_mps2;
++        if (!zupt_imu_history.empty() && timestamp < zupt_imu_history.back().stamp)
++        {
++            zupt_imu_history.clear();
++        }
++        zupt_imu_history.push_back({timestamp, stationary});
++        while (!zupt_imu_history.empty() &&
++               timestamp - zupt_imu_history.front().stamp > zupt_history_sec)
++        {
++            zupt_imu_history.pop_front();
++        }
++    }
+     mtx_buffer.unlock();
+     sig_buffer.notify_all();
+ }
+ 
++void wheel_feedback_health_cbk(const std_msgs::msg::Bool::SharedPtr msg)
++{
++    std::lock_guard<mutex> lock(mtx_buffer);
++    zupt_feedback_healthy = msg->data;
++    zupt_feedback_health_receive_time = steady_time_sec();
++}
++
++// ZUPT support: track how long /wheel/odom has reported near-zero speed.
++// zlac8030_driver_node publishes this unconditionally (real encoder feedback
++// when feedback registers are configured, open-loop-from-command otherwise),
++// so "apparent zero" here means the base driver believes the wheels are not
++// turning - it does not by itself prove the chair is stationary (e.g. it
++// would miss the wheels being spun by an external push while under a
++// mismatched invert_left/invert_right sign). Combined with a hold_time_sec
++// debounce and a staleness timeout (see apply_zupt_if_stationary), this is a
++// deliberately conservative "safe to assume stationary" signal, not a
++// certified stationary detector.
++void wheel_odom_cbk(const nav_msgs::msg::Odometry::SharedPtr msg)
++{
++    double stamp = get_time_sec(msg->header.stamp);
++    bool apparent_zero = abs(msg->twist.twist.linear.x) < zupt_linear_speed_thresh &&
++                          abs(msg->twist.twist.angular.z) < zupt_angular_speed_thresh;
++
++    std::lock_guard<mutex> lock(mtx_buffer);
++    const bool feedback_health_fresh = zupt_feedback_health_receive_time >= 0.0 &&
++        steady_time_sec() - zupt_feedback_health_receive_time <=
++            zupt_feedback_health_timeout_sec;
++    const bool feedback_ok = !zupt_require_feedback_healthy ||
++        (feedback_health_fresh && zupt_feedback_healthy);
++    if (!zupt_odom_history.empty() && stamp < zupt_odom_history.back().stamp) {
++        // A replay/time reset invalidates the previous time-domain history.
++        zupt_odom_history.clear();
++        zupt_stationary_since = -1.0;
++        zupt_confirmed_stationary = false;
++    }
++    zupt_last_odom_stamp = stamp;
++    if (apparent_zero && feedback_ok) {
++        if (zupt_stationary_since < 0.0) {
++            zupt_stationary_since = stamp;
++        }
++        zupt_confirmed_stationary = (stamp - zupt_stationary_since) >= zupt_hold_time_sec;
++    } else {
++        zupt_stationary_since = -1.0;
++        zupt_confirmed_stationary = false;
++    }
++    zupt_odom_history.push_back({stamp, zupt_confirmed_stationary, feedback_ok});
++    while (!zupt_odom_history.empty() &&
++           stamp - zupt_odom_history.front().stamp > zupt_history_sec) {
++        zupt_odom_history.pop_front();
++    }
++}
++
++// If ZUPT is enabled and /wheel/odom has confirmed the chair has been at
++// apparent-zero speed for at least hold_time_sec, apply a zero-velocity
++// pseudo-measurement so residual velocity error stops being integrated into
++// position drift every subsequent frame. No-op (and logs once) if /wheel/odom has
++// gone stale, so a dead odom topic fails closed to "do nothing" rather than
++// silently freezing velocity forever.
++void apply_zupt_if_stationary(double current_time)
++{
++    if (!zupt_en) return;
++
++    bool confirmed = false;
++    bool feedback_healthy = false;
++    bool sample_found = false;
++    double odom_age = -1.0;
++    bool imu_stationary = !zupt_require_imu_stationary;
++    bool imu_sample_found = !zupt_require_imu_stationary;
++    bool imu_window_covered = !zupt_require_imu_stationary;
++    double imu_age = -1.0;
++    bool live_feedback_healthy = !zupt_require_feedback_healthy;
++    double feedback_health_age = -1.0;
++    {
++        std::lock_guard<mutex> lock(mtx_buffer);
++        if (zupt_require_feedback_healthy && zupt_feedback_health_receive_time >= 0.0)
++        {
++            feedback_health_age = steady_time_sec() - zupt_feedback_health_receive_time;
++            live_feedback_healthy = zupt_feedback_healthy &&
++                feedback_health_age >= 0.0 &&
++                feedback_health_age <= zupt_feedback_health_timeout_sec;
++        }
++        // FAST-LIO may process an older LiDAR frame after a newer 50 Hz wheel
++        // sample has arrived. Selecting only the latest sample made age negative
++        // on 1171/1171 frames in the 2026-09-04 failure bag and silently disabled
++        // ZUPT. Select the newest wheel sample at or before the LiDAR time instead.
++        for (auto it = zupt_odom_history.rbegin(); it != zupt_odom_history.rend(); ++it) {
++            if (it->stamp <= current_time) {
++                confirmed = it->confirmed_stationary;
++                feedback_healthy = it->feedback_healthy;
++                odom_age = current_time - it->stamp;
++                sample_found = true;
++                break;
++            }
++        }
++        if (zupt_require_imu_stationary)
++        {
++            const double window_start = current_time - std::max(0.0, zupt_imu_window_sec);
++            bool latest_selected = false;
++            for (auto it = zupt_imu_history.rbegin(); it != zupt_imu_history.rend(); ++it)
++            {
++                if (it->stamp > current_time)
++                {
++                    continue;
++                }
++                if (!latest_selected)
++                {
++                    imu_age = current_time - it->stamp;
++                    imu_sample_found = true;
++                    imu_stationary = true;
++                    latest_selected = true;
++                }
++                if (it->stamp < window_start)
++                {
++                    imu_window_covered = true;
++                    break;
++                }
++                imu_stationary = imu_stationary && it->stationary;
++            }
++            if (zupt_imu_window_sec <= 0.0 && imu_sample_found)
++            {
++                imu_window_covered = true;
++            }
++        }
++    }
++
++    if (!sample_found || odom_age > zupt_stale_timeout_sec ||
++        (zupt_require_feedback_healthy &&
++         (!feedback_healthy || !live_feedback_healthy)) ||
++        !imu_sample_found || !imu_window_covered ||
++        (zupt_require_imu_stationary && imu_age > zupt_imu_stale_timeout_sec)) {
++        if (zupt_was_active) {
++            std::cout << "[ZUPT] prerequisites unavailable (odom_age=" << odom_age
++                      << "s, feedback_healthy=" << feedback_healthy
++                      << ", live_feedback_healthy=" << live_feedback_healthy
++                      << ", feedback_age=" << feedback_health_age
++                      << ", imu_age=" << imu_age
++                      << "s) - ZUPT suspended" << std::endl;
++            zupt_was_active = false;
++        }
++        return;
++    }
++    if (!confirmed || !imu_stationary) {
++        zupt_was_active = false;
++        return;
++    }
++
++    // Standard zero-velocity pseudo-measurement: z=0, h(x)=velocity. The
++    // Kalman gain propagates the correction through existing correlations into
++    // attitude, gyro/accel bias and gravity instead of hard-overwriting only the
++    // velocity state. Joseph form preserves a symmetric PSD covariance.
++    state_ikfom s = kf.get_x();
++    auto P = kf.get_P();
++    constexpr int N = state_ikfom::DOF;
++    Eigen::Matrix<double, 3, N> H = Eigen::Matrix<double, 3, N>::Zero();
++    H.template block<3, 3>(0, 12) = Eigen::Matrix3d::Identity();
++    const Eigen::Matrix3d R = std::max(1.0e-12, zupt_velocity_measurement_variance) *
++                              Eigen::Matrix3d::Identity();
++    const Eigen::Matrix3d innovation_cov = H * P * H.transpose() + R;
++    Eigen::LDLT<Eigen::Matrix3d> solver(innovation_cov);
++    if (solver.info() != Eigen::Success)
++    {
++        zupt_was_active = false;
++        return;
++    }
++    const Eigen::Matrix<double, N, 3> K =
++        P * H.transpose() * solver.solve(Eigen::Matrix3d::Identity());
++    Eigen::Matrix<double, N, 1> delta = K * (-s.vel);
++    if (!delta.allFinite())
++    {
++        zupt_was_active = false;
++        return;
++    }
++    s.boxplus(delta);
++
++    const Eigen::Matrix<double, N, N> identity =
++        Eigen::Matrix<double, N, N>::Identity();
++    const Eigen::Matrix<double, N, N> correction = identity - K * H;
++    Eigen::Matrix<double, N, N> P_updated =
++        correction * P * correction.transpose() + K * R * K.transpose();
++    P_updated = 0.5 * (P_updated + P_updated.transpose());
++    if (!P_updated.allFinite())
++    {
++        zupt_was_active = false;
++        return;
++    }
++    kf.change_x(s);
++    kf.change_P(P_updated);
++    zupt_applied_count++;
++
++    if (!zupt_was_active) {
++        std::cout << "[ZUPT] confirmed stationary via " << zupt_wheel_odom_topic
++                  << " - applying zero-velocity pseudo-measurement" << std::endl;
++        zupt_was_active = true;
++    }
++}
++
+ double lidar_mean_scantime = 0.0;
+ int    scan_num = 0;
+ bool sync_packages(MeasureGroup &meas)
+@@ -631,7 +930,6 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
+     odomAftMapped.child_frame_id = "body";
+     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+     set_posestamp(odomAftMapped.pose);
+-    pubOdomAftMapped->publish(odomAftMapped);
+     auto P = kf.get_P();
+     for (int i = 0; i < 6; i ++)
+     {
+@@ -643,6 +941,9 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
+         odomAftMapped.pose.covariance[i*6 + 4] = P(k, 1);
+         odomAftMapped.pose.covariance[i*6 + 5] = P(k, 2);
+     }
++    // Populate the covariance before publishing. The upstream order published
++    // the previous frame's covariance (and an all-zero covariance initially).
++    pubOdomAftMapped->publish(odomAftMapped);
+ 
+     geometry_msgs::msg::TransformStamped trans;
+     trans.header.frame_id = "camera_init";
+@@ -665,11 +966,19 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
+     msg_body_pose.header.frame_id = "camera_init";
+ 
+     /*** if path is too large, the rvis will crash ***/
+-    static int jjj = 0;
+-    jjj++;
+-    if (jjj % 10 == 0) 
++    static int frame_counter = 0;
++    frame_counter++;
++    if (path_publish_stride > 0 && frame_counter % path_publish_stride == 0)
+     {
++        if (path_max_poses > 0 &&
++            static_cast<int>(path.poses.size()) >= path_max_poses)
++        {
++            const auto remove_count = path.poses.size() -
++                static_cast<size_t>(path_max_poses) + 1;
++            path.poses.erase(path.poses.begin(), path.poses.begin() + remove_count);
++        }
+         path.poses.push_back(msg_body_pose);
++        path.header.stamp = msg_body_pose.header.stamp;
+         pubPath->publish(path);
+     }
+ }
+@@ -680,6 +989,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+     laserCloudOri->clear(); 
+     corr_normvect->clear(); 
+     total_residual = 0.0; 
++    update_observability_ratio = 0.0;
++    update_observability_min_eigenvalue = 0.0;
++    update_observability_max_eigenvalue = 0.0;
++    update_observable_rank = 0;
++    update_observable_projection.setIdentity();
+ 
+     /** closest surface search and residual computation **/
+     #ifdef MP_EN
+@@ -744,15 +1058,20 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+         }
+     }
+ 
+-    if (effct_feat_num < 1)
++    const int required_features = update_guard_en ? update_guard_min_effective_features : 1;
++    if (effct_feat_num < required_features)
+     {
+         ekfom_data.valid = false;
+-        std::cerr << "No Effective Points!" << std::endl;
+-        // ROS_WARN("No Effective Points! \n");
+         return;
+     }
+ 
+     res_mean_last = total_residual / effct_feat_num;
++    if (update_guard_en && update_guard_max_mean_residual_m > 0.0 &&
++        res_mean_last > update_guard_max_mean_residual_m)
++    {
++        ekfom_data.valid = false;
++        return;
++    }
+     match_time  += omp_get_wtime() - match_start;
+     double solve_start_  = omp_get_wtime();
+     
+@@ -790,6 +1109,56 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+         /*** Measuremnt: distance to the closest surface/corner ***/
+         ekfom_data.h(i) = -norm_p.intensity;
+     }
++
++    // The first six columns are the position/rotation Jacobian. Project the
++    // Jacobian onto its observable eigenspace so a wall/floor/corridor can still
++    // update constrained directions without injecting an arbitrary correction
++    // along a geometric nullspace. Reject only when too few directions remain.
++    const Eigen::Matrix<double, 6, 6> information =
++        (ekfom_data.h_x.leftCols(6).transpose() * ekfom_data.h_x.leftCols(6)) /
++        static_cast<double>(effct_feat_num);
++    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> eigensolver(
++        information, Eigen::ComputeEigenvectors);
++    if (eigensolver.info() != Eigen::Success)
++    {
++        ekfom_data.valid = false;
++        return;
++    }
++    update_observability_min_eigenvalue = std::max(0.0, eigensolver.eigenvalues()(0));
++    update_observability_max_eigenvalue =
++        std::max(0.0, eigensolver.eigenvalues()(5));
++    if (update_observability_max_eigenvalue > 0.0)
++    {
++        update_observability_ratio =
++            update_observability_min_eigenvalue / update_observability_max_eigenvalue;
++    }
++    const double eigen_cutoff = update_observability_max_eigenvalue *
++        std::max(0.0, update_guard_min_observability_ratio);
++    Eigen::Matrix<double, 6, 6> observable_mask =
++        Eigen::Matrix<double, 6, 6>::Zero();
++    for (int i = 0; i < 6; ++i)
++    {
++        if (eigensolver.eigenvalues()(i) >= eigen_cutoff &&
++            eigensolver.eigenvalues()(i) > 0.0)
++        {
++            observable_mask(i, i) = 1.0;
++            update_observable_rank++;
++        }
++    }
++    update_observable_projection = eigensolver.eigenvectors() * observable_mask *
++                                   eigensolver.eigenvectors().transpose();
++    if (update_guard_en &&
++        update_observable_rank < update_guard_min_observable_directions)
++    {
++        ekfom_data.valid = false;
++        return;
++    }
++    if (update_guard_en && update_guard_project_degenerate_directions &&
++        update_observable_rank < 6)
++    {
++        ekfom_data.h_x.leftCols(6) =
++            ekfom_data.h_x.leftCols(6) * update_observable_projection;
++    }
+     solve_time += omp_get_wtime() - solve_start_;
+ }
+ 
+@@ -804,6 +1173,8 @@ public:
+         this->declare_parameter<bool>("publish.scan_publish_en", true);
+         this->declare_parameter<bool>("publish.dense_publish_en", true);
+         this->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
++        this->declare_parameter<int>("publish.path_stride", 10);
++        this->declare_parameter<int>("publish.path_max_poses", 600);
+         this->declare_parameter<int>("max_iteration", 4);
+         this->declare_parameter<string>("map_file_path", "");
+         this->declare_parameter<string>("common.lid_topic", "/livox/lidar");
+@@ -820,6 +1191,20 @@ public:
+         this->declare_parameter<double>("mapping.acc_cov", 0.1);
+         this->declare_parameter<double>("mapping.b_gyr_cov", 0.0001);
+         this->declare_parameter<double>("mapping.b_acc_cov", 0.0001);
++        this->declare_parameter<double>("mapping.laser_point_cov", 0.001);
++        this->declare_parameter<bool>("mapping.update_guard.enabled", true);
++        this->declare_parameter<int>("mapping.update_guard.min_effective_features", 50);
++        this->declare_parameter<double>("mapping.update_guard.max_mean_residual_m", 0.25);
++        this->declare_parameter<double>("mapping.update_guard.min_observability_ratio", 1.0e-6);
++        this->declare_parameter<int>("mapping.update_guard.min_observable_directions", 3);
++        this->declare_parameter<bool>("mapping.update_guard.project_degenerate_directions", true);
++        this->declare_parameter<double>("mapping.update_guard.reject_after_lidar_gap_sec", 0.5);
++        this->declare_parameter<double>("mapping.update_guard.max_position_correction_m", 0.25);
++        this->declare_parameter<double>("mapping.update_guard.max_rotation_correction_deg", 5.0);
++        this->declare_parameter<double>("mapping.update_guard.max_velocity_correction_mps", 1.0);
++        this->declare_parameter<bool>("mapping.update_guard.adaptive_retry_enabled", true);
++        this->declare_parameter<int>("mapping.update_guard.adaptive_retry_max", 3);
++        this->declare_parameter<double>("mapping.update_guard.adaptive_retry_covariance_scale", 4.0);
+         this->declare_parameter<double>("preprocess.blind", 0.01);
+         this->declare_parameter<int>("preprocess.lidar_type", AVIA);
+         this->declare_parameter<int>("preprocess.scan_line", 16);
+@@ -833,6 +1218,32 @@ public:
+         this->declare_parameter<int>("pcd_save.interval", -1);
+         this->declare_parameter<vector<double>>("mapping.extrinsic_T", vector<double>());
+         this->declare_parameter<vector<double>>("mapping.extrinsic_R", vector<double>());
++        this->declare_parameter<int>("imu_init.min_samples", 400);
++        this->declare_parameter<double>("imu_init.min_duration_sec", 2.0);
++        this->declare_parameter<double>("imu_init.max_gyro_norm_rps", 0.10);
++        this->declare_parameter<double>("imu_init.max_accel_deviation_mps2", 1.0);
++        this->declare_parameter<double>("imu_init.max_gyro_std_rps", 0.05);
++        this->declare_parameter<double>("imu_init.max_accel_std_mps2", 0.50);
++        // ZUPT (zero-velocity update) mitigation. Off by default (matches upstream
++        // behaviour on every other route: left/dual radar, mock). See
++        // xtm60_right_lio.yaml "zupt:" block for why this exists and where it is
++        // turned on, and docs/fastlio_mapping.md for the drift-after-teleop diagnosis.
++        this->declare_parameter<bool>("zupt.enabled", false);
++        this->declare_parameter<string>("zupt.wheel_odom_topic", "/wheel/odom");
++        this->declare_parameter<double>("zupt.linear_speed_thresh_mps", 0.02);
++        this->declare_parameter<double>("zupt.angular_speed_thresh_rps", 0.02);
++        this->declare_parameter<double>("zupt.hold_time_sec", 0.3);
++        this->declare_parameter<double>("zupt.stale_timeout_sec", 1.0);
++        this->declare_parameter<double>("zupt.history_sec", 10.0);
++        this->declare_parameter<double>("zupt.velocity_measurement_variance", 0.0001);
++        this->declare_parameter<bool>("zupt.require_feedback_healthy", true);
++        this->declare_parameter<string>("zupt.feedback_health_topic", "/base/wheel_feedback_healthy");
++        this->declare_parameter<double>("zupt.feedback_health_timeout_sec", 0.25);
++        this->declare_parameter<bool>("zupt.require_imu_stationary", true);
++        this->declare_parameter<double>("zupt.imu_gyro_thresh_rps", 0.05);
++        this->declare_parameter<double>("zupt.imu_accel_tolerance_mps2", 0.50);
++        this->declare_parameter<double>("zupt.imu_stale_timeout_sec", 0.10);
++        this->declare_parameter<double>("zupt.imu_window_sec", 0.20);
+ 
+         this->get_parameter_or<bool>("publish.path_en", path_en, true);
+         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
+@@ -840,6 +1251,8 @@ public:
+         this->get_parameter_or<bool>("publish.scan_publish_en", scan_pub_en, true);
+         this->get_parameter_or<bool>("publish.dense_publish_en", dense_pub_en, true);
+         this->get_parameter_or<bool>("publish.scan_bodyframe_pub_en", scan_body_pub_en, true);
++        this->get_parameter_or<int>("publish.path_stride", path_publish_stride, 10);
++        this->get_parameter_or<int>("publish.path_max_poses", path_max_poses, 600);
+         this->get_parameter_or<int>("max_iteration", NUM_MAX_ITERATIONS, 4);
+         this->get_parameter_or<string>("map_file_path", map_file_path, "");
+         this->get_parameter_or<string>("common.lid_topic", lid_topic, "/livox/lidar");
+@@ -856,6 +1269,23 @@ public:
+         this->get_parameter_or<double>("mapping.acc_cov",acc_cov,0.1);
+         this->get_parameter_or<double>("mapping.b_gyr_cov",b_gyr_cov,0.0001);
+         this->get_parameter_or<double>("mapping.b_acc_cov",b_acc_cov,0.0001);
++        this->get_parameter_or<double>("mapping.laser_point_cov",laser_point_cov,0.001);
++        this->get_parameter_or<bool>("mapping.update_guard.enabled",update_guard_en,true);
++        this->get_parameter_or<int>("mapping.update_guard.min_effective_features",update_guard_min_effective_features,50);
++        this->get_parameter_or<double>("mapping.update_guard.max_mean_residual_m",update_guard_max_mean_residual_m,0.25);
++        this->get_parameter_or<double>("mapping.update_guard.min_observability_ratio",update_guard_min_observability_ratio,1.0e-6);
++        this->get_parameter_or<int>("mapping.update_guard.min_observable_directions",update_guard_min_observable_directions,3);
++        this->get_parameter_or<bool>("mapping.update_guard.project_degenerate_directions",update_guard_project_degenerate_directions,true);
++        this->get_parameter_or<double>("mapping.update_guard.reject_after_lidar_gap_sec",update_guard_reject_after_lidar_gap_sec,0.5);
++        this->get_parameter_or<double>("mapping.update_guard.max_position_correction_m",update_guard_max_position_correction_m,0.25);
++        this->get_parameter_or<double>("mapping.update_guard.max_rotation_correction_deg",update_guard_max_rotation_correction_deg,5.0);
++        this->get_parameter_or<double>("mapping.update_guard.max_velocity_correction_mps",update_guard_max_velocity_correction_mps,1.0);
++        this->get_parameter_or<bool>("mapping.update_guard.adaptive_retry_enabled",update_guard_adaptive_retry_en,true);
++        this->get_parameter_or<int>("mapping.update_guard.adaptive_retry_max",update_guard_adaptive_retry_max,3);
++        this->get_parameter_or<double>("mapping.update_guard.adaptive_retry_covariance_scale",update_guard_adaptive_retry_covariance_scale,4.0);
++        update_guard_adaptive_retry_max = std::max(0, update_guard_adaptive_retry_max);
++        update_guard_adaptive_retry_covariance_scale =
++            std::max(1.0, update_guard_adaptive_retry_covariance_scale);
+         this->get_parameter_or<double>("preprocess.blind", p_pre->blind, 0.01);
+         this->get_parameter_or<int>("preprocess.lidar_type", p_pre->lidar_type, AVIA);
+         this->get_parameter_or<int>("preprocess.scan_line", p_pre->N_SCANS, 16);
+@@ -869,8 +1299,53 @@ public:
+         this->get_parameter_or<int>("pcd_save.interval", pcd_save_interval, -1);
+         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
+         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
++        int imu_init_min_samples = 400;
++        double imu_init_min_duration_sec = 2.0;
++        double imu_init_max_gyro_norm_rps = 0.10;
++        double imu_init_max_accel_deviation_mps2 = 1.0;
++        double imu_init_max_gyro_std_rps = 0.05;
++        double imu_init_max_accel_std_mps2 = 0.50;
++        this->get_parameter_or<int>("imu_init.min_samples", imu_init_min_samples, 400);
++        this->get_parameter_or<double>("imu_init.min_duration_sec", imu_init_min_duration_sec, 2.0);
++        this->get_parameter_or<double>("imu_init.max_gyro_norm_rps", imu_init_max_gyro_norm_rps, 0.10);
++        this->get_parameter_or<double>("imu_init.max_accel_deviation_mps2", imu_init_max_accel_deviation_mps2, 1.0);
++        this->get_parameter_or<double>("imu_init.max_gyro_std_rps", imu_init_max_gyro_std_rps, 0.05);
++        this->get_parameter_or<double>("imu_init.max_accel_std_mps2", imu_init_max_accel_std_mps2, 0.50);
++        this->get_parameter_or<bool>("zupt.enabled", zupt_en, false);
++        this->get_parameter_or<string>("zupt.wheel_odom_topic", zupt_wheel_odom_topic, "/wheel/odom");
++        this->get_parameter_or<double>("zupt.linear_speed_thresh_mps", zupt_linear_speed_thresh, 0.02);
++        this->get_parameter_or<double>("zupt.angular_speed_thresh_rps", zupt_angular_speed_thresh, 0.02);
++        this->get_parameter_or<double>("zupt.hold_time_sec", zupt_hold_time_sec, 0.3);
++        this->get_parameter_or<double>("zupt.stale_timeout_sec", zupt_stale_timeout_sec, 1.0);
++        this->get_parameter_or<double>("zupt.history_sec", zupt_history_sec, 10.0);
++        this->get_parameter_or<double>("zupt.velocity_measurement_variance", zupt_velocity_measurement_variance, 0.0001);
++        this->get_parameter_or<bool>("zupt.require_feedback_healthy", zupt_require_feedback_healthy, true);
++        this->get_parameter_or<string>("zupt.feedback_health_topic", zupt_feedback_health_topic, "/base/wheel_feedback_healthy");
++        this->get_parameter_or<double>("zupt.feedback_health_timeout_sec", zupt_feedback_health_timeout_sec, 0.25);
++        this->get_parameter_or<bool>("zupt.require_imu_stationary", zupt_require_imu_stationary, true);
++        this->get_parameter_or<double>("zupt.imu_gyro_thresh_rps", zupt_imu_gyro_thresh_rps, 0.05);
++        this->get_parameter_or<double>("zupt.imu_accel_tolerance_mps2", zupt_imu_accel_tolerance_mps2, 0.50);
++        this->get_parameter_or<double>("zupt.imu_stale_timeout_sec", zupt_imu_stale_timeout_sec, 0.10);
++        this->get_parameter_or<double>("zupt.imu_window_sec", zupt_imu_window_sec, 0.20);
+ 
+         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
++        RCLCPP_INFO(this->get_logger(), "zupt.enabled %s (topic=%s, feedback=%s, lin<%.3f m/s, ang<%.3f rad/s, hold=%.2fs)",
++                    zupt_en ? "true" : "false", zupt_wheel_odom_topic.c_str(),
++                    zupt_require_feedback_healthy ? zupt_feedback_health_topic.c_str() : "not-required",
++                    zupt_linear_speed_thresh, zupt_angular_speed_thresh, zupt_hold_time_sec);
++        RCLCPP_INFO(this->get_logger(),
++                    "LiDAR update guard %s (R=%.6g, features>=%d, residual<=%.3fm, "
++                    "eigen_cutoff>=%.3g, observable_rank>=%d, correction<=%.3fm/%.2fdeg/%.3fmps, "
++                    "adaptive_retry=%s/%d/x%.2f)",
++                    update_guard_en ? "enabled" : "disabled", laser_point_cov,
++                    update_guard_min_effective_features, update_guard_max_mean_residual_m,
++                    update_guard_min_observability_ratio, update_guard_min_observable_directions,
++                    update_guard_max_position_correction_m,
++                    update_guard_max_rotation_correction_deg,
++                    update_guard_max_velocity_correction_mps,
++                    update_guard_adaptive_retry_en ? "on" : "off",
++                    update_guard_adaptive_retry_max,
++                    update_guard_adaptive_retry_covariance_scale);
+ 
+         path.header.stamp = this->get_clock()->now();
+         path.header.frame_id ="camera_init";
+@@ -899,6 +1374,10 @@ public:
+         p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
+         p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
+         p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
++        p_imu->set_init_requirements(
++            imu_init_min_samples, imu_init_min_duration_sec,
++            imu_init_max_gyro_norm_rps, imu_init_max_accel_deviation_mps2,
++            imu_init_max_gyro_std_rps, imu_init_max_accel_std_mps2);
+ 
+         fill(epsi, epsi+23, 0.001);
+         kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
+@@ -927,10 +1406,20 @@ public:
+             sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
+         }
+         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
+-        pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
+-        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
+-        pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
+-        pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
++        if (zupt_en) {
++            sub_wheel_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
++                zupt_wheel_odom_topic, 10, wheel_odom_cbk);
++            if (zupt_require_feedback_healthy)
++            {
++                sub_wheel_feedback_health_ = this->create_subscription<std_msgs::msg::Bool>(
++                    zupt_feedback_health_topic, 10, wheel_feedback_health_cbk);
++            }
++        }
++        auto cloud_qos = rclcpp::SensorDataQoS().keep_last(2);
++        pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", cloud_qos);
++        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", cloud_qos);
++        pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", cloud_qos);
++        pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", cloud_qos);
+         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
+         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+@@ -1049,7 +1538,144 @@ private:
+             /*** iterated state estimation ***/
+             double t_update_start = omp_get_wtime();
+             double solve_H_time = 0;
+-            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
++            const double lidar_update_gap_sec = last_lidar_update_time < 0.0 ? 0.0 :
++                Measures.lidar_end_time - last_lidar_update_time;
++            const bool lidar_gap_ok = !update_guard_en ||
++                update_guard_reject_after_lidar_gap_sec <= 0.0 ||
++                last_lidar_update_time < 0.0 ||
++                (lidar_update_gap_sec > 0.0 &&
++                 lidar_update_gap_sec <= update_guard_reject_after_lidar_gap_sec);
++            last_lidar_update_time = Measures.lidar_end_time;
++            state_ikfom state_before_update = kf.get_x();
++            auto covariance_before_update = kf.get_P();
++            state_ikfom state_after_update = state_before_update;
++            auto covariance_after_update = covariance_before_update;
++            V3D rotation_correction = Zero3d;
++            double position_correction_m = 0.0;
++            double rotation_correction_deg = 0.0;
++            double velocity_correction_mps = 0.0;
++            bool update_finite = false;
++            bool feature_count_ok = false;
++            bool residual_ok = false;
++            bool observability_ok = false;
++            bool position_correction_ok = false;
++            bool rotation_correction_ok = false;
++            bool velocity_correction_ok = false;
++            bool lidar_update_accepted = false;
++            int adaptive_retry_count = 0;
++            double effective_laser_point_cov = laser_point_cov;
++
++            // A geometrically sound update can still exceed the state-increment
++            // gate after a prediction error. Instead of rejecting it forever,
++            // retry from the exact pre-update state with moderately increased
++            // measurement covariance. Every accepted retry must still satisfy
++            // the original 5 cm / 2 deg / velocity limits; R never jumps to the
++            // retired global value 100.
++            while (true)
++            {
++                if (adaptive_retry_count > 0)
++                {
++                    kf.change_x(state_before_update);
++                    auto covariance_restore = covariance_before_update;
++                    kf.change_P(covariance_restore);
++                }
++                kf.update_iterated_dyn_share_modified(
++                    effective_laser_point_cov, solve_H_time);
++
++                state_after_update = kf.get_x();
++                covariance_after_update = kf.get_P();
++                rotation_correction.setZero();
++                state_after_update.rot.boxminus(
++                    rotation_correction, state_before_update.rot);
++                position_correction_m =
++                    (state_after_update.pos - state_before_update.pos).norm();
++                rotation_correction_deg =
++                    rotation_correction.norm() * 180.0 / PI_M;
++                velocity_correction_mps =
++                    (state_after_update.vel - state_before_update.vel).norm();
++
++                update_finite =
++                    state_after_update.pos.allFinite() &&
++                    state_after_update.vel.allFinite() &&
++                    state_after_update.bg.allFinite() &&
++                    state_after_update.ba.allFinite() &&
++                    state_after_update.rot.toRotationMatrix().allFinite() &&
++                    covariance_after_update.allFinite();
++                feature_count_ok =
++                    !update_guard_en ||
++                    effct_feat_num >= update_guard_min_effective_features;
++                residual_ok =
++                    !update_guard_en || update_guard_max_mean_residual_m <= 0.0 ||
++                    res_mean_last <= update_guard_max_mean_residual_m;
++                observability_ok =
++                    !update_guard_en || update_observable_rank >=
++                        update_guard_min_observable_directions;
++                position_correction_ok =
++                    !update_guard_en || update_guard_max_position_correction_m <= 0.0 ||
++                    position_correction_m <= update_guard_max_position_correction_m;
++                rotation_correction_ok =
++                    !update_guard_en || update_guard_max_rotation_correction_deg <= 0.0 ||
++                    rotation_correction_deg <= update_guard_max_rotation_correction_deg;
++                velocity_correction_ok =
++                    !update_guard_en || update_guard_max_velocity_correction_mps <= 0.0 ||
++                    velocity_correction_mps <= update_guard_max_velocity_correction_mps;
++
++                const bool update_quality_ok =
++                    update_finite && feature_count_ok && residual_ok &&
++                    observability_ok && lidar_gap_ok;
++                const bool correction_limits_ok =
++                    position_correction_ok && rotation_correction_ok &&
++                    velocity_correction_ok;
++                lidar_update_accepted = update_quality_ok && correction_limits_ok;
++                if (lidar_update_accepted)
++                {
++                    break;
++                }
++                const bool can_retry =
++                    update_guard_en && update_guard_adaptive_retry_en &&
++                    update_quality_ok && !correction_limits_ok &&
++                    adaptive_retry_count < update_guard_adaptive_retry_max &&
++                    update_guard_adaptive_retry_covariance_scale > 1.0;
++                if (!can_retry)
++                {
++                    break;
++                }
++                adaptive_retry_count++;
++                effective_laser_point_cov *=
++                    update_guard_adaptive_retry_covariance_scale;
++            }
++            if (!lidar_update_accepted)
++            {
++                kf.change_x(state_before_update);
++                auto covariance_restore = covariance_before_update;
++                kf.change_P(covariance_restore);
++                rejected_lidar_updates++;
++                RCLCPP_WARN_THROTTLE(
++                    this->get_logger(), *this->get_clock(), 1000,
++                    "Rejected LiDAR update: finite=%d features=%d residual=%.4fm "
++                    "obs=%.3e rank=%d gap=%.3fs correction=%.4fm/%.3fdeg/%.4fmps "
++                    "R=%.6g retries=%d "
++                    "(accepted=%lu rejected=%lu)",
++                    update_finite, effct_feat_num, res_mean_last,
++                    update_observability_ratio, update_observable_rank,
++                    lidar_update_gap_sec, position_correction_m,
++                    rotation_correction_deg, velocity_correction_mps,
++                    effective_laser_point_cov, adaptive_retry_count,
++                    static_cast<unsigned long>(accepted_lidar_updates),
++                    static_cast<unsigned long>(rejected_lidar_updates));
++            }
++            else
++            {
++                accepted_lidar_updates++;
++                if (adaptive_retry_count > 0)
++                {
++                    adapted_lidar_updates++;
++                }
++                if (update_observable_rank < 6)
++                {
++                    projected_lidar_updates++;
++                }
++            }
+             state_point = kf.get_x();
+             euler_cur = SO3ToEuler(state_point.rot);
+             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+@@ -1060,12 +1686,34 @@ private:
+ 
+             double t_update_end = omp_get_wtime();
+ 
++            /*** ZUPT: zero the velocity state if /wheel/odom confirms the chair
++             *** is stationary. Must run after the iEKF update and before
++             *** publish_odometry/publish_path read state_point, otherwise the
++             *** correction would show up one frame late. ***/
++            apply_zupt_if_stationary(Measures.lidar_end_time);
++            state_point = kf.get_x();
++
+             /******* Publish odometry *******/
+             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+ 
+             /*** add the feature points to map kdtree ***/
+             t3 = omp_get_wtime();
+-            map_incremental();
++            if (lidar_update_accepted)
++            {
++                map_incremental();
++            }
++            RCLCPP_INFO_THROTTLE(
++                this->get_logger(), *this->get_clock(), 5000,
++                "LiDAR update guard stats: accepted=%lu rejected=%lu "
++                "projected=%lu adapted=%lu features=%d residual=%.4fm "
++                "obs=%.3e rank=%d zupt=%lu",
++                static_cast<unsigned long>(accepted_lidar_updates),
++                static_cast<unsigned long>(rejected_lidar_updates),
++                static_cast<unsigned long>(projected_lidar_updates),
++                static_cast<unsigned long>(adapted_lidar_updates),
++                effct_feat_num, res_mean_last, update_observability_ratio,
++                update_observable_rank,
++                static_cast<unsigned long>(zupt_applied_count));
+             t5 = omp_get_wtime();
+             
+             /******* Publish points *******/
+@@ -1136,6 +1784,8 @@ private:
+     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
+     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_wheel_odom_;
++    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_wheel_feedback_health_;
+     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
+     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
+ 

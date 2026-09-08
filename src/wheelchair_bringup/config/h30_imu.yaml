@@ -12,8 +12,17 @@ imu_adapter_node:
     serial_port: /dev/smartwheel_h30_imu
     baud_rate: 460800
     serial_timeout_sec: 0.01
-    # This H30 profile does not emit a device timestamp TLV; use ROS host time.
+    # This H30 profile does not emit a device timestamp TLV. The adapter keeps
+    # the raw serial-read boundary and uses nominal-rate host interpolation by
+    # default to avoid duplicate timestamps within one read batch. This remains
+    # an estimated host time, not hardware-synchronised acquisition time.
     use_device_timestamp: false
+    # Formal bringup overrides both fields to true. When required, a frame
+    # without the H30 timestamp TLV is dropped instead of silently receiving a
+    # host timestamp.
+    require_device_timestamp: false
+    host_timestamp_mode: interpolated
+    nominal_sample_rate_hz: 200.0
     orientation_covariance: [0.05, 0.05, 0.10]
     angular_velocity_covariance: [0.02, 0.02, 0.02]
     linear_acceleration_covariance: [0.05, 0.05, 0.08]

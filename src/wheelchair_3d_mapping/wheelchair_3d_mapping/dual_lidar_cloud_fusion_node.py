@@ -49,6 +49,10 @@ class DualLidarCloudFusionNode(Node):
         self.declare_parameter("z_max", 3.0)
         self.declare_parameter("voxel_leaf_size", 0.05)
         self.declare_parameter("allow_single_lidar_fallback", True)
+        self.declare_parameter("require_synchronized_pair", False)
+        self.declare_parameter("max_pair_time_difference_sec", 0.075)
+        self.declare_parameter("require_intensity", False)
+        self.declare_parameter("require_nonzero_timestamps", False)
         self.declare_parameter("publish_diagnostics", True)
         self.declare_parameter("output_rate_hz", 10.0)
         self.declare_parameter("input_timeout_sec", 0.5)
@@ -61,6 +65,18 @@ class DualLidarCloudFusionNode(Node):
         self.z_max = float(self.get_parameter("z_max").value)
         self.voxel = float(self.get_parameter("voxel_leaf_size").value)
         self.fallback = bool(self.get_parameter("allow_single_lidar_fallback").value)
+        self.require_synchronized_pair = bool(
+            self.get_parameter("require_synchronized_pair").value
+        )
+        self.max_pair_time_difference = float(
+            self.get_parameter("max_pair_time_difference_sec").value
+        )
+        self.require_intensity = bool(self.get_parameter("require_intensity").value)
+        self.require_nonzero_timestamps = bool(
+            self.get_parameter("require_nonzero_timestamps").value
+        )
+        if self.max_pair_time_difference < 0.0:
+            raise ValueError("max_pair_time_difference_sec must be non-negative")
         self.input_timeout = float(self.get_parameter("input_timeout_sec").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
         self.left_enabled = bool(self.get_parameter("enable_left_input").value)
@@ -73,6 +89,11 @@ class DualLidarCloudFusionNode(Node):
         self.left = _LidarState()
         self.right = _LidarState()
         self._warn_log = {}
+        self._last_pair_delta_sec = None
+        self._last_rejection_reason = ""
+        self._unsynchronized_count = 0
+        self._missing_intensity_count = 0
+        self._invalid_frame_count = 0
 
         self.pub = self.create_publisher(PointCloud2, self.get_parameter("output_topic").value, qos_profile_sensor_data)
         self.status_pub = None
@@ -119,6 +140,10 @@ class DualLidarCloudFusionNode(Node):
         mat = self._lookup(msg.header.frame_id, msg.header.stamp)  # audit D178 (中)
         if mat is None:
             state.tf_ok = False
+            state.xyz = None
+            state.inten = None
+            state.stamp = None
+            self._invalid_frame_count += 1
             self._warn(f"tf_{msg.header.frame_id}",
                        f"no TF {self.target_frame}<-{msg.header.frame_id}; skipping frame")
             return
@@ -137,7 +162,34 @@ class DualLidarCloudFusionNode(Node):
                        f"{msg.header.frame_id}: raw={state.raw_points} after_range={n_range} "
                        f"base_z=[{zlo:.2f},{zhi:.2f}] after_height={n_height} after_voxel={xyz.shape[0]}", 3.0)
         except Exception as exc:
+            # Never keep publishing the previous frame after a transform or
+            # filter failure.  Reusing it with a fresh receive timestamp would
+            # silently create a stale/static cloud during a dynamic run.
+            state.xyz = None
+            state.inten = None
+            state.stamp = None
+            state.tf_ok = False
+            self._invalid_frame_count += 1
             self._warn(f"flt_{msg.header.frame_id}", f"filter pipeline error: {exc}")
+
+    @staticmethod
+    def _stamp_seconds(stamp):
+        if stamp is None:
+            return None
+        try:
+            return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _reject_publish(self, reason: str, left_ok: bool, right_ok: bool) -> None:
+        self._last_rejection_reason = reason
+        self._warn("publish_reject_" + reason, reason, 2.0)
+        self._publish_status(
+            left_ok,
+            right_ok,
+            0,
+            int(left_ok) + int(right_ok) < int(self.left_enabled) + int(self.right_enabled),
+        )
 
     def _lookup(self, source_frame: str, stamp):
         # audit D178 (中): look up TF at the source cloud's timestamp, not at
@@ -159,9 +211,14 @@ class DualLidarCloudFusionNode(Node):
             return None
 
     def _fresh(self, state: _LidarState) -> bool:
-        return state.xyz is not None and (time.monotonic() - state.recv_time) <= self.input_timeout
+        return (
+            state.xyz is not None
+            and state.xyz.shape[0] > 0
+            and (time.monotonic() - state.recv_time) <= self.input_timeout
+        )
 
     def _publish_merged(self):
+        self._last_rejection_reason = ""
         left_ok = self.left_enabled and self._fresh(self.left)
         right_ok = self.right_enabled and self._fresh(self.right)
         parts_xyz, parts_i = [], []
@@ -178,11 +235,43 @@ class DualLidarCloudFusionNode(Node):
         fallback_active = fresh_count < enabled_count
         if not parts_xyz:
             self._warn("no_input", "no fresh lidar input on either topic")
-            self._publish_status(left_ok, right_ok, 0, False)
+            self._reject_publish("no fresh lidar input", left_ok, right_ok)
             return
         if fallback_active and not self.fallback:
-            self._warn("fallback_off", "only one lidar fresh and fallback disabled; skipping")
-            self._publish_status(left_ok, right_ok, 0, fallback_active)
+            self._reject_publish(
+                "only one enabled lidar is fresh and single-lidar fallback is disabled",
+                left_ok,
+                right_ok,
+            )
+            return
+
+        left_stamp = self._stamp_seconds(self.left.stamp) if left_ok else None
+        right_stamp = self._stamp_seconds(self.right.stamp) if right_ok else None
+        self._last_pair_delta_sec = None
+        if self.require_synchronized_pair and self.left_enabled and self.right_enabled:
+            if left_stamp is None or right_stamp is None or left_stamp == 0.0 or right_stamp == 0.0:
+                self._unsynchronized_count += 1
+                self._reject_publish("dual-lidar timestamps are missing or zero", left_ok, right_ok)
+                return
+            self._last_pair_delta_sec = abs(left_stamp - right_stamp)
+            if self._last_pair_delta_sec > self.max_pair_time_difference:
+                self._unsynchronized_count += 1
+                self._reject_publish(
+                    f"dual-lidar timestamp delta {self._last_pair_delta_sec:.6f}s exceeds "
+                    f"{self.max_pair_time_difference:.6f}s",
+                    left_ok,
+                    right_ok,
+                )
+                return
+
+        if self.require_nonzero_timestamps:
+            selected = [value for value in (left_stamp, right_stamp) if value is not None]
+            if not selected or any(value == 0.0 for value in selected):
+                self._reject_publish("nonzero source timestamps are required", left_ok, right_ok)
+                return
+        if self.require_intensity and not have_intensity:
+            self._missing_intensity_count += 1
+            self._reject_publish("all participating lidar clouds must contain intensity", left_ok, right_ok)
             return
 
         xyz = np.vstack(parts_xyz)
@@ -206,7 +295,10 @@ class DualLidarCloudFusionNode(Node):
         else:
             header.stamp = self.get_clock().now().to_msg()
         header.frame_id = self.target_frame
-        self.pub.publish(cloud_utils.make_xyzi_cloud(header, xyz, inten))
+        if inten is None:
+            self.pub.publish(cloud_utils.make_xyz_cloud(header, xyz))
+        else:
+            self.pub.publish(cloud_utils.make_xyzi_cloud(header, xyz, inten))
         self._publish_status(left_ok, right_ok, int(xyz.shape[0]), fallback_active)
 
     def _publish_status(self, left_ok, right_ok, out_points, fallback_active):
@@ -220,6 +312,21 @@ class DualLidarCloudFusionNode(Node):
             "left_raw_points": self.left.raw_points, "right_raw_points": self.right.raw_points,
             "left_tf_ok": self.left.tf_ok, "right_tf_ok": self.right.tf_ok,
             "output_points": out_points, "single_lidar_fallback": bool(fallback_active),
+            "left_has_intensity": self.left.inten is not None,
+            "right_has_intensity": self.right.inten is not None,
+            "require_intensity": self.require_intensity,
+            "require_synchronized_pair": self.require_synchronized_pair,
+            "max_pair_time_difference_sec": self.max_pair_time_difference,
+            "pair_time_difference_sec": self._last_pair_delta_sec,
+            "pair_synchronized": (
+                self._last_pair_delta_sec is not None
+                and self._last_pair_delta_sec <= self.max_pair_time_difference
+            ) if self.require_synchronized_pair and self.left_enabled and self.right_enabled else None,
+            "require_nonzero_timestamps": self.require_nonzero_timestamps,
+            "last_rejection_reason": self._last_rejection_reason,
+            "unsynchronized_count": self._unsynchronized_count,
+            "missing_intensity_count": self._missing_intensity_count,
+            "invalid_frame_count": self._invalid_frame_count,
         }
         self.status_pub.publish(String(data=json.dumps(status)))
 

@@ -70,6 +70,41 @@ except ImportError:
 XYZI = Tuple[float, float, float, float]
 
 
+def _stamp_pair_to_dict(stamp: Optional[Tuple[int, int]]) -> Optional[dict]:
+    if stamp is None:
+        return None
+    sec, nanosec = stamp
+    return {"sec": int(sec), "nanosec": int(nanosec)}
+
+
+def build_timing_diagnostic(
+    *,
+    sdk_stamp: Optional[Tuple[int, int]],
+    host_receive_wall_time_ns: Optional[int],
+    cloud_header_stamp: Optional[Tuple[int, int]],
+    publish_wall_time_ns: Optional[int],
+    timestamp_source: str,
+) -> str:
+    """Serialize per-frame timestamp provenance for H1 offline correlation."""
+    return json.dumps(
+        {
+            "sdk_timestamp": _stamp_pair_to_dict(sdk_stamp),
+            "host_receive_wall_time_ns": (
+                None
+                if host_receive_wall_time_ns is None
+                else int(host_receive_wall_time_ns)
+            ),
+            "cloud_header_stamp": _stamp_pair_to_dict(cloud_header_stamp),
+            "publish_wall_time_ns": (
+                None if publish_wall_time_ns is None else int(publish_wall_time_ns)
+            ),
+            "timestamp_source": str(timestamp_source),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 @dataclass(frozen=True)
 class CloudQualityResult:
     accepted: bool
@@ -79,6 +114,8 @@ class CloudQualityResult:
     overlap_fraction: float
     median_range_delta: Optional[float]
     p95_range_delta: Optional[float]
+    temporal_jump_detected: bool
+    relative_validity_drop_detected: bool
     accepted_frames: int
     dropped_frames: int
 
@@ -103,6 +140,7 @@ class CloudFrameQualityGate:
         max_p95_range_delta: float = 0.75,
         min_overlap_fraction: float = 0.20,
         reset_after_gap_sec: float = 0.50,
+        temporal_hard_reject: bool = True,
     ):
         self.enabled = bool(enabled)
         self.min_valid_fraction = float(min_valid_fraction)
@@ -111,6 +149,7 @@ class CloudFrameQualityGate:
         self.max_p95_range_delta = float(max_p95_range_delta)
         self.min_overlap_fraction = float(min_overlap_fraction)
         self.reset_after_gap_sec = float(reset_after_gap_sec)
+        self.temporal_hard_reject = bool(temporal_hard_reject)
         if not 0.0 <= self.min_valid_fraction <= 1.0:
             raise ValueError("min_valid_fraction must be in [0, 1]")
         if not 0.0 <= self.min_relative_valid_fraction <= 1.0:
@@ -208,6 +247,8 @@ class CloudFrameQualityGate:
                 p95_delta = float(np.percentile(deltas, 95))
 
         reasons: List[str] = []
+        temporal_bad = False
+        relative_bad = False
         if self.enabled:
             if time_nonmonotonic:
                 reasons.append("nonmonotonic_receive_time")
@@ -225,9 +266,12 @@ class CloudFrameQualityGate:
                 and valid_fraction
                 < baseline * self.min_relative_valid_fraction
             )
-            if temporal_bad:
+            if temporal_bad and self.temporal_hard_reject:
                 reasons.append("temporal_range_jump")
-            if relative_bad and (
+            # Cross-frame changes are legitimate while the chair turns or
+            # translates. In report-only mode keep the metrics/flags but reject
+            # only per-frame corruption (absolute validity) or broken time.
+            if self.temporal_hard_reject and relative_bad and (
                 temporal_bad or overlap_fraction < self.min_overlap_fraction
             ):
                 reasons.append("relative_valid_fraction")
@@ -254,6 +298,8 @@ class CloudFrameQualityGate:
             overlap_fraction=overlap_fraction,
             median_range_delta=median_delta,
             p95_range_delta=p95_delta,
+            temporal_jump_detected=temporal_bad,
+            relative_validity_drop_detected=relative_bad,
             accepted_frames=self.accepted_frames,
             dropped_frames=self.dropped_frames,
         )
@@ -563,6 +609,7 @@ class XTM60SdkAdapter:
         self._latest_frame_id: Optional[int] = None
         self._latest_sdk_stamp: Optional[Tuple[int, int]] = None
         self._latest_receive_monotonic: Optional[float] = None
+        self._latest_receive_wall_time_ns: Optional[int] = None
         self._latest_quality_ranges: Optional[np.ndarray] = None
         self._latest_temperature_c: Optional[float] = None
         self._latest_vcsel_temperature_c: Optional[float] = None
@@ -739,12 +786,14 @@ class XTM60SdkAdapter:
             stamp = self._latest_sdk_stamp
             grid = self._latest_grid
             receive_monotonic = self._latest_receive_monotonic
+            receive_wall_time_ns = self._latest_receive_wall_time_ns
             quality_ranges = self._latest_quality_ranges
             temperature_c = self._latest_temperature_c
             vcsel_temperature_c = self._latest_vcsel_temperature_c
             self._latest_points = None
             self._latest_sdk_stamp = None
             self._latest_receive_monotonic = None
+            self._latest_receive_wall_time_ns = None
             self._latest_quality_ranges = None
             self._latest_temperature_c = None
             self._latest_vcsel_temperature_c = None
@@ -754,6 +803,7 @@ class XTM60SdkAdapter:
             stamp,
             grid,
             receive_monotonic,
+            receive_wall_time_ns,
             quality_ranges,
             temperature_c,
             vcsel_temperature_c,
@@ -1142,6 +1192,7 @@ class XTM60SdkAdapter:
 
     def _on_frame(self, frame) -> None:
         receive_monotonic = self._now()
+        receive_wall_time_ns = time.time_ns()
         self._last_frame_time = receive_monotonic
         width = 0
         height = 0
@@ -1197,6 +1248,7 @@ class XTM60SdkAdapter:
             self._latest_points = points
             self._latest_sdk_stamp = sdk_stamp
             self._latest_receive_monotonic = receive_monotonic
+            self._latest_receive_wall_time_ns = receive_wall_time_ns
             self._latest_quality_ranges = quality_ranges
             self._latest_temperature_c = temperature_c
             self._latest_vcsel_temperature_c = vcsel_temperature_c
@@ -1220,6 +1272,7 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("frame_id", "laser_link")
         self.declare_parameter("publish_rate_hz", 10.0)
         self.declare_parameter("use_sdk_timestamps", False)
+        self.declare_parameter("timestamp_source", "host_receive")
         self.declare_parameter("sdk_root", "")
         self.declare_parameter("connection_mode", "ethernet")
         self.declare_parameter("ip_address", "192.168.0.101")
@@ -1280,6 +1333,7 @@ class XTM60AdapterNode(Node):
         self.declare_parameter("quality_max_p95_range_delta", 0.75)
         self.declare_parameter("quality_min_overlap_fraction", 0.20)
         self.declare_parameter("quality_reset_after_gap_sec", 0.50)
+        self.declare_parameter("quality_temporal_hard_reject", True)
         self.declare_parameter("udp_dest_ip", "")
         self.declare_parameter("udp_dest_port", 0)
 
@@ -1297,6 +1351,7 @@ class XTM60AdapterNode(Node):
         )
         self.quality_pub = self.create_publisher(String, "/xtm60/quality", 10)
         self.status_pub = self.create_publisher(String, "/xtm60/status", 10)
+        self.timing_pub = self.create_publisher(String, "/xtm60/timing", 10)
         self.phase_pub = (
             self.create_publisher(Float64, "/xtm60/phase", 10)
             if self.phase_mode == "leader"
@@ -1340,6 +1395,9 @@ class XTM60AdapterNode(Node):
             reset_after_gap_sec=float(
                 self.get_parameter("quality_reset_after_gap_sec").value
             ),
+            temporal_hard_reject=bool(
+                self.get_parameter("quality_temporal_hard_reject").value
+            ),
         )
         self.last_quality_result: Optional[CloudQualityResult] = None
 
@@ -1369,8 +1427,16 @@ class XTM60AdapterNode(Node):
 
     def tick(self):
         if self.mode == "mock":
+            receive_wall_time_ns = time.time_ns()
             cloud = self.make_mock_cloud()
             self.pub.publish(cloud)
+            publish_wall_time_ns = time.time_ns()
+            self._publish_timing(
+                sdk_stamp=None,
+                cloud=cloud,
+                receive_wall_time_ns=receive_wall_time_ns,
+                publish_wall_time_ns=publish_wall_time_ns,
+            )
             self._publish_status("mock publishing /xtm60/points")
             return
 
@@ -1386,6 +1452,7 @@ class XTM60AdapterNode(Node):
             sdk_stamp,
             grid,
             receive_monotonic,
+            receive_wall_time_ns,
             quality_ranges,
             temperature_c,
             vcsel_temperature_c,
@@ -1403,13 +1470,37 @@ class XTM60AdapterNode(Node):
                 ranges_override=quality_ranges,
             )
             self.last_quality_result = quality
-            cloud = self._make_cloud(points, sdk_stamp, grid)
+            cloud = self._make_cloud(
+                points, sdk_stamp, grid, receive_wall_time_ns=receive_wall_time_ns
+            )
+            if cloud is None:
+                # A formal device-clock route must not silently degrade to
+                # callback, publish, or ROS-now time when the selected source
+                # cannot produce a valid epoch stamp. Keep raw provenance on
+                # /xtm60/timing, but publish no geometrically plausible-looking
+                # cloud that could be mistaken for a synchronized acquisition.
+                self._publish_timing(
+                    sdk_stamp=sdk_stamp,
+                    cloud=None,
+                    receive_wall_time_ns=receive_wall_time_ns,
+                    publish_wall_time_ns=time.time_ns(),
+                )
+                self._publish_status(
+                    "blocked: selected XT-M60 timestamp source has no valid epoch stamp"
+                )
+                return
             if quality.accepted:
                 self.pub.publish(cloud)
             else:
                 # Rejected frames remain available for bounded diagnosis and
                 # rosbag evidence without duplicating every healthy cloud.
                 self.rejected_pub.publish(cloud)
+            self._publish_timing(
+                sdk_stamp=sdk_stamp,
+                cloud=cloud,
+                receive_wall_time_ns=receive_wall_time_ns,
+                publish_wall_time_ns=time.time_ns(),
+            )
             self._publish_quality(
                 quality,
                 temperature_c=temperature_c,
@@ -1571,16 +1662,29 @@ class XTM60AdapterNode(Node):
             return f"waiting for ping {self.config.ip_address}"
         return "startup pending"
 
-    def _make_cloud(self, points: Sequence[XYZI], sdk_stamp: Optional[Tuple[int, int]],
-                    grid: Tuple[int, int] = (0, 0)):
+    def _make_cloud(
+        self,
+        points: Sequence[XYZI],
+        sdk_stamp: Optional[Tuple[int, int]],
+        grid: Tuple[int, int] = (0, 0),
+        *,
+        receive_wall_time_ns: Optional[int] = None,
+    ):
         header = Header()
         header.frame_id = self.frame_id
         use_sdk_timestamps = bool(self.get_parameter("use_sdk_timestamps").value)
-        if use_sdk_timestamps and self._is_plausible_epoch_stamp(sdk_stamp):
-            header.stamp.sec = int(sdk_stamp[0])
-            header.stamp.nanosec = int(sdk_stamp[1])
-        else:
-            header.stamp = self.get_clock().now().to_msg()
+        timestamp_source = str(self.get_parameter("timestamp_source").value).strip().lower()
+        if use_sdk_timestamps:
+            # Backward compatibility for older profiles. Only epoch-shaped SDK
+            # timestamps are accepted; XT-M60 runtime/uptime stamps must not be
+            # guessed into the ROS time domain.
+            timestamp_source = "sdk_epoch"
+        stamp = self._select_cloud_stamp(
+            timestamp_source, sdk_stamp=sdk_stamp, receive_wall_time_ns=receive_wall_time_ns
+        )
+        if stamp is None:
+            return None
+        header.stamp.sec, header.stamp.nanosec = stamp
 
         width, height = int(grid[0]), int(grid[1])
         organized = width > 0 and height > 0 and width * height == len(points)
@@ -1619,6 +1723,36 @@ class XTM60AdapterNode(Node):
         sec, nsec = stamp
         return int(sec) >= 1_000_000_000 and 0 <= int(nsec) < 1_000_000_000
 
+    @classmethod
+    def _select_cloud_stamp(
+        cls,
+        timestamp_source: str,
+        *,
+        sdk_stamp: Optional[Tuple[int, int]],
+        receive_wall_time_ns: Optional[int],
+    ) -> Optional[Tuple[int, int]]:
+        """Choose one declared timestamp domain without inventing a fallback.
+
+        ``timeStampS/timeStampNS`` is copied only when it is already an epoch
+        timestamp. The observed XT-M60 uptime-shaped values are deliberately
+        rejected: there is no verified reset/epoch conversion, so mapping them
+        using host arrival time would be a fabricated device timestamp.
+        """
+
+        source = str(timestamp_source).strip().lower()
+        if source == "sdk_epoch":
+            if cls._is_plausible_epoch_stamp(sdk_stamp):
+                return int(sdk_stamp[0]), int(sdk_stamp[1])
+            return None
+        if source == "host_receive":
+            if isinstance(receive_wall_time_ns, int) and receive_wall_time_ns > 0:
+                return (
+                    receive_wall_time_ns // 1_000_000_000,
+                    receive_wall_time_ns % 1_000_000_000,
+                )
+            return None
+        return None
+
     def _publish_status(self, text: str):
         msg = String()
         msg.data = text
@@ -1649,6 +1783,11 @@ class XTM60AdapterNode(Node):
                     if quality.p95_range_delta is None
                     else quality.p95_range_delta * 1000.0
                 ),
+                "temporal_jump_detected": quality.temporal_jump_detected,
+                "relative_validity_drop_detected": (
+                    quality.relative_validity_drop_detected
+                ),
+                "temporal_hard_reject": self.quality_gate.temporal_hard_reject,
                 "temperature_c": temperature_c,
                 "vcsel_temperature_c": vcsel_temperature_c,
                 "accepted_frames": quality.accepted_frames,
@@ -1658,6 +1797,34 @@ class XTM60AdapterNode(Node):
             sort_keys=True,
         )
         self.quality_pub.publish(msg)
+
+    def _publish_timing(
+        self,
+        *,
+        sdk_stamp: Optional[Tuple[int, int]],
+        cloud,
+        receive_wall_time_ns: Optional[int],
+        publish_wall_time_ns: Optional[int],
+    ) -> None:
+        header_stamp = getattr(getattr(cloud, "header", None), "stamp", None)
+        cloud_stamp = None
+        if header_stamp is not None:
+            cloud_stamp = (
+                int(getattr(header_stamp, "sec", 0)),
+                int(getattr(header_stamp, "nanosec", 0)),
+            )
+        timestamp_source = str(self.get_parameter("timestamp_source").value)
+        if bool(self.get_parameter("use_sdk_timestamps").value):
+            timestamp_source = "sdk_epoch"
+        msg = String()
+        msg.data = build_timing_diagnostic(
+            sdk_stamp=sdk_stamp,
+            host_receive_wall_time_ns=receive_wall_time_ns,
+            cloud_header_stamp=cloud_stamp,
+            publish_wall_time_ns=publish_wall_time_ns,
+            timestamp_source=timestamp_source,
+        )
+        self.timing_pub.publish(msg)
 
     def make_mock_cloud(self):
         header = Header()

@@ -105,6 +105,12 @@ def _setup(context, *args, **kwargs):
                 "enable_xtm60": "false",
                 "enable_xtm60_left": "true" if use_left else "false",
                 "enable_xtm60_right": "true" if use_right else "false",
+                # Periodic stop/start is a coordinated dual-radar workaround,
+                # never a single-radar default.
+                "xtm60_phase_realign_interval_sec": "30.0" if radar == "both" else "0.0",
+                # Ego-motion changes the same organized-cloud rays. Keep temporal
+                # jumps diagnostic-only while retaining hard validity gates.
+                "xtm60_quality_temporal_hard_reject": "false",
                 "enable_imu": "true",
                 "enable_ultrasonic": "true",
                 "enable_camera": "true",

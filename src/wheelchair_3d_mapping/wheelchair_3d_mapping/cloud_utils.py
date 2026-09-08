@@ -115,7 +115,20 @@ def voxel_downsample(
     return xyz[idx], (inten[idx] if inten is not None else None)
 
 
+_XYZ_FIELDS = None
 _XYZI_FIELDS = None
+
+
+def _xyz_fields():
+    global _XYZ_FIELDS
+    if _XYZ_FIELDS is None:
+        f32 = PointField.FLOAT32
+        _XYZ_FIELDS = [
+            PointField(name="x", offset=0, datatype=f32, count=1),
+            PointField(name="y", offset=4, datatype=f32, count=1),
+            PointField(name="z", offset=8, datatype=f32, count=1),
+        ]
+    return _XYZ_FIELDS
 _XYZRGB_FIELDS = None
 
 
@@ -132,13 +145,48 @@ def _xyzi_fields():
     return _XYZI_FIELDS
 
 
+def make_xyz_cloud(header, xyz: np.ndarray) -> "PointCloud2":
+    """Build a genuine XYZ-only cloud.
+
+    A missing amplitude channel is represented by missing metadata, never by a
+    column of zeroes.  This distinction is important for formal PointCloud+Amp
+    acceptance: downstream consumers can reject an XYZ-only stream instead of
+    mistaking fabricated values for sensor reflectance.
+    """
+
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3)")
+    if not np.isfinite(xyz).all():
+        raise ValueError("points must be finite")
+    n = int(xyz.shape[0])
+    msg = PointCloud2()
+    msg.header = header
+    msg.height = 1
+    msg.width = n
+    msg.fields = _xyz_fields()
+    msg.is_bigendian = False
+    msg.point_step = 12
+    msg.row_step = 12 * n
+    msg.is_dense = True
+    msg.data = xyz.tobytes()
+    return msg
+
+
 def make_xyzi_cloud(header, xyz: np.ndarray, inten=None) -> "PointCloud2":
     n = int(xyz.shape[0])
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3)")
+    if inten is not None:
+        inten = np.asarray(inten, dtype=np.float32).reshape(-1)
+        if inten.shape[0] != n:
+            raise ValueError("intensity length must match points")
     data = np.zeros((n, 4), dtype=np.float32)
     if n:
         data[:, :3] = xyz.astype(np.float32)
         if inten is not None:
-            data[:, 3] = inten.astype(np.float32)
+            data[:, 3] = inten
     msg = PointCloud2()
     msg.header = header
     msg.height = 1

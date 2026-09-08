@@ -24,6 +24,8 @@ def generate_launch_description():
                     "/xtm60/right/points_rejected",
                     "/xtm60/left/quality",
                     "/xtm60/right/quality",
+                    "/xtm60/left/timing",
+                    "/xtm60/right/timing",
                     "/xtm60/status",
                     "/xtm60/left/status",
                     "/xtm60/right/status",

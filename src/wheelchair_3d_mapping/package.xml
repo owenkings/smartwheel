@@ -27,6 +27,7 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
 
   <!-- 3D mapping main line: RTAB-Map (apt: ros-humble-rtabmap-ros). -->
   <exec_depend>rtabmap_slam</exec_depend>

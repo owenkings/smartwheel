@@ -10,11 +10,11 @@ Starts:
      PointCloud2 path; XT-M60 flash frames have no synthetic time or ring fields).
   2. fast_lio (fastlio_mapping) : consumes /lio/cloud_in + /imu/data, runs the
      iEKF, publishes /Odometry, /cloud_registered, /path and TF camera_init->body.
-     (LASER_POINT_COV=100 patch in vendored source makes the IMU lead the weak
-     narrow-FOV LiDAR update — see docs/fastlio_mapping.md / Task 7.)
+     (per-point covariance is restored to 0.001; update guards and observable-
+     subspace projection reject unsafe corrections before map insertion.)
   3. Frame bridges (static TFs) so FAST-LIO's hardcoded frames join the robot tree:
        map -> camera_init  (identity; camera_init = LIO world origin)
-       body -> base_link   ([0,0,-0.45] = inverse of base->imu; 'body' = IMU frame)
+       body -> base_link   (full inverse of base->imu; 'body' = IMU frame)
   4. base_link -> xtm60_<radar>_link static TF from the measured mount calibration.
 
 NOTE: this fork hardcodes 'camera_init'/'body' in C++ (not params), so we bridge
@@ -82,6 +82,12 @@ def _setup(context, *args, **kwargs):
                 "output_topic": "/lio/cloud_in",
                 "restamp_to_now": False,
                 "add_zero_time_field": add_zero_time_field,
+                # Keep raw 0..50 m PointCloud+Amp available for diagnosis/RViz,
+                # but exclude near-field noise and long-range indoor multipath
+                # from FAST-LIO plane fitting.
+                "min_range": 0.3,
+                "max_range": 12.0,
+                "output_qos": "best_effort",
             }],
         ),
         Node(
@@ -98,11 +104,16 @@ def _setup(context, *args, **kwargs):
             output="screen",
             condition=IfCondition(LaunchConfiguration("publish_map_tf")),
         ),
-        # body -> base_link (inverse of base->imu [0,0,0.45])
+        # body -> base_link: full inverse of the calibrated base_link->imu_link
+        # transform [0,0,0.45], rpy=[0.0098981264,0.0011002597,0].
         Node(
             package="tf2_ros", executable="static_transform_publisher",
             name="lio_body_to_base_link",
-            arguments=["0", "0", "-0.45", "0", "0", "0", "body", "base_link"],
+            arguments=[
+                "0.000495116765", "-0.004454081453", "-0.449977683911",
+                "-0.004949042248", "-0.000550123085", "0.000002722616",
+                "0.999987602092", "body", "base_link",
+            ],
             output="screen",
         ),
         # base_link -> xtm60_<radar>_link (measured mount calibration).

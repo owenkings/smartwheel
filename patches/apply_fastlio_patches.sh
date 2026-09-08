@@ -1,51 +1,69 @@
 #!/usr/bin/env bash
-# Re-apply local modifications to the vendored FAST-LIO (Ericsii/FAST_LIO_ROS2)
-# after a fresh clone or `git submodule update` (which would silently revert
-# them). The critical one is LASER_POINT_COV 0.001 -> 100.0, WITHOUT which
-# FAST-LIO ignores the IMU on the narrow-FOV XT-M60 (yaw stops tracking, map
-# swirls). See docs/fastlio_mapping.md §6.2 and auto_test/20260622_lio_rootcause_fix.
-#
-# The second patch adds an opt-in ZUPT (zero-velocity update) mitigation for
-# the drift-after-teleop diagnosis (20260903): see docs/fastlio_mapping.md §8.1
-# and xtm60_right_lio.yaml's "zupt:" block. It is dormant unless a route's yaml
-# sets zupt.enabled: true (only xtm60_right_lio.yaml does), so re-applying it
-# does not change behaviour on the left/dual-radar/mock routes.
-#
-# Usage: bash patches/apply_fastlio_patches.sh
-set -e
+# Reproduce SmartWheel's complete FAST-LIO hardening on the pinned upstream tree.
+# The nested FAST-LIO checkout is intentionally ignored by the parent repository,
+# so this script and the canonical patch are the durable delivery mechanism.
+set -euo pipefail
+
 WS="$(cd "$(dirname "$0")/.." && pwd)"
 FL="$WS/src/third_party/FAST_LIO_ROS2"
-PATCH_COV="$WS/patches/fastlio_laser_point_cov.patch"
-PATCH_ZUPT="$WS/patches/fastlio_zupt.patch"
+PATCH="$WS/patches/fastlio_smartwheel_hardening.patch"
+BASE_COMMIT="2fffc570a25d0df172720bac034fbdb6a13d2162"
+EXPECTED_PATCH_SHA256="89912f73b932a33c1fe5c7f56575f13c7f8940b840e3191c6d9007f271f93c74"
+EXPECTED_LASER_MAPPING_SHA256="cff8187e4e4cfb2c7c09d6f6478f933c1c2465e687ea66e4f7d212a1ef6e5d10"
+EXPECTED_IMU_PROCESSING_SHA256="a024e7040d189e9e75d12211610c33fa5d5829add229829a28a9f70c36622c72"
 
-if [[ ! -d "$FL" ]]; then
-  echo "ERROR: vendored FAST_LIO_ROS2 not found at $FL"; exit 1
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+sha256_matches() {
+  local expected="$1"
+  local file="$2"
+  local actual
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]]
+}
+
+validate_hardened_tree() {
+  local source="$FL/src/laserMapping.cpp"
+  local imu="$FL/src/IMU_Processing.hpp"
+
+  sha256_matches "$EXPECTED_LASER_MAPPING_SHA256" "$source" &&
+    sha256_matches "$EXPECTED_IMU_PROCESSING_SHA256" "$imu" &&
+    grep -Eq 'laser_point_cov[[:space:]]*=[[:space:]]*0\.001' "$source" &&
+    grep -q 'project_degenerate_directions' "$source" &&
+    grep -q 'velocity_measurement_variance' "$source" &&
+    grep -q 'wheel_feedback_healthy' "$source" &&
+    grep -q 'path_max_poses' "$source" &&
+    grep -q 'adaptive_retry_covariance_scale' "$source" &&
+    grep -q 'set_init_requirements' "$imu" &&
+    ! grep -Eq 'LASER_POINT_COV.*100\.0|laser_point_cov[[:space:]]*=[[:space:]]*100\.0' "$source"
+}
+
+[[ -d "$FL/.git" ]] || fail "FAST_LIO_ROS2 git checkout not found at $FL"
+[[ -f "$PATCH" ]] || fail "canonical hardening patch not found at $PATCH"
+sha256_matches "$EXPECTED_PATCH_SHA256" "$PATCH" ||
+  fail "canonical hardening patch checksum differs; review it before applying"
+
+if validate_hardened_tree; then
+  printf 'FAST-LIO hardening is already present and LASER_POINT_COV remains 0.001.\n'
+  exit 0
 fi
 
-# Idempotent: if already applied (value is 100.0), do nothing.
-if grep -q "define LASER_POINT_COV     (100.0)" "$FL/src/laserMapping.cpp" 2>/dev/null; then
-  echo "LASER_POINT_COV already = 100.0; patch already applied. Nothing to do."
-else
-  echo "Applying $PATCH_COV ..."
-  git -C "$FL" apply --verbose "$PATCH_COV" && \
-    echo "OK." || {
-      echo "git apply failed; applying the critical LASER_POINT_COV change directly via sed."
-      sed -i 's/#define LASER_POINT_COV     (0.001)/#define LASER_POINT_COV     (100.0)/' \
-        "$FL/src/laserMapping.cpp"
-      grep -n "LASER_POINT_COV" "$FL/src/laserMapping.cpp" | head -1
-    }
-fi
+actual_commit="$(git -C "$FL" rev-parse HEAD)"
+[[ "$actual_commit" == "$BASE_COMMIT" ]] ||
+  fail "FAST-LIO HEAD is $actual_commit, expected $BASE_COMMIT; review/rebase the patch instead of forcing it"
 
-# Idempotent: if already applied, do nothing.
-if grep -q "zupt_en = false" "$FL/src/laserMapping.cpp" 2>/dev/null; then
-  echo "ZUPT mitigation already present; patch already applied. Nothing to do."
-else
-  echo "Applying $PATCH_ZUPT ..."
-  git -C "$FL" apply --verbose "$PATCH_ZUPT" || {
-    echo "ERROR: git apply failed for $PATCH_ZUPT. Apply it manually (patch -p1 < $PATCH_ZUPT" \
-         "from $FL) after checking laserMapping.cpp still matches the expected upstream shape."
-    exit 1
-  }
-fi
+[[ -z "$(git -C "$FL" status --porcelain --untracked-files=no)" ]] ||
+  fail "FAST-LIO checkout has tracked changes; preserve/review them before applying the canonical patch"
 
-echo "OK. Rebuild: colcon build --packages-select fast_lio"
+git -C "$FL" apply --check "$PATCH" ||
+  fail "canonical patch does not apply cleanly to the pinned FAST-LIO commit"
+git -C "$FL" apply "$PATCH"
+
+validate_hardened_tree ||
+  fail "post-apply validation failed; refusing to report success"
+
+printf 'FAST-LIO hardening applied successfully. Rebuild with:\n'
+printf '  colcon build --packages-select fast_lio\n'

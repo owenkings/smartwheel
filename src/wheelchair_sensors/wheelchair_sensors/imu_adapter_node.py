@@ -1,5 +1,6 @@
 import math
 import struct
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -32,6 +33,12 @@ class YesenseSample:
     euler_rad: Optional[Tuple[float, float, float]] = None
     quat_xyzw: Optional[Tuple[float, float, float, float]] = None
     sample_timestamp_us: Optional[int] = None
+    host_receive_time_ns: Optional[int] = None
+    host_receive_monotonic_ns: Optional[int] = None
+    # Estimated sample time obtained by interpolating a serial-read batch at
+    # the configured nominal rate. This is not a device-synchronised time.
+    host_interpolated_time_ns: Optional[int] = None
+    host_interpolated_monotonic_ns: Optional[int] = None
 
 
 def yesense_checksum(data: bytes) -> Tuple[int, int]:
@@ -159,6 +166,9 @@ class H30ImuAdapter:
     timeout_sec: float = 0.01
     parser: YesenseParser = field(default_factory=YesenseParser)
     _serial: object = None
+    nominal_rate_hz: float = 200.0
+    _last_interpolated_time_ns: Optional[int] = field(default=None, init=False, repr=False)
+    _last_interpolated_monotonic_ns: Optional[int] = field(default=None, init=False, repr=False)
 
     def open(self):
         if self._serial is not None:
@@ -183,7 +193,78 @@ class H30ImuAdapter:
         self.open()
         waiting = getattr(self._serial, "in_waiting", 0) or 1
         data = self._serial.read(waiting)
-        return self.parser.feed(data)
+        receive_time_ns = time.time_ns()
+        receive_monotonic_ns = time.monotonic_ns()
+        samples = self.parser.feed(data)
+        self._stamp_samples(samples, receive_time_ns, receive_monotonic_ns)
+        return samples
+
+    def _stamp_samples(
+        self,
+        samples: List[YesenseSample],
+        receive_time_ns: int,
+        receive_monotonic_ns: int,
+    ) -> None:
+        """Attach raw receive and per-sample estimated host times.
+
+        A serial read can contain several H30 frames. Giving every frame the
+        same read-boundary timestamp creates duplicate timestamps and makes
+        interpolation in FAST-LIO/EKF ambiguous. We place the frames at the
+        nominal H30 period ending at the read boundary, while retaining the
+        raw boundary for diagnostics. If the host has fallen behind, spacing
+        is compressed over the interval since the previous batch so timestamps
+        stay ordered and do not extend into the future.
+        """
+        if not samples:
+            return
+        rate_hz = float(self.nominal_rate_hz)
+        if not math.isfinite(rate_hz) or rate_hz <= 0.0:
+            rate_hz = 200.0
+        period_ns = max(1, int(round(1_000_000_000.0 / rate_hz)))
+        wall_times = self._interpolate_batch_times(
+            receive_time_ns,
+            len(samples),
+            period_ns,
+            self._last_interpolated_time_ns,
+        )
+        monotonic_times = self._interpolate_batch_times(
+            receive_monotonic_ns,
+            len(samples),
+            period_ns,
+            self._last_interpolated_monotonic_ns,
+        )
+        for sample, wall_ns, monotonic_ns in zip(samples, wall_times, monotonic_times):
+            sample.host_receive_time_ns = receive_time_ns
+            sample.host_receive_monotonic_ns = receive_monotonic_ns
+            sample.host_interpolated_time_ns = wall_ns
+            sample.host_interpolated_monotonic_ns = monotonic_ns
+        self._last_interpolated_time_ns = wall_times[-1]
+        self._last_interpolated_monotonic_ns = monotonic_times[-1]
+
+    @staticmethod
+    def _interpolate_batch_times(
+        receive_ns: int,
+        sample_count: int,
+        period_ns: int,
+        previous_ns: Optional[int],
+    ) -> List[int]:
+        if sample_count <= 0:
+            return []
+        nominal_start = receive_ns - (sample_count - 1) * period_ns
+        if previous_ns is None:
+            return [nominal_start + index * period_ns for index in range(sample_count)]
+        available_ns = receive_ns - previous_ns
+        desired_start = max(nominal_start, previous_ns + period_ns)
+        if desired_start + (sample_count - 1) * period_ns <= receive_ns:
+            return [desired_start + index * period_ns for index in range(sample_count)]
+        # A delayed poll may contain more samples than fit at the nominal
+        # period. Distribute them over (previous, receive] without future time.
+        if available_ns <= 0:
+            return [receive_ns for _ in range(sample_count)]
+        return [
+            previous_ns + (available_ns * (index + 1)) // sample_count
+            for index in range(sample_count)
+        ]
 
     def read_sample(self) -> Optional[YesenseSample]:
         samples = self.read_samples()
@@ -203,18 +284,36 @@ class ImuAdapterNode(Node):
         self.declare_parameter("angular_velocity_covariance", [0.02, 0.02, 0.02])
         self.declare_parameter("linear_acceleration_covariance", [0.05, 0.05, 0.08])
         self.declare_parameter("use_device_timestamp", False)
+        self.declare_parameter("require_device_timestamp", False)
+        self.declare_parameter("host_timestamp_mode", "interpolated")
+        self.declare_parameter("nominal_sample_rate_hz", 200.0)
 
         self.mode = self.get_parameter("mode").value
         self.frame_id = self.get_parameter("frame_id").value
         self.use_device_timestamp = bool(self.get_parameter("use_device_timestamp").value)
+        self.require_device_timestamp = bool(
+            self.get_parameter("require_device_timestamp").value
+        )
+        if self.require_device_timestamp and not self.use_device_timestamp:
+            raise ValueError(
+                "require_device_timestamp=true requires use_device_timestamp=true"
+            )
+        self.host_timestamp_mode = str(self.get_parameter("host_timestamp_mode").value).strip().lower()
+        if self.host_timestamp_mode not in {"receive", "interpolated"}:
+            self.get_logger().warning(
+                "host_timestamp_mode must be 'receive' or 'interpolated'; using 'interpolated'"
+            )
+            self.host_timestamp_mode = "interpolated"
         self._clock_offset_ns = None
         self.adapter = H30ImuAdapter(
             port=self.get_parameter("serial_port").value,
             baud_rate=int(self.get_parameter("baud_rate").value),
             timeout_sec=float(self.get_parameter("serial_timeout_sec").value),
+            nominal_rate_hz=float(self.get_parameter("nominal_sample_rate_hz").value),
         )
         self.pub = self.create_publisher(Imu, "/imu/data", 10)
         self.warned = False
+        self._timestamp_block_warned = False
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter("publish_rate_hz").value), self.tick
         )
@@ -236,11 +335,22 @@ class ImuAdapterNode(Node):
                 self.warned = True
             return
         for sample in samples:
-            self.pub.publish(self._sample_to_msg(sample))
+            message = self._sample_to_msg(sample)
+            if message is None:
+                if not self._timestamp_block_warned:
+                    self.get_logger().error(
+                        "H30 sample blocked: required device timestamp TLV is missing"
+                    )
+                    self._timestamp_block_warned = True
+                continue
+            self.pub.publish(message)
 
     def _sample_to_msg(self, sample: YesenseSample):
         msg = Imu()
-        msg.header.stamp = self._stamp(sample)
+        stamp = self._stamp(sample)
+        if stamp is None:
+            return None
+        msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
         if sample.quat_xyzw is not None:
             msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = sample.quat_xyzw
@@ -257,14 +367,27 @@ class ImuAdapterNode(Node):
         return msg
 
     def _stamp(self, sample):
+        sample_timestamp_us = getattr(sample, "sample_timestamp_us", None)
+        if self.require_device_timestamp and sample_timestamp_us is None:
+            return None
         now = self.get_clock().now().to_msg()
-        if not self.use_device_timestamp or getattr(sample, "sample_timestamp_us", None) is None:
+        if not self.use_device_timestamp or sample_timestamp_us is None:
+            # This H30 profile has no timestamp TLV. Stamp at the host serial-read
+            # boundary, before the publish loop, rather than at publication time.
+            # This is the earliest observable host time; it is not claimed to be
+            # hardware-synchronised acquisition time.
+            host_ns = getattr(sample, "host_receive_time_ns", None)
+            if self.host_timestamp_mode == "interpolated":
+                host_ns = getattr(sample, "host_interpolated_time_ns", None) or host_ns
+            if host_ns is not None:
+                now.sec = int(host_ns // 1_000_000_000)
+                now.nanosec = int(host_ns % 1_000_000_000)
             return now
         # Map device uptime (us) to ROS time using a running-min offset (the
         # sample with least transport delay). Opt-in; assumes small long-run
         # drift. Without this, host publish time adds jitter that hurts LIVO/EKF.
         now_ns = now.sec * 1_000_000_000 + now.nanosec
-        dev_ns = int(sample.sample_timestamp_us) * 1000
+        dev_ns = int(sample_timestamp_us) * 1000
         offset = now_ns - dev_ns
         if self._clock_offset_ns is None or offset < self._clock_offset_ns:
             self._clock_offset_ns = offset

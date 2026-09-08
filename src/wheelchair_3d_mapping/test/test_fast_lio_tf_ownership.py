@@ -27,6 +27,18 @@ def test_fast_lio_rejects_invalid_and_blocked_right_radar_before_nodes():
     assert source.index('if radar == "right":') < source.index("spec = RADAR_TF[radar]")
 
 
+def test_fast_lio_uses_full_inverse_imu_mount_and_bounded_lio_ranges():
+    source = (MAPPING_LAUNCH / "fast_lio_mapping.launch.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"min_range": 0.3' in source
+    assert '"max_range": 12.0' in source
+    assert '"output_qos": "best_effort"' in source
+    assert '"0.000495116765", "-0.004454081453", "-0.449977683911"' in source
+    assert '"-0.004949042248", "-0.000550123085", "0.000002722616"' in source
+
+
 def test_left_profile_gives_map_correction_to_loop_backend_only_when_enabled():
     source = (BRINGUP_LAUNCH / "manual_mapping_lio_left.launch.py").read_text(
         encoding="utf-8"

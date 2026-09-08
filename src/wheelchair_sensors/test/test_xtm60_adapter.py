@@ -1,3 +1,4 @@
+import json
 import math
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from wheelchair_sensors.xtm60_adapter_node import (  # noqa: E402
     XTM60AdapterNode,
     XTM60SdkAdapter,
     XTM60SdkConfig,
+    build_timing_diagnostic,
     extract_xyzi_grid,
     extract_xyzi_points,
 )
@@ -96,6 +98,65 @@ def test_xtm60_sdk_runtime_seconds_are_not_epoch_timestamps():
     assert XTM60AdapterNode._is_plausible_epoch_stamp((1779897171, 676858200))
 
 
+def test_xtm60_sdk_epoch_selection_copies_only_verified_epoch_values():
+    assert XTM60AdapterNode._select_cloud_stamp(
+        "sdk_epoch", sdk_stamp=(1_779_897_171, 676_858_200), receive_wall_time_ns=1
+    ) == (1_779_897_171, 676_858_200)
+    assert XTM60AdapterNode._select_cloud_stamp(
+        "sdk_epoch", sdk_stamp=(1006, 792_000_000), receive_wall_time_ns=1_700_000_000_000
+    ) is None
+
+
+def test_xtm60_timestamp_selection_never_falls_back_from_requested_source():
+    assert XTM60AdapterNode._select_cloud_stamp(
+        "host_receive", sdk_stamp=(1_779_897_171, 0), receive_wall_time_ns=None
+    ) is None
+    assert XTM60AdapterNode._select_cloud_stamp(
+        "unknown", sdk_stamp=(1_779_897_171, 0), receive_wall_time_ns=1_700_000_000_000
+    ) is None
+    assert XTM60AdapterNode._select_cloud_stamp(
+        "host_receive", sdk_stamp=None, receive_wall_time_ns=1_700_000_000_123_456_789
+    ) == (1_700_000_000, 123_456_789)
+
+
+def test_timing_diagnostic_preserves_sdk_host_and_ros_domains():
+    payload = json.loads(
+        build_timing_diagnostic(
+            sdk_stamp=(1234, 5678),
+            host_receive_wall_time_ns=1_700_000_000_123_456_789,
+            cloud_header_stamp=(1_700_000_000, 123_456_789),
+            publish_wall_time_ns=1_700_000_000_123_999_999,
+            timestamp_source="host_receive",
+        )
+    )
+
+    assert payload["sdk_timestamp"] == {"sec": 1234, "nanosec": 5678}
+    assert payload["host_receive_wall_time_ns"] == 1_700_000_000_123_456_789
+    assert payload["cloud_header_stamp"] == {
+        "sec": 1_700_000_000,
+        "nanosec": 123_456_789,
+    }
+    assert payload["publish_wall_time_ns"] == 1_700_000_000_123_999_999
+    assert payload["timestamp_source"] == "host_receive"
+
+
+def test_timing_diagnostic_allows_missing_sdk_stamp():
+    payload = json.loads(
+        build_timing_diagnostic(
+            sdk_stamp=None,
+            host_receive_wall_time_ns=None,
+            cloud_header_stamp=None,
+            publish_wall_time_ns=None,
+            timestamp_source="host_receive",
+        )
+    )
+
+    assert payload["sdk_timestamp"] is None
+    assert payload["host_receive_wall_time_ns"] is None
+    assert payload["cloud_header_stamp"] is None
+    assert payload["publish_wall_time_ns"] is None
+
+
 def _quality_grid(distance, valid=4, total=4):
     points = [(float(distance), 0.0, 0.0, 100.0)] * int(valid)
     points.extend([(math.nan, math.nan, math.nan, 0.0)] * (int(total) - int(valid)))
@@ -135,6 +196,51 @@ def test_cloud_quality_gate_rejects_temporal_jump_but_raw_can_continue():
     assert bad.dropped_frames == 1
     assert recovered.accepted is True
     assert recovered.accepted_frames == 2
+
+
+def test_cloud_quality_gate_can_report_motion_jump_without_dropping_frame():
+    gate = CloudFrameQualityGate(
+        min_valid_fraction=0.50,
+        max_median_range_delta=0.10,
+        max_p95_range_delta=0.75,
+        temporal_hard_reject=False,
+    )
+
+    gate.evaluate(_quality_grid(2.0), 10.0, organized=True)
+    moving = gate.evaluate(_quality_grid(3.0), 10.1, organized=True)
+
+    assert moving.accepted is True
+    assert moving.reason == "ok"
+    assert moving.temporal_jump_detected is True
+
+
+def test_cloud_quality_report_only_mode_keeps_relative_drop_as_diagnostic():
+    gate = CloudFrameQualityGate(
+        min_valid_fraction=0.50,
+        min_relative_valid_fraction=0.75,
+        max_median_range_delta=0.10,
+        max_p95_range_delta=0.75,
+        temporal_hard_reject=False,
+    )
+
+    gate.evaluate(_quality_grid(2.0, valid=10, total=10), 10.0, organized=True)
+    moving = gate.evaluate(
+        _quality_grid(3.0, valid=6, total=10), 10.1, organized=True
+    )
+
+    assert moving.accepted is True
+    assert moving.temporal_jump_detected is True
+    assert moving.relative_validity_drop_detected is True
+
+
+def test_disabled_cloud_quality_gate_has_defined_diagnostic_flags():
+    gate = CloudFrameQualityGate(enabled=False)
+
+    result = gate.evaluate(_quality_grid(2.0), 10.0, organized=True)
+
+    assert result.accepted is True
+    assert result.temporal_jump_detected is False
+    assert result.relative_validity_drop_detected is False
 
 
 def test_cloud_quality_gate_rejects_low_validity_and_nonmonotonic_time():

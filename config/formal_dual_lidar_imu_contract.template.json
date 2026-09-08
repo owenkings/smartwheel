@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "status": "BLOCKED_CONFLICT",
+  "scope": "dual_lidar_imu",
+  "installation_epoch": "",
+  "hardware_identity": {
+    "schema_version": 1,
+    "installation_epoch": "",
+    "assets": {
+      "xtm60_left": {
+        "role": "xtm60_left",
+        "model": "XT-M60",
+        "hardware_id": null,
+        "identity_kind": "vendor_serial",
+        "ip_address": null,
+        "frame_id": "xtm60_left_link"
+      },
+      "xtm60_right": {
+        "role": "xtm60_right",
+        "model": "XT-M60",
+        "hardware_id": null,
+        "identity_kind": "vendor_serial",
+        "ip_address": null,
+        "frame_id": "xtm60_right_link"
+      },
+      "imu": {
+        "role": "imu",
+        "model": "H30",
+        "hardware_id": null,
+        "identity_kind": "installation_asset_id",
+        "frame_id": "imu_link"
+      }
+    }
+  },
+  "runtime_transforms": {
+    "xtm60_left": {
+      "frames": {
+        "parent": "base_link",
+        "child": "xtm60_left_link"
+      },
+      "runtime_transform": {
+        "translation": [null, null, null],
+        "rotation": [null, null, null]
+      }
+    },
+    "xtm60_right": {
+      "frames": {
+        "parent": "base_link",
+        "child": "xtm60_right_link"
+      },
+      "runtime_transform": {
+        "translation": [null, null, null],
+        "rotation": [null, null, null]
+      }
+    },
+    "imu": {
+      "frames": {
+        "parent": "base_link",
+        "child": "imu_link"
+      },
+      "runtime_transform": {
+        "translation": [null, null, null],
+        "rotation": [null, null, null]
+      }
+    }
+  },
+  "approval": {
+    "approved_at_utc": "",
+    "approved_by": "",
+    "source_artifacts": []
+  }
+}

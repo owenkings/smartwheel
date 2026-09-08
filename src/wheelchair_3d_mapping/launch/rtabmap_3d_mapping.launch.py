@@ -1,4 +1,9 @@
-"""RTAB-Map 3D mapping (LiDAR-primary) — the current 3D mapping main line.
+"""PROVISIONAL RTAB-Map 3D mapping (LiDAR-primary) software pipeline.
+
+This launch assembles and validates the ROS graph contract, but it is not a
+formal-map approval gate.  Device timestamps, dynamic/final extrinsics,
+dual-LiDAR synchronization, odometry accuracy and runtime performance still
+require independent evidence before an output may be labelled FINAL_PRODUCT.
 
 The merged XT-M60 cloud (points_topic, default /points_merged, already in
 base_link) drives the map. By default rtabmap_odom/icp_odometry computes 3D
@@ -28,16 +33,115 @@ ros-humble-rtabmap-ros (sudo apt install ros-humble-rtabmap-ros).
 """
 import os
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
+
+def _require_ros_launch_api():
+    """Load ROS launch dependencies only when the graph is constructed.
+
+    Contract/unit tests and offline review tools should be able to import this
+    module without a sourced ROS overlay.  ``ros2 launch`` still gets the same
+    imports, but a missing runtime dependency is reported only when a launch
+    description is actually requested.
+    """
+
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        from launch import LaunchDescription
+        from launch.actions import (
+            DeclareLaunchArgument,
+            IncludeLaunchDescription,
+            LogInfo,
+            OpaqueFunction,
+        )
+        from launch.launch_description_sources import PythonLaunchDescriptionSource
+        from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+        from launch_ros.actions import Node
+        from launch_ros.substitutions import FindPackageShare
+    except ImportError as exc:  # pragma: no cover - exercised on ROS hosts
+        raise RuntimeError(
+            "rtabmap_3d_mapping requires ROS 2 launch and launch_ros; "
+            "source the ROS environment before building the launch graph"
+        ) from exc
+    return {
+        "get_package_share_directory": get_package_share_directory,
+        "LaunchDescription": LaunchDescription,
+        "DeclareLaunchArgument": DeclareLaunchArgument,
+        "IncludeLaunchDescription": IncludeLaunchDescription,
+        "LogInfo": LogInfo,
+        "OpaqueFunction": OpaqueFunction,
+        "PythonLaunchDescriptionSource": PythonLaunchDescriptionSource,
+        "LaunchConfiguration": LaunchConfiguration,
+        "PathJoinSubstitution": PathJoinSubstitution,
+        "Node": Node,
+        "FindPackageShare": FindPackageShare,
+    }
+
+
+def _validate_launch_contract(
+    *,
+    config_path: str,
+    points_topic: str,
+    odom_topic: str,
+    odom_mode: str,
+    frame_id: str,
+    queue_size: int,
+    bringup_sensors: bool,
+    subscribe_scan_cloud: bool,
+    subscribe_rgb: bool,
+    rgb_topic: str,
+    camera_info_topic: str,
+    database_path: str,
+) -> None:
+    """Validate the static RTAB-Map launch contract before node construction.
+
+    This is deliberately independent of ROS graph state: runtime checks still
+    have to verify that the selected odometry publisher and TF edges actually
+    exist. ``bringup_sensors`` only controls sensor/fusion includes and does
+    not imply an odometry owner, so an enclosing launch may pair it with an
+    explicit external odom topic. Keeping this function pure makes the
+    fail-closed ownership rules unit-testable without starting hardware or a
+    ROS process.
+    """
+
+    if not config_path:
+        raise RuntimeError("config must be non-empty")
+    if odom_mode not in ("icp", "external"):
+        raise RuntimeError(
+            f"INVALID_ODOM_MODE: {odom_mode!r}; expected 'icp' or 'external'"
+        )
+    if queue_size < 1:
+        raise RuntimeError("queue_size must be a positive integer")
+    for name, value in (("points_topic", points_topic), ("odom_topic", odom_topic)):
+        if not value or not value.startswith("/"):
+            raise RuntimeError(f"{name} must be a non-empty absolute ROS topic")
+    if not frame_id or frame_id.startswith("/"):
+        raise RuntimeError("frame_id must be a non-empty TF frame without a leading '/'")
+    if odom_mode == "external" and odom_topic == "/rtabmap/odom":
+        raise RuntimeError(
+            "INVALID_EXTERNAL_ODOM: odom_mode=external requires an existing "
+            "odom_topic (for example /lio/odom or /odometry/filtered), not the "
+            "icp_odometry default /rtabmap/odom"
+        )
+    if not subscribe_rgb and not subscribe_scan_cloud:
+        raise RuntimeError(
+            "INVALID_INPUT: LiDAR-only RTAB-Map mapping requires "
+            "subscribe_scan_cloud=true"
+        )
+    if subscribe_rgb:
+        for name, value in (("rgb_topic", rgb_topic), ("camera_info_topic", camera_info_topic)):
+            if not value or not value.startswith("/"):
+                raise RuntimeError(f"{name} must be a non-empty absolute ROS topic")
+    if not database_path:
+        raise RuntimeError("database_path must be non-empty")
 
 
 def _setup(context, *args, **kwargs):
+    ros = _require_ros_launch_api()
+    get_package_share_directory = ros["get_package_share_directory"]
+    IncludeLaunchDescription = ros["IncludeLaunchDescription"]
+    PythonLaunchDescriptionSource = ros["PythonLaunchDescriptionSource"]
+    LaunchConfiguration = ros["LaunchConfiguration"]
+    Node = ros["Node"]
+    LogInfo = ros["LogInfo"]
     mapping = get_package_share_directory("wheelchair_3d_mapping")
     bringup = get_package_share_directory("wheelchair_bringup")
 
@@ -54,13 +158,61 @@ def _setup(context, *args, **kwargs):
     odom_mode = s("odom_mode").lower()
     frame_id = s("frame_id")
     subscribe_rgb = flag("subscribe_rgb")
+    subscribe_scan_cloud = flag("subscribe_scan_cloud")
     use_colorizer = flag("use_colorizer")
     localization = flag("localization")
     enable_loop_closure = flag("enable_loop_closure")
     use_sim = s("use_sim_time")
-    qsize = int(s("queue_size"))
+    try:
+        qsize = int(s("queue_size"))
+    except ValueError as exc:
+        raise RuntimeError("queue_size must be a positive integer") from exc
+
+    database_path = s("database_path")
+    # Fail before constructing any ROS action when the graph contract is
+    # ambiguous.  These checks are launch-time guards, not calibration
+    # approval or a substitute for runtime TF diagnostics.
+    _validate_launch_contract(
+        points_topic=points,
+        config_path=cfg,
+        odom_topic=odom,
+        odom_mode=odom_mode,
+        frame_id=frame_id,
+        queue_size=qsize,
+        bringup_sensors=flag("bringup_sensors"),
+        subscribe_scan_cloud=subscribe_scan_cloud,
+        subscribe_rgb=subscribe_rgb,
+        rgb_topic=s("rgb_topic"),
+        camera_info_topic=s("camera_info_topic"),
+        database_path=database_path,
+    )
+    delete_db = flag("delete_db_on_start")
+    if os.path.exists(database_path):
+        if delete_db and not localization:
+            actions_warning = LogInfo(
+                msg=(
+                    "[rtabmap_3d_mapping] WARNING: delete_db_on_start=true "
+                    f"will replace existing RTAB-Map database {database_path!r}. "
+                    "Use a unique session path before formal mapping."
+                )
+            )
+            # Keep this warning ahead of all node actions; no file is touched
+            # by the guard itself.
+            actions = [actions_warning]
+        elif not delete_db and not localization:
+            actions_warning = LogInfo(
+                msg=(
+                    "[rtabmap_3d_mapping] WARNING: an existing RTAB-Map "
+                    f"database {database_path!r} will be appended because "
+                    "delete_db_on_start=false; verify this is intentional."
+                )
+            )
+            actions = [actions_warning]
+        else:
+            actions = []
+    else:
+        actions = []
     common = {"use_sim_time": use_sim == "true"}
-    actions = []
 
     # Optional self-contained sensors + fusion (NO base/EKF -> icp_odometry is the
     # only odom->base_link publisher). Leave false if your stack already runs them.
@@ -92,13 +244,13 @@ def _setup(context, *args, **kwargs):
                                       "topic_queue_size": qsize, "sync_queue_size": qsize}],
             remappings=[("scan_cloud", points), ("imu", imu), ("odom", odom)]))
     else:
-        if odom == "/rtabmap/odom":
-            actions.append(LogInfo(msg="[rtabmap_3d_mapping] ERROR: odom_mode=external but odom_topic is still the "
-                                       "icp default '/rtabmap/odom', which has NO publisher in external mode. Pass a "
-                                       "real external odom, e.g. odom_topic:=/wheel/odom or odom_topic:=/odometry/filtered."))
-        else:
-            actions.append(LogInfo(msg=f"[rtabmap_3d_mapping] odom_mode=external: using {odom} as odometry; that node "
-                                       f"must own odom->base_link and actually publish (icp_odometry NOT started)."))
+        # ``bringup_sensors`` may still be true here: the enclosing launch can
+        # start an external wheel/IMU estimator alongside the sensor include.
+        # The static guard above only rejects the ambiguous historical default;
+        # this log makes the remaining runtime ownership obligation explicit.
+        actions.append(LogInfo(msg=f"[rtabmap_3d_mapping] odom_mode=external: using {odom} as odometry; the "
+                                   f"external node must own odom->base_link and actually publish "
+                                   f"(icp_odometry NOT started)."))
 
     # rtabmap -> 3D cloud map + graph + projected 2D grid.
     # NOTE: the YAML param file (cfg) is unreliable here -- rtabmap_slam ignores
@@ -127,6 +279,12 @@ def _setup(context, *args, **kwargs):
         "RGBD/LinearUpdate": "0.05",
         "RGBD/OptimizeMaxError": "3.0",
         "Rtabmap/DetectionRate": "1.0",
+        # Match the topic contracts explicitly.  RTAB-Map's parameter-file
+        # loading has differed across Humble builds, so these ownership/QoS
+        # values are kept in the launch dictionary as the runtime authority.
+        "qos_scan": 2,              # sensor-data / BEST_EFFORT cloud input
+        "qos_odom": 1,              # reliable odometry input
+        "Grid/FromDepth": "false",
         "Icp/VoxelSize": "0.05",
         "Icp/PointToPlane": "true",
         "Icp/MaxCorrespondenceDistance": "0.5",
@@ -157,7 +315,7 @@ def _setup(context, *args, **kwargs):
         # map->camera_init. The FAST-LIO identity bridge must be disabled then.
         "map_frame_id": "map",
         "publish_tf": True,
-        "subscribe_scan_cloud": flag("subscribe_scan_cloud"),
+        "subscribe_scan_cloud": subscribe_scan_cloud,
         "subscribe_rgb": subscribe_rgb,
         # RTAB-Map defaults subscribe_depth=true; for LiDAR-only mapping we must
         # explicitly disable depth/rgbd, otherwise the node waits on /rgb/image +
@@ -167,13 +325,13 @@ def _setup(context, *args, **kwargs):
         "approx_sync": flag("approx_sync"),
         "topic_queue_size": qsize, "sync_queue_size": qsize,
         "Mem/IncrementalMemory": "false" if localization else "true",
-        "database_path": s("database_path")}]
+        "database_path": database_path}]
     rtab_remaps = [("scan_cloud", points), ("odom", odom),
                    ("cloud_map", "/rtabmap/cloud_map"), ("map", "/rtabmap/grid_map"),
                    ("mapData", "/rtabmap/mapData")]
     if subscribe_rgb:
         rtab_remaps += [("rgb/image", s("rgb_topic")), ("rgb/camera_info", s("camera_info_topic"))]
-    delete = flag("delete_db_on_start") and not localization
+    delete = delete_db and not localization
     actions.append(Node(
         package="rtabmap_slam", executable="rtabmap", name="rtabmap", output="screen",
         parameters=rtab_params, remappings=rtab_remaps, arguments=["-d"] if delete else []))
@@ -191,11 +349,21 @@ def _setup(context, *args, **kwargs):
     if flag("rviz"):
         actions.append(Node(
             package="rtabmap_viz", executable="rtabmap_viz", name="rtabmap_viz", output="screen",
-            parameters=rtab_params, remappings=[("scan_cloud", points), ("odom", odom)]))
+            # The visualization process is not a TF owner.  Keep the value
+            # explicit so a distro-specific default cannot create a second
+            # map->odom publisher when the backend is running.
+            parameters=[*rtab_params, {"publish_tf": False}],
+            remappings=[("scan_cloud", points), ("odom", odom)]))
     return actions
 
 
 def generate_launch_description():
+    ros = _require_ros_launch_api()
+    FindPackageShare = ros["FindPackageShare"]
+    LaunchDescription = ros["LaunchDescription"]
+    DeclareLaunchArgument = ros["DeclareLaunchArgument"]
+    OpaqueFunction = ros["OpaqueFunction"]
+    PathJoinSubstitution = ros["PathJoinSubstitution"]
     pkg = FindPackageShare("wheelchair_3d_mapping")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),

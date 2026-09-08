@@ -1,15 +1,25 @@
-# FAST-LIO2 单(左)雷达 LiDAR-惯性建图
+# FAST-LIO2 LiDAR-惯性建图与验收记录
 
 本文档记录 SmartWheel 将 3D 建图从「纯 EKF 位姿 + RTAB-Map 零配准」重构为
 **FAST-LIO2(LiDAR-惯性里程计)** 的获取、依赖、编译、外参、启动与保存等可复现信息。
 
 对应 spec:`.kiro/specs/fastlio-narrow-fov-mapping/`(需求 1.1 / 1.3 / 1.5)。
 
-> 状态:本文件随实现任务逐步补全。当前已完成 **任务 1(获取并 vendored FAST-LIO2,锁定 commit)**、
-> **任务 2(安装依赖并在 aarch64/Humble 编译 FAST-LIO2,`BUILD_EXIT=0`)**
-> 与 **任务 4(录制离线 bag,作为后续所有离线工作的唯一回放源)**。
-> 外参核对(任务 5/7)、启动与保存(任务 11/13)等章节将在后续任务补充。
-
+> **当前状态（2026-09-07；覆盖下文早期任务状态描述）**：FAST-LIO2 的软件加固、
+> 时间戳传播和离线回放入口已完成代码级收口；这不等于真实传感器、动态运动或最终地图验收。
+> - 权威 FAST-LIO2 补丁是 patches/fastlio_smartwheel_hardening.patch，脚本会锁定基线、补丁
+>   及两个修改后源文件的 SHA-256，并拒绝旧的 R=100/负 age ZUPT。
+> - XT-M60 在 SDK 设备时间未启用时仍使用 SDK 回调的主机接收时间代理；H30 使用串口读取边界之间的
+>   主机侧名义频率插值。两者都不是真实设备采样时钟，也没有证明 LiDAR–IMU 固定延迟。
+> - 点云→scan→scan merge/fusion 会保留最新的非零源时间戳；地图输出时间戳是后端生成时间，需按产品
+>   语义解释，不能倒推传感器采样时间。
+> - LiDAR/IMU/base 外参、H30 动态轴向与 yaw/xyz、双雷达时间同步和重叠区融合仍为临时状态；
+>   right_lidar_stage1_calibration_contract.json 仍是 BLOCKED_CONFLICT。
+> - H2 离线完整回放已通过带时间窗说明；FAST-LIO2 实机、累计三维建图、导航、地面运动、物理急停和
+>   载人安全均未通过，硬件任务结束后必须停机并确认无进程/UDP 残留。
+>
+> 下文较早的任务编号、候选外参和 bag 数字是历史证据记录；当前计划、授权边界和最新结论以
+> docs/PROJECT_HANDOFF_CURRENT.md 与 docs/PROJECT_MEMORY_CURRENT.md 为准。
 ---
 
 ## 1. 仓库选型与锁定 commit(req 1.1 / 1.3 / 1.5)
@@ -230,9 +240,9 @@ RC=0  (BUILD_EXIT=0)
 
 ---
 
-## 5. 离线回放源 — canonical bag(任务 4 已落地,req 5.5 / 6.2)
+## 5. 历史离线回放记录（证据，不代表当前硬件验收通过）
 
-任务 4 已一次性录制离线 bag(左 XT-M60 + IMU + TF,含温和运动),作为**任务 5–9、13 的唯一离线回放源**,
+本节保留早期任务的回放统计，供追溯使用；原始 bag 的实际留存状态和可复现入口以当前交接文档为准。\n\n任务 4 已一次性录制离线 bag(左 XT-M60 + IMU + TF,含温和运动),作为**任务 5–9、13 的唯一离线回放源**,
 后续离线调参/集成**无需再次上电雷达**(雷达过热硬约束)。
 
 | 项 | 值 |
@@ -267,53 +277,52 @@ ros2 bag play auto_test/lio_canonical_bag   # 雷达 OFF,纯离线
 
 ## 6. 外参、启动、地图保存、RTAB-Map 后端开关
 
-### 6.1 LiDAR↔IMU 外参(任务 5 已落地,req 2.2/2.4/3.1)
+### 6.1 LiDAR↔IMU 外参（当前仍未完成，历史候选不可用于产品）
 
-FAST-LIO 的 `extrinsic_T/R` = **LiDAR 在 IMU 体系下的位姿**:`T_il = inv(base→imu) · (base→lidar)`。
-任务 5 从 canonical bag 的 `/tf_static`(`base→imu_link`=[0,0,0.45])+ `static_transforms.yaml` 文档值
-(`base→xtm60_left_link`=[0.45,0.24,0.65] rpy[0,-0.0873,0])解析得:
+FAST-LIO 的 extrinsic_T/R 约定是雷达在 IMU 坐标系中的位姿：
+T_il = inv(base→imu) · (base→lidar)。早期任务曾从文档值和旧 bag 推导候选矩阵，
+但那些数据没有同时满足最终安装姿态、时间语义和独立几何约束，**不能称为“任务 5 已落地”**，
+也不能直接作为正式地图或导航标定。
 
-```
-extrinsic_T: [0.45, 0.24, 0.20]            # LiDAR 在 IMU 上方 0.20m、前 0.45m、左 0.24m
-extrinsic_R: [0.996192, 0, -0.087189,      # 绕 Y 的 -5°(0.0873rad)俯仰
-              0, 1, 0,
-              0.087189, 0, 0.996192]
-```
+当前合同保持 fail-closed：
 
-写入 `src/wheelchair_3d_mapping/config/xtm60_left_lio.yaml`(lidar_type=2 标准 PointCloud2 路径、
-deskew off、`extrinsic_est_en=false`、fov 120、blind 0.1)。
+- right_lidar_stage1_calibration_contract.json 为 BLOCKED_CONFLICT，没有批准的 runtime transform；
+  左/右 LIO YAML 中的数值仅供诊断或离线兼容，均标为 provisional。
+- 当前固定 TF 只用于方向/显示和受限诊断。用户已确认两光学中心横向间距约 0.60 m、相对 fore/aft
+  偏移为 0，因此不得用虚构的非零相对 x 去补偿场景误差。
+- 右侧临时旋转来自一次地面拟合，左侧旋转沿用历史可靠候选；两者的 yaw、绝对 x、H30 动态轴向、
+  LiDAR–IMU 固定延迟和双雷达重叠区都尚未独立验证。
+- 真实标定须使用带动作 marker 的静态/直行/转弯数据，并在解除合同阻塞后再写入产品配置；
+  在此之前不要把 FAST-LIO 输出或地图当作正式产品。
 
-> **两个遗留点(交 Task 6/7)**:
-> 1. canonical bag 缺 `base_link→xtm60_left_link` 边(原 calibrator 被移除)——新 LIO 链路须补发该静态 TF。
-> 2. 俯仰用的是文档值 -5°,与早期左雷达实测 ~10° 不一致;**Task 7 用真实地面核对(地面 z≈0/墙竖直)并按需修正**。
+相关实测证据和待办见 docs/hardware/FASTLIO_H2_REAL_EXTRINSIC_TIME_20260906.md
+及 FASTLIO_HARDWARE_VALIDATION_PLAN.md。
 
-### 6.2 关键调参:LASER_POINT_COV(任务 7 根因修复)
+### 6.2 `LASER_POINT_COV` 历史结论更正(2026-09-04)
 
-**症状**:FAST-LIO 跑得动但**忽略 IMU 旋转**——真实/IMU 实测偏航 ~98°,输出只有 ~4°,地图成漩涡/重影。
+2026-06 的偏航实验曾把 `LASER_POINT_COV` 从 `0.001` 逐步放大到 `100.0`。该实验只说明在当时的
+短动态数据、未完成外参/时间同步且缺少更新门禁的条件下,减弱 LiDAR 权重可让输出偏航更接近 IMU;
+它**不能证明 `R=100` 是通用根因修复**。后续静止实机数据证明该值会放大不可观方向的预测漂移并
+造成灾难性假运动:修复前净假位移 `1749.10 m`,最大单帧 `75.27 m`。
 
-**根因**(逐层插桩定位,见 `auto_test/20260622_lio_rootcause_fix/report.md`):
-`LASER_POINT_COV` 在 `laserMapping.cpp` 硬编码 `0.001`(每个 LiDAR 点测量协方差极小=极度信任 LiDAR)。
-窄视场稀疏 flash ToF 的几何约束很弱却被极度信任,iEKF 每帧用扫描匹配把 IMU 预测的旋转抹掉,
-还把真实转速塞进陀螺零偏(`bg_z` 涨到 ~0.098 rad/s ≈ 平均转速)。
+当前正式实现如下:
 
-**修复**(单一杠杆,逐步验证 0.001→1.0→100):
-
-| 文件 | 改动 | 原因 |
+| 项目 | 当前值/行为 | 目的 |
 |---|---|---|
-| `src/third_party/FAST_LIO_ROS2/src/laserMapping.cpp` | `#define LASER_POINT_COV` `0.001` → **`100.0`** | 降低对弱 LiDAR 约束的信任,让 IMU 主导姿态 |
-| `config/xtm60_left_lio.yaml` | `b_gyr_cov` 1e-4→**1e-7**、`gyr_cov` 0.1→**0.5**、`b_acc_cov`→1e-5、`acc_cov`→0.5 | 锁死陀螺零偏,防止真实转速被当零偏吸收 |
+| `mapping.laser_point_cov` | 默认及右/左配置均为 **`0.001`** | 恢复上游量级;它现在是 ROS 参数,不再是必须改源码的宏 |
+| LiDAR 更新门 | 特征数、残差、有限值、可观秩和状态增量联合检查 | 阻止坏匹配进入状态 |
+| 回滚 | 更新超限时同时恢复状态和协方差,且不写入 ikd-tree | 避免拒绝后污染地图 |
+| 退化 | 可观秩不少于 3 时把更新投影到可观子空间;更严重时才整帧拒绝 | 保留走廊/单平面中的有效约束 |
+| 合法大修正 | 仅当特征/残差/可观性均合格而状态增量超限时,从同一快照用 `R=.004/.016/.064` 最多重算 3 次;最终仍须满足原增量门 | 用多个有界小修正逐步重捕获,避免长期整帧拒绝;绝不恢复全局 `R=100` |
+| IMU 噪声 | 左/右配置恢复保守的上游量级 | 不再用极小 bias 协方差“锁死”状态 |
 
-**效果**:偏航 0.001→4°,1.0→33°,**100→89°**(真实 ~98°)。这实现了需求要的「IMU 主导 + LiDAR 辅助」。
-
-> 注:`LASER_POINT_COV` 是 `#define`(非 ROS 参数),只能改 vendored 源码;已加注释标注原值与原因。
-> 后续可提为 ROS 参数以免改第三方源码。
-
-**已知待精修(非阻断)**:① 地面 z 仍在 ~1m 不在 0(外参俯仰/高度按真实地面校正;Task 5 文档 -5° vs 左雷达实测 ~10°);
-② 89° vs 98° 余 ~9°(可再调信任度/精修外参)。这些是外参精修,不是 IMU 问题。
+静止实机最终结果为最大单帧 `4.67 cm`,90 秒后活动半径约 `1.12 cm`。这证明灾难发散已被阻断,
+但直行、转弯、原地转向、STOP 恢复和长输出空窗后的重新收敛仍须作为动态验收项目,不能由静止
+结果外推。
 
 ### 6.3 启动、地图保存、RTAB-Map 后端开关
 
-启动见 §7.2（右雷达,当前默认入口）。完整会话地图保存必须在建图开始前启动
+启动与授权边界见当前交接文档；右雷达入口只是受限诊断入口，不代表最终外参或产品建图已批准。完整会话地图保存必须在建图开始前启动
 `map_products_node`，结束时再调用 `scripts/save_mapping_result.sh`；脚本会先调用
 `/map_session/stop`，再调用 `/map_export/export`，只接受正式会话的原子产品包。
 旧的 `lio_save_cloud.py` 仍可用于短时固定窗口诊断，但不再被视为完整地图保存器，
@@ -349,99 +358,111 @@ bash scripts/save_mapping_result.sh
 
 ---
 
-## 7. 当前部署:RIGHT 雷达(左雷达已入盒遮挡)
+## 7. 当前部署与硬件诊断入口（2026-09-07）
 
-> **硬件现状变更(20260623)**:LEFT 雷达被放入盒子、视场被遮挡,标定不可用(地面点 <~150,无法拟合)。
-> **当前部署改为 RIGHT 雷达单雷达**。详见 `.kiro/steering/orin-host-ops.md`。
+当前工作台支持左右 XT-M60 的只读诊断，但两路都必须在任务结束后停止；右路曾有较稳定的
+几何回波，左路的有效点比例/链路仍需一变量一项健康检查。任何临时 TF 都不能用于宣称
+FAST-LIO2、累计地图或导航通过。真实硬件启动、电机写入和运动测试必须遵循交接文档中的
+显式授权与停机门禁。
 
-### 7.1 两个雷达的实测外参
+### 7.1 当前临时 TF 与外参状态
 
-| 雷达 | 话题 | 高度 | pitch | roll | 平面残差 | 数据来源 |
-|---|---|---|---|---|---|---|
-| RIGHT(右,192.168.1.101) | `/xtm60/right/points` | **51.0 cm** | **−1.04°** | **−9.1°** | 4.3 mm | `auto_test/20260623_dual_radar_calib`(地面点充足,可靠) |
-| LEFT(左,192.168.0.101) | `/xtm60/left/points` | 54.5 cm | +1.1° | +0.78° | 8 mm | `auto_test/20260622_ground_calib_bag`(入盒前;现遮挡不可用) |
+| 传感器 | 当前临时平移（m） | 当前临时 RPY（rad） | 状态 |
+|---|---|---|---|
+| RIGHT 192.168.1.101 | [0.45, -0.30, 0.735] | [1.7071165220, 0.0265268546, 1.5744345976] | 地面拟合得到的诊断候选；yaw、绝对 x、时间偏移未标定 |
+| LEFT 192.168.0.101 | [0.45, 0.30, 0.735] | [1.5515153364, -0.0136154207, 1.5709313394] | 历史可靠方向候选；当前获取质量和最终外参仍待确认 |
 
-> 注:早期对左/右各报过几组互相矛盾的数字(同一窗口/约定 bug),已废弃。上表为最终采用值。
+两光学中心的用户实测相对横向间距约 0.60 m，相对 fore/aft 偏移为 0；上表的共同
+绝对 x 是未验证先验，不能用来吸收时间或姿态误差。当前 body→base_link 和
+base_link→xtm60_*_link 只服务于显示/诊断，正式标定前保持 provisional。
 
-### 7.2 RIGHT 雷达启动(当前默认)
+### 7.2 RIGHT 雷达只读启动（需显式授权）
 
 ```bash
-# 一键(默认 right;脚本据 RADAR 选择 launch):
-bash scripts/run_rviz_manual_mapping_left.sh                 # RADAR 默认 right
-RADAR=right MOTION=true bash scripts/run_rviz_manual_mapping_left.sh   # 含运动(需空旷+急停)
+# 只读/不运动入口；硬件任务结束后必须按交接要求干净停机：
+bash scripts/run_rviz_manual_mapping_left.sh                 # 默认只读诊断
+RADAR=right MOTION=false bash scripts/run_rviz_manual_mapping_left.sh
 
 # 或直接 launch:
 ros2 launch wheelchair_bringup manual_mapping_lio_right.launch.py motion_control_enabled:=false
 ```
 
 文件:
-- 配置 `src/wheelchair_3d_mapping/config/xtm60_right_lio.yaml`(extrinsic_T/R = 右雷达外参)。
+- 配置 src/wheelchair_3d_mapping/config/xtm60_right_lio.yaml（仅含 provisional extrinsic_T/R，不能视为最终外参）。
 - `fast_lio_mapping.launch.py` 支持 `radar:=right|left`,按雷达选 config + 输入话题 + `base_link→xtm60_<radar>_link` 静态 TF。
 - 顶层 `manual_mapping_lio_right.launch.py`(EKF off,FAST-LIO 拥有位姿)。
-- 离线右雷达冒烟已验证:`fast_lio` 在右雷达 bag 上产出 `/Odometry` `/cloud_registered` `/path`。
+- 历史离线右雷达冒烟曾产出 /Odometry、/cloud_registered、/path；这不是当前实机或最终外参验收。
 
 ### 7.3 LEFT 雷达(出盒后恢复)
 
 左雷达路径保留:`xtm60_left_lio.yaml`、`manual_mapping_lio_left.launch.py`、`fast_lio_mapping.launch.py radar:=left`、
-`RADAR=left bash scripts/run_rviz_manual_mapping_left.sh`。左雷达出盒、视野见地面后可直接用。
+`RADAR=left bash scripts/run_rviz_manual_mapping_left.sh`。左雷达恢复后仍须先做只读链路/质量检查；不能仅凭“有话题”进入最终标定或运动测试。
 
 ---
 
-## 8. ⚠️ 关键脆弱点:LASER_POINT_COV 在 vendored 源码里(必读)
+## 8. FAST-LIO 嵌套仓库的持久化合同(必读)
 
-Task 7 的根因修复 `LASER_POINT_COV` `0.001 → 100.0` 改在 **vendored 第三方源码**
-`src/third_party/FAST_LIO_ROS2/src/laserMapping.cpp`(它是 `#define`,不是 ROS 参数)。
-**一旦 re-clone 或 `git submodule update`,这个改动会被静默还原**,FAST-LIO 会重新忽略 IMU、
-偏航不再跟踪、地图回到漩涡。
+`src/third_party/FAST_LIO_ROS2` 是独立 Git 仓库,并被主仓库 `.gitignore` 忽略。只提交主仓库不会
+带走其中的 `laserMapping.cpp` / `IMU_Processing.hpp` 修复。当前合同把上游基线固定为
+`2fffc570a25d0df172720bac034fbdb6a13d2162`,并在主仓库保存一份**完整、唯一**的可重放补丁:
 
-**防护**:已把改动存为 patch 并提供重放脚本:
 ```bash
-bash patches/apply_fastlio_patches.sh        # 幂等:已是 100.0 则跳过;否则打 patch
+bash patches/apply_fastlio_patches.sh
 colcon build --packages-select fast_lio
 ```
-- patch:`patches/fastlio_laser_point_cov.patch`
-- 若 re-clone 后建图又变漩涡/偏航不动,**第一件事就是跑这个脚本**。
+
+- 权威补丁:`patches/fastlio_smartwheel_hardening.patch`。
+- 脚本只接受上述精确基线和干净的嵌套工作树；先执行 `git apply --check`，应用后验证关键标记，
+  并核对权威补丁、laserMapping.cpp、IMU_Processing.hpp 的 SHA-256。任何检查失败均 fail closed，
+  不再用 `sed` 强改源码；脚本已明确拒绝 LASER_POINT_COV=100.0。
+- 历史 `fastlio_laser_point_cov.patch` 与 `fastlio_zupt.patch` 已改为不可应用的退役墓碑,避免旧工具
+  无声恢复 `R=100` 或负 age ZUPT。
+- 发布时需要两个清晰的提交关系:先在 FAST-LIO 嵌套仓库提交/标记源码修复,再在主仓库提交权威
+  patch、脚本、配置、驱动和文档。主仓库提交说明必须记录嵌套提交 SHA;不要把两棵树误当成一个提交。
 
 ---
 
-## 8.1 ZUPT(零速度更新)缓解:WASD 驾驶后位姿持续漂移(20260903)
+## 8.1 ZUPT:时间对齐、反馈健康门与正规伪测量(2026-09-04)
 
 **症状**:短暂 WASD 驾驶(`MOTION=true`,真实电机转动)之后,按 Space/松键停止操作,rviz 里
 `/path`(青蓝色 "LIO Path")与 `/Odometry` 仍在不规则漂移变化,而轮椅本体已经物理静止。
 
-**根因**(诊断会话,未做真机复测前的静态代码排查,详见该次对话记录):
-右雷达路线没有 robot_localization EKF、没有轮速融合,位姿完全来自 FAST-LIO2 自身的 IMU-LiDAR
-紧耦合 iEKF。WASD 引入的真实动态加速度会扰动 iEKF 的速度/加速度计 bias 状态;
-`xtm60_right_lio.yaml` 里 Task-7 遗留的注释记录过真实测过的 accel-bias 漂移(静止场景
-0.3 mm/s → 234 mm/s,4.7 h),当前"修复"(`b_acc_cov` 恢复上游默认值)只在长时间静止场景验证过,
-从未验证"运动后状态如何收敛"。同时 `laserMapping.cpp` 的 `LASER_POINT_COV=100` 是 Task 7
-故意调大的(让 IMU 主导姿态、削弱 LiDAR 校正力),一旦速度状态被运动扰动,LiDAR 更新本身就弱到
-拉不回来。IKFoM 库里唯一像样的跳变限幅函数 `check_safe_update()`
-(`include/IKFoM_toolkit/esekfom/esekfom.hpp`)从未被任何调用点使用,是死代码——整条链路没有
-任何机制在停止后主动把被扰动的状态拉回。
+旧实现存在两个缺陷:它选取“最新”轮速而不是 LiDAR 时刻之前的样本,未来样本会产生负 age 并
+绕过陈旧检查;同时直接执行 `s.vel=0` 和速度协方差硬裁剪,不是统计一致的测量更新。
 
-**缓解**(`patches/fastlio_zupt.patch`,已生效,默认关闭,只在右雷达路线开启):
-用 `/wheel/odom`(`zlac8030_driver_node` 无条件发布的真实轮速反馈,配置了反馈寄存器时是编码器
-实测值,否则是指令值的开环估计)作为"轮子自认为没转"的信号。一旦该信号连续
-`zupt.hold_time_sec`(默认 0.3 s)保持在阈值以下,`laserMapping.cpp` 每帧把 iEKF 的速度状态
-`s.vel` 清零,并把速度分量的协方差裁到 `zupt.velocity_cov_reset`(默认 1e-4)以内,防止残余
-速度被二次积分成位置漂移。`/wheel/odom` 超过 `zupt.stale_timeout_sec`(默认 1.0 s)没更新则
-判定失效,ZUPT 暂停(什么都不做),不会把"数据陈旧"误判成"静止"。
+当前实现只在以下条件全部成立时执行:
 
-**局限,诚实说明**:
-- `/wheel/odom` 是"驱动认为轮子没转",不是独立的地面真值——如果外部把静止的轮椅推动、或
-  `invert_left`/`invert_right` 符号配错导致驱动误判零速,ZUPT 不会发现。
-- 这只处理"速度状态"这一个自由度,不处理 accel-bias 本身的收敛速度,也不处理窄视场沿墙退化
-  这个更根本的几何约束缺失问题(`.kiro/specs/fastlio-narrow-fov-mapping/design.md` §风险与已知限制)。
-- **尚未用真实驾驶复测确认效果**。已验证的范围:(1) `colcon build --packages-select fast_lio`
-  编译通过;(2) 独立启动 `fastlio_mapping`(无雷达/IMU 数据)确认新增的 `zupt.*` 参数被正确解析、
-  `/wheel/odom` 订阅被创建;(3) 用 `ros2 topic pub` 向 `/wheel/odom` 灌入近零速度消息持续数秒,
-  节点保持响应、无崩溃无死锁;(4) `patches/fastlio_zupt.patch` 在干净的上游 `2fffc57` checkout
-  上应用 `apply_fastlio_patches.sh` 后,产物与当前树逐字节一致,幂等重跑验证过。**没有**做过真实
-  WASD 驾驶 + 停止后观察漂移是否收敛的端到端复测——下次真机测试时请重点验证这一点。
+1. 从历史队列选取时间戳 `<= LiDAR` 的轮速样本,并检查 age、连续零速保持时间。
+2. 同一驱动周期的 Modbus 左/右反馈读取都成功,且 `/base/wheel_feedback_healthy` 未超时。
+   `zlac8030_driver_node` 在已配置反馈寄存器却读取失败时发布 `healthy=false`,并停止发布该周期的
+   `/wheel/odom`;缺失信息不再伪装成零速,因此只能让 ZUPT 因输入陈旧而暂停。
+3. LiDAR 时刻之前的 IMU 窗口同时满足角速度和加速度模长静止阈值。
 
-配置开关:`src/wheelchair_3d_mapping/config/xtm60_right_lio.yaml` 的 `zupt:` 块。
-左雷达 (`xtm60_left_lio.yaml`)、双雷达、mock 均未开启,行为不变。
+满足后使用观测 `v=0`、可配置 `zupt.velocity_measurement_variance` 计算 Kalman 增益,通过
+`boxplus` 更新状态并用 Joseph 形式更新协方差。姿态、bias 和重力不会被硬写零,但可通过与速度的
+交叉协方差得到统计修正。
+
+**局限**:轮速健康不是独立地面真值,外力推动仍主要靠 IMU 静止门排除;阈值和交叉状态修正仍需
+真实 STOP 恢复测试。缺少健康话题或任一输入陈旧时实现会 fail closed,即暂停 ZUPT。
+
+配置开关位于 `src/wheelchair_3d_mapping/config/xtm60_right_lio.yaml` 的 `zupt:` 块。
+
+## 8.2 已落地的软件加固与仍需实机闭环的边界
+
+| 项目 | 已落地的软件行为 | 仍需实机完成 |
+|---|---|---|
+| 时间戳 | XT-M60（SDK 设备时间关闭）使用 SDK 回调主机接收时间代理；H30 使用串口读取边界之间的 200 Hz 主机侧插值；点云→scan→merge/fusion 保留最新非零源戳 | 设备采样时钟/硬件同步能力、固定延迟和动态对齐标定 |
+| IMU 初始化 | 至少 400 样本、2 秒连续静止,并检查 gyro/accel 均值与标准差;检测到运动会重启窗口 | 上电静置和启动重复性验收 |
+| 点云质量 | 单雷达基础配置保留 temporal hard reject;驾驶入口改为只报告相邻像素变化而不因运动直接丢帧;输入另有限距 | 动态区分合法场景变化、多径和坏帧 |
+| 输出 | `/Odometry` 在填好本帧 covariance 后发布;`/path` 限长并降采样;大点云发布使用小队列 | 压力测试确认最长输出间隔及恢复跳变 |
+| 单/双雷达 | 单雷达 phase realign 默认 0;仅双雷达工作台显式覆盖 30 秒 | 双雷达错峰收益及停测影响验证 |
+| TF | `body→base_link` 使用当前已知 `base_link→imu_link` 的完整逆变换,不再只有 z 平移 | LiDAR/IMU/车体最终外参标定 |
+
+分阶段实机步骤、通过阈值和只读监控命令见
+[`FASTLIO_HARDWARE_VALIDATION_PLAN.md`](FASTLIO_HARDWARE_VALIDATION_PLAN.md)。软件验收完成不等于动态、时间同步或外参已经标定。
+
+上述主机时间线（包括 H30 的插值）只是比延迟发布时刻更接近采样的代理，**不等于真实设备采样时间**。在供应商未提供
+可用设备时间戳或同步接口前,文档和 UI 不得把它宣传为硬件同步。
 
 ---
 

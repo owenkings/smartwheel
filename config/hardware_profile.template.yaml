@@ -1,7 +1,40 @@
 profile:
   name: TODO_real_profile_name
   mode: real
+  simulation_only: false
   hardware_enabled: false
+  # Assign a new value whenever a sensor mount or bound asset changes.
+  installation_epoch: null
+
+# Required by the formal 3D entry. The installation_epoch below must exactly
+# match profile.installation_epoch and the approved calibration contract.
+hardware_identity:
+  schema_version: 1
+  installation_epoch: null
+  assets:
+    xtm60_left:
+      role: xtm60_left
+      model: XT-M60
+      # Use the vendor serial read from the device, not its IP as identity.
+      hardware_id: null
+      identity_kind: vendor_serial
+      ip_address: null
+      frame_id: xtm60_left_link
+    xtm60_right:
+      role: xtm60_right
+      model: XT-M60
+      hardware_id: null
+      identity_kind: vendor_serial
+      ip_address: null
+      frame_id: xtm60_right_link
+    imu:
+      role: imu
+      model: H30
+      # Assign and physically/documentarily confirm a stable installation ID.
+      # Do not use /dev/tty* because USB enumeration changes after reconnects.
+      hardware_id: null
+      identity_kind: installation_asset_id
+      frame_id: imu_link
 
 lidar_left:
   model: XT-M60
@@ -146,4 +179,3 @@ cameras:
     roll_deg: null
     pitch_deg: null
     yaw_deg: null
-

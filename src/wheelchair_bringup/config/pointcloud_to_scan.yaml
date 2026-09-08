@@ -16,4 +16,6 @@ pointcloud_to_laserscan_node:
     use_inf: true
     queue_size: 10
     publish_debug_markers: true
-    restamp_output: true
+    # Preserve the PointCloud2 acquisition stamp; do not hide transport delay
+    # by replacing it with the projection/merger callback's wall clock.
+    restamp_output: false

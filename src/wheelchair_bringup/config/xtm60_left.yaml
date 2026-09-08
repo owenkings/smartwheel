@@ -10,6 +10,7 @@ xtm60_left_adapter_node:
     # so the latest-frame buffer does not regularly miss the 10 Hz SDK stream.
     publish_rate_hz: 20.0
     use_sdk_timestamps: false
+    timestamp_source: host_receive
 
     point_unit_scale: 1.0
     # Match the XT-Toffuture upper-computer M60 default "PointCloud+Amp" view:
@@ -93,12 +94,12 @@ xtm60_left_adapter_node:
     # Host-side optical-interference mitigation: align sdk.start() to a common
     # 100 ms host-monotonic grid. The left flash starts at offset 0 and the
     # right starts 50 ms later, matching the measured low-interference order.
-    # Both streams briefly stop/start every 30 s to reset independent-clock
-    # drift. This does not write either device configuration.
+    # Single-radar-safe default. Dual-radar orchestration explicitly opts into
+    # periodic phase realignment for both units as one coordinated profile.
     phase_mode: grid
     phase_period_sec: 0.1
     phase_offset_sec: 0.0
-    phase_realign_interval_sec: 30.0
+    phase_realign_interval_sec: 0.0
     # /xtm60/left/points carries accepted production frames. Transient frames
     # with implausible whole-frame range jumps, severe validity loss, or
     # non-monotonic receive time are diverted to /points_rejected; compact
@@ -113,6 +114,7 @@ xtm60_left_adapter_node:
     quality_max_p95_range_delta: 0.75
     quality_min_overlap_fraction: 0.20
     quality_reset_after_gap_sec: 0.50
+    quality_temporal_hard_reject: true
     # The vendor SDK locally listens on UDP 7687. sensors.launch.py pins each
     # process to the host IP on its radar subnet with libxt_bindshim.so.
     udp_dest_ip: "192.168.0.100"

@@ -81,6 +81,20 @@ def test_invalid_points_are_rejected(ros_init):
         node.destroy_node()
 
 
+def test_mapping_range_gate_rejects_far_multipath_candidates(ros_init):
+    node = _make_node(min_range=0.3, max_range=12.0)
+    try:
+        out = node.adapt(
+            _make_cloud(
+                [[0.1, 0.0, 0.0], [1.0, 0.0, 0.0], [11.9, 0.0, 0.0], [20.0, 0.0, 0.0]]
+            )
+        )
+        ranges = np.linalg.norm(_read_xyz(out), axis=1)
+        assert ranges.tolist() == pytest.approx([1.0, 11.9])
+    finally:
+        node.destroy_node()
+
+
 # --------------------------------------------------------------------------
 # (b) add_zero_time_field behaviour
 # --------------------------------------------------------------------------

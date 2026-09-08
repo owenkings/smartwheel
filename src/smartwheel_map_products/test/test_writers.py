@@ -61,6 +61,7 @@ def test_map_bundle_contains_nonempty_products_and_nested_quality(tmp_path):
         "algorithm_profile_used.yaml",
         "quality_report.json",
         "quality_report.md",
+        "formal_acceptance.json",
         "manifest.json",
         "bag_path.txt",
     )
@@ -138,6 +139,45 @@ def test_writer_failure_leaves_incomplete_marker_and_no_manifest(tmp_path, monke
     assert not (output / "manifest.json").exists()
 
 
+def test_hardware_validated_writer_rechecks_copied_provenance(tmp_path, monkeypatch):
+    points, grid, profile = _inputs(tmp_path)
+    contract = tmp_path / "contract.json"
+    contract.write_text('{"status":"APPROVED"}\n', encoding="utf-8")
+    output = tmp_path / "rejected-formal-map"
+    calls = []
+
+    def reject_copied_snapshot(evidence, **paths):
+        calls.append((evidence, paths))
+        assert paths["hardware_profile_path"].is_file()
+        assert paths["calibration_contract_path"].is_file()
+        return False, "synthetic copied-snapshot mismatch"
+
+    monkeypatch.setattr(
+        "smartwheel_map_products.writers.validate_hardware_evidence_binding",
+        reject_copied_snapshot,
+    )
+    with pytest.raises(ValueError, match="copied-snapshot mismatch"):
+        export_map_bundle(
+            output,
+            points,
+            grid,
+            [(1.0, 0.0, 0.0, 0.0)],
+            None,
+            str(profile),
+            {"backend": "test"},
+            "",
+            {
+                "stage": "TEST",
+                "hardware_validated": True,
+                "formal_acceptance": {"schema_version": 1},
+            },
+            calibration_contract_path=str(contract),
+        )
+    assert len(calls) == 1
+    assert (output / ".incomplete").is_file()
+    assert not (output / "manifest.json").exists()
+
+
 def test_successful_writer_removes_incomplete_marker(tmp_path):
     points, grid, profile = _inputs(tmp_path)
     output = tmp_path / "complete-map"
@@ -183,3 +223,109 @@ def test_writer_preserves_preexisting_external_rtabmap_database(tmp_path):
     assert database.read_bytes() == b"external database"
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["externally_managed_files"] == ["rtabmap.db"]
+
+
+def test_writer_preserves_full_6dof_optimized_trajectory(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    output = tmp_path / "full-pose-map"
+    # 90 degrees around X retains non-planar orientation and non-zero height.
+    half = np.sqrt(0.5)
+    optimized = [
+        (1.0, 1.0, 2.0, 0.4, 0.0, 0.0, 0.0, 1.0),
+        (2.0, 1.5, 2.5, 0.6, half, 0.0, 0.0, half),
+    ]
+    export_map_bundle(
+        output,
+        points,
+        grid,
+        [(1.0, 1.0, 2.0, 0.0), (2.0, 1.5, 2.5, 0.0)],
+        None,
+        str(profile),
+        {"backend": "test"},
+        "",
+        {"stage": "TEST"},
+        trajectory_poses=optimized,
+    )
+    tum = (output / "trajectory.tum").read_text(encoding="ascii").splitlines()
+    assert tum[1].split()[3] == "0.600000"
+    assert float(tum[1].split()[4]) == pytest.approx(half, abs=1.0e-8)
+    rows = (output / "poses.csv").read_text(encoding="ascii").splitlines()
+    assert rows[2].split(",")[3] == "0.600000"
+    assert float(rows[2].split(",")[4]) == pytest.approx(np.pi / 2.0, abs=1.0e-8)
+
+
+def test_writer_manifest_covers_calibration_contract(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    contract = tmp_path / "contract.json"
+    contract.write_text('{"schema_version": 1, "status": "APPROVED"}\n', encoding="utf-8")
+    output = tmp_path / "contract-map"
+    export_map_bundle(
+        output,
+        points,
+        grid,
+        [(1.0, 0.0, 0.0, 0.0)],
+        None,
+        str(profile),
+        {"backend": "test"},
+        "",
+        {"stage": "TEST"},
+        calibration_contract_path=str(contract),
+    )
+    assert (output / "calibration_contract_used.json").read_bytes() == contract.read_bytes()
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert "calibration_contract_used.json" in {entry["path"] for entry in manifest["files"]}
+
+
+def test_writer_rejects_nonfinite_geometry_and_nonmonotonic_trajectory(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    invalid = points.copy()
+    invalid[0, 0] = np.nan
+    with pytest.raises(ValueError, match="points must be finite"):
+        export_map_bundle(
+            tmp_path / "nonfinite",
+            invalid,
+            grid,
+            [(1.0, 0.0, 0.0, 0.0)],
+            None,
+            str(profile),
+            {"backend": "test"},
+            "",
+            {"stage": "TEST"},
+        )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        export_map_bundle(
+            tmp_path / "bad-trajectory",
+            points,
+            grid,
+            [(2.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)],
+            None,
+            str(profile),
+            {"backend": "test"},
+            "",
+            {"stage": "TEST"},
+        )
+
+
+def test_writer_rejects_preexisting_symlink(tmp_path):
+    points, grid, profile = _inputs(tmp_path)
+    output = tmp_path / "linked-map"
+    output.mkdir()
+    target = tmp_path / "outside.txt"
+    target.write_text("outside", encoding="utf-8")
+    try:
+        (output / "linked.txt").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    with pytest.raises(ValueError, match="symlink"):
+        export_map_bundle(
+            output,
+            points,
+            grid,
+            [(1.0, 0.0, 0.0, 0.0)],
+            None,
+            str(profile),
+            {"backend": "test"},
+            "",
+            {"stage": "TEST"},
+        )

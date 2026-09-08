@@ -24,6 +24,8 @@ setup(
         "console_scripts": [
             "lio_input_adapter = smartwheel_global_mapping.lio_adapter_node:main",
             "cloud_to_scan_node = smartwheel_global_mapping.cloud_to_scan_node:main",
+            "offline_replay_normalizer_node = smartwheel_global_mapping.offline_replay_normalizer_node:main",
+            "offline_static_tf_relay_node = smartwheel_global_mapping.offline_static_tf_relay_node:main",
             "rtabmap_optimized_cloud_node = smartwheel_global_mapping.rtabmap_optimized_cloud_node:main",
         ]
     },

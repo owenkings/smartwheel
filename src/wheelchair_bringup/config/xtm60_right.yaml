@@ -10,6 +10,10 @@ xtm60_right_adapter_node:
     # so the latest-frame buffer does not regularly miss the 10 Hz SDK stream.
     publish_rate_hz: 20.0
     use_sdk_timestamps: false
+    # Stamp in the vendor callback at host receipt, before the 20 Hz ROS publish
+    # timer. SDK uptime stamps are retained for diagnostics but are not guessed
+    # into the ROS epoch until the vendor/reset semantics are verified.
+    timestamp_source: host_receive
 
     point_unit_scale: 1.0
     # Match the XT-Toffuture upper-computer M60 default "PointCloud+Amp" view:
@@ -72,13 +76,13 @@ xtm60_right_adapter_node:
     reconnect_interval_sec: 3.0
     require_ping_before_start: true
     frame_timeout_sec: 8.0
-    # Start 50 ms after the left radar on the shared 100 ms host grid. Both
-    # streams briefly stop/start every 30 s to reset independent-clock drift.
-    # No device imaging parameter is changed.
+    # Single-radar-safe default: never stop/start a healthy stream periodically.
+    # A dual-radar launch may explicitly override this to 30 s together with the
+    # left/right phase offsets; direct adapter and single-right routes stay at 0.
     phase_mode: grid
     phase_period_sec: 0.1
     phase_offset_sec: 0.05
-    phase_realign_interval_sec: 30.0
+    phase_realign_interval_sec: 0.0
     # Accepted frames remain on /points; rejected frames are diverted to
     # /points_rejected and summarized on /quality. Thresholds are shared with
     # the left unit and must pass the 30-minute dual-radar soak.
@@ -105,6 +109,10 @@ xtm60_right_adapter_node:
     quality_max_p95_range_delta: 0.75
     quality_min_overlap_fraction: 0.20
     quality_reset_after_gap_sec: 0.50
+    # Static profiles reject same-ray temporal jumps. The driving/LIO route
+    # overrides this false because ego-motion legitimately changes those rays;
+    # the absolute/relative validity gates remain hard in either mode.
+    quality_temporal_hard_reject: true
     # The SDK binds its local receive socket to 7687. The launch shim pins that
     # socket to 192.168.1.100 so it cannot consume left-radar packets. The device
     # must therefore also send to 7687 (matching the bound receive port).

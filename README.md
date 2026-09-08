@@ -83,20 +83,18 @@ Key documents are [the delivery report](docs/STAGE_A_DELIVERY_REPORT.md),
 The material below describes the pre-existing hardware stack. It is retained for audit
 and reference and must not be mixed into mapping-v2 launches.
 
-### 3D 建图主线:FAST-LIO2(LiDAR-惯性里程计)
+### 3D 建图主线:FAST-LIO2（软件与受限诊断链路）
 
-当前 3D 建图采用 **FAST-LIO2(LiDAR-Inertial Odometry)**,取代了此前「纯 EKF 位姿 + RTAB-Map 零配准」
-链路(后者在窄视场 XT-M60 上产生"漩涡/重影",根因是缺少 IMU 主导的帧间配准)。
+当前 FAST-LIO2 仅代表已编译、已加固并可离线/受限诊断的前端；真实动态建图、最终外参、时间同步和产品地图仍未验收。
 
-- **传感器**:XT-M60 flash ToF(窄视场 120°×45°,横向 120°、纵向 45°,整帧快照、无逐点时间/ring)+ H30 IMU(~200 Hz)。
-- **核心**:`fast_lio`(vendored `Ericsii/FAST_LIO_ROS2`)+ 一个 `lio_cloud_adapter` 把 XT-M60 点云
-  适配成 FAST-LIO 的 Velodyne 输入(关 de-skew)。
-- **位姿**:IMU 主导、LiDAR 辅助(关键调参 `LASER_POINT_COV=100`,见下)。EKF 关闭,FAST-LIO 独占
-  `base_link` 位姿。
-- **输出**:`/Odometry`、`/cloud_registered`(累积 3D 地图)、`/path`、`/map_2d_from_3d`(供 Nav2)。
+- 传感器：XT-M60 flash ToF（窄视场 120°×45°、整帧快照、无逐点时间/ring）+ H30 IMU（静态约 200 Hz）。
+- 核心：fast_lio（vendored Ericsii/FAST_LIO_ROS2）+ lio_cloud_adapter 将 XT-M60 点云适配为标准 PointCloud2 输入（deskew 关闭）。
+- 位姿：使用 IMU 预测和 LiDAR 更新门/回滚；正式配置 laser_point_cov=0.001，绝不使用历史 R=100 方案。EKF/FAST-LIO 的运行角色由具体诊断入口决定。
+- 输出：/Odometry、/cloud_registered、/path 等当前帧/前端产品；不能把 cloud_registered 或 path 自动解释为累计、回环优化或正式地图。
+- 时间语义：XT-M60 默认是 SDK 回调主机接收时间代理，H30 是读取边界之间的主机侧插值；均不等于设备采样时钟。
 
-### 当前部署:RIGHT 雷达(诊断通路)
-LEFT 雷达已入盒遮挡且不在线,**当前用 RIGHT 雷达**(设备 192.168.1.101,网卡 eno1 绑 192.168.1.100)。
+### 当前部署与诊断通路
+左右雷达均保留只读诊断入口；右路曾有较稳定几何回波，左路有效率/链路仍需一变量一项排查。任何一路都不能绕过外参合同直接作为正式地图来源。
 
 ⚠️ **RIGHT 雷达的已审核通路是 fail-closed 的**:`right_lidar_stage1_calibration` 契约状态为
 `BLOCKED_CONFLICT`(只做过地面拟合,给出高度 51.0cm / pitch −1.04° / roll −9.1°,**纵向 x 与
@@ -128,16 +126,13 @@ RViz 节点带 `on_exit=Shutdown`,所以它是这个会话的操作台:关掉它
 所以 `stop_mapping.sh` 要靠 KILL 阶段收掉它 —— 这也是强杀 RViz 时会看到
 `guard condition` 崩溃转储的原因。
 
-**⚠️ W/A/S/D 只在 `MOTION=true` 时能驱动轮椅。** 默认是只读,电机被有意门控:
-`/base/status` 里会显示 `motion_control_enabled=false`,驱动日志会打
-`ZLAC8030 motion_control_enabled is false; non-zero wheel commands are blocked`。
-链路本身已验证完好(`/cmd_vel_nav` → safety_supervisor → `/cmd_vel_safe` 20 Hz、
-`manual_bypass=true` 放行、`/wheel/odom` 50 Hz、门控打开后 `last_command_write_ok=true`)。
-另外在 RViz 里要**先点一下 SmartWheel Teleop 面板**让它拿到键盘焦点,W/A/S/D 才生效;
-面板上的方向按钮可以直接用鼠标点,不依赖焦点,适合先确认链路。
+**⚠️ W/A/S/D 只有在显式开启 MOTION=true 且满足硬件安全授权时才会驱动轮椅。** 默认是只读，电机被有意门控：
+`/base/status` 会显示 `motion_control_enabled=false`，驱动日志会记录非零命令被阻断。
+离地、无人条件下已验证 GUI 按键/方向路由和安全层限幅；这不等于轮椅落地行驶、里程计精度、物理急停或载人安全通过。
+在 RViz 里要先点 SmartWheel Teleop 面板获得键盘焦点；方向按钮可用鼠标点击，不依赖焦点。
 
-**相机(20260903 实测):四路全部正常**,默认全开。实测 compressed 传输
-front 29.9 / left 29.0 / right 23.1 / rear 25.0 Hz(四路并行 28.9/27.9/22.2/24.0 Hz)。
+**相机当前状态：压缩传输可用但右前链路仍受限。** 四路 30 分钟 compressed soak 无 USB/UVC 重置，
+左前/左侧/右侧约 8.1–8.2 Hz；右前曾约 4.925 Hz 并产生 libjpeg 警告。该物理链路仍需相机/线缆/接口一变量一项 A/B，不能称为四路无条件通过。
 
 ⚠️ **四画面 RViz 必须用 compressed 传输,不能用 raw。** 这是本项目早已验收过的结论
 (`docs/hardware/CAMERA_ARRAY_B4_REPORT.md`:raw 每路仅 0.67–0.73 Hz)。所以布局要用
@@ -157,13 +152,10 @@ front 29.9 / left 29.0 / right 23.1 / rear 25.0 Hz(四路并行 28.9/27.9/22.2/2
 
 细节与完整证据见 `auto_test/20260903_173000_right_diag_route/report.md`。
 
-该通路用的挂载外参是 URDF 里的候选值(与 `xtm60_right_lio.yaml` 的 FAST-LIO 外参数值一致,
-差 6e-7,地面校平已验证 tilt 0.00°),但 x/yaw 仍未标定 → **地图存在系统性纵向/偏航偏差,
-只用于验证硬件与观察建图是否运行,不可当作标定合格的地图来源。** 要转正需补做 x/yaw 标定
-并重新审核契约。
+该通路使用 URDF 与 xtm60_right_lio.yaml 中的 provisional 安装值；right_lidar_stage1_calibration 合同仍为 BLOCKED_CONFLICT，
+纵向 x、yaw、时间偏移和动态外参未标定。因此它只能用于观察节点/硬件是否运行，不能把输出地图当作标定合格产品。
 
-LEFT 雷达出盒且接回 192.168.0.101 后,已审核通路可用:
-`RADAR=left bash scripts/run_rviz_manual_mapping_left.sh`。
+LEFT 雷达恢复后仍须先完成冷却后的只读链路/质量检查和带 marker 采集；不能仅凭话题存在就进入最终标定或运动测试。
 
 ### 关键文档
 - `docs/fastlio_mapping.md` — FAST-LIO 获取/编译/外参/启动/保存/已知坑(**必读 §8 LASER_POINT_COV 脆弱点**、§9 供电 brownout)。
@@ -172,8 +164,7 @@ LEFT 雷达出盒且接回 192.168.0.101 后,已审核通路可用:
 - `progress_log/` — 历次对话/会话的进展记录(供其他对话或 AI 快速了解项目状态,见下)。
 
 ### ⚠️ 两个必知的坑
-1. **LASER_POINT_COV**:Task 7 的 IMU-主导修复(`0.001→100.0`)在 vendored 源码里,re-clone/submodule
-   update 会还原它 → 偏航不跟踪、地图变漩涡。修复后若复发,先跑 `bash patches/apply_fastlio_patches.sh`。
+1. **LASER_POINT_COV 与持久化**：历史 0.001→100.0 实验已证明不能作为通用根因修复，且可能重现静止发散。当前正式值为 0.001；权威补丁由 patches/apply_fastlio_patches.sh 幂等应用，并校验基线、补丁和修改后源文件 SHA-256。旧 fastlio_laser_point_cov.patch / fastlio_zupt.patch 只是不可应用墓碑。
 2. **Orin 供电 brownout**:重负载命令会触发 PMIC 硬复位(非软件/温度/内存)。重命令用 `taskset -c 0-3`
    限核、`--parallel-workers 2`;采集与离线处理不并行。
 

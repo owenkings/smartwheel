@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -19,6 +20,38 @@ class ScanSlice:
     range_min: float
     range_max: float
     ranges: Sequence[float]
+
+
+def _stamp_key(stamp):
+    """Return a comparable ROS stamp key, tolerating lightweight test doubles."""
+    return (
+        int(getattr(stamp, "sec", 0)),
+        int(getattr(stamp, "nanosec", 0)),
+    )
+
+
+def newest_nonzero_stamp(messages):
+    """Choose the newest non-zero source stamp from LaserScan messages.
+
+    A merged scan is already expressed in frame_id (normally base_link), so
+    replacing its capture stamp with the merger timer's wall clock only adds
+    queue latency and breaks TF/message-filter alignment. Keep the newest
+    source stamp when one is available; return None when all sources are
+    unstamped so the caller can make an explicit clock fallback.
+    """
+    candidates = []
+    for message in messages:
+        stamp = getattr(getattr(message, "header", None), "stamp", None)
+        if stamp is None:
+            continue
+        key = _stamp_key(stamp)
+        if key[0] < 0 or not 0 <= key[1] < 1_000_000_000:
+            continue
+        if key != (0, 0):
+            candidates.append((key, stamp))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 @dataclass(frozen=True)
@@ -92,7 +125,10 @@ class ScanMergerNode(Node):
         )
         self.input_topics = [str(topic) for topic in self.get_parameter("input_topics").value]
         self.latest: Dict[str, LaserScan] = {}
-        self.seen_at: Dict[str, object] = {}
+        # Freshness is a transport property. Use a monotonic host clock rather
+        # than ROS time so bag replay, /clock jumps, and wall-clock corrections
+        # cannot make an old scan appear fresh.
+        self.seen_at: Dict[str, float] = {}
         self.output_pub = self.create_publisher(
             LaserScan, str(self.get_parameter("output_topic").value), 10
         )
@@ -104,12 +140,14 @@ class ScanMergerNode(Node):
 
     def on_scan(self, topic: str, msg):
         self.latest[topic] = msg
-        self.seen_at[topic] = self.get_clock().now()
+        self.seen_at[topic] = time.monotonic()
 
     def tick(self):
-        now = self.get_clock().now()
+        now_ros = self.get_clock().now()
+        now_monotonic = time.monotonic()
         stale_timeout = float(self.get_parameter("stale_timeout_sec").value)
         fresh_scans = []
+        fresh_messages = []
         stale_topics = []
         for topic in self.input_topics:
             msg = self.latest.get(topic)
@@ -117,10 +155,16 @@ class ScanMergerNode(Node):
             if msg is None or seen_at is None:
                 stale_topics.append(topic)
                 continue
-            age = (now - seen_at).nanoseconds / 1e9
+            age = now_monotonic - seen_at
             if age > stale_timeout:
                 stale_topics.append(f"{topic}({age:.2f}s)")
                 continue
+            if age < 0.0:
+                # A monotonic clock should not go backwards, but fail closed if
+                # a test double or platform clock does.
+                stale_topics.append(f"{topic}(clock_reset)")
+                continue
+            fresh_messages.append(msg)
             fresh_scans.append(
                 ScanSlice(
                     angle_min=float(msg.angle_min),
@@ -140,7 +184,10 @@ class ScanMergerNode(Node):
             return
 
         output = LaserScan()
-        output.header.stamp = now.to_msg()
+        source_stamp = newest_nonzero_stamp(fresh_messages)
+        output.header.stamp = (
+            source_stamp if source_stamp is not None else now_ros.to_msg()
+        )
         output.header.frame_id = str(self.get_parameter("frame_id").value)
         output.angle_min = self.config.angle_min
         output.angle_max = self.config.realized_angle_max

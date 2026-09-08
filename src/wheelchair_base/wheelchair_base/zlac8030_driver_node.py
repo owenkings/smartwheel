@@ -8,7 +8,7 @@ try:
     from geometry_msgs.msg import TransformStamped, Twist
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
-    from std_msgs.msg import String
+    from std_msgs.msg import Bool, String
     from tf2_ros import TransformBroadcaster
 except ImportError:
     rclpy = None
@@ -16,6 +16,7 @@ except ImportError:
     Twist = None
     Odometry = None
     String = None
+    Bool = None
     TransformStamped = None
     TransformBroadcaster = None
 
@@ -164,6 +165,7 @@ class Zlac8030DriverNode(Node):
         self.last_cmd_time = self.get_clock().now()
         self.last_odom_time = self.get_clock().now()
         self.last_wheel_rpm: Tuple[float, float] = (0.0, 0.0)
+        self.feedback_healthy = False
         self.warned_no_registers = False
         self.warned_motion_disabled = False
         self.warned_zero_before_motion_init = False
@@ -174,6 +176,9 @@ class Zlac8030DriverNode(Node):
 
         self.odom_pub = self.create_publisher(Odometry, "/wheel/odom", 20)
         self.status_pub = self.create_publisher(String, "/base/status", 10)
+        self.feedback_health_pub = self.create_publisher(
+            Bool, "/base/wheel_feedback_healthy", 10
+        )
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
         self.create_subscription(Twist, "/cmd_vel_safe", self.on_cmd_vel, 10)
         self.timer = self.create_timer(
@@ -206,21 +211,33 @@ class Zlac8030DriverNode(Node):
                 target_left_rpm, target_right_rpm
             )
             feedback = self._read_feedback()
+            self.feedback_healthy = feedback is not None
             if feedback is not None:
                 actual_left_rpm, actual_right_rpm = feedback
+            elif self.registers.feedback_enabled:
+                # A failed read is missing information, not a measured zero.
+                # Do not integrate or publish a fabricated stationary odometry
+                # sample: consumers (especially FAST-LIO ZUPT) will instead see
+                # the odometry stream become stale and fail closed.
+                self._publish_feedback_health()
+                self._publish_status(cmd_age)
+                return
             elif not self.registers.feedback_enabled and self.last_command_write_ok:
                 # Open-loop odom only: with no feedback registers the commanded
-                # speed is the sole motion estimate. When feedback IS configured
-                # but the read failed, do NOT disguise the target as measured
-                # motion; actual stays 0.0 for this cycle.
+                # speed is the sole motion estimate. This mode is never marked
+                # feedback-healthy and therefore cannot enable health-gated ZUPT.
                 actual_left_rpm, actual_right_rpm = target_left_rpm, target_right_rpm
         else:
             self.last_command_write_ok = True
+            self.feedback_healthy = True
         self.last_wheel_rpm = (actual_left_rpm, actual_right_rpm)
 
         odom_left_rpm, odom_right_rpm = self._remove_direction(actual_left_rpm, actual_right_rpm)
         odom_linear, odom_angular = self.model.wheel_rpm_to_twist(odom_left_rpm, odom_right_rpm)
         self.odom_state.integrate(odom_linear, odom_angular, dt)
+        # Publish health first so consumers never interpret a failed Modbus read's
+        # fail-closed 0 rpm placeholder as a trustworthy stationary measurement.
+        self._publish_feedback_health()
         self._publish_odom(odom_linear, odom_angular, now)
         self._publish_status(cmd_age)
 
@@ -476,10 +493,16 @@ class Zlac8030DriverNode(Node):
             f"motion_control_enabled={str(self.motion_control_enabled).lower()}; "
             f"motion_initialized={str(self.motion_initialized).lower()}; "
             f"last_command_write_ok={str(self.last_command_write_ok).lower()}; "
+            f"feedback_healthy={str(self.feedback_healthy).lower()}; "
             f"left_rpm={self.last_wheel_rpm[0]:.2f}; right_rpm={self.last_wheel_rpm[1]:.2f}; "
             f"cmd_age={cmd_age:.2f}"
         )
         self.status_pub.publish(msg)
+
+    def _publish_feedback_health(self):
+        msg = Bool()
+        msg.data = bool(self.feedback_healthy)
+        self.feedback_health_pub.publish(msg)
 
     def destroy_node(self):
         try:

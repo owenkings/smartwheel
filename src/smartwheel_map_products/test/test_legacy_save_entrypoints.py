@@ -13,7 +13,15 @@ def test_save_mapping_result_is_a_strict_formal_session_wrapper():
     assert "set -Eeuo pipefail" in source
     assert "/map_session/stop" in source
     assert "/map_export/export" in source
-    assert "success:[[:space:]]*True" in source
+    assert "success[=:][[:space:]]*True" in source
+    assert "/rtabmap/pause" in source
+    assert "std_srvs/srv/Empty" in source
+    assert "export_deadline" in source
+    assert "/map_export/completed" in source
+    assert "--full-length" in source
+    assert "--qos-durability transient_local" in source
+    assert 'bundle / ".incomplete"' in source
+    assert 'manifest.get("complete") is not True' in source
     assert "lio_save_cloud.py" not in source
     assert "map_saver_cli" not in source
     assert 'cp -f "$db_path"' not in source
