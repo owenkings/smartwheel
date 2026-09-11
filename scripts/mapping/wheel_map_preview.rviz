@@ -1,0 +1,66 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 35; 35; 35
+    Fixed Frame: map
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Reference Grid (not measured floor)
+      Enabled: true
+      Plane Cell Count: 100
+      Cell Size: 1
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Saved optimized XYZI
+      Enabled: true
+      Topic:
+        Value: /wheel_preview/cloud
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        Depth: 1
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Autocompute Intensity Bounds: true
+      Position Transformer: XYZ
+    - Class: rviz_default_plugins/Path
+      Name: Saved optimized trajectory
+      Enabled: true
+      Topic:
+        Value: /wheel_preview/path
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        Depth: 1
+      Color: 0; 200; 255
+    - Class: rviz_default_plugins/Map
+      Name: Saved 2D grid
+      Enabled: true
+      Alpha: 0.5
+      Topic:
+        Value: /wheel_preview/grid
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        Depth: 1
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 15
+      Pitch: 0.8
+      Yaw: 0.8
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+Window Geometry:
+  Width: 1200
+  Height: 850

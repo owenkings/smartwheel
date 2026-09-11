@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -21,6 +22,8 @@ def generate_launch_description():
     output_topic = LaunchConfiguration("output_topic")
     status_topic = LaunchConfiguration("status_topic")
     target_frame = LaunchConfiguration("target_frame")
+    motion_compensation = LaunchConfiguration("motion_compensation")
+    motion_fixed_frame = LaunchConfiguration("motion_fixed_frame")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument(
@@ -40,6 +43,14 @@ def generate_launch_description():
         DeclareLaunchArgument("output_topic", default_value="/points_merged"),
         DeclareLaunchArgument("status_topic", default_value="/points_merged/status"),
         DeclareLaunchArgument("target_frame", default_value="base_link"),
+        DeclareLaunchArgument(
+            "motion_compensation", default_value="false", choices=["true", "false"],
+            description="Transform staggered clouds into one acquisition time using continuous two-time TF.",
+        ),
+        DeclareLaunchArgument(
+            "motion_fixed_frame", default_value="",
+            description="Required with motion_compensation: continuous odometric frame, not loop-corrected map.",
+        ),
         DeclareLaunchArgument(
             "require_synchronized_pair",
             default_value="false",
@@ -80,6 +91,8 @@ def generate_launch_description():
                     "output_topic": output_topic,
                     "status_topic": status_topic,
                     "target_frame": target_frame,
+                    "motion_compensation": motion_compensation,
+                    "motion_fixed_frame": ParameterValue(motion_fixed_frame, value_type=str),
                 },
             ],
         ),

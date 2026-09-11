@@ -572,6 +572,20 @@ def _validate_formal_launch_contract(
     }
 
 
+def _resolve_motion_fixed_frame(odom_mode: str, requested: str, local_edge: str) -> str:
+    """Never compensate through a loop-corrected map or moving sensor frame."""
+    local_parent = local_edge.split("->", 1)[0].strip()
+    if odom_mode == "contract_fastlio":
+        if requested and requested != "camera_init":
+            raise RuntimeError("FORMAL_MAP_BLOCKED: contract_fastlio motion_fixed_frame must be camera_init")
+        return "camera_init"
+    if not requested or requested in {"map", "base_link", "body"} or requested != local_parent:
+        raise RuntimeError(
+            "FORMAL_MAP_BLOCKED: external odometry requires an explicit continuous motion_fixed_frame matching tf_local_edge parent"
+        )
+    return requested
+
+
 def _setup(context, *args, **kwargs):
     ros = _require_ros_launch_api()
     get_package_share_directory = ros["get_package_share_directory"]
@@ -593,6 +607,9 @@ def _setup(context, *args, **kwargs):
     points = value("points_topic")
     odom = value("odom_topic")
     odom_mode = value("odom_mode").lower()
+    motion_fixed_frame = _resolve_motion_fixed_frame(
+        odom_mode, value("motion_fixed_frame"), value("tf_local_edge")
+    )
     evidence = value("evidence_path")
     hardware_validated = flag("hardware_validated")
     validated = _validate_formal_launch_contract(
@@ -709,6 +726,8 @@ def _setup(context, *args, **kwargs):
                 "max_pair_time_difference_sec": value("max_pair_time_difference_sec"),
                 "require_intensity": "true",
                 "require_nonzero_timestamps": "true",
+                "motion_compensation": "true",
+                "motion_fixed_frame": motion_fixed_frame,
             }.items(),
         )
     )
@@ -832,6 +851,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("formal_lio_input_topic", default_value=""),
             DeclareLaunchArgument("formal_lio_imu_topic", default_value="/imu/data"),
+            DeclareLaunchArgument(
+                "motion_fixed_frame", default_value="",
+                description="Continuous TF frame for two-time cloud compensation; camera_init for contract_fastlio, required explicitly for external odometry.",
+            ),
             DeclareLaunchArgument("tf_global_edge", default_value="map->camera_init"),
             DeclareLaunchArgument("tf_local_edge", default_value="camera_init->body"),
             DeclareLaunchArgument("tf_body_bridge_edge", default_value="body->base_link"),

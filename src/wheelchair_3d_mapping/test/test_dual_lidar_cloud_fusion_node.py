@@ -43,9 +43,11 @@ class _CapturePub:
 
     def __init__(self):
         self.last = None
+        self.count = 0
 
     def publish(self, msg):
         self.last = msg
+        self.count += 1
 
 
 def _make_node():
@@ -159,3 +161,172 @@ def test_cloud_with_invalid_points_is_cleaned(ros_init):
     # No remaining point is at the origin and all are finite.
     assert np.all(np.isfinite(filtered))
     assert np.all(np.linalg.norm(filtered, axis=1) > 0.0)
+
+
+def _set_motion_pair(node, delta_ns=50000000):
+    node.motion_compensation = True
+    node.motion_fixed_frame = "odom"
+    node.require_synchronized_pair = True
+    now_ns = node.get_clock().now().nanoseconds - 10000000
+    for state, stamp_ns, xyz, intensity in (
+        (node.left, now_ns - delta_ns, [2.0, 0.0, 0.0], 101.0),
+        (node.right, now_ns, [1.95, 0.0, 0.0], 202.0),
+    ):
+        state.stamp = Time(sec=stamp_ns // 1000000000, nanosec=stamp_ns % 1000000000)
+        state.xyz = np.array([xyz])
+        state.inten = np.array([intensity])
+        state.recv_time = __import__("time").monotonic()
+
+
+def test_two_time_compensation_preserves_intensity_and_original_stamps(ros_init):
+    from geometry_msgs.msg import TransformStamped
+
+    node = _make_node()
+    try:
+        _set_motion_pair(node)
+        original_left = (node.left.stamp.sec, node.left.stamp.nanosec)
+        original_right = (node.right.stamp.sec, node.right.stamp.nanosec)
+        calls = []
+
+        class FullTF:
+            def lookup_transform_full(self, **kwargs):
+                calls.append(kwargs)
+                tf = TransformStamped()
+                tf.transform.rotation.w = 1.0
+                # Synthetic robot moves +x at 1 m/s. World-fixed point shifts
+                # -0.05 m in the current base frame across a 50 ms capture gap.
+                tf.transform.translation.x = -(
+                    kwargs["target_time"].nanoseconds - kwargs["source_time"].nanoseconds
+                ) * 1.0e-9
+                return tf
+
+        node.tf_buffer = FullTF()
+        node._publish_merged()
+        assert node.pub.count == 1
+        xyz, intensity = cloud_utils.read_xyz_intensity(node.pub.last)
+        np.testing.assert_allclose(xyz[:, 0], [1.95, 1.95], atol=1.0e-6)
+        np.testing.assert_array_equal(intensity, [101.0, 202.0])
+        assert len(calls) == 2
+        assert all(call["fixed_frame"] == "odom" for call in calls)
+        assert all(call["source_frame"] == call["target_frame"] == "base_link" for call in calls)
+        assert (node.left.stamp.sec, node.left.stamp.nanosec) == original_left
+        assert (node.right.stamp.sec, node.right.stamp.nanosec) == original_right
+        assert (node.pub.last.header.stamp.sec, node.pub.last.header.stamp.nanosec) == original_right
+        assert node._last_motion_compensated
+        node._publish_merged()
+        assert node.pub.count == 1  # Timer must not manufacture repeated scans.
+    finally:
+        node.destroy_node()
+
+
+def test_missing_two_time_tf_rejects_without_consuming_pair(ros_init):
+    node = _make_node()
+    try:
+        _set_motion_pair(node)
+        node._lookup_motion = lambda *_: None
+        node._publish_merged()
+        assert node.pub.last is None
+        assert node.left.last_published_stamp_ns is None
+        assert "two-time TF" in node._last_rejection_reason
+        # The same still-fresh pair can recover once exact-time TF arrives.
+        node._lookup_motion = lambda *_: np.eye(4)
+        node._publish_merged()
+        assert node.pub.count == 1
+    finally:
+        node.destroy_node()
+
+
+def test_two_time_buffer_compensates_rotation(ros_init):
+    from geometry_msgs.msg import TransformStamped
+
+    node = _make_node()
+    try:
+        _set_motion_pair(node)
+        yaw = 0.1
+        expected = np.array([2.0 * np.cos(yaw), -2.0 * np.sin(yaw), 0.0])
+        node.right.xyz = expected.reshape(1, 3)
+        for stamp, angle in ((node.left.stamp, 0.0), (node.right.stamp, yaw)):
+            tf = TransformStamped()
+            tf.header.frame_id = "odom"
+            tf.child_frame_id = "base_link"
+            tf.header.stamp = stamp
+            tf.transform.rotation.z = np.sin(angle / 2.0)
+            tf.transform.rotation.w = np.cos(angle / 2.0)
+            node.tf_buffer.set_transform(tf, "offline_test")
+        node._publish_merged()
+        assert node.pub.count == 1
+        xyz, _ = cloud_utils.read_xyz_intensity(node.pub.last)
+        np.testing.assert_allclose(xyz, [expected, expected], atol=1.0e-6)
+    finally:
+        node.destroy_node()
+
+
+def test_pending_pair_survives_new_input_until_exact_time_tf_arrives(ros_init):
+    node = _make_node()
+    try:
+        _set_motion_pair(node)
+        expected_stamp = (node.right.stamp.sec, node.right.stamp.nanosec)
+        node._lookup_motion = lambda *_: None
+        node._publish_merged()
+        assert node._pending_motion_pair is not None
+        # Simulate the next callback replacing the newest states while the
+        # delayed trajectory can now transform the previously selected pair.
+        _set_motion_pair(node, delta_ns=40000000)
+        node._lookup_motion = lambda *_: np.eye(4)
+        node._publish_merged()
+        assert node.pub.count == 1
+        assert (node.pub.last.header.stamp.sec, node.pub.last.header.stamp.nanosec) == expected_stamp
+        assert node._pending_motion_pair is None
+    finally:
+        node.destroy_node()
+
+
+@pytest.mark.parametrize("bad_stamp", ["zero", "future", "stale", "bad_nsec"])
+def test_motion_compensation_rejects_invalid_clock_stamps(ros_init, bad_stamp):
+    node = _make_node()
+    try:
+        _set_motion_pair(node)
+        node._lookup_motion = lambda *_: np.eye(4)
+        if bad_stamp == "zero":
+            node.left.stamp = Time()
+        elif bad_stamp == "future":
+            node.left.stamp.sec += 1
+            node.right.stamp.sec += 1
+        elif bad_stamp == "stale":
+            node.left.stamp.sec -= 2
+            node.right.stamp.sec -= 2
+        else:
+            node.left.stamp.nanosec = 1000000000
+        node._publish_merged()
+        assert node.pub.last is None
+    finally:
+        node.destroy_node()
+
+
+def test_motion_compensation_rejects_large_pair_gap_even_if_pair_flag_off(ros_init):
+    node = _make_node()
+    try:
+        _set_motion_pair(node, delta_ns=100000000)
+        node.require_synchronized_pair = False
+        node._lookup_motion = lambda *_: np.eye(4)
+        node._publish_merged()
+        assert node.pub.last is None
+        assert "exceeds" in node._last_rejection_reason
+    finally:
+        node.destroy_node()
+
+
+@pytest.mark.parametrize("stamp_ns", [0, 9999999999, 10000000000])
+def test_motion_input_rejects_zero_duplicate_and_backwards(stamp_ns, ros_init):
+    node = _make_node()
+    try:
+        node.motion_compensation = True
+        node.left.last_input_stamp_ns = 10000000000
+        node.left.xyz = np.array([[1.0, 0.0, 0.0]])
+        msg = _make_cloud(stamp_ns // 1000000000, stamp_ns % 1000000000, [[1, 0, 0]])
+        node._on_cloud(msg, node.left)
+        assert node.left.xyz is None
+        assert node.left.last_input_stamp_ns == 10000000000
+        assert node._timestamp_rejection_count == 1
+    finally:
+        node.destroy_node()

@@ -1,0 +1,32 @@
+# DIAGNOSTIC ONLY. Not a formal calibration contract or hardware approval.
+# The user reconfirmed equal left/right installation heights and no relative x.
+# 0.735 m is the measured housing/optical-window reference, not a verified SDK
+# coordinate origin. A floor fit must still verify the sensor-origin height.
+schema_version: 1
+status: DIAGNOSTIC_UNCALIBRATED
+formal_runtime_eligible: false
+profile_id: equal_height_user_reference_20260910
+parent_frame: base_link
+constraints:
+  equal_height: true
+  equal_fore_aft: true
+  height_reference: user_measured_optical_window_midpoint
+  height_source_m: 0.735
+  relative_lateral_source_m: 0.60
+unvalidated: [absolute_x, sensor_origin, yaw, lidar_imu_rotation, time_alignment]
+sensors:
+  left:
+    frame: xtm60_left_link
+    xyz: [0.45, 0.30, 0.735]
+    # Preserve the current left candidate; not a new plane-fit calibration.
+    rpy: [1.5515153364, -0.0136154207, 1.5709313394]
+  right:
+    frame: xtm60_right_link
+    xyz: [0.45, -0.30, 0.735]
+    # Preserve the current diagnostic orientation. Do not silently substitute
+    # a different installation epoch's roll/pitch while correcting translation.
+    rpy: [1.5806995918, 0.1564194958, 1.5715764604]
+  imu:
+    frame: imu_link
+    xyz: [0.0, 0.0, 0.45]
+    rpy: [0.0098981264, 0.0011002597, 0.0]

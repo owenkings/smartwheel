@@ -1,5 +1,25 @@
 # 智能轮椅项目当前记忆
 
+## 2026-09-11 用户授权清理与 GitHub 备份快照
+
+用户已授权删除失败建图记录、旧地图和缓存。主树 maps/bags 及 auto_test 大型原始/导出数据、~/.ros/rtabmap.db 已删除且无另备份；历史报告中的原始路径不再保证存在，后续复查需重新采集。APT/pip/Conda 包缓存和旧日志已清理，可用空间约21.06 GiB。源码、运行依赖、脚本和报告、修复前代码备份保留，旧 RTAB 他人树未改。用户随后授权将当前软件状态提交并上传 GitHub；快照不是建图/角度补偿验收。详见 docs/maintenance/ORIN_DISK_CLEANUP_20260911.md 和 BACKUP_SNAPSHOT_20260911.md。
+
+## 2026-09-11 手推 / WASD 右雷达建图切换交付
+
+用户要求 MOTION=true 支持手推与 WASD 建图。wheel-primary 入口现增加显式模式切换，仍只启动右雷达 `/xtm60/right/points`，左雷达不启动，FAST-LIO 默认关闭。RViz 增加“手推建图”“WASD 建图”按钮；驱动 SetBool 服务 `/base/set_mapping_push_mode` 使用可选 allow_manual_push_mode，仅该入口开启，MOTION=false 不允许服务写控制器。进入手推前要求零命令及新鲜健康静止轮速，清零目标、发既有控制字7，失败 blocked；手推继续读取反馈但屏蔽普通速度/使能写入。恢复驾驶要求新零指令后新方向，不自动使能、不重置轨迹或数据库。没有放宽共享停车保持配置或运动安全监督。自动 bag 新增 `/base/mapping_drive_mode`、`/base/status`。
+
+225 项 Python 测试、Qt 离屏面板测试、base/bringup 编译安装通过；服务联调用假 Modbus、localhost/domain93，无真实串口。没有远程释放/驱动真实电机，未强停用户旧运行；需用户 STOP、Ctrl+C 等保存后重启同一命令。实际机械手推自由度及手推时编码器有效性尚须现场确认，不能将控制字回执当物理验证。前次通信问题用户报告自行修复，未据此宣称全硬件验收通过。完整说明 `docs/mapping/PUSH_WASD_MAPPING_20260911.md`。旧树未改、未提交/暂存，正式标定门禁及精度验收边界不变。
+
+## 2026-09-11 最新软件交付补充
+
+用户最新明确 FAST-LIO2 不强制，优先推进建图；Orin 重启后 SSH 恢复。当前代码树 `/home/nvidia/smartwheel`，分支 `local/formal-3d-hardening-20260908`，HEAD `103b569c0156c90bfcb6647e5da15fc12035b993`。保留既有工作区，没有暂存、提交、推送、修改另一人的 `smartwheel-rtab-old`；origin 在线 heads 查询因 TLS 失败未刷新。
+
+本轮仅实施软件和离线验证，未启动真实传感器/电机，未改设备参数与正式标定合同。`scripts/run_wheel_imu_mapping.sh` 是 provisional 平地诊断入口，不是下方永久失败关闭的 Stage 1 入口：轮速 vx＋H30 yaw rate 提供健康门后的主位姿，原始右 XYZI 与 RTAB-Map 提供累积地图/几何回环，FAST-LIO 隔离旁路默认关闭（`FASTLIO_SHADOW=false`），电机写入仍默认关闭。没有宣称 FAST-LIO 的失真已解决。
+
+已增加启动前自动原始录包、退出后导出本会话新地图包、只读数据库快照和 ROS domain 93 离线预览；195 项 mapping 测试及两包构建通过。已有历史数据库导出/无 GUI 重载通过：80 节点、221842 XYZI 点、421×421 @0.05m 栅格；没有空间回环验收证据。当前安装状态未做实车路线验证，地图准确性、外参、时间、轮速尺度、坡道和载人安全均未获通过。交付报告与完整命令见 `docs/mapping/MAPPING_DELIVERY_20260911.md`。
+
+新照片显示 H30 在蓝色集成盒顶盖，不能当作直接贴合雷达金属壳；700/760 mm 高度平均值不是厂家光学原点。此次没有将照片推测写为外参，既有诊断布局仍 provisional。下方严格 Stage 1 的 BLOCKED_CONFLICT 门禁保持原样；旧“本轮无人看守”是其历史会话边界，不是给新入口授予硬件/运动权限。
+
 > **最高优先级覆盖状态：`BLOCKED_CONFLICT`。** 本节晚于本文其余所有 Stage 1 可运行描述；发生冲突时必须以本节为准。
 
 ## 0. 最新安全覆盖事实：右雷达 Stage 1 永久失败关闭
@@ -641,3 +661,33 @@ B0 后仍需用户/厂家材料或实测确认：
 左右 XT-M60 与 H30 真实设备时间及固定
 延迟、最终 base/IMU/双雷达 xyz/rpy、动态四场景、负载实时性、至少一个闭环、
 三次重复路线及最终 operator attestation。未完成前只能输出 candidate。
+
+
+## 2026-09-10 当前高度/时间补偿/轮速修复（诊断，未完成实车验收）
+
+- 最新主树为 `/home/nvidia/smartwheel`，`local/formal-3d-hardening-20260908@103b569`。原有三处主树和两处 FAST-LIO 嵌套树修改被保留，本轮未暂存/提交/切分支/推送。Windows 根不是 Git 仓库；独立旧 RTAB 树未修改，不要混用 install。
+- 诊断入口此前启用了旧 mock 右侧安装 TF `[0.606,-0.24,0.499]`，与当前左右等高/相对前后差零的用户事实冲突。新增 `diagnostic_measured_layout.yaml` 统一两侧 `x=.45,z=.735,y=+/- .30`，同源派生 URDF、完整 IMU-frame LIO 外参与两条静态桥接。保留当前诊断旋转，不暗换其他安装时期标定；.735 仍为用户量测参考值而非本轮精确 SDK 原点高度。正式 BLOCKED_CONFLICT 门禁与 mock 默认夹具未改。
+- 用户确认静止平地后授权短时点云读取；发现左 SN151 HDR 第三档回到20us，保护拒绝启动。用户另行仅授权此项恢复，已写30us并立即/重新连接回读均通过，其余稳定成像字段/IP未改；未发送电机命令。证据 `docs/hardware/evidence/height_candidates_20260910/left_hdr3_restore.json`。
+- 左右最新各30帧原始XYZI在 `docs/hardware/evidence/height_candidates_20260910_raw/`。候选平面距离左.8513/右.7992m，但内点7.05%/16.225%、P95残差28.60/26.83mm，逐帧0/30通过。全部拒绝自动写TF，不能当作实际高度。一个地面平面不能解完整yaw/xy/时间偏差，SDK原点到地面距离也不自动等于base->sensor的z。
+- 双雷达融合新增跨采样时刻自车运动补偿，正式路径启用、严格时间/TF/陈旧数据门禁保留，原始时间/intensity不改。连续参考系为camera_init而非回环map。50ms错开发射有串扰缓解目的，软件补偿不等于硬件同步；正式20ms/真实时钟/批准外参门禁不放宽。
+- 修正 wheel_imu_ekf 节点名与YAML key不匹配；对照EKF只用wheel vx + IMU yaw rate，不广播TF。新FAST-LIO前向速度观测真实消费健康的wheel反馈，使用同源base/IMU外参和gyro杠杆臂，受新鲜度/创新/修正限幅约束，只直接修正速度，不替换姿态或绕过LiDAR拒绝门。不是把 /odometry/filtered 显示出来就称融合。
+- 四包编译通过，mapping最终151项测试通过，轮速数学10项及ASan/UBSan10项通过；FAST持久化补丁对固定上游重建哈希一致。静态历史bag回放672帧Odometry和cloud、无非有限输出；不能当路线精度。
+- 动态切片另发现sync_packages的永久队首阻塞：首LiDAR早于首IMU 76.3166ms，meas.imu.empty直接return却不pop点云，后来数据再多也不处理。已修为IMU覆盖scan-end后消费无法配对帧，保留未来IMU；结束时间相等也接受。实际源码提取C++测试4项通过，重新编译成功。同一45s切片输出从0变为129帧，wheel观测实际应用16次，证明同步队列修复和观测执行。
+- 但该动态片段仍因LiDAR修正超限而抑制输出。最终唯一参数差异的轮速开关A/B：启用129帧、尾部20.610s断更，禁用200帧、尾部21.169s断更；两者均未通过连续建图。并非只有新增轮速才出现尾冻结，也没有证明轮速改善轨迹。详见auto_test/wheel_aiding_replay_20260910_122012和122310；不要把A旧脚本仅检查曾有有限输出的regression_pass=true当整段验收，新脚本已加输出新鲜度与间隔门限。
+- 本轮自有采样已正常SDK停测/关闭、双网口3s实际UDP均0，未运行Windows上位机或发送电机指令。此后另一个会话启动旧RTAB树（检查时launcher PID171551、adapter171578/171580、base171621），不是本轮进程，未擅自停止。交接时不能再宣称全机无硬件进程；运行主树FAST前先由操作者退出旧RTAB。
+- 当前完整诊断入口仍 `CAMERAS=true ULTRASONIC=true MOTION=false bash scripts/run_right_diag_mapping.sh`，需在Orin图形终端、主树install环境执行。MOTION=true只由用户在安全条件满足后自行启用；这是右雷达FAST诊断，不是已经批准的正式双雷达RTAB回环管线。
+- 详见 `docs/mapping/HEIGHT_TIMING_WHEEL_REPAIR_20260910.md`（Windows副本 `docs/HEIGHT_TIMING_WHEEL_REPAIR_20260910.md`）。本轮不是“所有问题已修复”：实际地面区域/最终外参、真实同步、轮几何/滑移与动态地图质量仍待确认。
+
+
+## 2026-09-10 用户确认轮速/IMU 主位姿：架构调整与修复交付
+
+- 用户明确选择“轮速＋IMU为主”。唯一推荐操作者入口改为 `CAMERAS=true ULTRASONIC=true MOTION=false bash scripts/run_wheel_imu_mapping.sh`，在 Orin 主树图形终端执行。旧 `run_right_diag_mapping.sh` 仍是 legacy FAST 主位姿诊断，不要混用。默认禁止电机写入；用户自行启用 MOTION=true 前须满足安全条件，进程退出不证明物理停车。
+- 当前主干：实测wheel vx + 经安装TF旋转的H30 yaw rate -> 平面EKF -> 新鲜度/反馈健康门（唯一odom->base_link）-> RTAB外部里程计。右原始XYZI同时进入实时同时间戳配准点云与RTAB；RTAB拥有map->odom，启用空间ICP回环候选、关闭邻接ICP重配准。RViz FixedFrame=odom，累积3D显示 `/rtabmap/optimized_cloud`（XYZI），不是不含intensity的原生cloud_map。
+- FAST-LIO仅保留 `/lio/shadow/*` 对照，TF与wheel/ZUPT辅助关闭；相对运动一致性只报告，不能自动升主。不是已经完成FAST前端主地图/激光辅助融合。当前平面模型不估计坡道z/roll/pitch，完整XYZI仍保留；最终外参/同步、轮几何/滑移、导航和载人安全均未验证。
+- 已修复FAST代码：停车更新绕过最终位姿保护 -> 有界velocity-only Schmidt/Joseph；拒绝帧旧状态与新IMU时间游标不同步 -> 保留同一扫描末端预测；补发child-frame twist，修正position/rotation协方差块及mat_pre预测姿态；新增state_update_audit.tsv。持久化patch及固定上游重建哈希校验通过。
+- 必须保留失败事实：修复后独立FAST整段172s回放仍严重失配，而且数值/连续性比修复前差，1015输出后尾部59.987s断更，z跨度4.217m。审计40次ZUPT、456次wheel，辅助位置/姿态增量全为0，最终接受更新不超过.05m/2deg，证明已堵住已知更新漏洞但不能证明LIO准确。不要把单位测试或抑制输出当作漂移修好；FAST仍不得主定位。
+- 最终新主链离线回放 `auto_test/wheel_primary_full_replay_20260910_delivery`：完整1648/34052/6522/6962输入，3921主位姿与TF逐帧完全相等且到包末；1303实时云全部持续变化、intensity逐帧逐点字节一致；60次优化XYZI地图、末图221842点，2D421x421@.05。主链smoke=true；含shadow连续性总判定仍false。C++逐消息publisher GID确认只有gate写odom->base、RTAB写map->odom，其他已注册但不发TF的端点不能算冲突。
+- 新主航向公共窗口与H30积分差-.01343deg，是接线证据而非独立真值；wheel独立yaw积分231.748deg vs H30 222.282deg，不能宣称电机角度/几何绝对准确。当前bag前41.127s无wheel，主健康门等待是预期。2D关键帧图最后更新覆盖实际运动末端，停车后不变不是实时点云冻结。
+- 新RTAB数据库124个Node行、优化图80节点、158条双向邻接，0空间回环。回环已接入但此实录未验证成功闭环。旧树仍清洁 `local/rtab-old-loopfix-20260910@e0ab5957c327`，比旧记忆1c5f64e新，未修改。
+- 3包构建通过，最终182项mapping测试通过；本轮未启动真实硬件/Windows上位机/电机，回放只含传感器白名单，所有自有进程退出，FAST固定Log按哈希恢复。主树保持 `local/formal-3d-hardening-20260908@103b569`；保留原有更改，无暂存/提交/推送。
+- 详细证据：Orin `docs/mapping/WHEEL_PRIMARY_REPAIR_20260910.md`、Windows `docs/WHEEL_PRIMARY_REPAIR_20260910.md`；原始严重跳跃审查 `FASTLIO_VERTICAL_JUMP_FORENSICS_20260910.md`。下一步由用户按新完整入口做实际运行验证，不得称所有漂移/物理标定均已解决。

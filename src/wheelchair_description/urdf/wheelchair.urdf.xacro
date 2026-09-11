@@ -20,6 +20,12 @@
        runtime transform. Synthetic tests may opt in explicitly, but the
        default robot model must not publish this provisional TF. -->
   <xacro:arg name="include_blocked_right_lidar_for_mock" default="false"/>
+  <!-- Explicit real-data diagnostic opt-in; never makes the formal contract
+       APPROVED. Both radar translations come from one measured-layout profile.
+       The existing mock-only fixture remains unchanged for synthetic tests. -->
+  <xacro:arg name="diagnostic_measured_layout" default="false"/>
+  <xacro:arg name="diagnostic_layout_profile" default="$(find wheelchair_description)/config/diagnostic_measured_layout.yaml"/>
+  <xacro:property name="diag_layout" value="${xacro.load_yaml('$(arg diagnostic_layout_profile)')}"/>
 
   <link name="base_link">
     <visual>
@@ -113,12 +119,13 @@
   <!-- Left roll/pitch retains the last reliable floor-visible calibration from
        feature/fastlio-narrow-fov-mapping (45b1163); current left floor fitting
        selected a non-floor surface, so it was not used to overwrite this. -->
-  <xacro:xtm60_link
-    name="xtm60_left_link"
-    xyz="0.45 0.30 0.735"
-    rpy="1.5515153364 -0.0136154207 1.5709313394"/>
+  <xacro:unless value="$(arg diagnostic_measured_layout)">
+    <xacro:xtm60_link
+      name="xtm60_left_link"
+      xyz="0.45 0.30 0.735"
+      rpy="1.5515153364 -0.0136154207 1.5709313394"/>
 
-  <xacro:if value="$(arg include_blocked_right_lidar_for_mock)">
+    <xacro:if value="$(arg include_blocked_right_lidar_for_mock)">
     <!-- MOCK-ONLY historical candidate. It is not runtime-eligible for real
          hardware: longitudinal x/yaw are uncalibrated and the strict contract
          remains BLOCKED_CONFLICT. Keep it available only so synthetic
@@ -127,6 +134,15 @@
       name="xtm60_right_link"
       xyz="0.606 -0.24 0.499"
       rpy="1.5806995918 0.1564194958 1.5715764604"/>
+    </xacro:if>
+  </xacro:unless>
+  <xacro:if value="$(arg diagnostic_measured_layout)">
+    <xacro:xtm60_link name="xtm60_left_link"
+      xyz="${' '.join(map(str, diag_layout['sensors']['left']['xyz']))}"
+      rpy="${' '.join(map(str, diag_layout['sensors']['left']['rpy']))}"/>
+    <xacro:xtm60_link name="xtm60_right_link"
+      xyz="${' '.join(map(str, diag_layout['sensors']['right']['xyz']))}"
+      rpy="${' '.join(map(str, diag_layout['sensors']['right']['rpy']))}"/>
   </xacro:if>
 
   <link name="imu_link">
@@ -145,7 +161,13 @@
     <child link="imu_link"/>
     <!-- Roll/pitch from the 2026-07-22 user-confirmed level 60 s gravity
          capture. Yaw and xyz remain uncalibrated estimates. -->
-    <origin xyz="0.0 0.0 0.45" rpy="0.0098981264 0.0011002597 0.0"/>
+    <xacro:unless value="$(arg diagnostic_measured_layout)">
+      <origin xyz="0.0 0.0 0.45" rpy="0.0098981264 0.0011002597 0.0"/>
+    </xacro:unless>
+    <xacro:if value="$(arg diagnostic_measured_layout)">
+      <origin xyz="${' '.join(map(str, diag_layout['sensors']['imu']['xyz']))}"
+        rpy="${' '.join(map(str, diag_layout['sensors']['imu']['rpy']))}"/>
+    </xacro:if>
   </joint>
 
   <xacro:macro name="camera_link" params="name xyz rpy">

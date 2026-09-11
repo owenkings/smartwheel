@@ -1,0 +1,32 @@
+{
+  "src/third_party/FAST_LIO_ROS2": {
+    "head": "916fefe8f60f9c91995923dd2213a013dcbdb21c",
+    "origin": "https://github.com/Ericsii/FAST_LIO_ROS2.git",
+    "patch_sha256": "5cadfbadc27a80d502510284048ab6d5831acb7a7f7358a605cb53ee1c067954",
+    "files": {
+      "src/IMU_Processing.hpp": "c5f504012b884f09e70a9e6696cb09407687c7333892d531abfd13888f3cee4a",
+      "src/laserMapping.cpp": "ae9df41f67cb62ed6d9dcd27601e3a2aa06eddb0a663b0fbde94c3bee78d3b08",
+      "include/state_aiding_safety.hpp": "a3560ccb15b53c3f96b49cff2744618b1f13e7bfa50c6aa1ae09e03288629fed",
+      "include/wheel_velocity_update.hpp": "093fef1256aa65482e2f2a5a4cb50c917b96ae818ec20ea41e18d44fdf762898",
+      "tests/test_state_aiding_safety.cpp": "bbda1b430ba22287a793a53dd8d7f07bc22d4eb4752fc346430b57617bf492a8",
+      "tests/test_wheel_velocity_update.cpp": "69e89f19095c26e0b9ed084a0606cb2283febd854dabf6f4d9af759c4104737a"
+    }
+  },
+  "xtsdk_py": {
+    "head": "1770ebe479dc9bdfcdff090f9b02fd61d76ebd6a",
+    "origin": "https://github.com/XT-Toffuture/xtsdk_py.git",
+    "patch_sha256": "72636f3453fbcaa60f7d4a7c3d57e43f1a5d95211e890cdb245c57c08ba772a0",
+    "files": {
+      "ChangeList.md": "1208da3dd5019133f72426fb8c5e916601a4630bb67c78e96fdab3a3793a2af7",
+      "README.md": "aa7dc6e4248ef5d18db3c41f36ab61a2edcdf7ced8d67f2154c513f8817b0295",
+      "README_EN.md": "c43c795f1924d1bafce2b8b9b4c775ab46907a5199e98603bd2bdc581f09b5f2",
+      "cfg/read_config.py": "cb81f5c2efc626bef6b334ed5023b97e94fa9d721233c501973d851f7c08726e",
+      "cfg/xintan.xtcfg": "8aecc10d4bd7c912f864b56b739579283df376ce9c32d6952bd1fc51b16e3010",
+      "sdk_example/sdk_example.py": "32d7e2902808c34affb5b009ceab356e2b0c8abc5fe4599f6d809241f84dfa9d",
+      "sdk_example/sdk_example_3d.py": "431a5a93eafb97bd98c447f5e6a63f2ddc567f40c486a864942c2b4fca001e91",
+      "sdk_example/sdk_example_img.py": "e3effadcd46ebfb16563827dc941f43d19e13a7220058339cdd2e3d858605b27",
+      "sdk_example/sdk_example_play.py": "d3aa2961f15bd0ac9131de4b7e88ed24fc246d6305f3b7da8b01e02b753c683d",
+      "xintan.xtcfg": "2f2595661d42fdfefa93592b4edb88916c1be340ff8c467f6fe357552a1d5c6e"
+    }
+  }
+}

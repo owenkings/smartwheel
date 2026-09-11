@@ -76,6 +76,23 @@ def _module():
     return module
 
 
+def test_motion_fixed_frame_uses_local_odometric_parent():
+    module = _module()
+    assert module._resolve_motion_fixed_frame("contract_fastlio", "", "camera_init->body") == "camera_init"
+    assert module._resolve_motion_fixed_frame("external", "camera_init", "camera_init->body") == "camera_init"
+
+
+@pytest.mark.parametrize("requested", ["", "map", "body", "base_link", "imu_link", "unrelated_odom"])
+def test_external_motion_fixed_frame_must_be_explicit_and_continuous(requested):
+    with pytest.raises(RuntimeError, match="FORMAL_MAP_BLOCKED"):
+        _module()._resolve_motion_fixed_frame("external", requested, "camera_init->body")
+
+
+def test_fastlio_motion_fixed_frame_cannot_use_loop_corrected_map():
+    with pytest.raises(RuntimeError, match="FORMAL_MAP_BLOCKED"):
+        _module()._resolve_motion_fixed_frame("contract_fastlio", "map", "camera_init->body")
+
+
 def _transform(child):
     return {
         "frames": {"parent": "base_link", "child": child},

@@ -11,6 +11,8 @@
   <depend>rviz_common</depend>
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>pluginlib</depend>
   <depend>qtbase5-dev</depend>
 

@@ -60,6 +60,25 @@ TeleopPanel::TeleopPanel(QWidget * parent)
   state_label_->setStyleSheet("color:#80ff80; font-weight:bold; font-size:14px;");
   main_layout->addWidget(state_label_);
 
+  // Explicit switching is opt-in for wheel/IMU mapping only. No auto-release
+  // on key-up/STOP, and no command can drive through a pending/push mode.
+  mode_widget_ = new QWidget;
+  auto * mode_layout = new QVBoxLayout(mode_widget_);
+  mode_layout->setContentsMargins(0, 0, 0, 0);
+  auto * mode_buttons = new QHBoxLayout;
+  push_mode_button_ = new QPushButton("手推建图");
+  drive_mode_button_ = new QPushButton("WASD 建图");
+  mode_buttons->addWidget(push_mode_button_);
+  mode_buttons->addWidget(drive_mode_button_);
+  mode_layout->addLayout(mode_buttons);
+  mode_label_ = new QLabel("等待底盘模式状态");
+  mode_label_->setWordWrap(true);
+  mode_layout->addWidget(mode_label_);
+  mode_widget_->hide();
+  main_layout->addWidget(mode_widget_);
+  connect(push_mode_button_, &QPushButton::clicked, this, [this]() {requestMappingMode(true);});
+  connect(drive_mode_button_, &QPushButton::clicked, this, [this]() {requestMappingMode(false);});
+
   auto * note = new QLabel(
     "Motion flows through safety_supervisor.\n"
     "Motors move only if base runs with motion_control_enabled:=true.");
@@ -98,13 +117,35 @@ TeleopPanel::TeleopPanel(QWidget * parent)
   qApp->installEventFilter(this);
 }
 
-TeleopPanel::~TeleopPanel() = default;
+TeleopPanel::~TeleopPanel()
+{
+  qApp->removeEventFilter(this);
+  if (publish_timer_) {publish_timer_->stop();}
+  stop();
+}
 
 void TeleopPanel::onInitialize()
 {
   node_ = getDisplayContext()->getRosNodeAbstraction().lock()->get_raw_node();
   publisher_ = node_->create_publisher<geometry_msgs::msg::Twist>(
     topic_.toStdString(), 10);
+  mode_client_ = node_->create_client<std_srvs::srv::SetBool>("/base/set_mapping_push_mode");
+  QPointer<TeleopPanel> panel(this);
+  mode_subscription_ = node_->create_subscription<std_msgs::msg::String>(
+    "/base/mapping_drive_mode", 10,
+    [panel](std_msgs::msg::String::ConstSharedPtr msg) {
+      if (!panel) {return;}
+      const QString value = QString::fromStdString(msg->data);
+      QMetaObject::invokeMethod(panel.data(), [panel, value]() {
+        if (!panel) {return;}
+        panel->backend_mode_ = value;
+        panel->mode_received_.restart();
+        if (!panel->mappingDriveAllowed()) {panel->stop();}
+        if (!panel->mode_pending_) {
+          panel->mode_label_->setText("底盘模式: " + value + "\n" + panel->mode_result_);
+        }
+      }, Qt::QueuedConnection);
+    });
 
   publish_timer_ = new QTimer(this);
   connect(publish_timer_, &QTimer::timeout, this, &TeleopPanel::publishCommand);
@@ -120,6 +161,7 @@ void TeleopPanel::updateSpeeds()
 
 void TeleopPanel::setDir(bool forward, bool backward, bool left, bool right, bool held)
 {
+  if (held && !mappingDriveAllowed()) {stop(); return;}
   if (forward) {fwd_ = held;}
   if (backward) {back_ = held;}
   if (left) {left_ = held;}
@@ -159,6 +201,77 @@ void TeleopPanel::stop()
   target_angular_ = 0.0;
   state_label_->setText("STOPPED");
   state_label_->setStyleSheet("color:#80ff80; font-weight:bold; font-size:14px;");
+  if (publisher_) {publisher_->publish(geometry_msgs::msg::Twist());}
+}
+
+bool TeleopPanel::mappingDriveAllowed() const
+{
+  return !enable_push_mode_ || (drive_ack_ && !mode_pending_ &&
+    // Normal driver enable has two existing 200 ms settling waits. Allow that
+    // heartbeat gap; command release/STOP and the safety watchdog stay immediate.
+    backend_mode_ == "drive" && mode_received_.isValid() && mode_received_.elapsed() <= 1000);
+}
+
+void TeleopPanel::requestMappingMode(bool push)
+{
+  if (!enable_push_mode_ || mode_pending_) {return;}
+  stop();
+  drive_ack_ = false;
+  if (!mode_client_ || !mode_client_->service_is_ready()) {
+    mode_result_ = "切换服务不可用；已停止发送运动指令";
+    mode_label_->setText(mode_result_);
+    return;
+  }
+  mode_pending_ = true;
+  const unsigned int generation = ++mode_generation_;
+  mode_label_->setText("正在切换；请保持轮椅静止");
+  QPointer<TeleopPanel> panel(this);
+  // Let the zero command traverse the existing safety chain before requesting
+  // release. The driver independently checks fresh stationary encoder data.
+  QTimer::singleShot(400, this, [panel, generation, push]() {
+    if (!panel || generation != panel->mode_generation_) {return;}
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    request->data = push;
+    try {
+      panel->mode_client_->async_send_request(request,
+      [panel, generation, push](rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture future) {
+        if (!panel) {return;}
+        std_srvs::srv::SetBool::Response::SharedPtr response;
+        try {
+          response = future.get();
+        } catch (const std::exception & error) {
+          response = std::make_shared<std_srvs::srv::SetBool::Response>();
+          response->success = false;
+          response->message = std::string("Mode service failed: ") + error.what();
+        }
+        QMetaObject::invokeMethod(panel.data(), [panel, generation, push, response]() {
+          if (!panel || generation != panel->mode_generation_) {return;}
+          panel->mode_pending_ = false;
+          panel->drive_ack_ = response->success && !push;
+          panel->stop();
+          panel->mode_result_ = QString::fromStdString(response->message);
+          panel->mode_label_->setText(panel->mode_result_);
+          panel->mode_label_->setToolTip(QString::fromStdString(response->message));
+        }, Qt::QueuedConnection);
+      });
+    } catch (const std::exception & error) {
+      panel->mode_pending_ = false;
+      panel->drive_ack_ = false;
+      panel->mode_result_ = QString("Mode request failed: ") + error.what();
+      panel->mode_label_->setText(panel->mode_result_);
+      panel->stop();
+    }
+  });
+  QTimer::singleShot(6000, this, [panel, generation]() {
+    if (panel && panel->mode_pending_ && generation == panel->mode_generation_) {
+      ++panel->mode_generation_;
+      panel->mode_pending_ = false;
+      panel->drive_ack_ = false;
+      panel->stop();
+      panel->mode_result_ = "切换超时，实际模式未知；保持静止并重新选择模式";
+      panel->mode_label_->setText(panel->mode_result_);
+    }
+  });
 }
 
 void TeleopPanel::publishCommand()
@@ -167,6 +280,12 @@ void TeleopPanel::publishCommand()
     return;
   }
   geometry_msgs::msg::Twist msg;
+  if (!mappingDriveAllowed()) {
+    stop();
+    if (enable_push_mode_ && mode_received_.isValid() && mode_received_.elapsed() > 1000) {
+      mode_label_->setText("底盘状态已超时；运动指令已停止");
+    }
+  }
   msg.linear.x = target_linear_;
   msg.angular.z = target_angular_;
   publisher_->publish(msg);
@@ -174,6 +293,11 @@ void TeleopPanel::publishCommand()
 
 bool TeleopPanel::eventFilter(QObject * object, QEvent * event)
 {
+  if (event->type() == QEvent::ApplicationDeactivate ||
+    (object == this && (event->type() == QEvent::Hide || event->type() == QEvent::Close)))
+  {
+    stop();
+  }
   if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
     if (!isVisible()) {
       return rviz_common::Panel::eventFilter(object, event);
@@ -211,6 +335,8 @@ bool TeleopPanel::eventFilter(QObject * object, QEvent * event)
 void TeleopPanel::load(const rviz_common::Config & config)
 {
   rviz_common::Panel::load(config);
+  config.mapGetBool("EnablePushMode", &enable_push_mode_);
+  mode_widget_->setVisible(enable_push_mode_);
   QString topic;
   if (config.mapGetString("Topic", &topic) && !topic.isEmpty()) {
     topic_ = topic;
@@ -233,6 +359,7 @@ void TeleopPanel::save(rviz_common::Config config) const
   config.mapSetValue("Topic", topic_);
   config.mapSetValue("Linear", max_linear_);
   config.mapSetValue("Angular", max_angular_);
+  config.mapSetValue("EnablePushMode", enable_push_mode_);
 }
 
 }  // namespace wheelchair_bringup

@@ -8,6 +8,8 @@
 #include <rviz_common/panel.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 namespace wheelchair_bringup
 {
@@ -41,6 +43,8 @@ protected:
   void publishCommand();
   void setDir(bool forward, bool backward, bool left, bool right, bool held);
   void recomputeTarget();
+  void requestMappingMode(bool push);
+  bool mappingDriveAllowed() const;
 
   QPushButton * forward_button_{nullptr};
   QPushButton * backward_button_{nullptr};
@@ -51,6 +55,19 @@ protected:
   QDoubleSpinBox * angular_spin_{nullptr};
   QLabel * state_label_{nullptr};
   QLineEdit * topic_edit_{nullptr};
+  QWidget * mode_widget_{nullptr};
+  QLabel * mode_label_{nullptr};
+  QPushButton * push_mode_button_{nullptr};
+  QPushButton * drive_mode_button_{nullptr};
+  bool enable_push_mode_{false};
+  bool mode_pending_{false};
+  bool drive_ack_{true};
+  unsigned int mode_generation_{0};
+  QString backend_mode_;
+  QString mode_result_;
+  QElapsedTimer mode_received_;
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr mode_client_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_subscription_;
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;

@@ -1,0 +1,3853 @@
+diff --git a/ChangeList.md b/ChangeList.md
+index 872acf3..94fe08d 100644
+--- a/ChangeList.md
++++ b/ChangeList.md
+@@ -1,36 +1,36 @@
+-# Change List
+-
+----
+-
+----
+-## == 2.0.1
+-- 适配固件2.x
+-
+----
+-## == 2.0.2
+-- 增加arrch64版本
+-
+----
+-## == 2.0.4
+-- c++ lib 文件增加aarch64 支持 python3.8 python3.11
+-
+----
+-## == 2.0.5
+-- 增加 example_play示例用于读取xbin文件转为pcd
+-
+----
+-## == 2.0.6
+-- 同步 v_2.0.6 sdk 版本
+-- 增加 example_play示例用于读取txt 16进制文件转为pcd
+-- example_play 进行 frame label 对应
+-
+----
+-## == 2.0.7
+-- 同步 v_2.0.8 sdk 版本
+-- 增加sdk_example_play 中灰尘滤波设定
+-- 增加linux 中 python3.10的支持 
+-
+----
+-## == 2.0.8
+-- 同步 v_2.1.2_beta sdk 版本
++# Change List
++
++---
++
++---
++## == 2.0.1
++- 适配固件2.x
++
++---
++## == 2.0.2
++- 增加arrch64版本
++
++---
++## == 2.0.4
++- c++ lib 文件增加aarch64 支持 python3.8 python3.11
++
++---
++## == 2.0.5
++- 增加 example_play示例用于读取xbin文件转为pcd
++
++---
++## == 2.0.6
++- 同步 v_2.0.6 sdk 版本
++- 增加 example_play示例用于读取txt 16进制文件转为pcd
++- example_play 进行 frame label 对应
++
++---
++## == 2.0.7
++- 同步 v_2.0.8 sdk 版本
++- 增加sdk_example_play 中灰尘滤波设定
++- 增加linux 中 python3.10的支持 
++
++---
++## == 2.0.8
++- 同步 v_2.1.2_beta sdk 版本
+ - 适配新版sdk 滤波设定
+\ No newline at end of file
+diff --git a/README.md b/README.md
+index 04c9427..9845e6b 100644
+--- a/README.md
++++ b/README.md
+@@ -1,211 +1,211 @@
+-# **xtsdk_py**
+-
+-# SDK说明
+-
+-本代码为机密资料
+-## 简介
+-XTSDK 提供通过封装了对雷达交互的通讯过程(通讯、封包、深度转点云)，以易用的API方式提供编程接口，方便开发者快速集成开发。
+-xtsdk_py 通过xtsdk_cpp 的pybind11编译方式进行依赖库调用
+-
+-## 编译环境
+-- 语言：windows python3.9
+-               python3.12
+-        linux x86 aarch64 python3.8
+-                        python3.11
+-                        python3.12
+-- NOTE
+-    如果需要支持其他版本 请使用~/xtsdk_cpp/xtsdk/CMakeLists_pybind.txt 进行编译 生成依赖库后复制到
+-    ~/xtsdk_py/lib/ 相应文件夹
+-
+-  
+-
+-
+-- 依赖库：
+-  pip install numpy opencv-python PyQt5 open3d -i https://pypi.tuna.tsinghua.edu.cn/simple
+-  windows:- boost库：boost_1_79_0-msvc-14.2-64.exe
+-    - 下载链接 https://boostorg.jfrog.io/artifactory/main/release/1.79.0/binaries/boost_1_79_0-msvc-14.2-64.exe
+-  linux: sudo apt install libboost-all-dev
+-        建议下载boost 1.70版本
+-  
+-
+-## sdk_example 目录为sdk的使用示例代码
+-
+-- 设备连接：cd ~/xtsdk_py/sdk_example
+-  运行参数1：雷达地址 
+-  运行参数2：1 xtsdk_py/cfg/xintan.xtcfg 忽略雷达保存的参数 
+-            0 为使用雷达保存的参数 忽略本地配置文件
+-      例如 
+-        windows: python sdk_sample_***.py 192.168.0.101 0
+-        linux: python3 sdk_sample_***.py 192.168.0.101 0
+-
+-- 读取录像文件：
+-	1. cd ~/xtsdk_py/sdk_example
+-	2. 录像文件夹复制到此文件夹，录像文件夹中放入 xbin文件 或者包含16进制字符串txt文件
+-	3.  windows: python sdk_sample_play.py   录像文件夹名字		
+-		linux: python3 sdk_sample_play.py  录像文件夹名字
+-- 配置文件
+-    可由XT-Future GUI保存配置 直接覆盖使用 或者手动修改配置文件
+-
+-  
+-
+-
+-
+-### sdk实例化
+-    本实例使用python调用c++编译库 库名为 xintan_sdk
+-    实例化方法：xtsdk = xintan_sdk.XtSdk()    
+-
+-### Event数据类型：
+-    sdkState    sdk状态已改变
+-    devState    设备状态已改变
+-
+-
+-## 回调函数
+-void setCallback(std::function<void(const std::shared_ptr\<CBEventData> &) >  eventcallback, std::function<void(const std::shared_ptr\<Frame> & ) >  imgcallback);
+-
+-- 设置用于接收sdk回调的两个回调函数
+-  - eventcallback： 用户接收sdk事件、设备上报的信息、日志等
+-  - imgcallback： 用户接收 设备的深度、灰度、点云帧
+-
+-## 芯探激光雷达SDK数据解说
+-  芯探的激光雷达是Flash类型的，整个sensor全局曝光，所有点都是相同时间点，没有Ring通道的概念， 
+-	我们输出的点云格式是XYZI，整帧一个时间戳。
+-
+-	点云的坐标系是就是芯探的雷达坐标系，雷达是坐标系原点。
+-
+-	相机数据都在imgCallback 中传入的frame 对象中, 
+-		frame里数据说明：  
+-			uint16_t width; //数据分辨率宽
+-			uint16_t height;//数据分辨率高
+-			uint64_t timeStampS;//帧的时间:秒
+-			uint32_t timeStampNS;//帧的时间:纳秒
+-			uint16_t temperature;//sensor 温度
+-			uint16_t vcseltemperature;//灯板温度
+-			std::vector<uint16_t> distData;//排序后的距离数据, 深度图从左上角到右下角依次排列所有像素，有效数值是0~964000，964000以上的数值表示此像素无效
+-			std::vector<uint16_t> amplData;//排序后的信号强度数据, 信号强度从左上角到右下角依次排列所有像素，有效数值是0~2039，64000以上的数值表示此像素无效
+-			std::vector<XtPointXYZI> points;//点云数据，无序点云，排列方式和distData及amplData数据一样，按像素从左上角到右下角依次排列所有像素
+-					points里的点数据格式是 XYZI，例如第10行第20列的点的z方向数值是 points[width*10 + 20].z，已去畸变
+-
+-		***NOTE***
+-			std::vector<uint16_t> distData 为滤波过后深度数组 rawdistData 为滤波过滤前深度数组，上述深度数据均未去畸变
+-			
+-
+-## Sdk运行API
+-- bool setConnectIpaddress(std::string ipAddress);  
+-  如果用网络连接，使用这个API设置要连接设备的ip地址(如 "192.168.0.101")
+-
+-- bool setConnectSerialportName(std::string serialportName);  
+-​	如果用USB连接，使用这个API设置要连接设备的COM口地址(如 "COM2")
+-
+-- void startup();  
+-​	启动sdk运行
+-
+-- void shutdown();  
+-​	断开设备连接
+-
+-- bool isconnect();  
+-​	设备连接是否成功
+-
+-- bool isUsedNet();   
+-  设备连接是否通过网络
+-
+-- SdkState getSdkState();  
+-​	获取SDK状态
+-
+-- SdkState getDevState();  
+-​	获取设备状态
+-
+-- std::string getStateStr();  
+-​	获取SDK 状态字符串
+-
+-- int getfps();  
+-    获取SDK计算的帧率
+-
+-- bool setSdkKalmanFilter(uint16_t factor, uint16_t threshold);  
+-  设置sdk中的卡尔曼滤波
+-
+-- bool setSdkEdgeFilter(uint16_t threshold);  
+-  设置sdk中的飞点滤波
+-
+-- bool setSdkMedianFilter(uint16_t size);  
+-    设置sdk中的中值滤波
+-
+-- void setPostProcess(const float &dilation_pixels, const uint8_t &mode, const double &mode_th);
+-   设置近距离点云优化以及移动物体优化
+-
+-- bool clearAllSdkFilter();  
+-  清除SDK中所有的滤波设置
+-
+-- bool setSdkCloudCoordType(ClOUDCOORD_TYPE type); 
+-  设置sdk中输出点云的坐标系
+-
+-## 命令相关 API
+-
+-- bool testDev();  
+-​	测试设备命令交互是否通
+-
+-- bool start(ImageType imgType, bool isOnce = false);  
+-​	指定期望的图像类型 进行测量, isOnce 是否单次获取
+-
+-- bool stop();  
+-​	让设备停止测量
+-
+-- bool getDevInfo(RespDevInfo & devInfo);  
+-​	获取设备信息，数据结构见xtsdk.h定义
+-
+-- bool getDevConfig(RespDevConfig & devConfig);  
+-​	获取设备设置信息，数据结构见xtsdk.h定义
+-
+-- bool setIp(std::string ip, std::string mask, std::string gate);  
+-​	设置设备的ip地址相关  
+-​	ip 如 “192.168.0.101”  
+-​	mask 如”255.255.255.0”  
+-​	gate 如 “192.168.0.1”
+-
+-- bool setFilter(uint16_t temporal_factor, uint16_t temporal_threshold, uint16_t edgefilter_threshold);  
+-​	设置设备内基本滤波参数  
+-​	temporal_factor   卡尔曼 因子 ，最大1000，通常设定300  
+-​	temporal_threshold  卡尔曼 阈值，最大2000， 通常设定300  
+-​	edgefilter_threshold  飞点 阈值，最大2000， 通常设定 0
+-
+-- bool setIntTimesus(uint16_t timeGs, uint16_t time1, uint16_t time2, uint16_t time3);​	  
+-    设置积分时间 单位 us  
+-​	timeGs   测量灰度时的积分时间  
+-​	time1     第一次积分时间  
+-​	time2     第二次积分时间，开HDR时才有效，设为0 即关闭此次曝光  
+-​	time3     第三次积分时间，HDR 为HDR_TAMPORAL   模式时才有效，设为0 即关闭此次曝光
+-
+-- bool setMinAmplitude(uint16_t minAmplitude);   
+-​	设置有效的信号幅度下限, 通常设定为50~100
+-
+-- bool setHdrMode(HDRMode mode);  
+-​	设置HDR 类型，mode可配置为  
+-​	HDR_OFF    关闭HDR  
+-​	HDR_TAMPORAL   时域模式  
+-
+-- bool resetDev();  
+-​	重启设备
+-
+-- bool setModFreq(ModulationFreq freqType);  
+-​	设置设备调整频率  
+-​	freqType：  FREQ_12M，FREQ_6M
+-
+-- bool setRoi(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);  
+-​	设置ROI区域
+-
+-- bool setUdpDestIp(std::string ip, uint16_t port =7687);  
+-  设置UDP目标IP地址
+-
+-- bool setMaxFps(uint8_t maxfps);  
+-  设置设备测量的最快帧率，(HDR模式配置为实际要的帧率的多倍(几个积分时间))
+-
+-- bool getLensCalidata(CamParameterS & camparameter);  
+-  获取镜头内参
+-
+-- bool getDevConfig(RespDevConfig &devConfig); 
+-  获取设备设置信息
+-
+-- bool setAdditionalGray(const uint8_t &on);
+-  设置是否获取灰度图
+-
+-- bool setMultiModFreq(ModulationFreq freqType1, ModulationFreq freqType2, ModulationFreq freqType3, ModulationFreq freqType4 = FREQ_24M); 
+-  设置三档积分时间对应频率
++# **xtsdk_py**
++
++# SDK说明
++
++本代码为机密资料
++## 简介
++XTSDK 提供通过封装了对雷达交互的通讯过程(通讯、封包、深度转点云)，以易用的API方式提供编程接口，方便开发者快速集成开发。
++xtsdk_py 通过xtsdk_cpp 的pybind11编译方式进行依赖库调用
++
++## 编译环境
++- 语言：windows python3.9
++               python3.12
++        linux x86 aarch64 python3.8
++                        python3.11
++                        python3.12
++- NOTE
++    如果需要支持其他版本 请使用~/xtsdk_cpp/xtsdk/CMakeLists_pybind.txt 进行编译 生成依赖库后复制到
++    ~/xtsdk_py/lib/ 相应文件夹
++
++  
++
++
++- 依赖库：
++  pip install numpy opencv-python PyQt5 open3d -i https://pypi.tuna.tsinghua.edu.cn/simple
++  windows:- boost库：boost_1_79_0-msvc-14.2-64.exe
++    - 下载链接 https://boostorg.jfrog.io/artifactory/main/release/1.79.0/binaries/boost_1_79_0-msvc-14.2-64.exe
++  linux: sudo apt install libboost-all-dev
++        建议下载boost 1.70版本
++  
++
++## sdk_example 目录为sdk的使用示例代码
++
++- 设备连接：cd ~/xtsdk_py/sdk_example
++  运行参数1：雷达地址 
++  运行参数2：1 xtsdk_py/cfg/xintan.xtcfg 忽略雷达保存的参数 
++            0 为使用雷达保存的参数 忽略本地配置文件
++      例如 
++        windows: python sdk_sample_***.py 192.168.0.101 0
++        linux: python3 sdk_sample_***.py 192.168.0.101 0
++
++- 读取录像文件：
++	1. cd ~/xtsdk_py/sdk_example
++	2. 录像文件夹复制到此文件夹，录像文件夹中放入 xbin文件 或者包含16进制字符串txt文件
++	3.  windows: python sdk_sample_play.py   录像文件夹名字		
++		linux: python3 sdk_sample_play.py  录像文件夹名字
++- 配置文件
++    可由XT-Future GUI保存配置 直接覆盖使用 或者手动修改配置文件
++
++  
++
++
++
++### sdk实例化
++    本实例使用python调用c++编译库 库名为 xintan_sdk
++    实例化方法：xtsdk = xintan_sdk.XtSdk()    
++
++### Event数据类型：
++    sdkState    sdk状态已改变
++    devState    设备状态已改变
++
++
++## 回调函数
++void setCallback(std::function<void(const std::shared_ptr\<CBEventData> &) >  eventcallback, std::function<void(const std::shared_ptr\<Frame> & ) >  imgcallback);
++
++- 设置用于接收sdk回调的两个回调函数
++  - eventcallback： 用户接收sdk事件、设备上报的信息、日志等
++  - imgcallback： 用户接收 设备的深度、灰度、点云帧
++
++## 芯探激光雷达SDK数据解说
++  芯探的激光雷达是Flash类型的，整个sensor全局曝光，所有点都是相同时间点，没有Ring通道的概念， 
++	我们输出的点云格式是XYZI，整帧一个时间戳。
++
++	点云的坐标系是就是芯探的雷达坐标系，雷达是坐标系原点。
++
++	相机数据都在imgCallback 中传入的frame 对象中, 
++		frame里数据说明：  
++			uint16_t width; //数据分辨率宽
++			uint16_t height;//数据分辨率高
++			uint64_t timeStampS;//帧的时间:秒
++			uint32_t timeStampNS;//帧的时间:纳秒
++			uint16_t temperature;//sensor 温度
++			uint16_t vcseltemperature;//灯板温度
++			std::vector<uint16_t> distData;//排序后的距离数据, 深度图从左上角到右下角依次排列所有像素，有效数值是0~964000，964000以上的数值表示此像素无效
++			std::vector<uint16_t> amplData;//排序后的信号强度数据, 信号强度从左上角到右下角依次排列所有像素，有效数值是0~2039，64000以上的数值表示此像素无效
++			std::vector<XtPointXYZI> points;//点云数据，无序点云，排列方式和distData及amplData数据一样，按像素从左上角到右下角依次排列所有像素
++					points里的点数据格式是 XYZI，例如第10行第20列的点的z方向数值是 points[width*10 + 20].z，已去畸变
++
++		***NOTE***
++			std::vector<uint16_t> distData 为滤波过后深度数组 rawdistData 为滤波过滤前深度数组，上述深度数据均未去畸变
++			
++
++## Sdk运行API
++- bool setConnectIpaddress(std::string ipAddress);  
++  如果用网络连接，使用这个API设置要连接设备的ip地址(如 "192.168.0.101")
++
++- bool setConnectSerialportName(std::string serialportName);  
++​	如果用USB连接，使用这个API设置要连接设备的COM口地址(如 "COM2")
++
++- void startup();  
++​	启动sdk运行
++
++- void shutdown();  
++​	断开设备连接
++
++- bool isconnect();  
++​	设备连接是否成功
++
++- bool isUsedNet();   
++  设备连接是否通过网络
++
++- SdkState getSdkState();  
++​	获取SDK状态
++
++- SdkState getDevState();  
++​	获取设备状态
++
++- std::string getStateStr();  
++​	获取SDK 状态字符串
++
++- int getfps();  
++    获取SDK计算的帧率
++
++- bool setSdkKalmanFilter(uint16_t factor, uint16_t threshold);  
++  设置sdk中的卡尔曼滤波
++
++- bool setSdkEdgeFilter(uint16_t threshold);  
++  设置sdk中的飞点滤波
++
++- bool setSdkMedianFilter(uint16_t size);  
++    设置sdk中的中值滤波
++
++- void setPostProcess(const float &dilation_pixels, const uint8_t &mode, const double &mode_th);
++   设置近距离点云优化以及移动物体优化
++
++- bool clearAllSdkFilter();  
++  清除SDK中所有的滤波设置
++
++- bool setSdkCloudCoordType(ClOUDCOORD_TYPE type); 
++  设置sdk中输出点云的坐标系
++
++## 命令相关 API
++
++- bool testDev();  
++​	测试设备命令交互是否通
++
++- bool start(ImageType imgType, bool isOnce = false);  
++​	指定期望的图像类型 进行测量, isOnce 是否单次获取
++
++- bool stop();  
++​	让设备停止测量
++
++- bool getDevInfo(RespDevInfo & devInfo);  
++​	获取设备信息，数据结构见xtsdk.h定义
++
++- bool getDevConfig(RespDevConfig & devConfig);  
++​	获取设备设置信息，数据结构见xtsdk.h定义
++
++- bool setIp(std::string ip, std::string mask, std::string gate);  
++​	设置设备的ip地址相关  
++​	ip 如 “192.168.0.101”  
++​	mask 如”255.255.255.0”  
++​	gate 如 “192.168.0.1”
++
++- bool setFilter(uint16_t temporal_factor, uint16_t temporal_threshold, uint16_t edgefilter_threshold);  
++​	设置设备内基本滤波参数  
++​	temporal_factor   卡尔曼 因子 ，最大1000，通常设定300  
++​	temporal_threshold  卡尔曼 阈值，最大2000， 通常设定300  
++​	edgefilter_threshold  飞点 阈值，最大2000， 通常设定 0
++
++- bool setIntTimesus(uint16_t timeGs, uint16_t time1, uint16_t time2, uint16_t time3);​	  
++    设置积分时间 单位 us  
++​	timeGs   测量灰度时的积分时间  
++​	time1     第一次积分时间  
++​	time2     第二次积分时间，开HDR时才有效，设为0 即关闭此次曝光  
++​	time3     第三次积分时间，HDR 为HDR_TAMPORAL   模式时才有效，设为0 即关闭此次曝光
++
++- bool setMinAmplitude(uint16_t minAmplitude);   
++​	设置有效的信号幅度下限, 通常设定为50~100
++
++- bool setHdrMode(HDRMode mode);  
++​	设置HDR 类型，mode可配置为  
++​	HDR_OFF    关闭HDR  
++​	HDR_TAMPORAL   时域模式  
++
++- bool resetDev();  
++​	重启设备
++
++- bool setModFreq(ModulationFreq freqType);  
++​	设置设备调整频率  
++​	freqType：  FREQ_12M，FREQ_6M
++
++- bool setRoi(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);  
++​	设置ROI区域
++
++- bool setUdpDestIp(std::string ip, uint16_t port =7687);  
++  设置UDP目标IP地址
++
++- bool setMaxFps(uint8_t maxfps);  
++  设置设备测量的最快帧率，(HDR模式配置为实际要的帧率的多倍(几个积分时间))
++
++- bool getLensCalidata(CamParameterS & camparameter);  
++  获取镜头内参
++
++- bool getDevConfig(RespDevConfig &devConfig); 
++  获取设备设置信息
++
++- bool setAdditionalGray(const uint8_t &on);
++  设置是否获取灰度图
++
++- bool setMultiModFreq(ModulationFreq freqType1, ModulationFreq freqType2, ModulationFreq freqType3, ModulationFreq freqType4 = FREQ_24M); 
++  设置三档积分时间对应频率
+diff --git a/README_EN.md b/README_EN.md
+index ea1d45e..b59aaf9 100644
+--- a/README_EN.md
++++ b/README_EN.md
+@@ -1,153 +1,153 @@
+-# **xtsdk_py**
+-
+-# SDK Description
+-
+-**Confidential Material**
+-
+-## Introduction
+-XTSDK provides easy-to-use programming interfaces by encapsulating radar communication processes (communication, packetization, depth-to-point-cloud conversion), enabling developers to integrate and develop quickly.  
+-xtsdk_py calls dependency libraries via pybind11 compilation from xtsdk_cpp.
+-
+-## Compilation Environment
+-- Languages:  
+-  - Windows: Python 3.9, Python 3.12  
+-  - Linux x86/aarch64: Python 3.8, Python 3.11, Python 3.12  
+-- **NOTE**  
+-  To support other Python versions, compile using `~/xtsdk_cpp/xtsdk/CMakeLists_pybind.txt`, then copy the generated libraries to the corresponding folders in `~/xtsdk_py/lib/`.
+-
+-### Dependencies
+-```bash
+-pip install numpy opencv-python PyQt5 open3d -i https://pypi.tuna.tsinghua.edu.cn/simple
+-
+-
+-- Windows:
+-Boost library: boost_1_79_0-msvc-14.2-64.exe
+-Download link: https://boostorg.jfrog.io/artifactory/main/release/1.79.0/binaries/boost_1_79_0-msvc-14.2-64.exe
+-- Linux:
+-bash
+-复制代码
+-sudo apt install libboost-all-dev
+-Recommended: Boost 1.70.
+-sdk_example Directory
+-Contains SDK usage examples.
+-
+-## Device Connection
+-cd ~/xtsdk_py/sdk_example
+-Run with parameters:
+-Parameter 1: Radar IP address
+-Parameter 2: 1 (use xtsdk_py/cfg/xintan.xtcfg and ignore radar parameters) / 0 (use radar parameters and ignore local config)
+-Examples:
+-Windows: python sdk_sample_***.py 192.168.0.101 0
+-Linux: python3 sdk_sample_***.py 192.168.0.101 0
+-Playback from Recorded Files
+-cd ~/xtsdk_py/sdk_example
+-Copy recording folder (containing .xbin or hex-encoded .txt files) to this directory.
+-Run:
+-Windows: python sdk_sample_play.py [recording_folder_name]
+-Linux: python3 sdk_sample_play.py [recording_folder_name]
+-Configuration File
+-Configurations can be saved via XT-Future GUI and overwritten, or manually edited.
+-
+-## SDK Instantiation
+-This SDK uses Python to call a C++ compiled library named xintan_sdk.
+-Instantiate with:
+-
+-
+-xtsdk = xintan_sdk.XtSdk()
+-Event Data Types
+-sdkState: SDK state changed
+-devState: Device state changed
+-Callback Functions
+-
+-void setCallback(
+-    std::function<void(const std::shared_ptr<CBEventData>&)> eventcallback,
+-    std::function<void(const std::shared_ptr<Frame>&)> imgcallback
+-);
+-eventcallback: Receives SDK events, device reports, and logs.
+-imgcallback: Receives depth, grayscale, and point cloud frames.
+-Xintan LiDAR SDK Data Explanation
+-Xintan LiDAR is Flash-type with global exposure. Output point cloud format is XYZI with a single timestamp per frame.
+-
+-Coordinate System: LiDAR coordinate system (LiDAR as origin).
+-Frame Data:
+-
+-uint16_t width;           // Frame width
+-uint16_t height;          // Frame height
+-uint64_t timeStampS;      // Timestamp (seconds)
+-uint32_t timeStampNS;     // Timestamp (nanoseconds)
+-uint16_t temperature;     // Sensor temperature
+-uint16_t vcseltemperature;// VCSEL temperature
+-std::vector<uint16_t> distData;   // Filtered depth data (0~964000 = valid)
+-std::vector<uint16_t> amplData;   // Amplitude data (0~2039 = valid)
+-std::vector<XtPointXYZI> points;  // Point cloud (undistorted, XYZI format)
+-Note:
+-distData: Post-filter depth array (not undistorted).
+-rawdistData: Pre-filter depth array.
+-
+-
+-SDK APIs
+-Connection & Control
+-- bool setConnectIpaddress(std::string ipAddress);
+-Set device IP (e.g., "192.168.0.101").
+-- bool setConnectSerialportName(std::string serialportName);
+-Set COM port (e.g., "COM2").
+-- void startup();
+-Start SDK.
+-- void shutdown();
+-Disconnect device.
+-- bool isconnect();
+-Check connection status.
+-- bool isUsedNet();
+-Check if connected via network.
+-State & Configuration
+-- SdkState getSdkState();
+-Get SDK state.
+-- SdkState getDevState();
+-Get device state.
+-- std::string getStateStr();
+-Get SDK state as string.
+-- int getfps();
+-Get current FPS.
+-- bool getDevInfo(RespDevInfo &devInfo);
+-Get device info.
+-- bool getDevConfig(RespDevConfig &devConfig);
+-Get device configuration.
+-Filters & Processing
+-- bool setSdkKalmanFilter(uint16_t factor, uint16_t threshold);
+-Set Kalman filter.
+-- bool setSdkEdgeFilter(uint16_t threshold);
+-Set edge filter.
+-- bool setSdkMedianFilter(uint16_t size);
+-Set median filter.
+-- void setPostProcess(const float &dilation_pixels, const uint8_t &mode, const double &mode_th);
+-Optimize near-distance point cloud and moving objects.
+-- bool clearAllSdkFilter();
+-Clear all filters.
+-Device Commands
+-- bool testDev();
+-Test device communication.
+-- bool start(ImageType imgType, bool isOnce = false);
+-Start measurement with specified image type.
+-- bool stop();
+-Stop measurement.
+-- bool setIp(std::string ip, std::string mask, std::string gate);
+-Set device IP settings.
+-- bool setFilter(uint16_t temporal_factor, uint16_t temporal_threshold, uint16_t edgefilter_threshold);
+-Set device filters.
+-- bool setIntTimesus(uint16_t timeGs, uint16_t time1, uint16_t time2, uint16_t time3);
+-Set integration times (µs).
+-- bool setHdrMode(HDRMode mode);
+-Set HDR mode (HDR_OFF or HDR_TAMPORAL).
+-- bool resetDev();
+-Reboot device.
+-Advanced Settings
+-- bool setModFreq(ModulationFreq freqType);
+-Set modulation frequency (FREQ_12M, FREQ_6M).
+-- bool setRoi(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+-Set ROI region.
+-- bool setUdpDestIp(std::string ip, uint16_t port=7687);
+-Set UDP destination IP.
+-- bool setMaxFps(uint8_t maxfps);
+-Set maximum FPS.
+-- bool setAdditionalGray(const uint8_t &on);
++# **xtsdk_py**
++
++# SDK Description
++
++**Confidential Material**
++
++## Introduction
++XTSDK provides easy-to-use programming interfaces by encapsulating radar communication processes (communication, packetization, depth-to-point-cloud conversion), enabling developers to integrate and develop quickly.  
++xtsdk_py calls dependency libraries via pybind11 compilation from xtsdk_cpp.
++
++## Compilation Environment
++- Languages:  
++  - Windows: Python 3.9, Python 3.12  
++  - Linux x86/aarch64: Python 3.8, Python 3.11, Python 3.12  
++- **NOTE**  
++  To support other Python versions, compile using `~/xtsdk_cpp/xtsdk/CMakeLists_pybind.txt`, then copy the generated libraries to the corresponding folders in `~/xtsdk_py/lib/`.
++
++### Dependencies
++```bash
++pip install numpy opencv-python PyQt5 open3d -i https://pypi.tuna.tsinghua.edu.cn/simple
++
++
++- Windows:
++Boost library: boost_1_79_0-msvc-14.2-64.exe
++Download link: https://boostorg.jfrog.io/artifactory/main/release/1.79.0/binaries/boost_1_79_0-msvc-14.2-64.exe
++- Linux:
++bash
++复制代码
++sudo apt install libboost-all-dev
++Recommended: Boost 1.70.
++sdk_example Directory
++Contains SDK usage examples.
++
++## Device Connection
++cd ~/xtsdk_py/sdk_example
++Run with parameters:
++Parameter 1: Radar IP address
++Parameter 2: 1 (use xtsdk_py/cfg/xintan.xtcfg and ignore radar parameters) / 0 (use radar parameters and ignore local config)
++Examples:
++Windows: python sdk_sample_***.py 192.168.0.101 0
++Linux: python3 sdk_sample_***.py 192.168.0.101 0
++Playback from Recorded Files
++cd ~/xtsdk_py/sdk_example
++Copy recording folder (containing .xbin or hex-encoded .txt files) to this directory.
++Run:
++Windows: python sdk_sample_play.py [recording_folder_name]
++Linux: python3 sdk_sample_play.py [recording_folder_name]
++Configuration File
++Configurations can be saved via XT-Future GUI and overwritten, or manually edited.
++
++## SDK Instantiation
++This SDK uses Python to call a C++ compiled library named xintan_sdk.
++Instantiate with:
++
++
++xtsdk = xintan_sdk.XtSdk()
++Event Data Types
++sdkState: SDK state changed
++devState: Device state changed
++Callback Functions
++
++void setCallback(
++    std::function<void(const std::shared_ptr<CBEventData>&)> eventcallback,
++    std::function<void(const std::shared_ptr<Frame>&)> imgcallback
++);
++eventcallback: Receives SDK events, device reports, and logs.
++imgcallback: Receives depth, grayscale, and point cloud frames.
++Xintan LiDAR SDK Data Explanation
++Xintan LiDAR is Flash-type with global exposure. Output point cloud format is XYZI with a single timestamp per frame.
++
++Coordinate System: LiDAR coordinate system (LiDAR as origin).
++Frame Data:
++
++uint16_t width;           // Frame width
++uint16_t height;          // Frame height
++uint64_t timeStampS;      // Timestamp (seconds)
++uint32_t timeStampNS;     // Timestamp (nanoseconds)
++uint16_t temperature;     // Sensor temperature
++uint16_t vcseltemperature;// VCSEL temperature
++std::vector<uint16_t> distData;   // Filtered depth data (0~964000 = valid)
++std::vector<uint16_t> amplData;   // Amplitude data (0~2039 = valid)
++std::vector<XtPointXYZI> points;  // Point cloud (undistorted, XYZI format)
++Note:
++distData: Post-filter depth array (not undistorted).
++rawdistData: Pre-filter depth array.
++
++
++SDK APIs
++Connection & Control
++- bool setConnectIpaddress(std::string ipAddress);
++Set device IP (e.g., "192.168.0.101").
++- bool setConnectSerialportName(std::string serialportName);
++Set COM port (e.g., "COM2").
++- void startup();
++Start SDK.
++- void shutdown();
++Disconnect device.
++- bool isconnect();
++Check connection status.
++- bool isUsedNet();
++Check if connected via network.
++State & Configuration
++- SdkState getSdkState();
++Get SDK state.
++- SdkState getDevState();
++Get device state.
++- std::string getStateStr();
++Get SDK state as string.
++- int getfps();
++Get current FPS.
++- bool getDevInfo(RespDevInfo &devInfo);
++Get device info.
++- bool getDevConfig(RespDevConfig &devConfig);
++Get device configuration.
++Filters & Processing
++- bool setSdkKalmanFilter(uint16_t factor, uint16_t threshold);
++Set Kalman filter.
++- bool setSdkEdgeFilter(uint16_t threshold);
++Set edge filter.
++- bool setSdkMedianFilter(uint16_t size);
++Set median filter.
++- void setPostProcess(const float &dilation_pixels, const uint8_t &mode, const double &mode_th);
++Optimize near-distance point cloud and moving objects.
++- bool clearAllSdkFilter();
++Clear all filters.
++Device Commands
++- bool testDev();
++Test device communication.
++- bool start(ImageType imgType, bool isOnce = false);
++Start measurement with specified image type.
++- bool stop();
++Stop measurement.
++- bool setIp(std::string ip, std::string mask, std::string gate);
++Set device IP settings.
++- bool setFilter(uint16_t temporal_factor, uint16_t temporal_threshold, uint16_t edgefilter_threshold);
++Set device filters.
++- bool setIntTimesus(uint16_t timeGs, uint16_t time1, uint16_t time2, uint16_t time3);
++Set integration times (µs).
++- bool setHdrMode(HDRMode mode);
++Set HDR mode (HDR_OFF or HDR_TAMPORAL).
++- bool resetDev();
++Reboot device.
++Advanced Settings
++- bool setModFreq(ModulationFreq freqType);
++Set modulation frequency (FREQ_12M, FREQ_6M).
++- bool setRoi(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
++Set ROI region.
++- bool setUdpDestIp(std::string ip, uint16_t port=7687);
++Set UDP destination IP.
++- bool setMaxFps(uint8_t maxfps);
++Set maximum FPS.
++- bool setAdditionalGray(const uint8_t &on);
+ Enable grayscale capture.
+\ No newline at end of file
+diff --git a/cfg/read_config.py b/cfg/read_config.py
+index 82a7940..8562b79 100644
+--- a/cfg/read_config.py
++++ b/cfg/read_config.py
+@@ -1,57 +1,57 @@
+-import configparser
+-
+-class ConfigParse:
+-    def __init__(self, filename):
+-        self.config = configparser.ConfigParser()
+-        self.config.optionxform = str
+-        self.config.read(filename)
+-        self.configs = self._load_all_settings()
+-
+-
+-    def get_setting(self, key, default=None, value_type=str):
+-        return self._get_value('Setting', key, default, value_type)
+-
+-    def get_filter(self, key, default=None, value_type=str):
+-        return self._get_value('Filters', key, default, value_type)
+-
+-    def _get_value(self, section, key, default, value_type):
+-        try:
+-            if value_type == int:
+-                return self.config.getint(section, key)
+-            elif value_type == float:
+-                return self.config.getfloat(section, key)
+-            elif value_type == bool:
+-                return self.config.getboolean(section, key)
+-            else:
+-                return self.config.get(section, key)
+-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
+-            print(f"Warning: {e}. Using default value: {default}")
+-            return default
+-
+-    def _load_all_settings(self):
+-        configs = {}
+-        for section in self.config.sections():
+-            configs[section] = {}
+-            for key, value in self.config.items(section):
+-                # Attempt to convert values to int, float, or bool if applicable
+-                try:
+-                    configs[section][key] = int(value)
+-                except ValueError:
+-                    try:
+-                        configs[section][key] = float(value)
+-                    except ValueError:
+-                        if value.lower() in ['true', 'false']:
+-                            configs[section][key] = value.lower() == 'true'
+-                        else:
+-                            configs[section][key] = value
+-        return configs
+-
+-    def print_all_settings(self):
+-        print("************CONFIG***********")
+-        for section, params in self.configs.items():
+-            print(f"[{section}]")
+-            for key, value in params.items():
+-                print(f"{key}={value}")
+-            print()  # Print a newline for better readability
+-        print("******************************")
++import configparser
++
++class ConfigParse:
++    def __init__(self, filename):
++        self.config = configparser.ConfigParser()
++        self.config.optionxform = str
++        self.config.read(filename)
++        self.configs = self._load_all_settings()
++
++
++    def get_setting(self, key, default=None, value_type=str):
++        return self._get_value('Setting', key, default, value_type)
++
++    def get_filter(self, key, default=None, value_type=str):
++        return self._get_value('Filters', key, default, value_type)
++
++    def _get_value(self, section, key, default, value_type):
++        try:
++            if value_type == int:
++                return self.config.getint(section, key)
++            elif value_type == float:
++                return self.config.getfloat(section, key)
++            elif value_type == bool:
++                return self.config.getboolean(section, key)
++            else:
++                return self.config.get(section, key)
++        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
++            print(f"Warning: {e}. Using default value: {default}")
++            return default
++
++    def _load_all_settings(self):
++        configs = {}
++        for section in self.config.sections():
++            configs[section] = {}
++            for key, value in self.config.items(section):
++                # Attempt to convert values to int, float, or bool if applicable
++                try:
++                    configs[section][key] = int(value)
++                except ValueError:
++                    try:
++                        configs[section][key] = float(value)
++                    except ValueError:
++                        if value.lower() in ['true', 'false']:
++                            configs[section][key] = value.lower() == 'true'
++                        else:
++                            configs[section][key] = value
++        return configs
++
++    def print_all_settings(self):
++        print("************CONFIG***********")
++        for section, params in self.configs.items():
++            print(f"[{section}]")
++            for key, value in params.items():
++                print(f"{key}={value}")
++            print()  # Print a newline for better readability
++        print("******************************")
+         print()
+\ No newline at end of file
+diff --git a/cfg/xintan.xtcfg b/cfg/xintan.xtcfg
+index 1338bbb..3dbde27 100644
+--- a/cfg/xintan.xtcfg
++++ b/cfg/xintan.xtcfg
+@@ -1,38 +1,38 @@
+-[Setting]
+-imgType=4
+-HDR=1
+-int1=100
+-int2=1200
+-int3=0
+-int4=0
+-intgs=2000
+-minLSB=80
+-hmirror=0
+-vmirror=0
+-maxfps=30
+-
+-freq = 0
+-
+-freq1=2
+-freq2=0
+-freq3=1
+-freq4=1
+-renderType=0
+-
+-[Filters]
+-medianSize=3
+-kalmanEnable=1
+-kalmanFactor=0.30
+-kalmanThreshold=200
+-edgeEnable=1
+-edgeThreshold=150
+-dustEnable=1
+-dustThreshold=2000
+-dustFrames=2
+-postprocessEnable=1
+-dynamicsEnabled=1
+-dynamicsWinsize=9
+-postprocessThreshold=5.0
+-reflectiveEnable=1
+-ref_th_min=0.5
+-ref_th_max=2.0
++[Setting]
++imgType=4
++HDR=1
++int1=100
++int2=1200
++int3=0
++int4=0
++intgs=2000
++minLSB=80
++hmirror=0
++vmirror=0
++maxfps=30
++
++freq = 0
++
++freq1=2
++freq2=0
++freq3=1
++freq4=1
++renderType=0
++
++[Filters]
++medianSize=3
++kalmanEnable=1
++kalmanFactor=0.30
++kalmanThreshold=200
++edgeEnable=1
++edgeThreshold=150
++dustEnable=1
++dustThreshold=2000
++dustFrames=2
++postprocessEnable=1
++dynamicsEnabled=1
++dynamicsWinsize=9
++postprocessThreshold=5.0
++reflectiveEnable=1
++ref_th_min=0.5
++ref_th_max=2.0
+diff --git a/sdk_example/sdk_example.py b/sdk_example/sdk_example.py
+index 4eae730..6b6431d 100644
+--- a/sdk_example/sdk_example.py
++++ b/sdk_example/sdk_example.py
+@@ -1,241 +1,241 @@
+-import sys
+-import platform
+-import argparse
+-import configparser
+-import signal
+-import os
+-import re
+-# 获取操作系统类型
+-os_type = platform.system()
+-if os_type == "Windows":
+-    sys.path.append('../lib/win32')
+-    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
+-elif os_type == "Linux":
+-    architecture = platform.machine()
+-    
+-    if architecture == "x86_64":
+-        sys.path.append('../lib/linux/x86_64')
+-    elif architecture == "aarch64":
+-        sys.path.append('../lib/linux/aarch64')
+-
+-import copy
+-# import numpy
+-
+-
+-
+-sys.path.append("../cfg")
+-
+-
+-import time
+-import xintan_sdk
+-from read_config import ConfigParse
+-
+-keepRunning = True
+-xtsdk = xintan_sdk.XtSdk()
+-config_parse = ConfigParse('../cfg/xintan.xtcfg')
+-
+-configs = copy.deepcopy(config_parse.configs)
+-is_set_para = 0
+-
+-
+-def signal_handler(sig, frame):
+-    global keepRunning
+-    print('You pressed Control+C!')
+-    keepRunning = False
+-    # sys.exit(0)
+-
+-
+-def get_multi_freq(freq_dev: int) -> int:
+-    freq_map = {
+-        0: 2,
+-        1: 0,
+-        3: 1,
+-        4: 6,
+-        7: 3,
+-        15: 4
+-    }
+-
+-    # Get the index from the dictionary, default to 100 if freq_dev is unknown
+-    return freq_map.get(freq_dev, 100)
+-
+-
+-def extract_version(fwVersion: str) -> float:
+-    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
+-
+-    if not version_match:
+-        return None
+-
+-    version_str = version_match.group(1)  # Get X.Y part
+-    try:
+-        return float(version_str)
+-    except ValueError:
+-        return None
+-
+-#xtsdk 回调函数
+-def onCallbackEvent(event: xintan_sdk.CBEventData):
+-    try:
+-        print('event: '+ event.eventstr + " " +  str(event.cmdid))
+-        if event.eventstr == "sdkState":
+-
+-            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
+-                success1,  devinfo = xtsdk.getDevInfo()
+-                print(devinfo.fwVersion)
+-                print(devinfo.sn + " " + devinfo.chipidStr)
+-
+-                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
+-                fwversionf = extract_version(fwVersion)
+-                print("device fw version: " + str(fwversionf))
+-
+-                if fwversionf >= 2.20:
+-                    print(str(fwversionf) + " > 2.20")
+-
+-                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
+-
+-                    success, devconfig = xtsdk.getDevConfig()
+-
+-                    if success:
+-                        print("******************* GET CONFIG SUCCESS *******************")
+-                        # 打印 devinfo 的 fwVersion 属性
+-                        print(f"fwVersion: {devinfo.fwVersion}")
+-                        print(f"version: {devconfig.version}")
+-                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
+-                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
+-
+-                        # 打印其他属性
+-                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
+-                        print(f"integrationTimes: f“{devconfig.integrationTimes[0]} "
+-                                                  f"{devconfig.integrationTimes[1]} "
+-                                                  f"{devconfig.integrationTimes[2]} "
+-                                                  f"{devconfig.integrationTimes[3]}")
+-                        print(f"miniAmp: {devconfig.miniAmp}")
+-                        print(f"isFilterOn: {devconfig.isFilterOn}")
+-                        print(f"roi: {devconfig.roi}")
+-                        print(f"maxfps: {devconfig.maxfps}")
+-                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
+-                        print(f"bBinningH: {devconfig.bBinningH}")
+-                        print(f"bBinningV: {devconfig.bBinningV}")
+-                        print(f"freqChannel: {devconfig.freqChannel}")
+-                        print(f"setmaxfps: {devconfig.setmaxfps}")
+-                        print(f"endianType: {devconfig.endianType}")
+-                        # print(f"freq: {devconfig.freq}")
+-                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
+-
+-                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
+-                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
+-                        print(f"cut_distance0: {devconfig.cut_distance0}")
+-                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
+-                        print(f"cut_distance1: {devconfig.cut_distance1}")
+-
+-                        print("********************************************************")
+-                        if not is_set_para:
+-                            print("******************* USING DEV CONFIG *******************")
+-                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
+-                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
+-                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
+-                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
+-                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
+-
+-                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
+-                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
+-                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
+-                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
+-
+-                            configs['Setting']['freq'] = devconfig.modFreq
+-                            configs['Setting']['maxfps'] = devconfig.maxfps
+-                            configs['Setting']['minLSB'] = devconfig.miniAmp
+-                            configs['Setting']['HDR'] = devconfig.hdrMode
+-                        else:
+-                            print("******************* USING INI CONFIG *******************")
+-                        config_parse.configs = configs
+-                    else:
+-                        print("******************* GET CONFIG FAILED *******************")
+-                        print("********************************************************")
+-                else:
+-                    print("******************* < 2.20 *******************")
+-                    print("********************************************************")
+-
+-                config_parse.print_all_settings()
+-                xtsdk.stop()
+-                xtsdk.setIntTimesus(configs['Setting']['intgs'],
+-                                    configs['Setting']['int1'],
+-                                    configs['Setting']['int2'],
+-                                    configs['Setting']['int3'],
+-                                    configs['Setting']['int4'],
+-                                    0)
+-                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
+-                if fwversionf < 2.0:
+-                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
+-                    xtsdk.setModFreq(mod_freq)
+-                    
+-                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
+-                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
+-                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
+-                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
+-                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
+-                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4,xintan_sdk.ModulationFreq(2))
+-
+-
+-                xtsdk.setHdrMode(hdr_mode)
+-
+-                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
+-                xtsdk.setMaxFps(configs['Setting']['maxfps'])
+-                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
+-                xtsdk.start(img_type)
+-            elif event == 'sdkState':
+-                print(xtsdk.getStateStr())
+-            elif event == 'devState':
+-                print(xtsdk.getStateStr())
+-    except Exception as e:
+-        print(f"Exception in onCallbackEvent: {e}")
+-
+-def onCallbackImage(frame: xintan_sdk.Frame):
+-    print("img: " + str(frame.frame_id))
+-
+-if __name__ == '__main__':
+-    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
+-
+-    if configs['Filters']['kalmanEnable'] == 1:
+-        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
+-                                 (configs['Filters']['kalmanThreshold']),
+-                                 2000)
+-    if configs['Filters']['medianSize'] > 0:
+-        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
+-    if configs['Filters']['edgeEnable'] == 1:
+-        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
+-    if configs['Filters']['dustEnable'] == 1:
+-        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
+-    if configs['Filters']['postprocessEnable'] == 1:
+-        xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
+-    if configs['Filters']['reflectiveEnable'] == 1:
+-        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
+-
+-
+-
+-    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
+-
+-    # 添加 IP 地址参数
+-    parser.add_argument('ip_address',nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.101")
+-    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
+-    # 解析命令行参数
+-    args = parser.parse_args()
+-    print("ip: " + args.ip_address)
+-    print("is_set_para: " + args.is_set_para)
+-    is_set_para = int(args.is_set_para)
+-    success = xtsdk.setConnectIpaddress(args.ip_address)
+-
+-    try:
+-        xtsdk.startup()
+-    except Exception as reason:
+-        print(f"Error: {reason}")
+-    signal.signal(signal.SIGINT, signal_handler)
+-
+-
+-    while keepRunning:
+-        time.sleep(1)
+-    print("stop")
+-    xtsdk.stop()
+-    xtsdk.shutdown()
+-
++import sys
++import platform
++import argparse
++import configparser
++import signal
++import os
++import re
++# 获取操作系统类型
++os_type = platform.system()
++if os_type == "Windows":
++    sys.path.append('../lib/win32')
++    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
++elif os_type == "Linux":
++    architecture = platform.machine()
++    
++    if architecture == "x86_64":
++        sys.path.append('../lib/linux/x86_64')
++    elif architecture == "aarch64":
++        sys.path.append('../lib/linux/aarch64')
++
++import copy
++# import numpy
++
++
++
++sys.path.append("../cfg")
++
++
++import time
++import xintan_sdk
++from read_config import ConfigParse
++
++keepRunning = True
++xtsdk = xintan_sdk.XtSdk()
++config_parse = ConfigParse('../cfg/xintan.xtcfg')
++
++configs = copy.deepcopy(config_parse.configs)
++is_set_para = 0
++
++
++def signal_handler(sig, frame):
++    global keepRunning
++    print('You pressed Control+C!')
++    keepRunning = False
++    # sys.exit(0)
++
++
++def get_multi_freq(freq_dev: int) -> int:
++    freq_map = {
++        0: 2,
++        1: 0,
++        3: 1,
++        4: 6,
++        7: 3,
++        15: 4
++    }
++
++    # Get the index from the dictionary, default to 100 if freq_dev is unknown
++    return freq_map.get(freq_dev, 100)
++
++
++def extract_version(fwVersion: str) -> float:
++    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
++
++    if not version_match:
++        return None
++
++    version_str = version_match.group(1)  # Get X.Y part
++    try:
++        return float(version_str)
++    except ValueError:
++        return None
++
++#xtsdk 回调函数
++def onCallbackEvent(event: xintan_sdk.CBEventData):
++    try:
++        print('event: '+ event.eventstr + " " +  str(event.cmdid))
++        if event.eventstr == "sdkState":
++
++            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
++                success1,  devinfo = xtsdk.getDevInfo()
++                print(devinfo.fwVersion)
++                print(devinfo.sn + " " + devinfo.chipidStr)
++
++                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
++                fwversionf = extract_version(fwVersion)
++                print("device fw version: " + str(fwversionf))
++
++                if fwversionf >= 2.20:
++                    print(str(fwversionf) + " > 2.20")
++
++                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
++
++                    success, devconfig = xtsdk.getDevConfig()
++
++                    if success:
++                        print("******************* GET CONFIG SUCCESS *******************")
++                        # 打印 devinfo 的 fwVersion 属性
++                        print(f"fwVersion: {devinfo.fwVersion}")
++                        print(f"version: {devconfig.version}")
++                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
++                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
++
++                        # 打印其他属性
++                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
++                        print(f"integrationTimes: f“{devconfig.integrationTimes[0]} "
++                                                  f"{devconfig.integrationTimes[1]} "
++                                                  f"{devconfig.integrationTimes[2]} "
++                                                  f"{devconfig.integrationTimes[3]}")
++                        print(f"miniAmp: {devconfig.miniAmp}")
++                        print(f"isFilterOn: {devconfig.isFilterOn}")
++                        print(f"roi: {devconfig.roi}")
++                        print(f"maxfps: {devconfig.maxfps}")
++                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
++                        print(f"bBinningH: {devconfig.bBinningH}")
++                        print(f"bBinningV: {devconfig.bBinningV}")
++                        print(f"freqChannel: {devconfig.freqChannel}")
++                        print(f"setmaxfps: {devconfig.setmaxfps}")
++                        print(f"endianType: {devconfig.endianType}")
++                        # print(f"freq: {devconfig.freq}")
++                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
++
++                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
++                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
++                        print(f"cut_distance0: {devconfig.cut_distance0}")
++                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
++                        print(f"cut_distance1: {devconfig.cut_distance1}")
++
++                        print("********************************************************")
++                        if not is_set_para:
++                            print("******************* USING DEV CONFIG *******************")
++                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
++                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
++                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
++                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
++                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
++
++                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
++                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
++                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
++                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
++
++                            configs['Setting']['freq'] = devconfig.modFreq
++                            configs['Setting']['maxfps'] = devconfig.maxfps
++                            configs['Setting']['minLSB'] = devconfig.miniAmp
++                            configs['Setting']['HDR'] = devconfig.hdrMode
++                        else:
++                            print("******************* USING INI CONFIG *******************")
++                        config_parse.configs = configs
++                    else:
++                        print("******************* GET CONFIG FAILED *******************")
++                        print("********************************************************")
++                else:
++                    print("******************* < 2.20 *******************")
++                    print("********************************************************")
++
++                config_parse.print_all_settings()
++                xtsdk.stop()
++                xtsdk.setIntTimesus(configs['Setting']['intgs'],
++                                    configs['Setting']['int1'],
++                                    configs['Setting']['int2'],
++                                    configs['Setting']['int3'],
++                                    configs['Setting']['int4'],
++                                    0)
++                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
++                if fwversionf < 2.0:
++                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
++                    xtsdk.setModFreq(mod_freq)
++                    
++                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
++                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
++                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
++                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
++                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
++                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4,xintan_sdk.ModulationFreq(2))
++
++
++                xtsdk.setHdrMode(hdr_mode)
++
++                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
++                xtsdk.setMaxFps(configs['Setting']['maxfps'])
++                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
++                xtsdk.start(img_type)
++            elif event == 'sdkState':
++                print(xtsdk.getStateStr())
++            elif event == 'devState':
++                print(xtsdk.getStateStr())
++    except Exception as e:
++        print(f"Exception in onCallbackEvent: {e}")
++
++def onCallbackImage(frame: xintan_sdk.Frame):
++    print("img: " + str(frame.frame_id))
++
++if __name__ == '__main__':
++    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
++
++    if configs['Filters']['kalmanEnable'] == 1:
++        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
++                                 (configs['Filters']['kalmanThreshold']),
++                                 2000)
++    if configs['Filters']['medianSize'] > 0:
++        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
++    if configs['Filters']['edgeEnable'] == 1:
++        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
++    if configs['Filters']['dustEnable'] == 1:
++        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
++    if configs['Filters']['postprocessEnable'] == 1:
++        xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
++    if configs['Filters']['reflectiveEnable'] == 1:
++        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
++
++
++
++    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
++
++    # 添加 IP 地址参数
++    parser.add_argument('ip_address',nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.101")
++    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
++    # 解析命令行参数
++    args = parser.parse_args()
++    print("ip: " + args.ip_address)
++    print("is_set_para: " + args.is_set_para)
++    is_set_para = int(args.is_set_para)
++    success = xtsdk.setConnectIpaddress(args.ip_address)
++
++    try:
++        xtsdk.startup()
++    except Exception as reason:
++        print(f"Error: {reason}")
++    signal.signal(signal.SIGINT, signal_handler)
++
++
++    while keepRunning:
++        time.sleep(1)
++    print("stop")
++    xtsdk.stop()
++    xtsdk.shutdown()
++
+diff --git a/sdk_example/sdk_example_3d.py b/sdk_example/sdk_example_3d.py
+index 6ee17b0..88cf988 100644
+--- a/sdk_example/sdk_example_3d.py
++++ b/sdk_example/sdk_example_3d.py
+@@ -1,424 +1,424 @@
+-import sys
+-import platform
+-import argparse
+-import signal
+-import os
+-import re
+-
+-# 获取操作系统类型
+-os_type = platform.system()
+-
+-if os_type == "Windows":
+-    sys.path.append('../lib/win32')
+-    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
+-elif os_type == "Linux":
+-    architecture = platform.machine()
+-    if architecture == "x86_64":
+-        sys.path.append('../lib/linux/x86_64')
+-    elif architecture == "aarch64":
+-        sys.path.append('../lib/linux/aarch64')
+-
+-sys.path.append("../cfg")
+-from read_config import ConfigParse
+-import time
+-import xintan_sdk
+-import open3d as o3d
+-import open3d.visualization.gui as gui
+-import threading
+-import queue
+-import math
+-# print(sys.path)
+-import numpy as np
+-xtsdk = xintan_sdk.XtSdk()
+-lock = threading.Lock()
+-dataqueue = queue.Queue()
+-
+-keepRunning = True
+-config_parse = ConfigParse('../cfg/xintan.xtcfg')
+-
+-configs = config_parse.configs
+-is_set_para = 0
+-vis = None
+-exit_event = threading.Event()
+-
+-
+-def signal_handler(sig, frame):
+-    print('\nShutting down...')
+-    exit_event.set()
+-
+-    # 停止数据采集
+-    xtsdk.stop()
+-    xtsdk.shutdown()
+-
+-    # # 关闭 Open3D 窗口
+-    # global vis
+-    # if vis:
+-    #     gui.Application.instance.quit()
+-
+-    # 强制退出程序（必要时）
+-    os._exit(0)
+-
+-def get_multi_freq(freq_dev: int) -> int:
+-    freq_map = {
+-        0: 2,
+-        1: 0,
+-        3: 1,
+-        4: 6,
+-        7: 3,
+-        15: 4
+-    }
+-
+-    # Get the index from the dictionary, default to 100 if freq_dev is unknown
+-    return freq_map.get(freq_dev, 100)
+-
+-def extract_version(fwVersion: str) -> float:
+-    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
+-
+-    if not version_match:
+-        return None
+-
+-    version_str = version_match.group(1)  # Get X.Y part
+-    try:
+-        return float(version_str)
+-    except ValueError:
+-        return None
+-
+-#xtsdk 回调函数
+-def onCallbackEvent(event: xintan_sdk.CBEventData):
+-    try:
+-        print('event: '+ event.eventstr + " " +  str(event.cmdid))
+-        if event.eventstr == "sdkState":
+-
+-            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
+-                success1,  devinfo = xtsdk.getDevInfo()
+-                print(devinfo.fwVersion)
+-                print(devinfo.sn + " " + devinfo.chipidStr)
+-
+-                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
+-                fwlen = len(fwVersion)
+-                fwversionf = float(fwVersion[fwlen - 4:])
+-                fwversionf = extract_version(fwVersion)
+-                print("device fw version: " + str(fwversionf))
+-
+-                if fwversionf >= 2.20:
+-                    print(str(fwversionf) + " > 2.20")
+-
+-                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
+-
+-                    success, devconfig = xtsdk.getDevConfig()
+-
+-                    if success:
+-                        print("******************* GET CONFIG SUCCESS *******************")
+-                        # 打印 devinfo 的 fwVersion 属性
+-                        print(f"fwVersion: {devinfo.fwVersion}")
+-                        print(f"version: {devconfig.version}")
+-                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
+-                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
+-
+-                        # 打印其他属性
+-                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
+-                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
+-                                                  f"{devconfig.integrationTimes[1]} "
+-                                                  f"{devconfig.integrationTimes[2]} "
+-                                                  f"{devconfig.integrationTimes[3]}")
+-                        print(f"miniAmp: {devconfig.miniAmp}")
+-                        print(f"isFilterOn: {devconfig.isFilterOn}")
+-                        print(f"roi: {devconfig.roi}")
+-                        print(f"maxfps: {devconfig.maxfps}")
+-                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
+-                        print(f"bBinningH: {devconfig.bBinningH}")
+-                        print(f"bBinningV: {devconfig.bBinningV}")
+-                        print(f"freqChannel: {devconfig.freqChannel}")
+-                        print(f"setmaxfps: {devconfig.setmaxfps}")
+-                        print(f"endianType: {devconfig.endianType}")
+-                        # print(f"freq: {devconfig.freq}")
+-                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
+-
+-                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
+-                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
+-                        print(f"cut_distance0: {devconfig.cut_distance0}")
+-                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
+-                        print(f"cut_distance1: {devconfig.cut_distance1}")
+-
+-                        print("********************************************************")
+-                        if not is_set_para:
+-                            print("******************* USING DEV CONFIG *******************")
+-                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
+-                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
+-                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
+-                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
+-                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
+-
+-                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
+-                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
+-                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
+-                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
+-
+-                            configs['Setting']['freq'] = devconfig.modFreq
+-                            configs['Setting']['maxfps'] = devconfig.maxfps
+-                            configs['Setting']['minLSB'] = devconfig.miniAmp
+-                            configs['Setting']['HDR'] = devconfig.hdrMode
+-                        else:
+-                            print("******************* USING INI CONFIG *******************")
+-                        config_parse.configs = configs
+-                    else:
+-                        print("******************* GET CONFIG FAILED *******************")
+-                        print("********************************************************")
+-                else:
+-                    print("******************* < 2.20 *******************")
+-                    print("********************************************************")
+-
+-                config_parse.print_all_settings()
+-                xtsdk.stop()
+-                xtsdk.setIntTimesus(configs['Setting']['intgs'],
+-                                    configs['Setting']['int1'],
+-                                    configs['Setting']['int2'],
+-                                    configs['Setting']['int3'],
+-                                    configs['Setting']['int4'],
+-                                    0)
+-                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
+-                if fwversionf < 2.0:
+-                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
+-                    xtsdk.setModFreq(mod_freq)
+-                    
+-                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
+-                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
+-                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
+-                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
+-                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
+-                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4, xintan_sdk.ModulationFreq(2))
+-
+-
+-                xtsdk.setHdrMode(hdr_mode)
+-
+-                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
+-                xtsdk.setMaxFps(configs['Setting']['maxfps'])
+-                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
+-                xtsdk.start(img_type)
+-            elif event == 'sdkState':
+-                print(xtsdk.getStateStr())
+-            elif event == 'devState':
+-                print(xtsdk.getStateStr())
+-    except Exception as e:
+-        print(f"Exception in onCallbackEvent: {e}")
+-
+-
+-def onCallbackImage(frame: xintan_sdk.Frame):
+-    response = np.empty((1, frame.height, frame.width), dtype=np.uint16)
+-    # if (frame.measType == DISTANCE) | (frame.measType == DISTAMP):
+-    if not frame.hasPointcloud:
+-        return
+-    frame_inq(frame)
+-
+-# 将 frame 添加到队列
+-def frame_inq(frame):
+-    # dataqueue.put(frame)
+-    dataqueue.put(frame, block=False)
+-
+-
+-
+-# 从 frame 获取点和颜色信息
+-def frame_getpointsandcolors(frame):
+-    # 初始化 points 和 colors 数组
+-
+-    points = np.zeros((frame.width * frame.height, 3))
+-    colors = np.zeros((frame.width * frame.height, 3))
+-
+-    try:
+-        # 获取所有点的坐标信息
+-        xyz = np.array([[p.x, p.y, p.z] for p in frame.points])
+-
+-        # 检测 NaN 值
+-        valid_mask = ~np.isnan(xyz).any(axis=1)
+-
+-        # 筛选出有效的点并填充 points 数组
+-        points[valid_mask] = xyz[valid_mask]
+-
+-        # 计算颜色值并填充 colors 数组
+-        colors[valid_mask, 2] = xyz[valid_mask, 2] / 4       # Blue channel
+-        colors[valid_mask, 1] = xyz[valid_mask, 2] / 8       # Green channel
+-        colors[valid_mask, 0] = 1 - colors[valid_mask, 2]    # Red channel
+-
+-        # 为无效点设置默认颜色
+-        colors[~valid_mask] = [0, 0, 1]
+-
+-        # 调试信息：输出前10个点
+-        # print("First 10 Points:", points[:10])
+-    except Exception as reason:
+-        print(f"Error getting points and colors: {reason}")
+-
+-
+-
+-    return points, colors
+-
+-app = None
+-vis = None
+-# 可视化函数
+-def visualize_3dv():
+-    global vis
+-    global app
+-    app = gui.Application.instance
+-    app.initialize()
+-    vis = o3d.visualization.O3DVisualizer("XinTan Open3D - Demo", 1000, 800)
+-    vis.show_settings = False
+-
+-    material = o3d.visualization.rendering.MaterialRecord()
+-    material.shader = "defaultLit"  # Use unlit shader for efficiency
+-
+-    # 初始化点云
+-    pcd = o3d.geometry.PointCloud()
+-    # pcd.points = o3d.utility.Vector3dVector(np.zeros((320*240, 3), dtype=float))
+-    pts = np.zeros((320 * 240, 3), dtype=float)
+-
+-    pcd.points = o3d.utility.Vector3dVector(pts)
+-    try:
+-        vis.add_geometry("Points", pcd, material)
+-    except Exception as e:
+-        print(f"Error: {e}")
+-    vis.reset_camera_to_default()
+-
+-    visual = threading.Thread(target=visualize_3dvThread, args=(vis, pcd))
+-    visual.start()
+-    app.add_window(vis)
+-    # threading.Thread(target=visualize_3dvThread, args=(pcd,), daemon=True).start()
+-    app.run()
+-
+-
+-
+-
+-def update_pointcloud_geometry(vis, pcd):
+-    vis.update_geometry(pcd)
+-    vis.poll_events()
+-    vis.update_renderer()
+-
+-# def visualize_3dvThread(pcd):
+-#     while keepRunning:  # 在程序结束时终止线程
+-#         if dataqueue.empty():
+-#             time.sleep(0.1)
+-#             continue
+-#
+-#         try:
+-#             frame = dataqueue.get(timeout=1)  # 从队列中获取点云数据
+-#             points, colors = frame_getpointsandcolors(frame)
+-#
+-#             # 创建 Tensor 类型点云
+-#             t_pcd = o3d.t.geometry.PointCloud()
+-#             t_pcd.point.positions = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
+-#             t_pcd.point.colors = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
+-#
+-#             try:
+-#                 # pts = np.zeros((len(points), 3), dtype=float)
+-#                 # pcd.points = o3d.utility.Vector3dVector(pts)
+-#                 pcd.points = o3d.utility.Vector3dVector(np.asarray(points))
+-#                 pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors))
+-#             except Exception as e:
+-#                 print(f"Error: {e}")
+-#             vis.remove_geometry("Points")
+-#             vis.add_geometry("Points",pcd)
+-#             end_time = time.time()  # 记录结束时间
+-#             # print(f"onCallbackImage function execution time: {end_time - start_time:.6f} seconds")
+-#
+-#             # # 添加或更新几何体
+-#             # if "point_cloud" not in vis.get_geometry_names():
+-#             #     vis.add_geometry("point_cloud", t_pcd)  # 添加新的点云
+-#             # else:
+-#             #     vis.update_geometry(
+-#             #         "point_cloud", t_pcd, o3d.visualization.O3DVisualizer.UPDATE_POINTS_FLAG
+-#             #     )  # 更新点云数据
+-#             #
+-#             # # 刷新可视化显示
+-#             # vis.poll_events()
+-#             # vis.update_renderer()
+-#
+-#         except queue.Empty:
+-#             continue  # 队列为空时跳过
+-#         except Exception as reason:
+-#             print(f"Error: {reason}")
+-
+-
+-# 可视化更新线程
+-def visualize_3dvThread(vis, pcd):
+-    global app
+-    geometry_added = False
+-    while not exit_event.is_set():  # 在程序结束时终止线程
+-        # if dataqueue.empty():
+-        #     time.sleep(0.1)
+-        #     continue
+-
+-        try:
+-            start_time = time.time()
+-            frame = dataqueue.get(block=False)  # 从队列中取出数据
+-            points, colors = frame_getpointsandcolors(frame)
+-            t_pcd = o3d.t.geometry.PointCloud()
+-            t_pcd.point.positions = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
+-            t_pcd.point.colors = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
+-
+-            # 检查并更新几何体
+-            if not geometry_added:
+-                vis.add_geometry("point_cloud", t_pcd)  # Add new geometry
+-                geometry_added = True
+-            else:
+-                vis.remove_geometry("point_cloud")  # Remove the existing geometry
+-                vis.add_geometry("point_cloud", t_pcd)  # Add updated geometry
+-
+-            end_time = time.time()  # 记录结束时间
+-            print(f"onCallbackImage function execution time: {end_time - start_time:.6f} seconds")
+-
+-        except queue.Empty:
+-            continue  # 队列为空时跳过
+-        except Exception as reason:
+-            print(f"Error: {reason}")
+-    if vis:
+-        app.quit()
+-
+-
+-if __name__ == '__main__':
+-    signal.signal(signal.SIGINT, signal_handler)
+-    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
+-    if configs['Filters']['kalmanEnable'] == 1:
+-        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
+-                                 (configs['Filters']['kalmanThreshold']),
+-                                 2000)
+-    if configs['Filters']['medianSize'] > 0:
+-        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
+-    if configs['Filters']['edgeEnable'] == 1:
+-        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
+-    if configs['Filters']['dustEnable'] == 1:
+-        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
+-    if configs['Filters']['postprocessEnable'] == 1:
+-                xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
+-    if configs['Filters']['reflectiveEnable'] == 1:
+-        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
+-
+-    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
+-
+-    # 添加 IP 地址参数
+-    parser.add_argument('ip_address', nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.117")
+-    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
+-    # 解析命令行参数
+-    args = parser.parse_args()
+-    print("ip: " + args.ip_address)
+-    print("is_set_para: " + args.is_set_para)
+-    is_set_para = int(args.is_set_para)
+-
+-    success = xtsdk.setConnectIpaddress(args.ip_address)
+-    xtsdk.startup()
+-
+-
+-    visual = threading.Thread(target=visualize_3dv)
+-    visual.start()
+-
+-
+-    while not exit_event.is_set():
+-        time.sleep(1)
+-
+-    print("Stopping...")
+-    # 清理工作
+-    # visual.join()  # 等待可视化线程结束
+-    print("stop")
+-    xtsdk.stop()
+-    xtsdk.shutdown()
+-
++import sys
++import platform
++import argparse
++import signal
++import os
++import re
++
++# 获取操作系统类型
++os_type = platform.system()
++
++if os_type == "Windows":
++    sys.path.append('../lib/win32')
++    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
++elif os_type == "Linux":
++    architecture = platform.machine()
++    if architecture == "x86_64":
++        sys.path.append('../lib/linux/x86_64')
++    elif architecture == "aarch64":
++        sys.path.append('../lib/linux/aarch64')
++
++sys.path.append("../cfg")
++from read_config import ConfigParse
++import time
++import xintan_sdk
++import open3d as o3d
++import open3d.visualization.gui as gui
++import threading
++import queue
++import math
++# print(sys.path)
++import numpy as np
++xtsdk = xintan_sdk.XtSdk()
++lock = threading.Lock()
++dataqueue = queue.Queue()
++
++keepRunning = True
++config_parse = ConfigParse('../cfg/xintan.xtcfg')
++
++configs = config_parse.configs
++is_set_para = 0
++vis = None
++exit_event = threading.Event()
++
++
++def signal_handler(sig, frame):
++    print('\nShutting down...')
++    exit_event.set()
++
++    # 停止数据采集
++    xtsdk.stop()
++    xtsdk.shutdown()
++
++    # # 关闭 Open3D 窗口
++    # global vis
++    # if vis:
++    #     gui.Application.instance.quit()
++
++    # 强制退出程序（必要时）
++    os._exit(0)
++
++def get_multi_freq(freq_dev: int) -> int:
++    freq_map = {
++        0: 2,
++        1: 0,
++        3: 1,
++        4: 6,
++        7: 3,
++        15: 4
++    }
++
++    # Get the index from the dictionary, default to 100 if freq_dev is unknown
++    return freq_map.get(freq_dev, 100)
++
++def extract_version(fwVersion: str) -> float:
++    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
++
++    if not version_match:
++        return None
++
++    version_str = version_match.group(1)  # Get X.Y part
++    try:
++        return float(version_str)
++    except ValueError:
++        return None
++
++#xtsdk 回调函数
++def onCallbackEvent(event: xintan_sdk.CBEventData):
++    try:
++        print('event: '+ event.eventstr + " " +  str(event.cmdid))
++        if event.eventstr == "sdkState":
++
++            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
++                success1,  devinfo = xtsdk.getDevInfo()
++                print(devinfo.fwVersion)
++                print(devinfo.sn + " " + devinfo.chipidStr)
++
++                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
++                fwlen = len(fwVersion)
++                fwversionf = float(fwVersion[fwlen - 4:])
++                fwversionf = extract_version(fwVersion)
++                print("device fw version: " + str(fwversionf))
++
++                if fwversionf >= 2.20:
++                    print(str(fwversionf) + " > 2.20")
++
++                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
++
++                    success, devconfig = xtsdk.getDevConfig()
++
++                    if success:
++                        print("******************* GET CONFIG SUCCESS *******************")
++                        # 打印 devinfo 的 fwVersion 属性
++                        print(f"fwVersion: {devinfo.fwVersion}")
++                        print(f"version: {devconfig.version}")
++                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
++                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
++
++                        # 打印其他属性
++                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
++                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
++                                                  f"{devconfig.integrationTimes[1]} "
++                                                  f"{devconfig.integrationTimes[2]} "
++                                                  f"{devconfig.integrationTimes[3]}")
++                        print(f"miniAmp: {devconfig.miniAmp}")
++                        print(f"isFilterOn: {devconfig.isFilterOn}")
++                        print(f"roi: {devconfig.roi}")
++                        print(f"maxfps: {devconfig.maxfps}")
++                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
++                        print(f"bBinningH: {devconfig.bBinningH}")
++                        print(f"bBinningV: {devconfig.bBinningV}")
++                        print(f"freqChannel: {devconfig.freqChannel}")
++                        print(f"setmaxfps: {devconfig.setmaxfps}")
++                        print(f"endianType: {devconfig.endianType}")
++                        # print(f"freq: {devconfig.freq}")
++                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
++
++                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
++                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
++                        print(f"cut_distance0: {devconfig.cut_distance0}")
++                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
++                        print(f"cut_distance1: {devconfig.cut_distance1}")
++
++                        print("********************************************************")
++                        if not is_set_para:
++                            print("******************* USING DEV CONFIG *******************")
++                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
++                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
++                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
++                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
++                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
++
++                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
++                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
++                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
++                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
++
++                            configs['Setting']['freq'] = devconfig.modFreq
++                            configs['Setting']['maxfps'] = devconfig.maxfps
++                            configs['Setting']['minLSB'] = devconfig.miniAmp
++                            configs['Setting']['HDR'] = devconfig.hdrMode
++                        else:
++                            print("******************* USING INI CONFIG *******************")
++                        config_parse.configs = configs
++                    else:
++                        print("******************* GET CONFIG FAILED *******************")
++                        print("********************************************************")
++                else:
++                    print("******************* < 2.20 *******************")
++                    print("********************************************************")
++
++                config_parse.print_all_settings()
++                xtsdk.stop()
++                xtsdk.setIntTimesus(configs['Setting']['intgs'],
++                                    configs['Setting']['int1'],
++                                    configs['Setting']['int2'],
++                                    configs['Setting']['int3'],
++                                    configs['Setting']['int4'],
++                                    0)
++                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
++                if fwversionf < 2.0:
++                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
++                    xtsdk.setModFreq(mod_freq)
++                    
++                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
++                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
++                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
++                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
++                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
++                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4, xintan_sdk.ModulationFreq(2))
++
++
++                xtsdk.setHdrMode(hdr_mode)
++
++                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
++                xtsdk.setMaxFps(configs['Setting']['maxfps'])
++                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
++                xtsdk.start(img_type)
++            elif event == 'sdkState':
++                print(xtsdk.getStateStr())
++            elif event == 'devState':
++                print(xtsdk.getStateStr())
++    except Exception as e:
++        print(f"Exception in onCallbackEvent: {e}")
++
++
++def onCallbackImage(frame: xintan_sdk.Frame):
++    response = np.empty((1, frame.height, frame.width), dtype=np.uint16)
++    # if (frame.measType == DISTANCE) | (frame.measType == DISTAMP):
++    if not frame.hasPointcloud:
++        return
++    frame_inq(frame)
++
++# 将 frame 添加到队列
++def frame_inq(frame):
++    # dataqueue.put(frame)
++    dataqueue.put(frame, block=False)
++
++
++
++# 从 frame 获取点和颜色信息
++def frame_getpointsandcolors(frame):
++    # 初始化 points 和 colors 数组
++
++    points = np.zeros((frame.width * frame.height, 3))
++    colors = np.zeros((frame.width * frame.height, 3))
++
++    try:
++        # 获取所有点的坐标信息
++        xyz = np.array([[p.x, p.y, p.z] for p in frame.points])
++
++        # 检测 NaN 值
++        valid_mask = ~np.isnan(xyz).any(axis=1)
++
++        # 筛选出有效的点并填充 points 数组
++        points[valid_mask] = xyz[valid_mask]
++
++        # 计算颜色值并填充 colors 数组
++        colors[valid_mask, 2] = xyz[valid_mask, 2] / 4       # Blue channel
++        colors[valid_mask, 1] = xyz[valid_mask, 2] / 8       # Green channel
++        colors[valid_mask, 0] = 1 - colors[valid_mask, 2]    # Red channel
++
++        # 为无效点设置默认颜色
++        colors[~valid_mask] = [0, 0, 1]
++
++        # 调试信息：输出前10个点
++        # print("First 10 Points:", points[:10])
++    except Exception as reason:
++        print(f"Error getting points and colors: {reason}")
++
++
++
++    return points, colors
++
++app = None
++vis = None
++# 可视化函数
++def visualize_3dv():
++    global vis
++    global app
++    app = gui.Application.instance
++    app.initialize()
++    vis = o3d.visualization.O3DVisualizer("XinTan Open3D - Demo", 1000, 800)
++    vis.show_settings = False
++
++    material = o3d.visualization.rendering.MaterialRecord()
++    material.shader = "defaultLit"  # Use unlit shader for efficiency
++
++    # 初始化点云
++    pcd = o3d.geometry.PointCloud()
++    # pcd.points = o3d.utility.Vector3dVector(np.zeros((320*240, 3), dtype=float))
++    pts = np.zeros((320 * 240, 3), dtype=float)
++
++    pcd.points = o3d.utility.Vector3dVector(pts)
++    try:
++        vis.add_geometry("Points", pcd, material)
++    except Exception as e:
++        print(f"Error: {e}")
++    vis.reset_camera_to_default()
++
++    visual = threading.Thread(target=visualize_3dvThread, args=(vis, pcd))
++    visual.start()
++    app.add_window(vis)
++    # threading.Thread(target=visualize_3dvThread, args=(pcd,), daemon=True).start()
++    app.run()
++
++
++
++
++def update_pointcloud_geometry(vis, pcd):
++    vis.update_geometry(pcd)
++    vis.poll_events()
++    vis.update_renderer()
++
++# def visualize_3dvThread(pcd):
++#     while keepRunning:  # 在程序结束时终止线程
++#         if dataqueue.empty():
++#             time.sleep(0.1)
++#             continue
++#
++#         try:
++#             frame = dataqueue.get(timeout=1)  # 从队列中获取点云数据
++#             points, colors = frame_getpointsandcolors(frame)
++#
++#             # 创建 Tensor 类型点云
++#             t_pcd = o3d.t.geometry.PointCloud()
++#             t_pcd.point.positions = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
++#             t_pcd.point.colors = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
++#
++#             try:
++#                 # pts = np.zeros((len(points), 3), dtype=float)
++#                 # pcd.points = o3d.utility.Vector3dVector(pts)
++#                 pcd.points = o3d.utility.Vector3dVector(np.asarray(points))
++#                 pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors))
++#             except Exception as e:
++#                 print(f"Error: {e}")
++#             vis.remove_geometry("Points")
++#             vis.add_geometry("Points",pcd)
++#             end_time = time.time()  # 记录结束时间
++#             # print(f"onCallbackImage function execution time: {end_time - start_time:.6f} seconds")
++#
++#             # # 添加或更新几何体
++#             # if "point_cloud" not in vis.get_geometry_names():
++#             #     vis.add_geometry("point_cloud", t_pcd)  # 添加新的点云
++#             # else:
++#             #     vis.update_geometry(
++#             #         "point_cloud", t_pcd, o3d.visualization.O3DVisualizer.UPDATE_POINTS_FLAG
++#             #     )  # 更新点云数据
++#             #
++#             # # 刷新可视化显示
++#             # vis.poll_events()
++#             # vis.update_renderer()
++#
++#         except queue.Empty:
++#             continue  # 队列为空时跳过
++#         except Exception as reason:
++#             print(f"Error: {reason}")
++
++
++# 可视化更新线程
++def visualize_3dvThread(vis, pcd):
++    global app
++    geometry_added = False
++    while not exit_event.is_set():  # 在程序结束时终止线程
++        # if dataqueue.empty():
++        #     time.sleep(0.1)
++        #     continue
++
++        try:
++            start_time = time.time()
++            frame = dataqueue.get(block=False)  # 从队列中取出数据
++            points, colors = frame_getpointsandcolors(frame)
++            t_pcd = o3d.t.geometry.PointCloud()
++            t_pcd.point.positions = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
++            t_pcd.point.colors = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
++
++            # 检查并更新几何体
++            if not geometry_added:
++                vis.add_geometry("point_cloud", t_pcd)  # Add new geometry
++                geometry_added = True
++            else:
++                vis.remove_geometry("point_cloud")  # Remove the existing geometry
++                vis.add_geometry("point_cloud", t_pcd)  # Add updated geometry
++
++            end_time = time.time()  # 记录结束时间
++            print(f"onCallbackImage function execution time: {end_time - start_time:.6f} seconds")
++
++        except queue.Empty:
++            continue  # 队列为空时跳过
++        except Exception as reason:
++            print(f"Error: {reason}")
++    if vis:
++        app.quit()
++
++
++if __name__ == '__main__':
++    signal.signal(signal.SIGINT, signal_handler)
++    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
++    if configs['Filters']['kalmanEnable'] == 1:
++        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
++                                 (configs['Filters']['kalmanThreshold']),
++                                 2000)
++    if configs['Filters']['medianSize'] > 0:
++        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
++    if configs['Filters']['edgeEnable'] == 1:
++        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
++    if configs['Filters']['dustEnable'] == 1:
++        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
++    if configs['Filters']['postprocessEnable'] == 1:
++                xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
++    if configs['Filters']['reflectiveEnable'] == 1:
++        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
++
++    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
++
++    # 添加 IP 地址参数
++    parser.add_argument('ip_address', nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.117")
++    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
++    # 解析命令行参数
++    args = parser.parse_args()
++    print("ip: " + args.ip_address)
++    print("is_set_para: " + args.is_set_para)
++    is_set_para = int(args.is_set_para)
++
++    success = xtsdk.setConnectIpaddress(args.ip_address)
++    xtsdk.startup()
++
++
++    visual = threading.Thread(target=visualize_3dv)
++    visual.start()
++
++
++    while not exit_event.is_set():
++        time.sleep(1)
++
++    print("Stopping...")
++    # 清理工作
++    # visual.join()  # 等待可视化线程结束
++    print("stop")
++    xtsdk.stop()
++    xtsdk.shutdown()
++
+diff --git a/sdk_example/sdk_example_img.py b/sdk_example/sdk_example_img.py
+index b702188..78ae318 100644
+--- a/sdk_example/sdk_example_img.py
++++ b/sdk_example/sdk_example_img.py
+@@ -1,371 +1,371 @@
+-import sys
+-import platform
+-import argparse
+-import configparser
+-import signal
+-import os
+-import copy
+-import numpy as np
+-import re
+-
+-
+-
+-# 获取操作系统类型
+-os_type = platform.system()
+-if os_type == "Windows":
+-    sys.path.append('../lib/win32')
+-    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
+-elif os_type == "Linux":
+-    architecture = platform.machine()
+-    if architecture == "x86_64":
+-        sys.path.append('../lib/linux/x86_64')
+-    elif architecture == "aarch64":
+-        sys.path.append('../lib/linux/aarch64')
+-
+-sys.path.append("../cfg")
+-
+-import time
+-import xintan_sdk
+-from read_config import ConfigParse
+-
+-keepRunning = True
+-xtsdk = xintan_sdk.XtSdk()
+-config_parse = ConfigParse('../cfg/xintan.xtcfg')
+-
+-configs = copy.deepcopy(config_parse.configs)
+-is_set_para = 0
+-depth_render_max = 10000
+-amp_render_max = 5000
+-g_temperature = 0
+-import threading
+-from PyQt5.QtCore import Qt
+-from PyQt5.QtGui import QPixmap, QImage
+-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton
+-from PyQt5.QtGui import QImage, QPixmap, QColor
+-def signal_handler(sig, frame):
+-    print('\nShutting down gracefully...')
+-    QApplication.instance().quit()  # 触发 Qt 退出机制
+-    xtsdk.stop()  # 停止 SDK 数据流
+-    xtsdk.shutdown()  # 关闭 SDK 连接
+-
+-
+-def get_multi_freq(freq_dev: int) -> int:
+-    freq_map = {
+-        0: 2,
+-        1: 0,
+-        3: 1,
+-        4: 6,
+-        7: 3,
+-        15: 4
+-    }
+-
+-    # Get the index from the dictionary, default to 100 if freq_dev is unknown
+-    return freq_map.get(freq_dev, 100)
+-
+-def extract_version(fwVersion: str) -> float:
+-    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
+-
+-    if not version_match:
+-        return None
+-
+-    version_str = version_match.group(1)  # Get X.Y part
+-    try:
+-        return float(version_str)
+-    except ValueError:
+-        return None
+-
+-#xtsdk 回调函数
+-def onCallbackEvent(event: xintan_sdk.CBEventData):
+-    try:
+-        print('event: '+ event.eventstr + " " +  str(event.cmdid))
+-        if event.eventstr == "sdkState":
+-
+-            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
+-                success1,  devinfo = xtsdk.getDevInfo()
+-                print(devinfo.fwVersion)
+-                print(devinfo.sn + " " + devinfo.chipidStr)
+-
+-                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
+-                fwversionf = extract_version(fwVersion)
+-                print("device fw version: " + str(fwversionf))
+-
+-                if fwversionf >= 2.20:
+-                    print(str(fwversionf) + " > 2.20")
+-
+-                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
+-
+-                    success, devconfig = xtsdk.getDevConfig()
+-
+-                    if success:
+-                        print("******************* GET CONFIG SUCCESS *******************")
+-                        # 打印 devinfo 的 fwVersion 属性
+-                        print(f"fwVersion: {devinfo.fwVersion}")
+-                        print(f"version: {devconfig.version}")
+-                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
+-                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
+-
+-                        # 打印其他属性
+-                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
+-                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
+-                                                  f"{devconfig.integrationTimes[1]} "
+-                                                  f"{devconfig.integrationTimes[2]} "
+-                                                  f"{devconfig.integrationTimes[3]}")
+-                        print(f"miniAmp: {devconfig.miniAmp}")
+-                        print(f"isFilterOn: {devconfig.isFilterOn}")
+-                        print(f"roi: {devconfig.roi}")
+-                        print(f"maxfps: {devconfig.maxfps}")
+-                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
+-                        print(f"bBinningH: {devconfig.bBinningH}")
+-                        print(f"bBinningV: {devconfig.bBinningV}")
+-                        print(f"freqChannel: {devconfig.freqChannel}")
+-                        print(f"setmaxfps: {devconfig.setmaxfps}")
+-                        print(f"endianType: {devconfig.endianType}")
+-                        # print(f"freq: {devconfig.freq}")
+-                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
+-
+-                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
+-                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
+-                        print(f"cut_distance0: {devconfig.cut_distance0}")
+-                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
+-                        print(f"cut_distance1: {devconfig.cut_distance1}")
+-
+-                        print("********************************************************")
+-                        if not is_set_para:
+-                            print("******************* USING DEV CONFIG *******************")
+-                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
+-                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
+-                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
+-                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
+-                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
+-
+-                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
+-                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
+-                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
+-                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
+-
+-                            configs['Setting']['freq'] = devconfig.modFreq
+-                            configs['Setting']['maxfps'] = devconfig.maxfps
+-                            configs['Setting']['minLSB'] = devconfig.miniAmp
+-                            configs['Setting']['HDR'] = devconfig.hdrMode
+-                        else:
+-                            print("******************* USING INI CONFIG *******************")
+-                        config_parse.configs = configs
+-                    else:
+-                        print("******************* GET CONFIG FAILED *******************")
+-                        print("********************************************************")
+-                else:
+-                    print("******************* < 2.20 *******************")
+-                    print("********************************************************")
+-
+-                config_parse.print_all_settings()
+-                xtsdk.stop()
+-                xtsdk.setIntTimesus(configs['Setting']['intgs'],
+-                                    configs['Setting']['int1'],
+-                                    configs['Setting']['int2'],
+-                                    configs['Setting']['int3'],
+-                                    configs['Setting']['int4'],
+-                                    0)
+-                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
+-                if fwversionf < 2.0:
+-                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
+-                    xtsdk.setModFreq(mod_freq)
+-                    
+-                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
+-                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
+-                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
+-                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
+-                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
+-                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4, xintan_sdk.ModulationFreq(2))
+-
+-
+-                xtsdk.setHdrMode(hdr_mode)
+-
+-                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
+-                xtsdk.setMaxFps(configs['Setting']['maxfps'])
+-                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
+-                xtsdk.start(img_type)
+-            elif event == 'sdkState':
+-                print(xtsdk.getStateStr())
+-            elif event == 'devState':
+-                print(xtsdk.getStateStr())
+-    except Exception as e:
+-        print(f"Exception in onCallbackEvent: {e}")
+-
+-def interpolate(x, x0, y0, x1, y1):
+-    if x1 == x0:
+-        return y0
+-    return ((x - x0) * (y1 - y0) / (x1 - x0)) + y0
+-
+-
+-def create_rgb_colormap(num_steps=30000):
+-    red, green, blue = np.zeros(num_steps), np.zeros(num_steps), np.zeros(num_steps)
+-    k = 1
+-    R0, R1, R2, R3 = -0.125 * k - 0.25, 0, 0.25 * k, 0.5 * k
+-    G0, G1, G2, G3 = R1, 0.25 * k, 0.5 * k, 0.625 * k
+-    B0, B1, B2, B3 = R2, 0.5 * k, 0.75 * k, 1.0 * k
+-
+-    index = np.linspace(-0.25 * k, 1 - 0.25 * k, num_steps)
+-
+-    # 红色通道
+-    red = np.where((R0 <= index) & (index < R1), interpolate(index, R0, 0, R1, 255),
+-                   np.where((R1 <= index) & (index < R2), 255,
+-                            np.where((R2 <= index) & (index < R3), interpolate(index, R2, 255, R3, 0), 0)))
+-
+-    # 绿色通道
+-    green = np.where((G0 <= index) & (index < G1), interpolate(index, G0, 0, G1, 255),
+-                     np.where((G1 <= index) & (index < G2), 255,
+-                              np.where((G2 <= index) & (index < G3), interpolate(index, G2, 255, G3, 0), 0)))
+-
+-    # 蓝色通道
+-    blue = np.where((B0 <= index) & (index < B1), interpolate(index, B0, 0, B1, 255),
+-                    np.where((B1 <= index) & (index < B2), 255,
+-                             np.where((B2 <= index) & (index < B3), interpolate(index, B2, 255, B3, 0), 0)))
+-
+-    return np.stack((red, green, blue), axis=1) / 255.0
+-
+-
+-def render_to_rgb_colormap_image(data_np, width, height, begin=0, end=13000):
+-    colormap = create_rgb_colormap()
+-    data_np = data_np.reshape((height, width))
+-
+-    diff = end - begin
+-    diff = max(diff, 1)
+-    indexFactorColor = len(colormap) / diff
+-
+-    # 用 NumPy 计算索引值
+-    value_indices = np.clip((data_np - begin) * indexFactorColor, 0, len(colormap) - 1).astype(int)
+-
+-    # 使用 NumPy 索引加速颜色映射
+-    output_image = np.take(colormap, value_indices, axis=0)
+-    output_image[data_np < 0] = [1, 1, 1]  # 白色
+-    output_image[data_np > end] = [0, 0, 0]  # 黑色
+-
+-    output_image = (output_image * 255).astype(np.uint8)
+-    bytes_per_line = 3 * width
+-    q_img = QImage(output_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+-    return q_img
+-
+-def onCallbackImage(frame: xintan_sdk.Frame):
+-    try:
+-        global g_temperature
+-        g_temperature = frame.temperature / 100
+-
+-        # 将 std::vector<uint16_t> 转换为 NumPy 数组
+-        if frame.dataType == xintan_sdk.DataType.GRAYSCALE:
+-            print("Gray scale No Image")
+-            return
+-        amplitude_np = np.array(frame.amplData, dtype=np.uint16)
+-        distance_np = np.array(frame.distData, dtype=np.uint32)
+-
+-        # 为振幅和距离创建彩色图像
+-        # q_image_ampl = render_to_colormap_image(amplitude_np, frame.width, frame.height, gamma=0.8)
+-        # q_image_dist = render_to_colormap_image(distance_np, frame.width, frame.height, gamma=0.8)
+-
+-        q_image_ampl = render_to_rgb_colormap_image(amplitude_np, frame.width, frame.height, end=amp_render_max)
+-        q_image_dist = render_to_rgb_colormap_image(distance_np, frame.width, frame.height, end=depth_render_max)
+-
+-        # 显示图像
+-        g_qimage = QPixmap.fromImage(q_image_dist).scaled(frame.width * 2, frame.height * 2, Qt.KeepAspectRatio)
+-        g_qimage2 = QPixmap.fromImage(q_image_ampl).scaled(frame.width * 2, frame.height * 2, Qt.KeepAspectRatio)
+-        g_pixmapui.setPixmap(g_qimage)
+-        g_pixmapui2.setPixmap(g_qimage2)
+-
+-    except Exception as e:
+-        print(f"Exception in onCallbackImg: {e}")
+-
+-
+-
+-# 按钮处理函数
+-def onStartStop(self):
+-    if g_startstopui.text() == 'Start':
+-        g_startstopui.setText('Stop')
+-        xtsdk.start(xintan_sdk.ImageType.IMG_POINTCLOUDAMP)
+-    else:
+-        g_startstopui.setText('Start')
+-        xtsdk.stop()
+-
+-# 定时检查设备状态
+-def TimerThreadFunc():
+-    global g_temperature
+-    while True:
+-        time.sleep(3)
+-        if xtsdk.isconnect():
+-            g_stateui.setText(xtsdk.getStateStr() +' ' + str(g_temperature)+'℃')
+-            g_stateui.setStyleSheet("color:green")
+-            if xtsdk.getDevState() != xintan_sdk.DevStateCode.DevSTATE_STREAM:
+-                if g_startstopui.text() == 'Stop':
+-                    g_startstopui.setText('Start')
+-            else:
+-                if g_startstopui.text() == 'Start':
+-                    g_startstopui.setText('Stop')
+-
+-        else:
+-            g_stateui.setText('Disconnect')
+-            g_stateui.setStyleSheet("color:red")
+-
+-if __name__ == '__main__':
+-    app = QApplication(sys.argv)
+-    window = QWidget()
+-    window.setWindowTitle('XT Example image')
+-    window.setGeometry(200, 200, 1400, 640)
+-
+-    g_pixmapui = QLabel(window)
+-    g_pixmapui2 = QLabel(window)
+-    g_startstopui = QPushButton(window)
+-    g_stateui = QLabel(window)
+-
+-    g_pixmapui.resize(640, 480)
+-    g_pixmapui2.resize(640, 480)
+-    g_startstopui.resize(150, 50)
+-    g_stateui.resize(300, 50)
+-
+-    g_pixmapui.move(10, 10)
+-    g_pixmapui2.move(10 + 650, 10)
+-    g_startstopui.move(20, 10 + 490)
+-    g_stateui.move(20, 560)
+-
+-    g_startstopui.setText('Start')
+-    g_stateui.setText('Unknow')
+-    g_stateui.setStyleSheet("color:red")
+-
+-    g_startstopui.clicked.connect(onStartStop)
+-    window.show()
+-
+-    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
+-    if configs['Filters']['kalmanEnable'] == 1:
+-        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
+-                                 (configs['Filters']['kalmanThreshold']),
+-                                 2000)
+-    if configs['Filters']['medianSize'] > 0:
+-        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
+-    if configs['Filters']['edgeEnable'] == 1:
+-        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
+-    if configs['Filters']['dustEnable'] == 1:
+-        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
+-    if configs['Filters']['postprocessEnable'] == 1:
+-                xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
+-    if configs['Filters']['reflectiveEnable'] == 1:
+-        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
+-
+-    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
+-
+-    # 添加 IP 地址参数
+-    parser.add_argument('ip_address',nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.117")
+-    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
+-    # 解析命令行参数
+-    args = parser.parse_args()
+-    print("ip: " + args.ip_address)
+-    print("is_set_para: " + args.is_set_para)
+-    is_set_para = int(args.is_set_para)
+-
+-    success = xtsdk.setConnectIpaddress(args.ip_address)
+-    signal.signal(signal.SIGINT, signal_handler)
+-    xtsdk.startup()
+-    timerthread = threading.Thread(target=TimerThreadFunc)
+-    timerthread.start()
+-
+-    sys.exit(app.exec_())
+-
++import sys
++import platform
++import argparse
++import configparser
++import signal
++import os
++import copy
++import numpy as np
++import re
++
++
++
++# 获取操作系统类型
++os_type = platform.system()
++if os_type == "Windows":
++    sys.path.append('../lib/win32')
++    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
++elif os_type == "Linux":
++    architecture = platform.machine()
++    if architecture == "x86_64":
++        sys.path.append('../lib/linux/x86_64')
++    elif architecture == "aarch64":
++        sys.path.append('../lib/linux/aarch64')
++
++sys.path.append("../cfg")
++
++import time
++import xintan_sdk
++from read_config import ConfigParse
++
++keepRunning = True
++xtsdk = xintan_sdk.XtSdk()
++config_parse = ConfigParse('../cfg/xintan.xtcfg')
++
++configs = copy.deepcopy(config_parse.configs)
++is_set_para = 0
++depth_render_max = 10000
++amp_render_max = 5000
++g_temperature = 0
++import threading
++from PyQt5.QtCore import Qt
++from PyQt5.QtGui import QPixmap, QImage
++from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton
++from PyQt5.QtGui import QImage, QPixmap, QColor
++def signal_handler(sig, frame):
++    print('\nShutting down gracefully...')
++    QApplication.instance().quit()  # 触发 Qt 退出机制
++    xtsdk.stop()  # 停止 SDK 数据流
++    xtsdk.shutdown()  # 关闭 SDK 连接
++
++
++def get_multi_freq(freq_dev: int) -> int:
++    freq_map = {
++        0: 2,
++        1: 0,
++        3: 1,
++        4: 6,
++        7: 3,
++        15: 4
++    }
++
++    # Get the index from the dictionary, default to 100 if freq_dev is unknown
++    return freq_map.get(freq_dev, 100)
++
++def extract_version(fwVersion: str) -> float:
++    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
++
++    if not version_match:
++        return None
++
++    version_str = version_match.group(1)  # Get X.Y part
++    try:
++        return float(version_str)
++    except ValueError:
++        return None
++
++#xtsdk 回调函数
++def onCallbackEvent(event: xintan_sdk.CBEventData):
++    try:
++        print('event: '+ event.eventstr + " " +  str(event.cmdid))
++        if event.eventstr == "sdkState":
++
++            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
++                success1,  devinfo = xtsdk.getDevInfo()
++                print(devinfo.fwVersion)
++                print(devinfo.sn + " " + devinfo.chipidStr)
++
++                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
++                fwversionf = extract_version(fwVersion)
++                print("device fw version: " + str(fwversionf))
++
++                if fwversionf >= 2.20:
++                    print(str(fwversionf) + " > 2.20")
++
++                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
++
++                    success, devconfig = xtsdk.getDevConfig()
++
++                    if success:
++                        print("******************* GET CONFIG SUCCESS *******************")
++                        # 打印 devinfo 的 fwVersion 属性
++                        print(f"fwVersion: {devinfo.fwVersion}")
++                        print(f"version: {devconfig.version}")
++                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
++                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
++
++                        # 打印其他属性
++                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
++                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
++                                                  f"{devconfig.integrationTimes[1]} "
++                                                  f"{devconfig.integrationTimes[2]} "
++                                                  f"{devconfig.integrationTimes[3]}")
++                        print(f"miniAmp: {devconfig.miniAmp}")
++                        print(f"isFilterOn: {devconfig.isFilterOn}")
++                        print(f"roi: {devconfig.roi}")
++                        print(f"maxfps: {devconfig.maxfps}")
++                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
++                        print(f"bBinningH: {devconfig.bBinningH}")
++                        print(f"bBinningV: {devconfig.bBinningV}")
++                        print(f"freqChannel: {devconfig.freqChannel}")
++                        print(f"setmaxfps: {devconfig.setmaxfps}")
++                        print(f"endianType: {devconfig.endianType}")
++                        # print(f"freq: {devconfig.freq}")
++                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
++
++                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
++                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
++                        print(f"cut_distance0: {devconfig.cut_distance0}")
++                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
++                        print(f"cut_distance1: {devconfig.cut_distance1}")
++
++                        print("********************************************************")
++                        if not is_set_para:
++                            print("******************* USING DEV CONFIG *******************")
++                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
++                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
++                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
++                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
++                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
++
++                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
++                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
++                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
++                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
++
++                            configs['Setting']['freq'] = devconfig.modFreq
++                            configs['Setting']['maxfps'] = devconfig.maxfps
++                            configs['Setting']['minLSB'] = devconfig.miniAmp
++                            configs['Setting']['HDR'] = devconfig.hdrMode
++                        else:
++                            print("******************* USING INI CONFIG *******************")
++                        config_parse.configs = configs
++                    else:
++                        print("******************* GET CONFIG FAILED *******************")
++                        print("********************************************************")
++                else:
++                    print("******************* < 2.20 *******************")
++                    print("********************************************************")
++
++                config_parse.print_all_settings()
++                xtsdk.stop()
++                xtsdk.setIntTimesus(configs['Setting']['intgs'],
++                                    configs['Setting']['int1'],
++                                    configs['Setting']['int2'],
++                                    configs['Setting']['int3'],
++                                    configs['Setting']['int4'],
++                                    0)
++                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
++                if fwversionf < 2.0:
++                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
++                    xtsdk.setModFreq(mod_freq)
++                    
++                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
++                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
++                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
++                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
++                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
++                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4, xintan_sdk.ModulationFreq(2))
++
++
++                xtsdk.setHdrMode(hdr_mode)
++
++                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
++                xtsdk.setMaxFps(configs['Setting']['maxfps'])
++                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
++                xtsdk.start(img_type)
++            elif event == 'sdkState':
++                print(xtsdk.getStateStr())
++            elif event == 'devState':
++                print(xtsdk.getStateStr())
++    except Exception as e:
++        print(f"Exception in onCallbackEvent: {e}")
++
++def interpolate(x, x0, y0, x1, y1):
++    if x1 == x0:
++        return y0
++    return ((x - x0) * (y1 - y0) / (x1 - x0)) + y0
++
++
++def create_rgb_colormap(num_steps=30000):
++    red, green, blue = np.zeros(num_steps), np.zeros(num_steps), np.zeros(num_steps)
++    k = 1
++    R0, R1, R2, R3 = -0.125 * k - 0.25, 0, 0.25 * k, 0.5 * k
++    G0, G1, G2, G3 = R1, 0.25 * k, 0.5 * k, 0.625 * k
++    B0, B1, B2, B3 = R2, 0.5 * k, 0.75 * k, 1.0 * k
++
++    index = np.linspace(-0.25 * k, 1 - 0.25 * k, num_steps)
++
++    # 红色通道
++    red = np.where((R0 <= index) & (index < R1), interpolate(index, R0, 0, R1, 255),
++                   np.where((R1 <= index) & (index < R2), 255,
++                            np.where((R2 <= index) & (index < R3), interpolate(index, R2, 255, R3, 0), 0)))
++
++    # 绿色通道
++    green = np.where((G0 <= index) & (index < G1), interpolate(index, G0, 0, G1, 255),
++                     np.where((G1 <= index) & (index < G2), 255,
++                              np.where((G2 <= index) & (index < G3), interpolate(index, G2, 255, G3, 0), 0)))
++
++    # 蓝色通道
++    blue = np.where((B0 <= index) & (index < B1), interpolate(index, B0, 0, B1, 255),
++                    np.where((B1 <= index) & (index < B2), 255,
++                             np.where((B2 <= index) & (index < B3), interpolate(index, B2, 255, B3, 0), 0)))
++
++    return np.stack((red, green, blue), axis=1) / 255.0
++
++
++def render_to_rgb_colormap_image(data_np, width, height, begin=0, end=13000):
++    colormap = create_rgb_colormap()
++    data_np = data_np.reshape((height, width))
++
++    diff = end - begin
++    diff = max(diff, 1)
++    indexFactorColor = len(colormap) / diff
++
++    # 用 NumPy 计算索引值
++    value_indices = np.clip((data_np - begin) * indexFactorColor, 0, len(colormap) - 1).astype(int)
++
++    # 使用 NumPy 索引加速颜色映射
++    output_image = np.take(colormap, value_indices, axis=0)
++    output_image[data_np < 0] = [1, 1, 1]  # 白色
++    output_image[data_np > end] = [0, 0, 0]  # 黑色
++
++    output_image = (output_image * 255).astype(np.uint8)
++    bytes_per_line = 3 * width
++    q_img = QImage(output_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
++    return q_img
++
++def onCallbackImage(frame: xintan_sdk.Frame):
++    try:
++        global g_temperature
++        g_temperature = frame.temperature / 100
++
++        # 将 std::vector<uint16_t> 转换为 NumPy 数组
++        if frame.dataType == xintan_sdk.DataType.GRAYSCALE:
++            print("Gray scale No Image")
++            return
++        amplitude_np = np.array(frame.amplData, dtype=np.uint16)
++        distance_np = np.array(frame.distData, dtype=np.uint32)
++
++        # 为振幅和距离创建彩色图像
++        # q_image_ampl = render_to_colormap_image(amplitude_np, frame.width, frame.height, gamma=0.8)
++        # q_image_dist = render_to_colormap_image(distance_np, frame.width, frame.height, gamma=0.8)
++
++        q_image_ampl = render_to_rgb_colormap_image(amplitude_np, frame.width, frame.height, end=amp_render_max)
++        q_image_dist = render_to_rgb_colormap_image(distance_np, frame.width, frame.height, end=depth_render_max)
++
++        # 显示图像
++        g_qimage = QPixmap.fromImage(q_image_dist).scaled(frame.width * 2, frame.height * 2, Qt.KeepAspectRatio)
++        g_qimage2 = QPixmap.fromImage(q_image_ampl).scaled(frame.width * 2, frame.height * 2, Qt.KeepAspectRatio)
++        g_pixmapui.setPixmap(g_qimage)
++        g_pixmapui2.setPixmap(g_qimage2)
++
++    except Exception as e:
++        print(f"Exception in onCallbackImg: {e}")
++
++
++
++# 按钮处理函数
++def onStartStop(self):
++    if g_startstopui.text() == 'Start':
++        g_startstopui.setText('Stop')
++        xtsdk.start(xintan_sdk.ImageType.IMG_POINTCLOUDAMP)
++    else:
++        g_startstopui.setText('Start')
++        xtsdk.stop()
++
++# 定时检查设备状态
++def TimerThreadFunc():
++    global g_temperature
++    while True:
++        time.sleep(3)
++        if xtsdk.isconnect():
++            g_stateui.setText(xtsdk.getStateStr() +' ' + str(g_temperature)+'℃')
++            g_stateui.setStyleSheet("color:green")
++            if xtsdk.getDevState() != xintan_sdk.DevStateCode.DevSTATE_STREAM:
++                if g_startstopui.text() == 'Stop':
++                    g_startstopui.setText('Start')
++            else:
++                if g_startstopui.text() == 'Start':
++                    g_startstopui.setText('Stop')
++
++        else:
++            g_stateui.setText('Disconnect')
++            g_stateui.setStyleSheet("color:red")
++
++if __name__ == '__main__':
++    app = QApplication(sys.argv)
++    window = QWidget()
++    window.setWindowTitle('XT Example image')
++    window.setGeometry(200, 200, 1400, 640)
++
++    g_pixmapui = QLabel(window)
++    g_pixmapui2 = QLabel(window)
++    g_startstopui = QPushButton(window)
++    g_stateui = QLabel(window)
++
++    g_pixmapui.resize(640, 480)
++    g_pixmapui2.resize(640, 480)
++    g_startstopui.resize(150, 50)
++    g_stateui.resize(300, 50)
++
++    g_pixmapui.move(10, 10)
++    g_pixmapui2.move(10 + 650, 10)
++    g_startstopui.move(20, 10 + 490)
++    g_stateui.move(20, 560)
++
++    g_startstopui.setText('Start')
++    g_stateui.setText('Unknow')
++    g_stateui.setStyleSheet("color:red")
++
++    g_startstopui.clicked.connect(onStartStop)
++    window.show()
++
++    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
++    if configs['Filters']['kalmanEnable'] == 1:
++        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
++                                 (configs['Filters']['kalmanThreshold']),
++                                 2000)
++    if configs['Filters']['medianSize'] > 0:
++        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
++    if configs['Filters']['edgeEnable'] == 1:
++        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
++    if configs['Filters']['dustEnable'] == 1:
++        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
++    if configs['Filters']['postprocessEnable'] == 1:
++                xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
++    if configs['Filters']['reflectiveEnable'] == 1:
++        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
++
++    parser = argparse.ArgumentParser(description='设置连接的 IP 地址。')
++
++    # 添加 IP 地址参数
++    parser.add_argument('ip_address',nargs='?', type=str, help='要连接的 IP 地址', default="192.168.0.117")
++    parser.add_argument('is_set_para', nargs='?', type=str, help='是否需要设定默认参数', default="0")
++    # 解析命令行参数
++    args = parser.parse_args()
++    print("ip: " + args.ip_address)
++    print("is_set_para: " + args.is_set_para)
++    is_set_para = int(args.is_set_para)
++
++    success = xtsdk.setConnectIpaddress(args.ip_address)
++    signal.signal(signal.SIGINT, signal_handler)
++    xtsdk.startup()
++    timerthread = threading.Thread(target=TimerThreadFunc)
++    timerthread.start()
++
++    sys.exit(app.exec_())
++
+diff --git a/sdk_example/sdk_example_play.py b/sdk_example/sdk_example_play.py
+index 57758c0..cd2fe9e 100644
+--- a/sdk_example/sdk_example_play.py
++++ b/sdk_example/sdk_example_play.py
+@@ -1,346 +1,346 @@
+-import sys
+-import platform
+-import argparse
+-import configparser
+-import signal
+-import os
+-import re
+-import numpy as np
+-# 获取操作系统类型
+-os_type = platform.system()
+-if os_type == "Windows":
+-    sys.path.append('../lib/win32')
+-    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
+-elif os_type == "Linux":
+-    architecture = platform.machine()
+-    if architecture == "x86_64":
+-        sys.path.append('../lib/linux/x86_64')
+-    elif architecture == "aarch64":
+-        sys.path.append('../lib/linux/aarch64')
+-
+-import copy
+-# import numpy
+-
+-
+-
+-sys.path.append("../cfg")
+-
+-import time
+-import xintan_sdk
+-from read_config import ConfigParse
+-
+-keepRunning = True
+-xtsdk = xintan_sdk.XtSdk()
+-config_parse = ConfigParse('../cfg/xintan.xtcfg')
+-
+-configs = copy.deepcopy(config_parse.configs)
+-is_set_para = 0
+-record_path_str = ""
+-
+-def signal_handler(sig, frame):
+-    global keepRunning
+-    print('You pressed Control+C!')
+-    keepRunning = False
+-    # sys.exit(0)
+-
+-
+-def get_multi_freq(freq_dev: int) -> int:
+-    freq_map = {
+-        0: 2,
+-        1: 0,
+-        3: 1,
+-        4: 6,
+-        7: 3,
+-        15: 4
+-    }
+-
+-    # Get the index from the dictionary, default to 100 if freq_dev is unknown
+-    return freq_map.get(freq_dev, 100)
+-
+-def extract_version(fwVersion: str) -> float:
+-    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
+-
+-    if not version_match:
+-        return None
+-
+-    version_str = version_match.group(1)  # Get X.Y part
+-    try:
+-        return float(version_str)
+-    except ValueError:
+-        return None
+-
+-#xtsdk 回调函数
+-def onCallbackEvent(event: xintan_sdk.CBEventData):
+-    try:
+-        print('event: '+ event.eventstr + " " +  str(event.cmdid))
+-        if event.eventstr == "sdkState":
+-
+-            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
+-                success1,  devinfo = xtsdk.getDevInfo()
+-                print(devinfo.fwVersion)
+-                print(devinfo.sn + " " + devinfo.chipidStr)
+-
+-                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
+-                fwversionf = extract_version(fwVersion)
+-                print("device fw version: " + str(fwversionf))
+-
+-                if fwversionf >= 2.20:
+-                    print(str(fwversionf) + " > 2.20")
+-
+-                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
+-
+-                    success, devconfig = xtsdk.getDevConfig()
+-
+-                    if success:
+-                        print("******************* GET CONFIG SUCCESS *******************")
+-                        # 打印 devinfo 的 fwVersion 属性
+-                        print(f"fwVersion: {devinfo.fwVersion}")
+-                        print(f"version: {devconfig.version}")
+-                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
+-                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
+-
+-                        # 打印其他属性
+-                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
+-                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
+-                                                  f"{devconfig.integrationTimes[1]} "
+-                                                  f"{devconfig.integrationTimes[2]} "
+-                                                  f"{devconfig.integrationTimes[3]}")
+-                        print(f"miniAmp: {devconfig.miniAmp}")
+-                        print(f"isFilterOn: {devconfig.isFilterOn}")
+-                        print(f"roi: {devconfig.roi}")
+-                        print(f"maxfps: {devconfig.maxfps}")
+-                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
+-                        print(f"bBinningH: {devconfig.bBinningH}")
+-                        print(f"bBinningV: {devconfig.bBinningV}")
+-                        print(f"freqChannel: {devconfig.freqChannel}")
+-                        print(f"setmaxfps: {devconfig.setmaxfps}")
+-                        print(f"endianType: {devconfig.endianType}")
+-                        # print(f"freq: {devconfig.freq}")
+-                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
+-                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
+-
+-                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
+-                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
+-                        print(f"cut_distance0: {devconfig.cut_distance0}")
+-                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
+-                        print(f"cut_distance1: {devconfig.cut_distance1}")
+-
+-                        print("********************************************************")
+-                        if not is_set_para:
+-                            print("******************* USING DEV CONFIG *******************")
+-                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
+-                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
+-                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
+-                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
+-                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
+-
+-                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
+-                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
+-                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
+-                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
+-
+-                            configs['Setting']['freq'] = devconfig.modFreq
+-                            configs['Setting']['maxfps'] = devconfig.maxfps
+-                            configs['Setting']['minLSB'] = devconfig.miniAmp
+-                            configs['Setting']['HDR'] = devconfig.hdrMode
+-                        else:
+-                            print("******************* USING INI CONFIG *******************")
+-                        config_parse.configs = configs
+-                    else:
+-                        print("******************* GET CONFIG FAILED *******************")
+-                        print("********************************************************")
+-                else:
+-                    print("******************* < 2.20 *******************")
+-                    print("********************************************************")
+-
+-                config_parse.print_all_settings()
+-                xtsdk.stop()
+-                xtsdk.setIntTimesus(configs['Setting']['intgs'],
+-                                    configs['Setting']['int1'],
+-                                    configs['Setting']['int2'],
+-                                    configs['Setting']['int3'],
+-                                    configs['Setting']['int4'],
+-                                    0)
+-                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
+-                if fwversionf < 2.0:
+-                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
+-                    xtsdk.setModFreq(mod_freq)
+-                    
+-                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
+-                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
+-                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
+-                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
+-                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
+-                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4,xintan_sdk.ModulationFreq(2))
+-
+-
+-                xtsdk.setHdrMode(hdr_mode)
+-
+-                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
+-                xtsdk.setMaxFps(configs['Setting']['maxfps'])
+-                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
+-                xtsdk.start(img_type)
+-            elif event == 'sdkState':
+-                print(xtsdk.getStateStr())
+-            elif event == 'devState':
+-                print(xtsdk.getStateStr())
+-    except Exception as e:
+-        print(f"Exception in onCallbackEvent: {e}")
+-
+-def onCallbackImage(frame):
+-    # 创建 xyzi 数组
+-    print("callback")
+-    xyzi = np.empty((len(frame.points), 4), dtype=float)
+-
+-    xyzi[:, 0] = np.array([p.x for p in frame.points])
+-    xyzi[:, 1] = np.array([p.y for p in frame.points])
+-    xyzi[:, 2] = np.array([p.z for p in frame.points])
+-    xyzi[:, 3] = frame.amplData
+-    # 将所有点视为有效点
+-    valid_points = xyzi
+-
+-    base_dir = os.getcwd()
+-
+-    # 创建输出目录
+-    output_dir = os.path.join(base_dir, f"{record_path_str}_pcd")
+-    os.makedirs(output_dir, exist_ok=True)
+-
+-    # 创建输出文件路径
+-    # output_path = os.path.join(output_dir, f"{frame.frame_label}.pcd")
+-
+-    # Remove invalid characters
+-
+-    position = frame.frame_label.find('\x00')
+-    if position != -1:
+-        print(f"空字符在位置: {position}")
+-    frame_label_cleaned = re.sub(r'[\x00]', '', frame.frame_label)
+-
+-
+-    output_path = os.path.join(output_dir, f"{frame_label_cleaned}.pcd")
+-
+-    print(f"Writing to {output_path}")
+-
+-    # 获取点云的宽度和高度
+-    width = frame.width
+-    height = frame.height
+-
+-    try:
+-        with open(str(output_path), 'w') as f:
+-            # 写入 PCD 头信息
+-            f.write("# .PCD v0.7 - Point Cloud Data file format\n")
+-            f.write("VERSION 0.7\n")
+-            f.write("FIELDS x y z intensity\n")
+-            f.write("SIZE 4 4 4 4\n")
+-            f.write("TYPE F F F F\n")
+-            f.write("COUNT 1 1 1 1\n")
+-            f.write(f"WIDTH {width}\n")
+-            f.write(f"HEIGHT {height}\n")
+-            f.write("VIEWPOINT 0 0 0 1 0 0 0\n")
+-            f.write(f"POINTS {width * height}\n")
+-            f.write("DATA ascii\n")
+-            # 使用 NumPy 的 savetxt 方法进行批量写入
+-            np.savetxt(f, valid_points, fmt='%f %f %f %f')
+-    except Exception as e:
+-        print(f"Error writing file: {e}")
+-
+-
+-def is_hexadecimal(s):
+-    try:
+-        int(s, 16)
+-        return True
+-    except ValueError:
+-        return False
+-
+-def read_files():
+-    folder_path = record_path_str
+-    if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+-        print(f"folder {folder_path} not exist")
+-        return
+-    if len(os.listdir(folder_path)) <= configs['Filters']['dustFrames']:
+-        print("DUST FILTER NOT ACTIVED BY NOT ENOUGH FRAME COUNT : " + str(len(os.listdir(folder_path))) +
+-            " REQUIRED : " + str(configs['Filters']['dustFrames'] + 1))
+-    for entry in os.listdir(folder_path):
+-        path = os.path.join(folder_path, entry)
+-
+-        if os.path.isfile(path):
+-            if path.endswith('.xbin'):
+-                xtsdk.doXbinFrameData(path)
+-                time.sleep(0.3)  
+-            elif path.endswith('.txt'):
+-                with open(path, 'r', encoding='utf-8') as file:
+-                    hex_string = file.readline().strip()
+-
+-                if len(hex_string) % 2 != 0:
+-                    print("invalid hex string length !")
+-                    return
+-
+-                bytes_vector = []
+-                for i in range(0, len(hex_string), 2):
+-                    byte_string = hex_string[i:i+2]
+-
+-                    if not is_hexadecimal(byte_string):
+-                        print(f"trans error: contains invalid hexadecimal strings {byte_string}")
+-                        break
+-
+-                    byte = int(byte_string, 16)
+-                    bytes_vector.append(byte)
+-
+-                if len(bytes_vector) < 1000:
+-                    print(f"trans error: length error {len(bytes_vector)}")
+-                    return
+-                file_name = os.path.splitext(os.path.basename(path))[0]
+-                try:
+-                    xtsdk.doUdpFrameData(bytes_vector, file_name)
+-                except Exception as e:
+-                    print(f"Error writing file: {e}")
+-                
+-                time.sleep(0.3)
+-
+-if __name__ == '__main__':
+-    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
+-
+-    parser = argparse.ArgumentParser(description='xbin path')
+-
+-    # 添加 IP 地址参数
+-    parser.add_argument('record_path',nargs='?', type=str, help='', default="b")
+-    # 解析命令行参数
+-    args = parser.parse_args()
+-    record_path_str = args.record_path
+-
+-    if configs['Filters']['kalmanEnable'] == 1:
+-        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
+-                                 (configs['Filters']['kalmanThreshold']),
+-                                 2000)
+-    if configs['Filters']['medianSize'] > 0:
+-        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
+-    if configs['Filters']['edgeEnable'] == 1:
+-        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
+-    if configs['Filters']['dustEnable'] == 1:
+-        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
+-    if configs['Filters']['postprocessEnable'] == 1:
+-        xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
+-    if configs['Filters']['reflectiveEnable'] == 1:
+-        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
+-
+-    try:
+-        xtsdk.startup()
+-    except Exception as reason:
+-        print(f"Error: {reason}")
+-
+-    img_type = xintan_sdk.ImageType(4)
+-    xtsdk.start(img_type)
+-
+-
+-    read_files()
+-
+-    signal.signal(signal.SIGINT, signal_handler)
+-
+-
+-    # while keepRunning:
+-    #     time.sleep(1)
+-    print("stop")
+-    xtsdk.stop()
+-    xtsdk.shutdown()
+-
++import sys
++import platform
++import argparse
++import configparser
++import signal
++import os
++import re
++import numpy as np
++# 获取操作系统类型
++os_type = platform.system()
++if os_type == "Windows":
++    sys.path.append('../lib/win32')
++    os.environ['PATH'] = r'../lib/win32;' + os.environ['PATH']
++elif os_type == "Linux":
++    architecture = platform.machine()
++    if architecture == "x86_64":
++        sys.path.append('../lib/linux/x86_64')
++    elif architecture == "aarch64":
++        sys.path.append('../lib/linux/aarch64')
++
++import copy
++# import numpy
++
++
++
++sys.path.append("../cfg")
++
++import time
++import xintan_sdk
++from read_config import ConfigParse
++
++keepRunning = True
++xtsdk = xintan_sdk.XtSdk()
++config_parse = ConfigParse('../cfg/xintan.xtcfg')
++
++configs = copy.deepcopy(config_parse.configs)
++is_set_para = 0
++record_path_str = ""
++
++def signal_handler(sig, frame):
++    global keepRunning
++    print('You pressed Control+C!')
++    keepRunning = False
++    # sys.exit(0)
++
++
++def get_multi_freq(freq_dev: int) -> int:
++    freq_map = {
++        0: 2,
++        1: 0,
++        3: 1,
++        4: 6,
++        7: 3,
++        15: 4
++    }
++
++    # Get the index from the dictionary, default to 100 if freq_dev is unknown
++    return freq_map.get(freq_dev, 100)
++
++def extract_version(fwVersion: str) -> float:
++    version_match = re.search(r'[vV](\d+\.\d+)(?:\.\d+)?[a-zA-Z]?', fwVersion)
++
++    if not version_match:
++        return None
++
++    version_str = version_match.group(1)  # Get X.Y part
++    try:
++        return float(version_str)
++    except ValueError:
++        return None
++
++#xtsdk 回调函数
++def onCallbackEvent(event: xintan_sdk.CBEventData):
++    try:
++        print('event: '+ event.eventstr + " " +  str(event.cmdid))
++        if event.eventstr == "sdkState":
++
++            if xtsdk.isconnect() == True and event.cmdid == 0xfe:
++                success1,  devinfo = xtsdk.getDevInfo()
++                print(devinfo.fwVersion)
++                print(devinfo.sn + " " + devinfo.chipidStr)
++
++                fwVersion = devinfo.fwVersion  # 假设 devinfo 是字典类型，fwVersion 是其中的一个键
++                fwversionf = extract_version(fwVersion)
++                print("device fw version: " + str(fwversionf))
++
++                if fwversionf >= 2.20:
++                    print(str(fwversionf) + " > 2.20")
++
++                    # 假设 devconfig 是一个字典或类似的对象，devinfo 类似于结构体的形式
++
++                    success, devconfig = xtsdk.getDevConfig()
++
++                    if success:
++                        print("******************* GET CONFIG SUCCESS *******************")
++                        # 打印 devinfo 的 fwVersion 属性
++                        print(f"fwVersion: {devinfo.fwVersion}")
++                        print(f"version: {devconfig.version}")
++                        print(f"ModulationFreq: {xintan_sdk.get_modulation_freq_strings()[devconfig.modFreq]}")
++                        print(f"HDRMode: {xintan_sdk.get_modulation_HDRMode_strings()[devconfig.hdrMode]}")
++
++                        # 打印其他属性
++                        print(f"integrationTimeGs: {devconfig.integrationTimeGs}")
++                        print(f"integrationTimes: {devconfig.integrationTimes[0]} "
++                                                  f"{devconfig.integrationTimes[1]} "
++                                                  f"{devconfig.integrationTimes[2]} "
++                                                  f"{devconfig.integrationTimes[3]}")
++                        print(f"miniAmp: {devconfig.miniAmp}")
++                        print(f"isFilterOn: {devconfig.isFilterOn}")
++                        print(f"roi: {devconfig.roi}")
++                        print(f"maxfps: {devconfig.maxfps}")
++                        print(f"bCompensateOn: {devconfig.bCompensateOn}")
++                        print(f"bBinningH: {devconfig.bBinningH}")
++                        print(f"bBinningV: {devconfig.bBinningV}")
++                        print(f"freqChannel: {devconfig.freqChannel}")
++                        print(f"setmaxfps: {devconfig.setmaxfps}")
++                        print(f"endianType: {devconfig.endianType}")
++                        # print(f"freq: {devconfig.freq}")
++                        print(f"freq: {xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[0])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[1])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[2])]} "
++                                  f"{xintan_sdk.get_modulation_freq_strings()[get_multi_freq(devconfig.freq[3])]}")
++
++                        print(f"bcut_filteron: {devconfig.bcut_filteron}")
++                        print(f"cut_intgrttime0: {devconfig.cut_intgrttime0}")
++                        print(f"cut_distance0: {devconfig.cut_distance0}")
++                        print(f"cut_intgrttime1: {devconfig.cut_intgrttime1}")
++                        print(f"cut_distance1: {devconfig.cut_distance1}")
++
++                        print("********************************************************")
++                        if not is_set_para:
++                            print("******************* USING DEV CONFIG *******************")
++                            configs['Setting']['intgs'] = devconfig.integrationTimeGs
++                            configs['Setting']['int1'] = devconfig.integrationTimes[0]
++                            configs['Setting']['int2'] = devconfig.integrationTimes[1]
++                            configs['Setting']['int3'] = devconfig.integrationTimes[2]
++                            configs['Setting']['int4'] = devconfig.integrationTimes[3]
++
++                            configs['Setting']['freq1'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[0]))
++                            configs['Setting']['freq2'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[1]))
++                            configs['Setting']['freq3'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[2]))
++                            configs['Setting']['freq4'] = xintan_sdk.ModulationFreq(get_multi_freq(devconfig.freq[3]))
++
++                            configs['Setting']['freq'] = devconfig.modFreq
++                            configs['Setting']['maxfps'] = devconfig.maxfps
++                            configs['Setting']['minLSB'] = devconfig.miniAmp
++                            configs['Setting']['HDR'] = devconfig.hdrMode
++                        else:
++                            print("******************* USING INI CONFIG *******************")
++                        config_parse.configs = configs
++                    else:
++                        print("******************* GET CONFIG FAILED *******************")
++                        print("********************************************************")
++                else:
++                    print("******************* < 2.20 *******************")
++                    print("********************************************************")
++
++                config_parse.print_all_settings()
++                xtsdk.stop()
++                xtsdk.setIntTimesus(configs['Setting']['intgs'],
++                                    configs['Setting']['int1'],
++                                    configs['Setting']['int2'],
++                                    configs['Setting']['int3'],
++                                    configs['Setting']['int4'],
++                                    0)
++                mod_freq = xintan_sdk.ModulationFreq.FREQ_12M
++                if fwversionf < 2.0:
++                    mod_freq = xintan_sdk.ModulationFreq(configs['Setting']['freq'])
++                    xtsdk.setModFreq(mod_freq)
++                    
++                hdr_mode = xintan_sdk.HDRMode(configs['Setting']['HDR'])
++                mod_freq1 = xintan_sdk.ModulationFreq(configs['Setting']['freq1'])
++                mod_freq2 = xintan_sdk.ModulationFreq(configs['Setting']['freq2'])
++                mod_freq3 = xintan_sdk.ModulationFreq(configs['Setting']['freq3'])
++                mod_freq4 = xintan_sdk.ModulationFreq(configs['Setting']['freq4'])
++                xtsdk.setMultiModFreq(mod_freq1, mod_freq2, mod_freq3, mod_freq4,xintan_sdk.ModulationFreq(2))
++
++
++                xtsdk.setHdrMode(hdr_mode)
++
++                xtsdk.setMinAmplitude(configs['Setting']['minLSB'])
++                xtsdk.setMaxFps(configs['Setting']['maxfps'])
++                img_type = xintan_sdk.ImageType(configs['Setting']['imgType'])
++                xtsdk.start(img_type)
++            elif event == 'sdkState':
++                print(xtsdk.getStateStr())
++            elif event == 'devState':
++                print(xtsdk.getStateStr())
++    except Exception as e:
++        print(f"Exception in onCallbackEvent: {e}")
++
++def onCallbackImage(frame):
++    # 创建 xyzi 数组
++    print("callback")
++    xyzi = np.empty((len(frame.points), 4), dtype=float)
++
++    xyzi[:, 0] = np.array([p.x for p in frame.points])
++    xyzi[:, 1] = np.array([p.y for p in frame.points])
++    xyzi[:, 2] = np.array([p.z for p in frame.points])
++    xyzi[:, 3] = frame.amplData
++    # 将所有点视为有效点
++    valid_points = xyzi
++
++    base_dir = os.getcwd()
++
++    # 创建输出目录
++    output_dir = os.path.join(base_dir, f"{record_path_str}_pcd")
++    os.makedirs(output_dir, exist_ok=True)
++
++    # 创建输出文件路径
++    # output_path = os.path.join(output_dir, f"{frame.frame_label}.pcd")
++
++    # Remove invalid characters
++
++    position = frame.frame_label.find('\x00')
++    if position != -1:
++        print(f"空字符在位置: {position}")
++    frame_label_cleaned = re.sub(r'[\x00]', '', frame.frame_label)
++
++
++    output_path = os.path.join(output_dir, f"{frame_label_cleaned}.pcd")
++
++    print(f"Writing to {output_path}")
++
++    # 获取点云的宽度和高度
++    width = frame.width
++    height = frame.height
++
++    try:
++        with open(str(output_path), 'w') as f:
++            # 写入 PCD 头信息
++            f.write("# .PCD v0.7 - Point Cloud Data file format\n")
++            f.write("VERSION 0.7\n")
++            f.write("FIELDS x y z intensity\n")
++            f.write("SIZE 4 4 4 4\n")
++            f.write("TYPE F F F F\n")
++            f.write("COUNT 1 1 1 1\n")
++            f.write(f"WIDTH {width}\n")
++            f.write(f"HEIGHT {height}\n")
++            f.write("VIEWPOINT 0 0 0 1 0 0 0\n")
++            f.write(f"POINTS {width * height}\n")
++            f.write("DATA ascii\n")
++            # 使用 NumPy 的 savetxt 方法进行批量写入
++            np.savetxt(f, valid_points, fmt='%f %f %f %f')
++    except Exception as e:
++        print(f"Error writing file: {e}")
++
++
++def is_hexadecimal(s):
++    try:
++        int(s, 16)
++        return True
++    except ValueError:
++        return False
++
++def read_files():
++    folder_path = record_path_str
++    if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
++        print(f"folder {folder_path} not exist")
++        return
++    if len(os.listdir(folder_path)) <= configs['Filters']['dustFrames']:
++        print("DUST FILTER NOT ACTIVED BY NOT ENOUGH FRAME COUNT : " + str(len(os.listdir(folder_path))) +
++            " REQUIRED : " + str(configs['Filters']['dustFrames'] + 1))
++    for entry in os.listdir(folder_path):
++        path = os.path.join(folder_path, entry)
++
++        if os.path.isfile(path):
++            if path.endswith('.xbin'):
++                xtsdk.doXbinFrameData(path)
++                time.sleep(0.3)  
++            elif path.endswith('.txt'):
++                with open(path, 'r', encoding='utf-8') as file:
++                    hex_string = file.readline().strip()
++
++                if len(hex_string) % 2 != 0:
++                    print("invalid hex string length !")
++                    return
++
++                bytes_vector = []
++                for i in range(0, len(hex_string), 2):
++                    byte_string = hex_string[i:i+2]
++
++                    if not is_hexadecimal(byte_string):
++                        print(f"trans error: contains invalid hexadecimal strings {byte_string}")
++                        break
++
++                    byte = int(byte_string, 16)
++                    bytes_vector.append(byte)
++
++                if len(bytes_vector) < 1000:
++                    print(f"trans error: length error {len(bytes_vector)}")
++                    return
++                file_name = os.path.splitext(os.path.basename(path))[0]
++                try:
++                    xtsdk.doUdpFrameData(bytes_vector, file_name)
++                except Exception as e:
++                    print(f"Error writing file: {e}")
++                
++                time.sleep(0.3)
++
++if __name__ == '__main__':
++    xtsdk.setCallback(onCallbackEvent, onCallbackImage)
++
++    parser = argparse.ArgumentParser(description='xbin path')
++
++    # 添加 IP 地址参数
++    parser.add_argument('record_path',nargs='?', type=str, help='', default="b")
++    # 解析命令行参数
++    args = parser.parse_args()
++    record_path_str = args.record_path
++
++    if configs['Filters']['kalmanEnable'] == 1:
++        xtsdk.setSdkKalmanFilter(int((configs['Filters']['kalmanFactor']) * 1000),
++                                 (configs['Filters']['kalmanThreshold']),
++                                 2000)
++    if configs['Filters']['medianSize'] > 0:
++        xtsdk.setSdkMedianFilter(configs['Filters']['medianSize'])
++    if configs['Filters']['edgeEnable'] == 1:
++        xtsdk.setSdkEdgeFilter(configs['Filters']['edgeThreshold'])
++    if configs['Filters']['dustEnable'] == 1:
++        xtsdk.setSdkDustFilter(configs['Filters']['dustThreshold'], configs['Filters']['dustFrames'])
++    if configs['Filters']['postprocessEnable'] == 1:
++        xtsdk.setPostProcess(configs['Filters']['postprocessThreshold'], configs['Filters']['dynamicsEnabled'], configs['Filters']['dynamicsWinsize'])
++    if configs['Filters']['reflectiveEnable'] == 1:
++        xtsdk.setSdkReflectiveFilter(configs['Filters']['ref_th_min'], configs['Filters']['ref_th_max'])
++
++    try:
++        xtsdk.startup()
++    except Exception as reason:
++        print(f"Error: {reason}")
++
++    img_type = xintan_sdk.ImageType(4)
++    xtsdk.start(img_type)
++
++
++    read_files()
++
++    signal.signal(signal.SIGINT, signal_handler)
++
++
++    # while keepRunning:
++    #     time.sleep(1)
++    print("stop")
++    xtsdk.stop()
++    xtsdk.shutdown()
++
+diff --git a/xintan.xtcfg b/xintan.xtcfg
+new file mode 100644
+--- /dev/null
++++ b/xintan.xtcfg
+@@ -0,0 +1,49 @@
++[Setting]
++imgType=4
++deviceType=8
++HDR=1
++int1=1600
++int2=200
++int3=30
++int4=1600
++int5=200
++intgs=2000
++minLSB=70
++hmirror=0
++vmirror=0
++maxfps=10
++cut_corner=90
++freq1=0
++freq2=0
++freq3=0
++freq4=3
++freq5=3
++renderType=2
++pclFilterOn=1
++hbinning=0
++vbinning=0
++
++[Filters]
++medianSize=3
++kalmanEnable=1
++kalmanFactor=0.30
++kalmanThreshold=300
++edgeEnable=1
++edgeThreshold=150
++dustEnable=1
++dustThreshold=9000
++dustFrames=2
++postprocessThreshold=5
++postprocessEnable=1
++dynamicsEnabled=1
++dynamicsWinsize=9
++dynamicsMotionsize=3
++reflectiveEnable=1
++ref_th_min=0.5
++ref_th_max=2
++spatialEnable=1
++spatialAlpha=0.7
++spatialDelta=70
++spatialIterations=2
++averageEnable=0
++averageSize=4

@@ -78,6 +78,8 @@ def main():
     args = parser.parse_args()
 
     source = json.loads(args.ground_json.read_text(encoding="utf-8"))
+    if source.get("quality", {}).get("status") != "CANDIDATE_REVIEW_REQUIRED":
+        raise SystemExit("requires a multi-frame v2 ground diagnostic with all quality/context gates passed")
     plane = source.get("plane")
     if plane is None:
         raise SystemExit("ground diagnostic contains no plane")
@@ -98,6 +100,9 @@ def main():
     result = {
         "schema": "smartwheel.xtm60_orientation_diagnostic.v1",
         "read_only": True,
+        "status": "CANDIDATE_REVIEW_REQUIRED",
+        "automatic_apply_allowed": False,
+        "formal_runtime_eligible": False,
         "source_ground_json": str(args.ground_json),
         "sensor_axes": {"x": "left", "y": "up", "z": "forward"},
         "translation_xyz_m": [float(value) for value in args.xyz],

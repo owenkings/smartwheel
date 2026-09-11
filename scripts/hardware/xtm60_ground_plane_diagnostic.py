@@ -14,14 +14,19 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 
 from xtm60_cloud_diagnostic import _points_array
+from wheelchair_3d_mapping.ground_plane_candidate import evaluate_floor_frames, fit_floor_plane
 
 
 class CloudCollector(Node):
-    def __init__(self, topic, frame_limit):
+    def __init__(self, topic, frame_limit, save_raw=False):
         super().__init__("xtm60_ground_plane_diagnostic")
         self.frame_limit = frame_limit
         self.frames = []
         self.frame_ids = set()
+        self.source_frames = []
+        self.stamps = []
+        self.save_raw = save_raw
+        self.raw_frames = []
         self.create_subscription(PointCloud2, topic, self.on_cloud, qos_profile_sensor_data)
 
     def on_cloud(self, message):
@@ -40,6 +45,10 @@ class CloudCollector(Node):
         if xyz.size:
             self.frames.append(xyz)
             self.frame_ids.add(message.header.frame_id)
+            self.source_frames.append(message.header.frame_id)
+            self.stamps.append(message.header.stamp.sec + message.header.stamp.nanosec * 1e-9)
+            if self.save_raw:
+                self.raw_frames.append(points.copy())
 
 
 def fit_horizontal_plane(points, iterations, threshold_m, vertical_tolerance_deg):
@@ -93,17 +102,23 @@ def fit_horizontal_plane(points, iterations, threshold_m, vertical_tolerance_deg
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--topic", default="/xtm60/left/points")
-    parser.add_argument("--frame-count", type=int, default=5)
+    parser.add_argument("--frame-count", type=int, default=30)
     parser.add_argument("--timeout-sec", type=float, default=10.0)
     parser.add_argument("--max-points", type=int, default=100000)
     parser.add_argument("--iterations", type=int, default=300)
     parser.add_argument("--threshold-m", type=float, default=0.03)
     parser.add_argument("--vertical-tolerance-deg", type=float, default=25.0)
+    parser.add_argument("--floor-roi-confirmed", action="store_true",
+                        help="Operator confirms visible candidate surface is the floor, not a desk/ceiling")
+    parser.add_argument("--stationary-level-confirmed", action="store_true",
+                        help="Operator confirms chassis is stationary on a level floor")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--raw-output", type=Path,
+                        help="Optional NPZ of original structured XYZ/intensity frames and source stamps")
     args = parser.parse_args()
 
     rclpy.init()
-    node = CloudCollector(args.topic, args.frame_count)
+    node = CloudCollector(args.topic, args.frame_count, save_raw=args.raw_output is not None)
     started = time.monotonic()
     try:
         while (
@@ -113,24 +128,32 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.2)
         frame_ids = sorted(node.frame_ids)
         frames = list(node.frames)
+        stamps = list(node.stamps)
+        source_frames = list(node.source_frames)
+        raw_frames = list(node.raw_frames)
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+    if args.raw_output is not None:
+        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(args.raw_output, stamps=np.asarray(stamps),
+                            frame_ids=np.asarray(source_frames),
+                            **{f"frame_{i:04d}": frame for i, frame in enumerate(raw_frames)})
 
     points = np.concatenate(frames) if frames else np.empty((0, 3), dtype=np.float64)
     if points.shape[0] > args.max_points:
         rng = np.random.default_rng(20260722)
         points = points[rng.choice(points.shape[0], args.max_points, replace=False)]
     plane = (
-        fit_horizontal_plane(
-            points, args.iterations, args.threshold_m, args.vertical_tolerance_deg
-        )
+        fit_floor_plane(points, iterations=args.iterations, threshold_m=args.threshold_m,
+                        vertical_tolerance_deg=args.vertical_tolerance_deg)
         if points.shape[0] >= 3
         else None
     )
     positive_z_fraction = float(np.mean(points[:, 2] > 0)) if points.size else 0.0
     result = {
-        "schema": "smartwheel.xtm60_ground_plane_diagnostic.v1",
+        "schema": "smartwheel.xtm60_ground_plane_diagnostic.v2",
         "read_only": True,
         "topic": args.topic,
         "frame_ids": frame_ids,
@@ -142,6 +165,12 @@ def main():
             "vertical_tolerance_deg": args.vertical_tolerance_deg,
         },
         "plane": plane,
+        "quality": evaluate_floor_frames(
+            frames, stamps=stamps, frame_ids=source_frames,
+            floor_roi_confirmed=args.floor_roi_confirmed,
+            stationary_level_confirmed=args.stationary_level_confirmed,
+            iterations=args.iterations, threshold_m=args.threshold_m,
+            vertical_tolerance_deg=args.vertical_tolerance_deg),
         "positive_z_fraction": positive_z_fraction,
     }
     result["checks"] = {
@@ -160,7 +189,7 @@ def main():
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
-    return 0 if plane is not None else 2
+    return 0 if result["quality"]["status"] == "CANDIDATE_REVIEW_REQUIRED" else 2
 
 
 if __name__ == "__main__":

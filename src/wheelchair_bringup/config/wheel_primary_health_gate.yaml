@@ -1,0 +1,25 @@
+wheel_pose_health_gate:
+  ros__parameters:
+    input_odom_topic: /odometry/filtered
+    output_odom_topic: /wheel_mapping/odometry_gated
+    path_topic: /wheel_mapping/path
+    wheel_odom_topic: /wheel/odom
+    imu_topic: /imu/data
+    feedback_health_topic: /base/wheel_feedback_healthy
+    status_topic: /wheel_mapping/pose_gate/status
+    expected_parent_frame: odom
+    expected_child_frame: base_link
+    expected_wheel_parent_frame: odom
+    expected_wheel_child_frame: base_link
+    expected_imu_frame: imu_link
+    publish_tf: true
+    max_feedback_receive_age_sec: 0.25
+    max_wheel_receive_age_sec: 0.20
+    max_imu_receive_age_sec: 0.10
+    max_wheel_header_age_sec: 0.20
+    max_imu_header_age_sec: 0.10
+    max_ekf_header_age_sec: 0.20
+    future_stamp_tolerance_sec: 0.05
+    status_period_sec: 0.20
+    path_min_period_sec: 0.10
+    path_max_poses: 3000

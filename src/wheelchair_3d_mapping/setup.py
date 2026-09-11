@@ -26,6 +26,9 @@ setup(
         "console_scripts": [
             "dual_lidar_cloud_fusion_node = wheelchair_3d_mapping.dual_lidar_cloud_fusion_node:main",
             "lio_cloud_adapter = wheelchair_3d_mapping.lio_cloud_adapter_node:main",
+            "lio_consistency_monitor = wheelchair_3d_mapping.lio_consistency_node:main",
+            "wheel_pose_health_gate_node = wheelchair_3d_mapping.wheel_pose_health_gate_node:main",
+            "wheel_registered_cloud_node = wheelchair_3d_mapping.wheel_registered_cloud_node:main",
             "wheel_livo_consistency_monitor = wheelchair_3d_mapping.wheel_livo_consistency_monitor:main",
             "cloud_to_occupancy_grid_node = wheelchair_3d_mapping.cloud_to_occupancy_grid_node:main",
             "rgb_cloud_colorizer_node = wheelchair_3d_mapping.rgb_cloud_colorizer_node:main",

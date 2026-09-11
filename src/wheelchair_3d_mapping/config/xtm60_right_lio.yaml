@@ -59,9 +59,13 @@
                 min_observability_ratio: 0.000001
                 min_observable_directions: 3
                 project_degenerate_directions: true
-                # The first frame after a long input gap is prediction-only. The
-                # following normally spaced frame may re-enter through all gates.
-                reject_after_lidar_gap_sec: 0.5
+                # A short transport/processing gap is tolerated when the
+                # geometric and increment gates below still pass.  The live
+                # run measured 1.018--1.512 s gaps while the valid correction
+                # remained <= 0.05 m/2 deg; rejecting those frames froze the
+                # output even though the scan was usable.  Much longer gaps
+                # remain fail-closed.
+                reject_after_lidar_gap_sec: 2.0
                 # At the safety-clamped 0.08 m/s route speed, one 10 Hz frame
                 # advances about 8 mm. A 5 cm correction still leaves >6x margin
                 # while rejecting the 7.4-17.2 cm recovery jumps measured after
@@ -69,6 +73,12 @@
                 max_position_correction_m: 0.05
                 max_rotation_correction_deg: 2.0
                 max_velocity_correction_mps: 0.5
+                # Bootstrap may accept the first geometrically valid frame
+                # with a bounded larger correction; runtime limits apply after
+                # the first accepted LiDAR update.
+                bootstrap_max_position_correction_m: 0.5
+                bootstrap_max_rotation_correction_deg: 10.0
+                bootstrap_max_velocity_correction_mps: 2.0
                 # If only the increment gate fails, retry from the exact saved
                 # state with R=.004/.016/.064. The accepted correction must still
                 # remain below all limits; this enables gradual reacquisition

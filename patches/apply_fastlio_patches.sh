@@ -8,9 +8,13 @@ WS="$(cd "$(dirname "$0")/.." && pwd)"
 FL="$WS/src/third_party/FAST_LIO_ROS2"
 PATCH="$WS/patches/fastlio_smartwheel_hardening.patch"
 BASE_COMMIT="2fffc570a25d0df172720bac034fbdb6a13d2162"
-EXPECTED_PATCH_SHA256="89912f73b932a33c1fe5c7f56575f13c7f8940b840e3191c6d9007f271f93c74"
-EXPECTED_LASER_MAPPING_SHA256="cff8187e4e4cfb2c7c09d6f6478f933c1c2465e687ea66e4f7d212a1ef6e5d10"
-EXPECTED_IMU_PROCESSING_SHA256="a024e7040d189e9e75d12211610c33fa5d5829add229829a28a9f70c36622c72"
+EXPECTED_PATCH_SHA256="57c8352ba839d9a7f9421985f3f0538f15d272c43eb6540a944eb6c3c1b17a9b"
+EXPECTED_LASER_MAPPING_SHA256="ae9df41f67cb62ed6d9dcd27601e3a2aa06eddb0a663b0fbde94c3bee78d3b08"
+EXPECTED_IMU_PROCESSING_SHA256="c5f504012b884f09e70a9e6696cb09407687c7333892d531abfd13888f3cee4a"
+EXPECTED_WHEEL_HEADER_SHA256="093fef1256aa65482e2f2a5a4cb50c917b96ae818ec20ea41e18d44fdf762898"
+EXPECTED_WHEEL_TEST_SHA256="69e89f19095c26e0b9ed084a0606cb2283febd854dabf6f4d9af759c4104737a"
+EXPECTED_AIDING_HEADER_SHA256="a3560ccb15b53c3f96b49cff2744618b1f13e7bfa50c6aa1ae09e03288629fed"
+EXPECTED_AIDING_TEST_SHA256="bbda1b430ba22287a793a53dd8d7f07bc22d4eb4752fc346430b57617bf492a8"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -31,6 +35,12 @@ validate_hardened_tree() {
 
   sha256_matches "$EXPECTED_LASER_MAPPING_SHA256" "$source" &&
     sha256_matches "$EXPECTED_IMU_PROCESSING_SHA256" "$imu" &&
+    sha256_matches "$EXPECTED_WHEEL_HEADER_SHA256" "$FL/include/wheel_velocity_update.hpp" &&
+    sha256_matches "$EXPECTED_WHEEL_TEST_SHA256" "$FL/tests/test_wheel_velocity_update.cpp" &&
+    sha256_matches "$EXPECTED_AIDING_HEADER_SHA256" "$FL/include/state_aiding_safety.hpp" &&
+    sha256_matches "$EXPECTED_AIDING_TEST_SHA256" "$FL/tests/test_state_aiding_safety.cpp" &&
+    grep -q 'publish.tf_en' "$source" &&
+    grep -q 'validate_post_aid' "$source" &&
     grep -Eq 'laser_point_cov[[:space:]]*=[[:space:]]*0\.001' "$source" &&
     grep -q 'project_degenerate_directions' "$source" &&
     grep -q 'velocity_measurement_variance' "$source" &&

@@ -22,19 +22,28 @@ separate, explicitly-labelled diagnostic path that wires the same nodes directly
 so the operator can drive the chair and watch live 3D/2D mapping. It exists to
 answer "does the hardware work", not "is the map metrically correct".
 
-ACCEPTED INACCURACY: the mount transform used here (URDF's blocked candidate,
-xyz 0.606 -0.24 0.499) is geometrically self-consistent with the FAST-LIO
-extrinsic in xtm60_right_lio.yaml (verified identical to 6e-7, floor-levelling
-checked: tilt 0.00 deg) but its x/yaw component is UNCALIBRATED. Expect a
-systematic longitudinal/heading offset. Do not promote maps made here.
+ACCEPTED INACCURACY: this route now uses diagnostic_measured_layout.yaml as one
+source for the URDF and derived IMU-frame FAST-LIO extrinsics. Both radar heights
+are the user's 0.735 m measurement, with zero relative fore/aft displacement.
+Absolute x, yaw and retained provisional rotations are NOT newly calibrated.
+The old 0.499 m installation-epoch candidate remains historical, not the active
+diagnostic mount. Do not promote maps made here.
 
-TF OWNERSHIP (single parent for base_link)
+TF OWNERSHIP with pose_owner=fastlio (historical diagnostic only)
   camera_init -> body        FAST-LIO (dynamic)
   body        -> base_link   static bridge, full inverse of calibrated base->imu
-  map         -> camera_init identity bridge
+  map         -> camera_init initial base->IMU reference bridge
   base_link   -> xtm60_right_link   URDF / robot_state_publisher
-No EKF, and the wheel base runs with publish_tf:=false, so nothing else claims
-base_link.
+The diagnostic wheel/IMU EKF and wheel base both run with publish_tf:=false;
+only FAST-LIO owns base_link. Wheel forward-speed updates inside FAST-LIO are
+separate from this comparison EKF and never consume its correlated IMU output.
+
+With pose_owner=wheel_imu, the wheel/IMU EKF estimates continuous pose; its
+freshness/feedback gate alone broadcasts odom->base_link. RTAB-Map owns
+map->odom. FAST-LIO is isolated under /lio/shadow with TF disabled. No static
+camera_init/body bridges or LIO-derived occupancy grid are started in that mode.
+The wheel-primary path is an explicit planar indoor diagnostic, not approval of
+the formally gated full-3D calibration/navigation pipeline.
 
 CHAIN: RViz TeleopPanel (W/A/S/D, Space=stop) -> /cmd_vel_nav
        -> safety_supervisor -> /cmd_vel_safe -> zlac8030 base
@@ -56,6 +65,7 @@ from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackagePrefix
+from wheelchair_3d_mapping.diagnostic_layout import load_diagnostic_layout
 
 # Right-unit deployment identity (deployment_identity block of the contract).
 RIGHT_DEVICE_IP = "192.168.1.101"
@@ -67,6 +77,8 @@ def _setup(context, *args, **kwargs):
     bringup = get_package_share_directory("wheelchair_bringup")
     description = get_package_share_directory("wheelchair_description")
     mapping = get_package_share_directory("wheelchair_3d_mapping")
+    layout_profile = os.path.join(description, "config", "diagnostic_measured_layout.yaml")
+    layout = load_diagnostic_layout(layout_profile, radar="right")
     bringup_prefix = FindPackagePrefix("wheelchair_bringup").perform(context)
     bindshim = os.path.join(
         bringup_prefix, "lib", "wheelchair_bringup", "libxt_bindshim.so"
@@ -78,6 +90,15 @@ def _setup(context, *args, **kwargs):
     motion = s("motion_control_enabled").lower()
     enable_camera = s("enable_camera").lower() == "true"
     enable_ultrasonic = s("enable_ultrasonic").lower() == "true"
+    lio_wheel_aiding = s("lio_wheel_aiding").lower() == "true"
+    lio_zupt = s("lio_zupt").lower() == "true"
+    pose_owner = s("pose_owner").lower()
+    if pose_owner not in ("fastlio", "wheel_imu"):
+        raise RuntimeError("pose_owner must be fastlio or wheel_imu")
+    wheel_primary = pose_owner == "wheel_imu"
+    run_lio = not wheel_primary or s("enable_fastlio_shadow").lower() == "true"
+    if wheel_primary and s("use_wheel_imu_ekf").lower() != "true":
+        raise RuntimeError("wheel_imu pose owner requires use_wheel_imu_ekf=true")
 
     # Which camera slots to start. One isolated process per role, so an absent or
     # faulty unit cannot drag the others down: a dead device reconnects every
@@ -94,16 +115,15 @@ def _setup(context, *args, **kwargs):
             f"INVALID_CAMERA_ROLES: {unknown}; expected front, left, right, rear"
         )
 
-    # robot_state_publisher with the right-radar link switched ON. That xacro arg
-    # is named "..._for_mock" because the reviewed model must not ship this
-    # provisional TF by default; here it is enabled deliberately and only for
-    # this diagnostic route.
+    # Explicit diagnostic layout opt-in; the formally approved route's
+    # BLOCKED_CONFLICT contract is unchanged.
     robot_description = {
         "robot_description": ParameterValue(
             Command([
                 "xacro ",
                 os.path.join(description, "urdf", "wheelchair.urdf.xacro"),
-                " include_blocked_right_lidar_for_mock:=true",
+                " diagnostic_measured_layout:=true",
+                " diagnostic_layout_profile:=", layout_profile,
             ]),
             value_type=str,
         )
@@ -114,7 +134,16 @@ def _setup(context, *args, **kwargs):
             "[right_lidar_diag_mapping] DIAGNOSTIC ROUTE. right_lidar_stage1_calibration "
             "is BLOCKED_CONFLICT (x/yaw uncalibrated); the mount TF used here is a "
             "provisional candidate. Hardware/behaviour check only - do not promote maps. "
+            "Equal-height measured-layout profile: z=0.735 m; yaw/x not calibrated. "
             f"motion_control_enabled={motion} (true = motors may move)."
+        )),
+        LogInfo(msg=(
+            "[pose ownership] health-gated wheel/IMU EKF -> odom->base; RTAB -> map->odom; "
+            f"FAST-LIO shadow enabled={run_lio}, never owns vehicle TF. "
+            "Planar indoor trajectory, full XYZ cloud."
+            if wheel_primary else
+            "[pose ownership] FAST-LIO -> camera_init->body; wheel/IMU EKF "
+            "comparison only; NO RTAB-Map loop closure in this mode."
         )),
 
         # --- TF tree from the URDF (includes base_link->xtm60_right_link) ---
@@ -218,6 +247,7 @@ def _setup(context, *args, **kwargs):
         Node(
             package="wheelchair_3d_mapping", executable="lio_cloud_adapter",
             name="lio_cloud_adapter_node", output="screen",
+            condition=IfCondition(str(run_lio).lower()),
             parameters=[{
                 "input_topic": "/xtm60/right/points",
                 "output_topic": "/lio/cloud_in",
@@ -231,33 +261,59 @@ def _setup(context, *args, **kwargs):
         Node(
             package="fast_lio", executable="fastlio_mapping",
             name="fastlio_mapping", output="screen",
-            parameters=[os.path.join(mapping, "config", "xtm60_right_lio.yaml")],
+            condition=IfCondition(str(run_lio).lower()),
+            parameters=[os.path.join(mapping, "config", "xtm60_right_lio.yaml"), {
+                "mapping.extrinsic_R": layout["extrinsic_R"],
+                "mapping.extrinsic_T": layout["extrinsic_T"],
+                "wheel_update.enabled": False if wheel_primary else lio_wheel_aiding,
+                "zupt.enabled": False if wheel_primary else lio_zupt,
+                "publish.tf_en": not wheel_primary,
+                "wheel_update.base_to_imu_R": layout["base_to_imu_R"],
+                "wheel_update.base_to_imu_T": layout["base_to_imu_T"],
+            }],
+            remappings=([
+                ("/Odometry", "/lio/shadow/odometry"),
+                ("/path", "/lio/shadow/path"),
+                ("/cloud_registered", "/lio/shadow/cloud_registered"),
+                ("/cloud_registered_body", "/lio/shadow/cloud_registered_body"),
+                ("/cloud_effected", "/lio/shadow/cloud_effected"),
+                ("/Laser_map", "/lio/shadow/laser_map"),
+                ("map_save", "/lio/shadow/map_save"),
+            ] if wheel_primary else []),
         ),
         # FAST-LIO hardcodes camera_init/body in C++, so bridge them statically.
         Node(
             package="tf2_ros", executable="static_transform_publisher",
             name="lio_map_to_camera_init", output="screen",
-            arguments=["0", "0", "0", "0", "0", "0", "map", "camera_init"],
+            condition=IfCondition(str(not wheel_primary).lower()),
+            # camera_init is the INITIAL IMU frame, not the ground plane.
+            # Use the same base->IMU transform as the URDF so the initial
+            # map->base chain is identity when combined with body->base below.
+            # This is a presentation/reference-frame alignment, not a new
+            # sensor calibration or a correction to the estimated trajectory.
+            arguments=[str(v) for v in (
+                layout["map_to_camera_init_translation"] +
+                layout["map_to_camera_init_quaternion"])] + ["map", "camera_init"],
         ),
         Node(
             package="tf2_ros", executable="static_transform_publisher",
             name="lio_body_to_base_link", output="screen",
+            condition=IfCondition(str(not wheel_primary).lower()),
             # Full inverse of base_link->imu_link, including the measured H30
             # roll/pitch correction; quaternion form avoids Euler order ambiguity.
-            arguments=[
-                "0.000495116765", "-0.004454081453", "-0.449977683911",
-                "-0.004949042248", "-0.000550123085", "0.000002722616",
-                "0.999987602092", "body", "base_link",
-            ],
+            arguments=[str(v) for v in (
+                layout["body_to_base_translation"] +
+                layout["body_to_base_quaternion"])] + ["body", "base_link"],
         ),
 
         # --- 2D: project FAST-LIO's registered cloud into an occupancy grid. ---
         Node(
             package="wheelchair_3d_mapping", executable="cloud_to_occupancy_grid_node",
             name="cloud_to_occupancy_grid_node", output="screen",
+            condition=IfCondition(str(not wheel_primary).lower()),
             parameters=[
                 os.path.join(mapping, "config", "cloud_to_occupancy_grid.yaml"),
-                {"input_cloud_topic": "/cloud_registered", "map_frame": "camera_init"},
+                {"input_cloud_topic": "/cloud_registered", "map_frame": "map"},
             ],
         ),
 
@@ -285,7 +341,7 @@ def _setup(context, *args, **kwargs):
             ],
         ),
 
-        # --- Base. publish_tf:=false because FAST-LIO owns base_link. ---
+        # --- Base. Never a TF owner in either mapping mode. ---
         Node(
             package="wheelchair_base", executable="zlac8030_driver_node",
             name="zlac8030_driver_node", output="screen",
@@ -295,9 +351,23 @@ def _setup(context, *args, **kwargs):
                     "mode": "real",
                     "publish_tf": False,
                     "hold_zero_before_motion_init": False,
+                    "allow_manual_push_mode": wheel_primary,
                     "motion_control_enabled": motion == "true",
                 },
             ],
+        ),
+
+        # --- Wheel + IMU: estimate only; never publish unchecked predictions as TF.
+        # In wheel-primary mode the helper's health gate alone forwards its
+        # fresh, controller-confirmed poses to TF and RTAB-Map.
+        Node(
+            package="robot_localization", executable="ekf_node",
+            name="wheel_imu_ekf", output="screen",
+            parameters=[
+                os.path.join(bringup, "config", "right_diag_wheel_imu_ekf.yaml"),
+                {"publish_tf": False},
+            ],
+            condition=IfCondition(LaunchConfiguration("use_wheel_imu_ekf")),
         ),
 
         # --- RViz last, after TF/topics exist: 3D cloud + 2D grid + W/A/S/D panel
@@ -313,13 +383,18 @@ def _setup(context, *args, **kwargs):
         TimerAction(period=6.0, actions=[Node(
             package="rviz2", executable="rviz2", name="rviz2", output="screen",
             arguments=[
-                "-d", os.path.join(bringup, "rviz", "right_diag_mapping.rviz"),
+                "-d", os.path.join(bringup, "rviz", "wheel_imu_mapping.rviz"
+                                   if wheel_primary else "right_diag_mapping.rviz"),
                 "--qwindowgeometry", s("rviz_window_geometry"),
             ],
             condition=IfCondition(LaunchConfiguration("rviz")),
             on_exit=Shutdown(reason="RViz was closed by the operator"),
         )]),
     ]
+    if wheel_primary:
+        from wheelchair_3d_mapping.wheel_primary_pipeline import build_wheel_primary_nodes
+        actions += build_wheel_primary_nodes(
+            bringup, mapping, layout, s("database_path"), enable_lio_monitor=run_lio)
     return actions
 
 
@@ -329,7 +404,33 @@ def generate_launch_description():
             "motion_control_enabled", default_value="false",
             description="HIGH RISK. true lets /cmd_vel_safe write real motor speeds. "
                         "Default false = read-only sensor/mapping check."),
+        DeclareLaunchArgument(
+            "use_wheel_imu_ekf", default_value="true",
+            description="Run the wheel/IMU EKF with its own TF disabled. Required in "
+                        "wheel_imu mode, where the health gate owns odom->base_link.",
+        ),
         DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument(
+            "enable_fastlio_shadow", default_value="false",
+            description="Optional recorded-data comparison only in wheel_imu mode; "
+                        "off by default to avoid unnecessary CPU and debug-log load."),
+        DeclareLaunchArgument(
+            "pose_owner", default_value="fastlio",
+            description="fastlio: historical diagnostic; wheel_imu: planar wheel/IMU "
+                        "primary + RTAB loops + isolated FAST shadow. Use the dedicated "
+                        "run_wheel_imu_mapping.sh operator entry for wheel-primary mode."),
+        DeclareLaunchArgument(
+            "database_path", default_value="",
+            description="Required fresh RTAB database path in wheel_imu mode; "
+                        "the dedicated operator script supplies a unique session path."),
+        DeclareLaunchArgument(
+            "lio_wheel_aiding", default_value="true",
+            description="FAST-LIO forward-speed observation, not wheel-owned pose. "
+                        "Disable only for matched recorded-data comparisons."),
+        DeclareLaunchArgument(
+            "lio_zupt", default_value="true",
+            description="Bounded stationary velocity observation in legacy fastlio mode. "
+                        "Forced off in wheel_imu mode's isolated FAST-LIO shadow."),
         DeclareLaunchArgument(
             "enable_camera", default_value="true",
             description="UVC camera streams for the four RViz image panels. Set false "

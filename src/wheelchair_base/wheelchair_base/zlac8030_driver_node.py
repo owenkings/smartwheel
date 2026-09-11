@@ -9,6 +9,7 @@ try:
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from std_msgs.msg import Bool, String
+    from std_srvs.srv import SetBool
     from tf2_ros import TransformBroadcaster
 except ImportError:
     rclpy = None
@@ -79,6 +80,7 @@ class Zlac8030DriverNode(Node):
         self.declare_parameter("max_angular_rps", 1.0)
         self.declare_parameter("command_timeout_sec", 0.5)
         self.declare_parameter("motion_control_enabled", False)
+        self.declare_parameter("allow_manual_push_mode", False)
         self.declare_parameter("write_dual_axis_command_together", False)
         self.declare_parameter("initialize_motion_on_first_command", True)
         self.declare_parameter("hold_zero_before_motion_init", False)
@@ -114,6 +116,11 @@ class Zlac8030DriverNode(Node):
         self.invert_right = bool(self.get_parameter("invert_right").value)
         self.command_timeout_sec = float(self.get_parameter("command_timeout_sec").value)
         self.motion_control_enabled = bool(self.get_parameter("motion_control_enabled").value)
+        self.allow_manual_push_mode = bool(self.get_parameter("allow_manual_push_mode").value)
+        self.mapping_drive_mode = "drive"
+        self.mapping_rearm_required = False
+        self.last_feedback_monotonic = -math.inf
+        self.stationary_since = None
         self.write_dual_axis_command_together = bool(
             self.get_parameter("write_dual_axis_command_together").value
         )
@@ -179,6 +186,8 @@ class Zlac8030DriverNode(Node):
         self.feedback_health_pub = self.create_publisher(
             Bool, "/base/wheel_feedback_healthy", 10
         )
+        self.mapping_mode_pub = self.create_publisher(String, "/base/mapping_drive_mode", 10)
+        self.create_service(SetBool, "/base/set_mapping_push_mode", self.set_mapping_push_mode)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
         self.create_subscription(Twist, "/cmd_vel_safe", self.on_cmd_vel, 10)
         self.timer = self.create_timer(
@@ -189,8 +198,62 @@ class Zlac8030DriverNode(Node):
         if not (math.isfinite(msg.linear.x) and math.isfinite(msg.angular.z)):
             self.get_logger().warning("ignoring /cmd_vel_safe with non-finite values")
             return
+        if getattr(self, "allow_manual_push_mode", False):
+            zero = abs(msg.linear.x) < 1e-6 and abs(msg.angular.z) < 1e-6
+            if self.mapping_drive_mode != "drive" or self.mapping_rearm_required:
+                self.last_cmd = Twist()
+                self.last_cmd_time = self.get_clock().now()
+                # A zero received AFTER selecting drive is required. Commands
+                # held during push/transition must never re-enable the drive.
+                if self.mapping_drive_mode == "drive" and zero:
+                    self.mapping_rearm_required = False
+                return
         self.last_cmd = msg
         self.last_cmd_time = self.get_clock().now()
+
+    def set_mapping_push_mode(self, request, response):
+        response.success = False
+        if not self.allow_manual_push_mode or not self.motion_control_enabled or self.mode != "real":
+            response.message = "Switching disabled: use the wheel mapping entry with MOTION=true."
+            return response
+        now = time.monotonic()
+        stopped = (self.feedback_healthy and now - self.last_feedback_monotonic <= 0.25
+                   and self.stationary_since is not None and now - self.stationary_since >= 0.30)
+        command_zero = abs(self.last_cmd.linear.x) < 1e-6 and abs(self.last_cmd.angular.z) < 1e-6
+        if not stopped or not command_zero:
+            response.message = "Press STOP, physically stop, wait for healthy stationary wheel feedback, then retry."
+            return response
+        self.mapping_drive_mode = "blocked"
+        self.mapping_rearm_required = True
+        self.last_cmd = Twist()
+        self.last_cmd_time = self.get_clock().now()
+        if request.data:
+            try:
+                # Clear targets without invoking drive-enable, including when
+                # switching to push before the first WASD command.
+                if not self.registers.command_enabled or self.registers.control_word_register < 0:
+                    raise RuntimeError("speed/control registers not configured")
+                self.modbus.write_single_register(self.left_slave_id, self.registers.command_left_register, 0)
+                self.modbus.write_single_register(
+                    self.left_slave_id if self.single_slave_dual_axis else self.right_slave_id,
+                    self.registers.command_right_register, 0)
+                if not self._write_control_stop(emergency=False):
+                    raise RuntimeError("controller did not acknowledge stop/disable")
+            except Exception as exc:
+                self._write_control_stop(emergency=True)
+                response.message = "Switch FAILED; drive commands blocked. Check physical stop: " + str(exc)
+                return response
+            self.mapping_drive_mode = "push"
+            response.message = "PUSH: controller acknowledged stop; wheel/IMU recording continues. Confirm physical release."
+        else:
+            # No enable/write here. First fresh nonzero command after a fresh
+            # zero goes through the normal safety-supervised initialization.
+            self.mapping_drive_mode = "drive"
+            self.motion_initialized = False
+            response.message = "DRIVE selected; release keys, then press a fresh WASD command."
+        response.success = True
+        self.get_logger().info("Mapping mode switch: " + response.message)
+        return response
 
     def tick(self):
         now = self.get_clock().now()
@@ -214,7 +277,16 @@ class Zlac8030DriverNode(Node):
             self.feedback_healthy = feedback is not None
             if feedback is not None:
                 actual_left_rpm, actual_right_rpm = feedback
+                self.last_feedback_monotonic = time.monotonic()
+                # Conservative switch policy, not an encoder calibration:
+                # both measured wheel speeds <=0.5 rpm for at least 0.30 s.
+                if all(math.isfinite(v) and abs(v) <= 0.5 for v in feedback):
+                    if getattr(self, "stationary_since", None) is None:
+                        self.stationary_since = self.last_feedback_monotonic
+                else:
+                    self.stationary_since = None
             elif self.registers.feedback_enabled:
+                self.stationary_since = None
                 # A failed read is missing information, not a measured zero.
                 # Do not integrate or publish a fabricated stationary odometry
                 # sample: consumers (especially FAST-LIO ZUPT) will instead see
@@ -248,6 +320,9 @@ class Zlac8030DriverNode(Node):
         return (-left_rpm if self.invert_left else left_rpm, -right_rpm if self.invert_right else right_rpm)
 
     def _write_wheel_commands(self, left_rpm: float, right_rpm: float) -> bool:
+        if getattr(self, "allow_manual_push_mode", False):
+            if self.mapping_drive_mode != "drive" or self.mapping_rearm_required:
+                return False  # Read-only polling continues in tick().
         command_is_zero = abs(left_rpm) <= 1e-6 and abs(right_rpm) <= 1e-6
         now_monotonic = time.monotonic()
         if not command_is_zero:
@@ -503,6 +578,13 @@ class Zlac8030DriverNode(Node):
         msg = Bool()
         msg.data = bool(self.feedback_healthy)
         self.feedback_health_pub.publish(msg)
+        if hasattr(self, "mapping_mode_pub"):
+            mode = String()
+            mode.data = (self.mapping_drive_mode if self.allow_manual_push_mode and self.motion_control_enabled
+                         else "disabled")
+            if mode.data != "disabled" and not self.feedback_healthy:
+                mode.data += "_no_feedback"
+            self.mapping_mode_pub.publish(mode)
 
     def destroy_node(self):
         try:

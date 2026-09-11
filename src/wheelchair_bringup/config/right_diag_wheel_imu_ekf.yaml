@@ -1,0 +1,35 @@
+wheel_imu_ekf:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: false
+    print_diagnostics: true
+    transform_timeout: 0.1
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+    # Feed measured speed, not the wheel-integrated x/y trajectory: that
+    # trajectory already contains wheel-derived heading and correlated data.
+    odom0: /wheel/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 20
+    odom0_differential: false
+    odom0_relative: false
+    # Use gyro yaw rate. Indoor magnetic/absolute heading and gravity-removal
+    # accuracy have not been qualified; do not fuse raw acceleration or yaw.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 40
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: false

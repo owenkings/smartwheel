@@ -68,6 +68,8 @@ norm_bool() {
 motion="$(norm_bool "${MOTION:-false}")"
 cameras="$(norm_bool "${CAMERAS:-true}")"
 ultrasonic="$(norm_bool "${ULTRASONIC:-true}")"
+lio_wheel_aiding="$(norm_bool "${LIO_WHEEL_AIDING:-true}")"
+lio_zupt="$(norm_bool "${LIO_ZUPT:-true}")"
 # All four roles. They work over compressed transport (measured 23-30 Hz each);
 # the earlier "rear is dead" conclusion was an artefact of using raw transport.
 camera_roles="${CAMERA_ROLES:-front,left,right,rear}"
@@ -75,6 +77,10 @@ camera_roles="${CAMERA_ROLES:-front,left,right,rear}"
 echo "motion_control_enabled=$motion (true = motors may move)"
 echo "radar=right (device 192.168.1.101 via eno1 192.168.1.100)"
 echo "cameras=$cameras (roles: $camera_roles)  ultrasonic=$ultrasonic"
+echo "DIAGNOSTIC ONLY: FAST-LIO owns pose/TF; RTAB-Map loop closure is NOT started."
+echo "wheel/IMU EKF is comparison output only, not the displayed pose source."
+echo "LIO_WHEEL_AIDING=$lio_wheel_aiding  LIO_ZUPT=$lio_zupt"
+echo "Dynamic trajectory accuracy is NOT accepted; this is not the formal mapping entry."
 if [[ "$motion" == true ]]; then
   echo ""
   echo "  !! MOTORS ARMED. Clear area, physical E-stop in reach."
@@ -121,6 +127,8 @@ setsid taskset -c 0-5 nice -n 5 \
     enable_camera:="$cameras" \
     camera_roles:="$camera_roles" \
     enable_ultrasonic:="$ultrasonic" \
+    lio_wheel_aiding:="$lio_wheel_aiding" \
+    lio_zupt:="$lio_zupt" \
     rviz:=true &
 launch_pid=$!
 

@@ -1,11 +1,15 @@
 """Fuse the two XT-M60 point clouds into a single /points_merged cloud.
 
-Each incoming cloud is transformed into target_frame via TF, range/height
-filtered and optionally voxel-downsampled. A timer merges the most recent
-left/right results and publishes them. Missing TF or a missing lidar never
+Each incoming cloud is transformed into target_frame at its acquisition time.
+Motion-compensated routes additionally transform every participating cloud to
+target_frame at the newest acquisition time through a continuous fixed frame.
+This corrects ego-motion between staggered captures; it is NOT hardware clock
+synchronization and does not correct moving objects or unknown sensor latency.
+Missing TF or a missing lidar never
 crashes the node: it warns and, if allow_single_lidar_fallback is true, keeps
 publishing from whichever lidar is available.
 """
+import copy
 import json
 import time
 from typing import Optional
@@ -31,6 +35,8 @@ class _LidarState:
         self.rate_hz = 0.0
         self.tf_ok = False
         self.raw_points = 0
+        self.last_input_stamp_ns = None
+        self.last_published_stamp_ns = None
 
 
 class DualLidarCloudFusionNode(Node):
@@ -53,6 +59,9 @@ class DualLidarCloudFusionNode(Node):
         self.declare_parameter("max_pair_time_difference_sec", 0.075)
         self.declare_parameter("require_intensity", False)
         self.declare_parameter("require_nonzero_timestamps", False)
+        self.declare_parameter("motion_compensation", False)
+        self.declare_parameter("motion_fixed_frame", "")
+        self.declare_parameter("max_source_stamp_age_sec", 0.5)
         self.declare_parameter("publish_diagnostics", True)
         self.declare_parameter("output_rate_hz", 10.0)
         self.declare_parameter("input_timeout_sec", 0.5)
@@ -75,8 +84,17 @@ class DualLidarCloudFusionNode(Node):
         self.require_nonzero_timestamps = bool(
             self.get_parameter("require_nonzero_timestamps").value
         )
-        if self.max_pair_time_difference < 0.0:
-            raise ValueError("max_pair_time_difference_sec must be non-negative")
+        self.motion_compensation = bool(self.get_parameter("motion_compensation").value)
+        self.motion_fixed_frame = str(self.get_parameter("motion_fixed_frame").value).strip()
+        self.max_source_stamp_age = float(self.get_parameter("max_source_stamp_age_sec").value)
+        if not np.isfinite(self.max_pair_time_difference) or self.max_pair_time_difference < 0.0:
+            raise ValueError("max_pair_time_difference_sec must be finite and non-negative")
+        if not np.isfinite(self.max_source_stamp_age) or self.max_source_stamp_age <= 0.0:
+            raise ValueError("max_source_stamp_age_sec must be finite and positive")
+        if self.motion_compensation and (
+            not self.motion_fixed_frame or self.motion_fixed_frame == self.target_frame
+        ):
+            raise ValueError("motion compensation requires a distinct continuous motion_fixed_frame")
         self.input_timeout = float(self.get_parameter("input_timeout_sec").value)
         self.tf_timeout = float(self.get_parameter("tf_timeout_sec").value)
         self.left_enabled = bool(self.get_parameter("enable_left_input").value)
@@ -94,6 +112,10 @@ class DualLidarCloudFusionNode(Node):
         self._unsynchronized_count = 0
         self._missing_intensity_count = 0
         self._invalid_frame_count = 0
+        self._motion_tf_rejection_count = 0
+        self._timestamp_rejection_count = 0
+        self._last_motion_compensated = False
+        self._pending_motion_pair = None
 
         self.pub = self.create_publisher(PointCloud2, self.get_parameter("output_topic").value, qos_profile_sensor_data)
         self.status_pub = None
@@ -129,6 +151,18 @@ class DualLidarCloudFusionNode(Node):
             if dt > 0:
                 state.rate_hz = 0.7 * state.rate_hz + 0.3 * (1.0 / dt)
         state.recv_time = now
+
+        if self.motion_compensation:
+            stamp_ns = self._stamp_ns(msg.header.stamp)
+            if (stamp_ns is None or stamp_ns <= 0 or
+                    (state.last_input_stamp_ns is not None and stamp_ns <= state.last_input_stamp_ns)):
+                state.xyz, state.inten, state.stamp = None, None, None
+                state.tf_ok = False
+                self._timestamp_rejection_count += 1
+                self._warn("invalid_stamp", "motion compensation requires strictly increasing nonzero source stamps")
+                return
+            # Record input sequence even if later TF/filter handling fails.
+            state.last_input_stamp_ns = stamp_ns
 
         xyz, inten = cloud_utils.read_xyz_intensity(msg)
         state.raw_points = int(xyz.shape[0])
@@ -171,6 +205,18 @@ class DualLidarCloudFusionNode(Node):
             state.tf_ok = False
             self._invalid_frame_count += 1
             self._warn(f"flt_{msg.header.frame_id}", f"filter pipeline error: {exc}")
+
+    @staticmethod
+    def _stamp_ns(stamp):
+        if stamp is None:
+            return None
+        try:
+            sec, nsec = int(stamp.sec), int(stamp.nanosec)
+            if sec < 0 or not 0 <= nsec < 1000000000:
+                return None
+            return sec * 1000000000 + nsec
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None
 
     @staticmethod
     def _stamp_seconds(stamp):
@@ -217,13 +263,44 @@ class DualLidarCloudFusionNode(Node):
             and (time.monotonic() - state.recv_time) <= self.input_timeout
         )
 
+    def _lookup_motion(self, source_stamp, reference_stamp):
+        # State points already live in target_frame at source_stamp.  A plain
+        # target<-target lookup would incorrectly return identity during motion.
+        # Full TF traverses a continuous odometric frame at TWO source times.
+        # Never use map if it can jump at loop closure, latest TF, or identity as
+        # a fallback. A missing trajectory must suppress this pair.
+        try:
+            tf = self.tf_buffer.lookup_transform_full(
+                target_frame=self.target_frame,
+                target_time=rclpy.time.Time.from_msg(reference_stamp),
+                source_frame=self.target_frame,
+                source_time=rclpy.time.Time.from_msg(source_stamp),
+                fixed_frame=self.motion_fixed_frame,
+                timeout=rclpy.duration.Duration(seconds=self.tf_timeout),
+            )
+            return cloud_utils.transform_to_matrix(tf)
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            return None
+
     def _publish_merged(self):
         self._last_rejection_reason = ""
-        left_ok = self.left_enabled and self._fresh(self.left)
-        right_ok = self.right_enabled and self._fresh(self.right)
+        self._last_motion_compensated = False
+        left, right = self.left, self.right
+        if self.motion_compensation and self._pending_motion_pair is not None:
+            pending_left, pending_right = self._pending_motion_pair
+            # Give a selected pair time for its exact-time odometry TF to
+            # arrive. Continually replacing it with the newest sensor frame
+            # can starve fusion whenever LIO lags acquisition by one frame.
+            selected = [st for st in (pending_left, pending_right) if st.xyz is not None]
+            if selected and all(self._fresh(st) for st in selected):
+                left, right = pending_left, pending_right
+            else:
+                self._pending_motion_pair = None
+        left_ok = self.left_enabled and self._fresh(left)
+        right_ok = self.right_enabled and self._fresh(right)
         parts_xyz, parts_i = [], []
         have_intensity = True
-        for ok, st in ((left_ok, self.left), (right_ok, self.right)):
+        for ok, st in ((left_ok, left), (right_ok, right)):
             if ok and st.xyz is not None and st.xyz.shape[0] > 0:
                 parts_xyz.append(st.xyz)
                 if st.inten is None:
@@ -245,10 +322,12 @@ class DualLidarCloudFusionNode(Node):
             )
             return
 
-        left_stamp = self._stamp_seconds(self.left.stamp) if left_ok else None
-        right_stamp = self._stamp_seconds(self.right.stamp) if right_ok else None
+        left_stamp = self._stamp_seconds(left.stamp) if left_ok else None
+        right_stamp = self._stamp_seconds(right.stamp) if right_ok else None
         self._last_pair_delta_sec = None
-        if self.require_synchronized_pair and self.left_enabled and self.right_enabled:
+        if (self.require_synchronized_pair and self.left_enabled and self.right_enabled) or (
+            self.motion_compensation and left_ok and right_ok
+        ):
             if left_stamp is None or right_stamp is None or left_stamp == 0.0 or right_stamp == 0.0:
                 self._unsynchronized_count += 1
                 self._reject_publish("dual-lidar timestamps are missing or zero", left_ok, right_ok)
@@ -264,7 +343,7 @@ class DualLidarCloudFusionNode(Node):
                 )
                 return
 
-        if self.require_nonzero_timestamps:
+        if self.require_nonzero_timestamps or self.motion_compensation:
             selected = [value for value in (left_stamp, right_stamp) if value is not None]
             if not selected or any(value == 0.0 for value in selected):
                 self._reject_publish("nonzero source timestamps are required", left_ok, right_ok)
@@ -274,15 +353,13 @@ class DualLidarCloudFusionNode(Node):
             self._reject_publish("all participating lidar clouds must contain intensity", left_ok, right_ok)
             return
 
-        xyz = np.vstack(parts_xyz)
-        inten = np.concatenate([p for p in parts_i]) if have_intensity else None
         header = Header()
         # audit D034/D168 (高; ICP 关闭后降级风险)
         # Use the source frame acquisition time rather than wall clock.
         # Pick the newer stamp among left/right (single-lidar: left stamp only).
         # Fall back to wall clock only when all source stamps are zero (sec==0 and nanosec==0).
         src_stamp = None
-        for ok, st in ((left_ok, self.left), (right_ok, self.right)):
+        for ok, st in ((left_ok, left), (right_ok, right)):
             if ok and st.stamp is not None:
                 if src_stamp is None:
                     src_stamp = st.stamp
@@ -294,11 +371,50 @@ class DualLidarCloudFusionNode(Node):
             header.stamp = src_stamp
         else:
             header.stamp = self.get_clock().now().to_msg()
+
+        participating = [st for ok, st in ((left_ok, left), (right_ok, right)) if ok]
+        if self.motion_compensation:
+            now_ns = self.get_clock().now().nanoseconds
+            max_age_ns = int(self.max_source_stamp_age * 1.0e9)
+            for st in participating:
+                stamp_ns = self._stamp_ns(st.stamp)
+                if stamp_ns is None or stamp_ns <= 0 or not 0 <= now_ns - stamp_ns <= max_age_ns:
+                    self._pending_motion_pair = None
+                    self._timestamp_rejection_count += 1
+                    self._reject_publish("source stamp is invalid, future, stale, or outside the ROS clock domain", left_ok, right_ok)
+                    return
+                if st.last_published_stamp_ns is not None and stamp_ns <= st.last_published_stamp_ns:
+                    self._reject_publish("waiting for a new unconsumed frame from each participating lidar", left_ok, right_ok)
+                    return
+            compensated = []
+            for st in participating:
+                mat = self._lookup_motion(st.stamp, header.stamp)
+                if mat is None or not np.all(np.isfinite(mat)):
+                    # Shallow copies are intentional: input callbacks replace
+                    # arrays, while transforms never modify cached arrays.
+                    self._pending_motion_pair = (
+                        copy.copy(left) if left_ok else _LidarState(),
+                        copy.copy(right) if right_ok else _LidarState(),
+                    )
+                    self._motion_tf_rejection_count += 1
+                    self._reject_publish("no two-time TF for motion compensation; pair suppressed", left_ok, right_ok)
+                    return
+                compensated.append(cloud_utils.apply_transform(st.xyz, mat))
+            parts_xyz = compensated
+            self._last_motion_compensated = True
+
+        xyz = np.vstack(parts_xyz)
+        inten = np.concatenate([p for p in parts_i]) if have_intensity else None
         header.frame_id = self.target_frame
         if inten is None:
             self.pub.publish(cloud_utils.make_xyz_cloud(header, xyz))
         else:
             self.pub.publish(cloud_utils.make_xyzi_cloud(header, xyz, inten))
+        if self.motion_compensation:
+            for ok, selected, current in ((left_ok, left, self.left), (right_ok, right, self.right)):
+                if ok:
+                    current.last_published_stamp_ns = self._stamp_ns(selected.stamp)
+            self._pending_motion_pair = None
         self._publish_status(left_ok, right_ok, int(xyz.shape[0]), fallback_active)
 
     def _publish_status(self, left_ok, right_ok, out_points, fallback_active):
@@ -323,6 +439,13 @@ class DualLidarCloudFusionNode(Node):
                 and self._last_pair_delta_sec <= self.max_pair_time_difference
             ) if self.require_synchronized_pair and self.left_enabled and self.right_enabled else None,
             "require_nonzero_timestamps": self.require_nonzero_timestamps,
+            "motion_compensation": self.motion_compensation,
+            "motion_fixed_frame": self.motion_fixed_frame,
+            "motion_compensated": self._last_motion_compensated,
+            "max_source_stamp_age_sec": self.max_source_stamp_age,
+            "motion_tf_rejection_count": self._motion_tf_rejection_count,
+            "timestamp_rejection_count": self._timestamp_rejection_count,
+            "hardware_clock_synchronization_verified_by_this_node": False,
             "last_rejection_reason": self._last_rejection_reason,
             "unsynchronized_count": self._unsynchronized_count,
             "missing_intensity_count": self._missing_intensity_count,
