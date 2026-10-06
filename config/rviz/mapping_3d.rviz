@@ -1,0 +1,194 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+Visualization Manager:
+  Class: ""
+  Enabled: true
+  Name: root
+  Global Options:
+    Background Color: 24; 29; 36
+    Fixed Frame: map
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Optimized 3D map
+      Enabled: true
+      Value: true
+      Alpha: 1
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Value Bounds:
+        Value: true
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.03
+      Decay Time: 0
+      Use Fixed Frame: true
+      Topic:
+        Value: /wc_mapping/map/cloud
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/Map
+      Name: Conservative 2D occupancy - uninflated
+      Enabled: true
+      Value: true
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+      Use Timestamp: false
+      Topic:
+        Value: /wc_mapping/map/grid
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Left current raw cloud - live only
+      Enabled: false
+      Value: false
+      Alpha: 1
+      Color Transformer: FlatColor
+      Color: 0; 210; 255
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 2
+      Decay Time: 0
+      Topic:
+        Value: /wc_mapping/lidar_left/points_raw
+        Depth: 2
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Right current raw cloud - live only
+      Enabled: false
+      Value: false
+      Alpha: 1
+      Color Transformer: FlatColor
+      Color: 255; 80; 160
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 2
+      Decay Time: 0
+      Topic:
+        Value: /wc_mapping/lidar_right/points_raw
+        Depth: 2
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Joint ICP input fused cloud - live only
+      Enabled: false
+      Value: false
+      Alpha: 1
+      Color Transformer: FlatColor
+      Color: 140; 255; 90
+      Position Transformer: XYZ
+      Style: Points
+      Size (Pixels): 2
+      Decay Time: 0
+      Topic:
+        Value: /wc_mapping/fusion/points
+        Depth: 2
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+    - Class: rviz_default_plugins/Path
+      Name: Rig trajectory - latest continuous epoch
+      Enabled: true
+      Value: true
+      Alpha: 1
+      Color: 255; 165; 0
+      Buffer Length: 1
+      Line Style: Lines
+      Line Width: 0.04
+      Pose Style: None
+      Topic:
+        Value: /wc_mapping/map/path
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Rig trajectory - separate epoch segments
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /wc_mapping/map/path_segments
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Map status and verification limits
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /wc_mapping/ui/status_marker
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Version-bound goal annotations
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /wc_mapping/ui/goal_markers
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/TF
+      Name: Actual published TF only
+      Enabled: true
+      Value: true
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Marker Scale: 0.5
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /wc_mapping/ui/goal_annotation
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 12
+      Pitch: 0.65
+      Yaw: 0.8
+      Focal Point:
+        X: 2.5
+        Y: 0
+        Z: 0.5
+      Target Frame: <Fixed Frame>
+      Near Clip Distance: 0.01
+    Saved: []
+Window Geometry:
+  Width: 1280
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+

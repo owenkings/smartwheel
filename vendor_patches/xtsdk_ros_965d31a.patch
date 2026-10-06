@@ -1,0 +1,1833 @@
+diff --git a/xtsdk_cpp/xtsdk/IbaseFilter_lib.h b/xtsdk_cpp/xtsdk/IbaseFilter_lib.h
+--- a/xtsdk_cpp/xtsdk/IbaseFilter_lib.h
++++ b/xtsdk_cpp/xtsdk/IbaseFilter_lib.h
+@@ -18,7 +18,8 @@
+     FILTER_MEDIAN = 0x0008,
+     FILTER_DUST = 0x0010,
+     FILTER_POST = 0x0020,
+-    FILTER_REFLECT = 0x0040
++    FILTER_REFLECT = 0x0040,
++    FILTER_SPATIAL = 0x0080
+ };
+ 
+ struct SpecFiltersPara
+@@ -130,7 +131,7 @@
+     virtual bool setDustFilter(uint16_t threshold,
+                                uint16_t framecount,
+                                uint16_t validpercent,
+-                               uint16_t timedf) = 0;
++                               uint16_t timedf = 300) = 0;
+ 
+     virtual bool setEdgeFilter(uint16_t threshold) = 0;
+     virtual bool setKalmanFilter(uint16_t factor, uint16_t threshold, uint16_t timedf = 300) = 0;
+@@ -138,7 +139,10 @@
+     virtual bool setPostParam(const float &dilation_pixels, const int &mode, const uint8_t &winsize, uint8_t motion_size) = 0;
+     virtual bool setSdkReflectiveFilter(const float &threshold_min, const float &threshold_max) = 0;
+     virtual void setSpecPara(uint8_t sn[29]) = 0;
+-    virtual bool setAvgFilter(uint16_t size) = 0;
++    virtual bool setAvgFilter(uint16_t size, uint16_t timedf = 300) = 0;
++    virtual bool setSpatialFilter(const float &alpha, const uint32_t &delta, const uint8_t &iterations) = 0;
++
++    virtual void resetFilters() = 0;
+ 
+     virtual void doDustFilter(const std::shared_ptr<IFrame> &frame) = 0;
+     virtual void doMedianFilter(const std::shared_ptr<IFrame> &frame) = 0;
+@@ -153,6 +157,7 @@
+ 
+     virtual void doCloudFilter(const std::shared_ptr<IFrame> &frame) = 0;
+     virtual void doReflectiveFilter(const std::shared_ptr<IFrame> &frame) = 0;
++    virtual void doSpatialFilter(const std::shared_ptr<IFrame> &frame) = 0;
+ 
+     virtual void printVersionLib() = 0;
+ };
+diff --git a/xtsdk_cpp/xtsdk/Iframe.h b/xtsdk_cpp/xtsdk/Iframe.h
+--- a/xtsdk_cpp/xtsdk/Iframe.h
++++ b/xtsdk_cpp/xtsdk/Iframe.h
+@@ -12,12 +12,14 @@
+ #define DEPTH_ABNORMAL 964000
+ #define DEPTH_LOW 964001
+ #define DEPTH_IGNORE 964008
++#define DEPTH_FILTED 964010
+ #define AMPLITUDE_ABNORMAL 64000
+ #define AMPLITUDE_LOW 64001
+ #define AMPLITUDE_ADC 64002
+ #define AMPLITUDE_OVEREXPOSURE 64003
+ #define AMPLITUDE_DEFECTIVE 64004
+ #define AMPLITUDE_INVALID 64007
++#define AMPLITUDE_FILTED  64010
+ 
+     typedef void (*LogFunction)(const char *pfunction, const char *plogstr);
+ 
+diff --git a/xtsdk_cpp/xtsdk/baseFilter.cpp b/xtsdk_cpp/xtsdk/baseFilter.cpp
+--- a/xtsdk_cpp/xtsdk/baseFilter.cpp
++++ b/xtsdk_cpp/xtsdk/baseFilter.cpp
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -34,12 +34,12 @@
+         filter_lib->setSpecParaLib(sn);
+     }
+ 
+-    bool BaseFilter::setAvgFilter(uint16_t size)
++    bool BaseFilter::setAvgFilter(uint16_t size, uint16_t timedf)
+     {
+         const std::lock_guard<std::mutex> lock(filterLock);
+         filter_flag &= ~FILTER_AVERAGE;
+-        if(!filter_lib->setAvgFilterLib(size)){
+-            return true;
++        if(!filter_lib->setAvgFilterLib(size, timedf)){
++            return false;
+         }
+         filter_flag |= FILTER_AVERAGE;
+         return true;
+@@ -50,7 +50,7 @@
+         const std::lock_guard<std::mutex> lock(filterLock);
+         filter_flag &= ~FILTER_POST;
+         if(!filter_lib->setPostParamLib(dilation_pixels, mode, winsize, motion_size)){
+-            return true;
++            return false;
+         }
+         filter_flag |= FILTER_POST;
+         return true;
+@@ -61,7 +61,7 @@
+         const std::lock_guard<std::mutex> lock(filterLock);
+         filter_flag &= ~FILTER_KALMAN;
+         if(!filter_lib->setKalmanFilterLib(factor, threshold, timedf)){
+-            return true;
++            return false;
+         }
+         filter_flag |= FILTER_KALMAN;
+         return true;
+@@ -73,7 +73,7 @@
+         filter_flag &= ~FILTER_EDGE;
+ 
+         if(!filter_lib->setEdgeFilterLib(threshold)){
+-            return true;
++            return false;
+         }
+         filter_flag |= FILTER_EDGE;
+         return true;
+@@ -84,7 +84,7 @@
+         const std::lock_guard<std::mutex> lock(filterLock);
+         filter_flag &= ~FILTER_MEDIAN;
+         if(!filter_lib->setMedianFilterLib(size)){
+-            return true;
++            return false;
+         }
+         filter_flag |= FILTER_MEDIAN;
+         return true;
+@@ -97,7 +97,7 @@
+ 
+         if(!filter_lib->setDustFilterLib(threshold, framecount, validpercent, timedf))
+         {
+-            return true;
++            return false;
+         }
+         filter_flag |= FILTER_DUST;
+ 
+@@ -111,10 +111,24 @@
+         filter_flag &= ~FILTER_REFLECT;
+ 
+         if(!filter_lib->setSdkReflectiveFilterLib(threshold_min, threshold_max)){
+-            return true;
++            return false;
+         }
+ 
+         filter_flag |= FILTER_REFLECT;
++        return true;
++    }
++
++    bool BaseFilter::setSpatialFilter(const float &alpha, const uint32_t &delta, const uint8_t &iterations)
++    {
++        const std::lock_guard<std::mutex> lock(filterLock);
++        filter_flag &= ~FILTER_SPATIAL;
++
++        if (!filter_lib->setSpatialFilterLib(alpha, delta, iterations))
++        {
++            return false;
++        }
++
++        filter_flag |= FILTER_SPATIAL;
+         return true;
+     }
+ 
+@@ -143,6 +157,7 @@
+ 
+     void BaseFilter::doAverageFilter(const std::shared_ptr<Frame> &frame)
+     {
++        filter_lib->doAverageFilterLib(frame);
+     }
+ 
+     void BaseFilter::doEdgeFilter(const std::shared_ptr<Frame> &frame)
+@@ -153,6 +168,13 @@
+     void BaseFilter::doReflectiveFilter(const std::shared_ptr<Frame> &frame)
+     {
+         filter_lib->doReflectiveFilterLib(frame);
++    }
++
++
++
++    void BaseFilter::resetFilters()
++    {
++        filter_lib->resetFiltersLib();
+     }
+ 
+     std::string toBinaryString(int n, int bitWidth = 32)
+@@ -160,6 +182,8 @@
+         std::bitset<32> binary(n);                                 // 使用 bitset 表示二进制
+         return binary.to_string().substr(32 - bitWidth, bitWidth); // 截取指定宽度的二进制字符串
+     }
++
++
+     void BaseFilter::doBaseFilter(const std::shared_ptr<Frame> &frame)
+     {
+         const std::lock_guard<std::mutex> lock(filterLock);
+@@ -196,8 +220,6 @@
+ 
+         //std::cout << "doMedianFilter: " << tic.toc() << std::endl;
+ 
+-        if (filter_flag & FILTER_AVERAGE)
+-            doAverageFilter(frame);
+ 
+         // if(frame->dust_percent > 50){
+         //     if(filter_flag & FILTER_KALMAN)
+@@ -206,6 +228,22 @@
+         if (filter_flag & FILTER_KALMAN)
+             doKalmanFilter_dist(frame);
+ 
++        if (filter_flag & FILTER_AVERAGE)
++            doAverageFilter(frame);
++
++        if (filter_flag & FILTER_SPATIAL)
++            doSpatialFilter(frame);
++
++
++
++        if (filter_flag & FILTER_EDGE)
++            doEdgeFilter(frame);
++
++    }
++
++    void BaseFilter::doSpatialFilter(const std::shared_ptr<Frame> &frame)
++    {
++        filter_lib->doSpatialFilterLib(frame);
+     }
+ 
+     void BaseFilter::doPostProcess(const std::shared_ptr<Frame> &frame)
+diff --git a/xtsdk_cpp/xtsdk/basefilter.h b/xtsdk_cpp/xtsdk/basefilter.h
+--- a/xtsdk_cpp/xtsdk/basefilter.h
++++ b/xtsdk_cpp/xtsdk/basefilter.h
+@@ -33,7 +33,7 @@
+     uint16_t filter_flag;
+     void doBaseFilter(const std::shared_ptr<Frame> &frame);
+ 
+-    bool setAvgFilter(uint16_t size);
++    bool setAvgFilter(uint16_t size, uint16_t timedf = 300);
+     bool setKalmanFilter(uint16_t factor, uint16_t threshold, uint16_t timedf = 300);
+     bool setEdgeFilter(uint16_t threshold);
+     bool setMedianFilter(uint16_t size);
+@@ -42,7 +42,8 @@
+ 
+     bool setDustFilter(uint16_t threshold, uint16_t framecount, uint16_t validpercent, uint16_t timedf = 300);
+     bool setSdkReflectiveFilter(const float &threshold_min, const float &threshold_max);
+-    void doDustFilter(const std::shared_ptr<Frame> &frame);
++    bool setSpatialFilter(const float &alpha, const uint32_t &delta, const uint8_t &iterations);
++    void resetFilters();
+ 
+ private:
+     void doMedianFilter(const std::shared_ptr<Frame> &frame);
+@@ -50,13 +51,14 @@
+     void doKalmanFilter_dist(const std::shared_ptr<Frame> &frame);
+     void doAverageFilter(const std::shared_ptr<Frame> &frame);
+     void doEdgeFilter(const std::shared_ptr<Frame> &frame);
+-
++    void doSpatialFilter(const std::shared_ptr<Frame> &frame);
+     void doPostProcess(const std::shared_ptr<Frame> &frame);
+     void doCloseProcess(const std::shared_ptr<Frame> &frame);
+     void doMotionTrack(const std::shared_ptr<Frame> &frame);
+ 
+     void doCloudFilter(const std::shared_ptr<Frame> &frame);
+     void doReflectiveFilter(const std::shared_ptr<Frame> &frame);
++    void doDustFilter(const std::shared_ptr<Frame> &frame);
+     void setSpecPara(uint8_t sn[29]);
+ 
+     LibHandler::Ptr filter_lib;
+diff --git a/xtsdk_cpp/xtsdk/cartesianTransform.cpp b/xtsdk_cpp/xtsdk/cartesianTransform.cpp
+--- a/xtsdk_cpp/xtsdk/cartesianTransform.cpp
++++ b/xtsdk_cpp/xtsdk/cartesianTransform.cpp
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -182,15 +182,20 @@
+     void CartesianTransform::maptable(CamParameterS &camparams)
+     {
+         const std::lock_guard<std::mutex> lock(camparams_mutex);
+-
+-        if ((camParams.fx == camparams.fx) && (camParams.fy == camparams.fy) &&
++        const float *values = reinterpret_cast<const float *>(&camparams);
++        for (size_t n = 0; n < sizeof(camparams)/sizeof(float); ++n) {
++            if (!std::isfinite(values[n])) { hasparam = false; return; }
++        }
++        if (camparams.fx <= 0 || camparams.fy <= 0) { hasparam = false; return; }
++
++        if (hasparam && (camParams.fx == camparams.fx) && (camParams.fy == camparams.fy) &&
+             (camParams.cx == camparams.cx) && (camParams.cy == camparams.cy) &&
+             (camParams.k1 == camparams.k1) && (camParams.k2 == camparams.k2) &&
+             (camParams.k3 == camparams.k3) && (camParams.p1 == camparams.p1) &&
+             (camParams.p2 == camparams.p2))
+             return;
+ 
+-        if ((0 == camparams.fx) && (0 == camparams.fy) && (0 == camparams.k1))
++        if (false) // disabled: unknown lens parameters are never replaced by defaults
+         {
+             if (blast_camparmsIsZero)
+                 return;
+@@ -277,7 +282,7 @@
+     }
+ 
+     void
+-    CartesianTransform::pcltransCamparm(const std::shared_ptr<Frame> &frame)
++    CartesianTransform::pcltransCamparm(const std::shared_ptr<Frame> &frame, bool bypass_host_geometry)
+     {
+         const size_t nPixel = frame->width * frame->height;
+ 
+@@ -355,7 +360,7 @@
+ 
+                 index = (index / sensor_width) * sensor_width + sensor_width - 1 - index % sensor_width; // 左右翻转的取索引
+ 
+-                if ((frame->dataType == Frame::AMPLITUDE) && (cutMinAmp > 0))
++                if (!bypass_host_geometry && (frame->dataType == Frame::AMPLITUDE) && (cutMinAmp > 0))
+                 {
+                     if ((frame->amplData[i] < cutMinAmp) ||
+                         (frame->amplData[i] == AMPLITUDE_INVALID))
+@@ -368,7 +373,7 @@
+                     }
+                 }
+ 
+-                if (bPointsCornerCut && outputUndistortedPointsDeled[index])
++                if (!bypass_host_geometry && bPointsCornerCut && outputUndistortedPointsDeled[index])
+                 {
+                     frame->points[i].x = std::numeric_limits<float>::quiet_NaN();
+                     frame->points[i].y = std::numeric_limits<float>::quiet_NaN();
+@@ -394,10 +399,10 @@
+                 else
+                     frame->points[i].intensity = std::numeric_limits<float>::quiet_NaN();
+ 
+-                if (hmirror)
++                if (hmirror && !bypass_host_geometry)
+                     frame->points[i].x = -frame->points[i].x;
+ 
+-                if (!vmirror)
++                if (!vmirror || bypass_host_geometry)
+                     frame->points[i].y = -frame->points[i].y;
+ 
+                 if (curdis >= 964000)
+diff --git a/xtsdk_cpp/xtsdk/cartesianTransform.h b/xtsdk_cpp/xtsdk/cartesianTransform.h
+--- a/xtsdk_cpp/xtsdk/cartesianTransform.h
++++ b/xtsdk_cpp/xtsdk/cartesianTransform.h
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -49,7 +49,7 @@
+         void setcutcorner(uint32_t cutvalue);
+ 
+         void maptable(CamParameterS &camparams);
+-        void pcltransCamparm(const std::shared_ptr<Frame> &frame);
++        void pcltransCamparm(const std::shared_ptr<Frame> &frame, bool bypass_host_geometry = false);
+         void updateImuExtParamters(const ExtrinsicIMULidar &e_imu_lidar);
+         ExtrinsicIMULidar getCurrentImuExtParamters();
+ 
+diff --git a/xtsdk_cpp/xtsdk/communication.h b/xtsdk_cpp/xtsdk/communication.h
+--- a/xtsdk_cpp/xtsdk/communication.h
++++ b/xtsdk_cpp/xtsdk/communication.h
+@@ -9,6 +9,7 @@
+ #include <vector>
+ #include <memory>
+ #include <mutex>
++#include <atomic>
+ #include "frame.h"
+ 
+ 
+@@ -19,9 +20,9 @@
+ 
+ public:
+ 
+-    bool isConnected = false;
+-    bool isUdpOpened = false;
+-    bool isConnecting = false;
++    std::atomic<bool> isConnected{false};
++    std::atomic<bool> isUdpOpened{false};
++    std::atomic<bool> isConnecting{false};
+     uint8_t endianType = 1;//大端
+     
+     std::string address;
+diff --git a/xtsdk_cpp/xtsdk/communicationNet.cpp b/xtsdk_cpp/xtsdk/communicationNet.cpp
+--- a/xtsdk_cpp/xtsdk/communicationNet.cpp
++++ b/xtsdk_cpp/xtsdk/communicationNet.cpp
+@@ -1,417 +1,90 @@
+-﻿/**************************************************************************************
+-* Copyright (C) 2022 Xintan Technology Corporation
+-*
+-* Author: Marco
+-***************************************************************************************/
++/* Copyright (C) 2022 Xintan Technology Corporation. Original author: Marco.
++ * Project-local transport hardening, 2026-09-11. API signatures retained.
++ * See vendor_patches for the exact upstream diff. */
+ #include "communicationNet.h"
+-#include <iostream>
++#include "utils.h"
++#include <algorithm>
++#include <chrono>
++#include <poll.h>
++#include <sys/socket.h>
+ #include <thread>
+-#include "utils.h"
+-#include "xtlogger.h"
+-
+-#define  UDP_HEADER_OFFSET  20
+-
+ namespace XinTan {
+-
+-
+-  CommnunicationNet::CommnunicationNet(boost::asio::io_service& ios, std::string & logtag):
+-      logtagname(logtag),
+-      socketTcp(ios),
+-      tcpEndpoint(boost::asio::ip::address_v4::from_string("192.168.0.101"),7787),
+-      resolver(ios),
+-      tcpRecvPacket(XByteArray(4096)),
+-      socketUdp(ios),
+-      //udpEndpoint(udp::v4(), 7687),
+-      udpRecvBuffer(XByteArray(4096)),
+-      udpRecvPacket(XByteArray(4096))
+-  {
+-      address = "";
+-      isConnected = false;
+-      isConnecting = false;
+-      isUdpOpened = false;
+-      for(int i=0; i < 3; i++)
+-      {
+-        data_buffer[i] = XByteArray(320*240*8*2+1024);
+-        data_isUsed[i] = 0;
+-        data_count[i] = 0;
+-        data_sn[i] = 0;
+-        data_size[i] = 0;
+-      }
+-  }
+-
+-  CommnunicationNet::~CommnunicationNet()
+-  {
+-      disconnect();
+-      closeUdp();
+-  }
+-
+-  void openTcpThread(CommnunicationNet * pComuntNet)
+-  {
+-        XTLOGINFOEXT(pComuntNet->logtagname, "");
+-        boost::system::error_code error;
+-        pComuntNet->socketTcp.connect(pComuntNet->tcpEndpoint, error); // 连接服务
+-        if(error)
+-        {
+-            XTLOGWRNEXT(pComuntNet->logtagname,"error");
+-        }else
+-            pComuntNet->isConnecting = false;
+-  }
+-
+-  bool CommnunicationNet::connect()
+-  {
+-      const std::lock_guard<std::mutex> lock(opencloseLock);
+-      if(Utils::ipIsValid(address)==false)
+-          return false;
+-
+-       if(isConnected || isConnecting)
+-           return true;
+-       boost::asio::ip::address_v4 ipaddress = boost::asio::ip::address_v4::from_string(address);
+-
+-       tcpEndpoint.address(ipaddress);
+-
+-       isConnecting = true;
+-       std::thread openthred(openTcpThread, this);
+-
+-       for(int i=0;i<3;i++)
+-       {
+-           if(isConnecting)
+-           {
+-               std::this_thread::sleep_for(std::chrono::seconds(1));
+-               continue;
+-           }
+-           break;
+-       }
+-
+-       if(isConnecting)
+-       {
+-           socketTcp.close();
+-           openthred.join();
+-
+-           std::this_thread::sleep_for(std::chrono::seconds(1));
+-           isConnecting = false;
+-           return false;
+-       }else
+-       {
+-           isConnected = true;
+-           openthred.join();
+-           XTLOGWRN("tcp connected");
+-           return true;
+-       }
+-
+-  }
+-  void CommnunicationNet::disconnect()
+-  {
+-      const std::lock_guard<std::mutex> lock(opencloseLock);
+-       if(isConnected == false)
+-          return;
+-
+-        boost::system::error_code error;
+-        socketTcp.shutdown(boost::asio::ip::tcp::socket::shutdown_both, error);
+-        if (!error) {
+-
+-            XTLOGWRN("error");
+-            socketTcp.close(error);
+-            std::cout << "tcp closed " <<  std::endl;
+-        }
+-
+-        isConnected = false;
+-
+-  }
+-  bool CommnunicationNet::openUdp(uint16_t port)
+-  {
+-    const std::lock_guard<std::mutex> lock(opencloseLock);
+-    if(isUdpOpened)
+-        return true;
+-
+-	XTLOGWRN("");
+-    try{
+-        socketUdp.open(boost::asio::ip::udp::v4());
+-        socketUdp.set_option(boost::asio::ip::udp::socket::reuse_address(true));
+-        boost::asio::ip::udp::endpoint endpoint(boost::asio::ip::address_v4::any(), port);
+-
+-        socketUdp.bind(endpoint);		
+-
+-        isUdpOpened = true;
+-		return true;
+-
+-	}catch( std::exception &e)
+-	{
+-        std::cout << "openUdp:exception " << e.what() <<  std::endl;
+-        XTLOGWRN("exception");
+-	}
+-    return false;
+-
+-  }
+-  
+-  void CommnunicationNet::closeUdp()
+-  {
+-      const std::lock_guard<std::mutex> lock(opencloseLock);
+-	  
+-      if(isUdpOpened == false)
+-         return;      
+-      isUdpOpened = false;
+-	 
+-	  XTLOGWRN("");
+-
+-      boost::system::error_code error;
+-      try{
+-          socketUdp.cancel(error);
+-          socketUdp.close(error);
+-          std::cout  <<  std::endl << "udp closed " <<  std::endl;
+-	  }catch( std::exception &e)
+-	  {
+-          std::cout << "closeUdp:exception " << e.what() <<  std::endl;
+-          XTLOGWRN("exception");
+-      }
+-      if(error)
+-      {
+-          std::cout << "udp already closed " <<  std::endl;
+-          XTLOGWRN("udp already closed ");
+-      }
+-  }
+-
+-  bool CommnunicationNet::transmitPackage(XByteArray data)
+-  {
+-      if(isConnected==false)
+-          return false;
+-
+-        uint32_t data_len = (uint32_t) (data.size());
+-        std::ostringstream os;
+-        //data
+-        for (uint32_t i = 0; i < data_len; ++i) {
+-            os << static_cast<uint8_t>(data[i]);
+-        }
+-
+-        boost::system::error_code error;
+-
+-        socketTcp.write_some(boost::asio::buffer(os.str(), os.tellp()), error);
+-        if (error) {
+-            std::cout << "cmd wirte error" << std::endl;
+-            XTLOGWRN("cmd wirte error");
+-            return false;
+-        }
+-        return true;
+-  }
+-
+-  bool CommnunicationNet::receivePackage(XByteArray & pkgData)
+-  {
+-        if(isConnected==false)
+-            return false;
+-
+-        XByteArray buf(1500);
+-        boost::system::error_code error;
+-
+-        uint32_t startmark = 0;
+-        uint32_t endmark = 0;
+-        uint32_t payloadlen =0;
+-
+-        size_t len = 0;
+-        try{
+-            len = socketTcp.read_some(boost::asio::buffer(buf), error);
+-            if (error) {
+-                std::cout << "tcp rx error" << std::endl;
+-                disconnect();
+-                return false;
+-            }
+-
+-        }catch( std::exception &e)
+-        {
+-            std::string logstr = "exception:read_some:exception ";
+-            logstr.append(e.what());
+-            std::cout << logstr <<  std::endl;
+-            XTLOGERR(logstr);
+-        }
+-
+-        if(len<15)
+-            return false;
+-
+-        buf.resize(len);
+-        startmark = Utils::getValueUint32Endian(&(buf[0]), Endian_Big);
+-        endmark = Utils::getValueUint32Endian(&(buf[len-4]), Endian_Big);
+-        if((startmark == 0x7EFFAA55) && (endmark == 0xFF7E55AA))
+-        {
+-            payloadlen = Utils::getValueUint32Endian(&(buf[4]), endianType);
+-            if(payloadlen != (buf.size()-12) )//确保数据尺寸正确
+-                return false;
+-
+-            pkgData.assign(buf.begin()+8, buf.end()-4);//头去8，尾去4
+-
+-            return true;
+-        }
+-
+-        return false;
+-  }
+-
+-  bool CommnunicationNet::udpReceiveFrame(XByteArray & pkgData)
+-  {
+-      if(isUdpOpened==false)
+-          return false;
+-
+-       udp::endpoint remote_ep;
+-       boost::system::error_code ec;
+-       while(isUdpOpened){
+-           size_t len = socketUdp.receive_from(boost::asio::buffer(udpRecvBuffer), remote_ep, 0, ec);
+-
+-           if(ec && ec!=boost::asio::error::message_size)
+-           {
+-               std::cout << "udp error" << len << std::endl;
+-               XTLOGWRN("udp error");
+-               return false;
+-           }
+-           if(udppacket(udpRecvBuffer, pkgData))
+-           {
+-               return true;
+-           }
+-       }
+-       return false;
+-  }
+-
+-  bool CommnunicationNet::udppacket(const XByteArray & p, XByteArray & pkgData)
+-  {
+-         uint16_t imagesn = Utils::getValueUint16Endian(&p[0], endianType);
+-         uint32_t totalsize = Utils::getValueUint32Endian(&p[2], endianType);
+-         uint16_t payloadSize = Utils::getValueUint16Endian(&p[6], endianType);
+-         uint32_t sentsize = Utils::getValueUint32Endian(&p[8], endianType);
+-         //uint32_t packetNum = Utils::getValueUint32Endian(&p[16], Endian_Big);
+-
+-         if(payloadSize > 1400)
+-         {
+-             uint8_t endian = Endian_Little;
+-             if(endianType == Endian_Little)
+-                 endian = Endian_Big;
+-
+-             imagesn = Utils::getValueUint16Endian(&p[0], endian);
+-             totalsize = Utils::getValueUint32Endian(&p[2], endian);
+-             payloadSize = Utils::getValueUint16Endian(&p[6], endian);
+-             sentsize = Utils::getValueUint32Endian(&p[8], endian);
+-
+-             if((payloadSize > 1400) || (sentsize > totalsize) || (totalsize > 1200000))
+-                return false;
+-
+-             endianType = endian;
+-         }else if(payloadSize < 200)
+-         {
+-             if(p[UDP_HEADER_OFFSET+8] == 252)
+-             {
+-                 uint32_t startmark = Utils::getValueUint32Endian(&p[UDP_HEADER_OFFSET], Endian_Big);
+-                 uint32_t endmark = Utils::getValueUint32Endian(&p[UDP_HEADER_OFFSET+payloadSize-4], Endian_Big);
+-
+-                 if((startmark == 0x7EFFAA55) && (endmark == 0xFF7E55AA))
+-                 {
+-                     pkgData.assign(p.begin()+UDP_HEADER_OFFSET+8, p.begin() +UDP_HEADER_OFFSET+ payloadSize-4);
+-
+-                     return true;
+-                 }else
+-                 {
+-                     std::cout << "imu frame start " << std::hex << startmark << std::endl;
+-                     std::cout << "imu frame end " << std::hex << endmark << std::endl;
+-                 }
+-             }
+-         }
+-
+-         uint32_t bufIndex = 10;
+-         //找在用的index
+-         for(uint32_t i=0; i < 3; i++)
+-         {
+-             if(data_isUsed[i] == 1)
+-                 if(data_sn[i] == imagesn)
+-                     bufIndex = i;
+-         }
+-
+-         if(bufIndex > 2)
+-             //找沒用的index
+-             for(uint32_t i=0; i < 3; i++)
+-             {
+-                 if(data_isUsed[i] == 0)
+-                 {
+-                      bufIndex = i;
+-                      data_sn[bufIndex] = imagesn;
+-                      data_size[bufIndex] = totalsize;
+-                      data_count[bufIndex] = 0;
+-                      data_isUsed[i] = 1;
+-                 }
+-             }
+-
+-         if(bufIndex > 2)
+-         {
+-            //丟最早的index
+-            if(data_sn[0] < data_sn[1])
+-            {
+-                bufIndex = 0;
+-                if(data_sn[0] > data_sn[2])
+-                    bufIndex = 2;
+-            }
+-            else if(data_sn[1] < data_sn[2])
+-                bufIndex = 1;
+-            else
+-                bufIndex = 2;
+-
+-            if(data_sn[bufIndex] < 5)//sn 翻转点处理
+-            {
+-                int validindex = 10;
+-                for(uint32_t i=0; i < 3; i++)
+-                {
+-                    if(bufIndex != i)
+-                    {
+-                        if(data_sn[i] > 65500)
+-                        {
+-                            validindex = i;
+-                            break;
+-                        }
+-                    }
+-                }
+-                if(validindex < 3)
+-                {
+-                    //XTLOGWRN("udp sn mirror0="+std::to_string(data_sn[validindex]));
+-                    for(uint32_t i=0; i < 3; i++)
+-                    {
+-                        if((bufIndex != i) && (validindex != i))
+-                        {
+-                            if(data_sn[i] > 65500)
+-                            {
+-                                if(data_sn[i] < data_sn[validindex])
+-                                    bufIndex = i;
+-                                else
+-                                    bufIndex = validindex;
+-                            }else
+-                                bufIndex = validindex;
+-                            XTLOGWRN("udp sn overturn="+std::to_string(data_sn[bufIndex]) +": " +std::to_string(data_sn[0]) +" " +std::to_string(data_sn[1])+" " +std::to_string(data_sn[2]));
+-                        }
+-                    }
+-                }
+-            }
+-            std::cout << "udp discard frame " << std::to_string(data_sn[bufIndex]) <<std::endl;
+-
+-            XTLOGWRN("udp discard frame "+std::to_string(data_sn[bufIndex]));
+-            data_isUsed[bufIndex] = 1;
+-            data_sn[bufIndex] = imagesn;
+-            data_size[bufIndex] = totalsize;
+-            data_count[bufIndex] = 0;
+-         }
+-
+-         memcpy(&data_buffer[bufIndex][sentsize], &p[UDP_HEADER_OFFSET], payloadSize);
+-         data_count[bufIndex] += payloadSize;
+-
+-         if(data_count[bufIndex] >= data_size[bufIndex])
+-         {
+-              data_isUsed[bufIndex] = 0;
+-
+-              if(data_count[bufIndex] == totalsize)
+-              {
+-                  uint32_t startmark = Utils::getValueUint32Endian(&(data_buffer[bufIndex][0]), Endian_Big);
+-                  uint32_t endmark = Utils::getValueUint32Endian(&(data_buffer[bufIndex][totalsize-4]), Endian_Big);
+-
+-                  if((startmark == 0x7EFFAA55) && (endmark == 0xFF7E55AA))
+-                  {
+-                      pkgData.assign(data_buffer[bufIndex].begin()+8, data_buffer[bufIndex].begin() + totalsize-4);
+-                      return true;
+-                  }
+-
+-                  std::cout << "udp frame error " << std::to_string(data_sn[bufIndex]) <<std::endl;
+-              }
+-         }
+-         return false;
+-  }
+-
+-
+-} //end namespace XinTan
++CommnunicationNet::CommnunicationNet(boost::asio::io_service& ios,std::string& logtag)
++ :logtagname(logtag),socketTcp(ios),tcpEndpoint(tcp::v4(),7787),resolver(ios),socketUdp(ios),udpRecvBuffer(4096){}
++CommnunicationNet::~CommnunicationNet(){disconnect();closeUdp();}
++bool CommnunicationNet::connect(){
++ const std::lock_guard<std::mutex> lock(opencloseLock);
++ if(isConnected)return true;
++ if(!Utils::ipIsValid(address)||!Utils::ipIsValid(localBindIp))return false;
++ boost::system::error_code ec;
++ socketTcp.close(ec);socketTcp.open(tcp::v4(),ec);if(ec)return false;
++ socketTcp.bind(tcp::endpoint(boost::asio::ip::address_v4::from_string(localBindIp),0),ec);
++ if(ec){socketTcp.close(ec);return false;}
++ socketTcp.non_blocking(true,ec);if(ec){socketTcp.close(ec);return false;}
++ tcpEndpoint=tcp::endpoint(boost::asio::ip::address_v4::from_string(address),7787);
++ socketTcp.connect(tcpEndpoint,ec);
++ if(ec==boost::asio::error::in_progress||ec==boost::asio::error::would_block){
++   pollfd descriptor{socketTcp.native_handle(),POLLOUT,0};int error=0;socklen_t n=sizeof(error);
++   if(::poll(&descriptor,1,2500)<=0||::getsockopt(descriptor.fd,SOL_SOCKET,SO_ERROR,&error,&n)||error){socketTcp.close(ec);return false;}
++   ec.clear();
++ }
++ if(ec){socketTcp.close(ec);return false;}
++ isConnected=true;tcpRecvPacket.clear();return true;
++}
++void CommnunicationNet::disconnect(){
++ const std::lock_guard<std::mutex> lock(opencloseLock);isConnected=false;
++ boost::system::error_code ec;socketTcp.shutdown(tcp::socket::shutdown_both,ec);socketTcp.close(ec);
++}
++bool CommnunicationNet::openUdp(uint16_t port){
++ const std::lock_guard<std::mutex> lock(opencloseLock);
++ if(isUdpOpened)return true;
++ if(!Utils::ipIsValid(localBindIp)||localBindIp=="0.0.0.0"||!port)return false;
++ boost::system::error_code ec;socketUdp.close(ec);socketUdp.open(udp::v4(),ec);if(ec)return false;
++ // No SO_REUSEADDR: each process exclusively owns one concrete receive IP.
++ socketUdp.bind(udp::endpoint(boost::asio::ip::address_v4::from_string(localBindIp),port),ec);
++ if(ec){socketUdp.close(ec);return false;}
++ socketUdp.non_blocking(true,ec);if(ec){socketUdp.close(ec);return false;}
++ assembler_.reset();isUdpOpened=true;return true;
++}
++void CommnunicationNet::closeUdp(){
++ const std::lock_guard<std::mutex> lock(opencloseLock);isUdpOpened=false;
++ boost::system::error_code ec;socketUdp.cancel(ec);socketUdp.close(ec);
++}
++bool CommnunicationNet::transmitPackage(XByteArray data){
++ if(!isConnected)return false;boost::system::error_code ec;
++ const auto n=boost::asio::write(socketTcp,boost::asio::buffer(data),ec);
++ if(ec||n!=data.size()){disconnect();return false;}return true;
++}
++bool CommnunicationNet::receivePackage(XByteArray& package){
++ if(!isConnected)return false;
++ auto extract=[&](){
++   const uint8_t magic[]={0x7e,0xff,0xaa,0x55};
++   while(tcpRecvPacket.size()>=12){
++     const auto begin=std::search(tcpRecvPacket.begin(),tcpRecvPacket.end(),magic,magic+4);
++     if(begin==tcpRecvPacket.end()){tcpRecvPacket.erase(tcpRecvPacket.begin(),tcpRecvPacket.end()-3);return false;}
++     tcpRecvPacket.erase(tcpRecvPacket.begin(),begin);if(tcpRecvPacket.size()<12)return false;
++     const size_t n=Utils::getValueUint32Endian(&tcpRecvPacket[4],endianType);
++     if(n<3||n>65536){tcpRecvPacket.erase(tcpRecvPacket.begin());continue;}
++     if(tcpRecvPacket.size()<n+12)return false;
++     if(Utils::getValueUint32Endian(&tcpRecvPacket[n+8],Endian_Big)!=0xff7e55aa){tcpRecvPacket.erase(tcpRecvPacket.begin());continue;}
++     package.assign(tcpRecvPacket.begin()+8,tcpRecvPacket.begin()+n+8);
++     tcpRecvPacket.erase(tcpRecvPacket.begin(),tcpRecvPacket.begin()+n+12);return true;
++   }return false;
++ };
++ if(extract())return true;
++ uint8_t buffer[4096];boost::system::error_code ec;
++ const auto n=socketTcp.read_some(boost::asio::buffer(buffer),ec);
++ if(ec==boost::asio::error::would_block||ec==boost::asio::error::try_again){std::this_thread::sleep_for(std::chrono::milliseconds(2));return false;}
++ if(ec){disconnect();return false;}
++ if(tcpRecvPacket.size()+n>131072){tcpRecvPacket.clear();return false;}
++ tcpRecvPacket.insert(tcpRecvPacket.end(),buffer,buffer+n);return extract();
++}
++bool CommnunicationNet::udpReceiveFrame(XByteArray& package){
++ if(!isUdpOpened)return false;udp::endpoint source;boost::system::error_code ec;
++ const auto n=socketUdp.receive_from(boost::asio::buffer(udpRecvBuffer),source,0,ec);
++ if(ec==boost::asio::error::would_block||ec==boost::asio::error::try_again){std::this_thread::sleep_for(std::chrono::milliseconds(2));return false;}
++ if(ec||source.address().to_string()!=address)return false;
++ const XByteArray actual(udpRecvBuffer.begin(),udpRecvBuffer.begin()+n);return udppacket(actual,package);
++}
++bool CommnunicationNet::udppacket(const XByteArray& p,XByteArray& package){return assembler_.feed(p,endianType==Endian_Little,package);}
++}
+diff --git a/xtsdk_cpp/xtsdk/communicationNet.h b/xtsdk_cpp/xtsdk/communicationNet.h
+--- a/xtsdk_cpp/xtsdk/communicationNet.h
++++ b/xtsdk_cpp/xtsdk/communicationNet.h
+@@ -8,6 +8,7 @@
+ #include "communication.h"
+ #include <boost/asio.hpp>
+ #include <boost/signals2.hpp>
++#include "wc_xt_driver/udp_assembler.hpp"
+ 
+ using boost::asio::ip::address;
+ using boost::asio::ip::tcp;
+@@ -21,6 +22,7 @@
+     CommnunicationNet(boost::asio::io_service& ios, std::string & logtag);
+     ~CommnunicationNet();
+     std::string & logtagname;
++    std::string localBindIp; // project-local host setting, never a device write
+ 
+     bool connect();
+     void disconnect();
+@@ -35,6 +37,7 @@
+     tcp::endpoint tcpEndpoint;
+ 
+ private:
++    wc_xt_driver::UdpAssembler assembler_;
+     tcp::resolver resolver;
+     XByteArray tcpRecvPacket;
+ 
+diff --git a/xtsdk_cpp/xtsdk/frame.cpp b/xtsdk_cpp/xtsdk/frame.cpp
+--- a/xtsdk_cpp/xtsdk/frame.cpp
++++ b/xtsdk_cpp/xtsdk/frame.cpp
+@@ -327,6 +327,7 @@
+ 
+     void Frame::resetData()
+     {
++        sort_data_valid = false;
+         px_size = sizeof(uint16_t);
+ 
+         rawdistData.resize(width * height);
+@@ -381,6 +382,9 @@
+ 
+     void Frame::sortData(const XByteArray &data)
+     {
++        sort_data_valid = false;
++        hasPointcloud = false;
++        points.clear();
+         int i, mirrori;
+         uint32_t dist_unitmm = 1;
+         int offset, dist_offset, gs16_offset, level_offset, dcs_offset;
+@@ -407,6 +411,11 @@
+                 info.imageflags = 0;
+         }
+ 
++        // Each byte contains two HDR level indices. Odd dimensions would
++        // otherwise write the second nibble beyond leveldata's final pixel.
++        if ((info.imageflags & IMG_LEVEL) && (pixelcount % 2 != 0))
++            return;
++
+         // check size
+         int wantdatasize = 0;
+         dist_offset = pixelDataOffset;
+@@ -504,10 +513,25 @@
+                 {
+                     offset = level_offset + i / 2;
+ 
++                    const uint8_t level0 = data[offset] & 0x0F;
++                    const uint8_t level1 = (data[offset] >> 4) & 0x0F;
++                    const size_t stages = sizeof(info.integtime) / sizeof(info.integtime[0]);
++                    // Never clamp or reinterpret a malformed stage index.
++                    // Reflectivity/correction below index five-element arrays.
++                    if (level0 >= stages || level1 >= stages)
++                        return;
++                    if (frame_version > 2 && (info.imageflags & IMG_AMP))
++                    {
++                        for (const auto level : {level0, level1})
++                            if (info.integtime[level] > 0 &&
++                                devsdk_feq_map.find(info.freq[level]) == devsdk_feq_map.end())
++                                return;
++                    }
++
+                     mirrori = (i / orgwidth) * orgwidth + orgwidth - 1 - i % orgwidth;
+-                    leveldata[mirrori] = data[offset] & 0x0F;
++                    leveldata[mirrori] = level0;
+                     mirrori = ((i + 1) / orgwidth) * orgwidth + orgwidth - 1 - (i + 1) % orgwidth;
+-                    leveldata[mirrori] = (data[offset] >> 4) & 0x0F;
++                    leveldata[mirrori] = level1;
+                 }
+             }
+         }
+@@ -690,6 +714,7 @@
+         }
+ 
+         rawdistData = distData;
++        sort_data_valid = true;
+     }
+ 
+ } // end namespace XinTan
+diff --git a/xtsdk_cpp/xtsdk/frame.h b/xtsdk_cpp/xtsdk/frame.h
+--- a/xtsdk_cpp/xtsdk/frame.h
++++ b/xtsdk_cpp/xtsdk/frame.h
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -149,6 +149,15 @@
+         void setAmpdataIndex(const size_t &index, const uint16_t &data);
+         void setMotionIndex(const size_t &index, const uint8_t &data);
+         void setDustPercent(int data);
++        // Project validation result; appended without changing IFrame ABI.
++        // False frames must never enter filtering, geometry or user callbacks.
++        bool sort_data_valid = false;
++        // Project-owned metadata appended after the vendor ABI fields. Same
++        // decoded frame captured before host filtering, never a second sample.
++        std::shared_ptr<Frame> wc_before_host_filter;
++        uint64_t wc_receive_system_ns = 0;
++        uint64_t wc_receive_steady_ns = 0;
++        uint64_t wc_driver_callback_steady_ns = 0;
+     };
+ 
+ } // end namespace XinTan
+diff --git a/xtsdk_cpp/xtsdk/wc_frame_storage.h b/xtsdk_cpp/xtsdk/wc_frame_storage.h
+new file mode 100644
+--- /dev/null
++++ b/xtsdk_cpp/xtsdk/wc_frame_storage.h
+@@ -0,0 +1,30 @@
++#pragma once
++#include "frame.h"
++#include <limits>
++#include <type_traits>
++#include <stdexcept>
++namespace XinTan {
++// Conservatively accounts vector allocations, strings and map nodes owned by
++// this frame; allocator metadata is not included. Queue budgets are payload
++// budgets, not a claim about total process RSS. Nested raw sample counted once.
++inline size_t wc_frame_storage_bytes(const Frame& f,bool include_raw=true) {
++  size_t bytes=sizeof(Frame);
++  auto add=[&](size_t n){if(n>std::numeric_limits<size_t>::max()-bytes)
++      throw std::overflow_error("frame storage byte overflow");bytes+=n;};
++  auto vector=[&](const auto& v){add(v.capacity()*sizeof(typename std::decay_t<decltype(v)>::value_type));};
++  vector(f.frameData);vector(f.leveldata);vector(f.dcsdata);vector(f.rawdistData);
++  vector(f.distData);vector(f.amplData);vector(f.grayscaledata);vector(f.reflectivity);
++  vector(f.freqMap);vector(f.intMap);vector(f.points);vector(f.motion_vec);
++  add(f.frame_label.capacity()+1);
++  add(f.devsdk_feq_map.bucket_count()*sizeof(void*)+f.devsdk_feq_map.size()*(sizeof(void*)*2+sizeof(std::pair<const uint8_t,uint8_t>)));
++  if(include_raw && f.wc_before_host_filter)add(wc_frame_storage_bytes(*f.wc_before_host_filter,false));
++  return bytes;
++}
++inline std::shared_ptr<Frame> wc_copy_frame_pair(const std::shared_ptr<Frame>& f) {
++  if(!f || !f->wc_before_host_filter)throw std::invalid_argument("paired raw frame required");
++  auto copy=std::make_shared<Frame>(*f);
++  copy->wc_before_host_filter=std::make_shared<Frame>(*f->wc_before_host_filter);
++  copy->wc_before_host_filter->wc_before_host_filter.reset();
++  return copy;
++}
++}
+diff --git a/xtsdk_cpp/xtsdk/xtdaemon.cpp b/xtsdk_cpp/xtsdk/xtdaemon.cpp
+--- a/xtsdk_cpp/xtsdk/xtdaemon.cpp
++++ b/xtsdk_cpp/xtsdk/xtdaemon.cpp
+@@ -1,4 +1,7 @@
+-﻿/**************************************************************************************
++#include "wc_xt_driver/imaging_allowlist.hpp"
++#include <chrono>
++#include "wc_frame_storage.h"
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -23,7 +26,7 @@
+         img_callback = nullptr;
+         internalEvent_callback = nullptr;
+ 
+-        bDaemonRuning = true;
++        bDaemonRuning = false;
+ 
+         threadDaemon = nullptr;
+         threadReceiver = nullptr;
+@@ -33,7 +36,7 @@
+         threadDaemonRuning = true;
+         threadReceiveRuning = true;
+         threadUdpReceiveRuning = true;
+-        bDaemonStarted = true;
++        bDaemonStarted = false;
+ 
+         rxedPackageN = 0;
+         checkLiveCount = 0;
+@@ -101,60 +104,29 @@
+ 
+     XtDaemon::~XtDaemon()
+     {
+-        bDaemonRuning = false;
+-
+-        {
+-            std::lock_guard<std::mutex> lock_img(imageQueueMutex);
+-            imageQueueCV.notify_all();
+-        }
+-        {
+-            std::lock_guard<std::mutex> lock_raw(rawframeQueueMutex);
+-            rawframeQueueCV.notify_all();
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_event(eventQueueMutex);
+-            eventQueueCV.notify_all();
+-        }
+-
+-        std::this_thread::sleep_for(std::chrono::seconds(1));
+-
+-        // 4. 清理队列资源（避免内存泄漏）
+-        {
+-            std::lock_guard<std::mutex> lock_img(imageQueueMutex);
+-            while (!imageQueue.empty())
+-            {
+-                imageQueue.pop();
+-            }
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_raw(rawframeQueueMutex);
+-            while (!rawframeQueue.empty())
+-            {
+-                rawframeQueue.pop();
+-            }
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_event(eventQueueMutex);
+-            while (!eventQueue.empty())
+-            {
+-                eventQueue.pop();
+-            }
+-        }
+-
+-        communctNet->disconnect();
+-        communctNet->closeUdp();
+-        communctUsb->disconnect();
+-
+-        std::this_thread::sleep_for(std::chrono::seconds(1));
+-        delete communctNet;
+-        delete communctUsb;
+-        delete cartesianTransform;
+-        delete baseFilter;
+-
++        shutdown(); // all producers/consumers joined before freeing their state
++        communctNet->disconnect();communctNet->closeUdp();communctUsb->disconnect();
++        delete communctNet;delete communctUsb;delete cartesianTransform;delete baseFilter;
+         XTLOGINFO("daemon delete");
++    }
++
++    void XtDaemon::setStrictFrameDelivery(bool strict)
++    {
++        if(bDaemonStarted || bDaemonRuning)throw std::logic_error("set strict delivery before startup only");
++        strictFrameDelivery=strict;
++    }
++
++    WcQueueDiagnostics XtDaemon::getQueueDiagnostics() const
++    {
++        const auto raw=rawframeQueue.snapshot(), image=imageQueue.snapshot();
++        WcQueueDiagnostics result;
++        result.raw_received=raw.received;result.raw_dropped=raw.rejected+raw.discarded;
++        result.raw_highwater_frames=raw.highwater_frames;result.raw_highwater_bytes=raw.highwater_bytes;
++        result.raw_pending_frames=raw.pending_frames;result.raw_pending_bytes=raw.pending_bytes;
++        result.image_received=image.received;result.image_dropped=image.rejected+image.discarded;
++        result.image_highwater_frames=image.highwater_frames;result.image_highwater_bytes=image.highwater_bytes;
++        result.image_pending_frames=image.pending_frames;result.image_pending_bytes=image.pending_bytes;
++        result.strict_delivery=strictFrameDelivery.load();return result;
+     }
+ 
+     void XtDaemon::set_endianType(uint8_t endian)
+@@ -286,6 +258,11 @@
+     void XtDaemon::startup()
+     {
+         XTLOGINFO("");
++        if (!Utils::ipIsValid(hostIpStr) || hostIpStr == "0.0.0.0")
++            throw std::runtime_error("explicit local receive IP required before startup");
++        communctNet->localBindIp = hostIpStr;
++        rawframeQueue.reopen();imageQueue.reopen();
++        bDaemonStarted=true;bDaemonRuning=true;
+         if (threadDaemon == nullptr)
+         {
+             threadDaemon = new std::thread(XtDaemon::DaemonFunc, this);
+@@ -308,53 +285,22 @@
+ 
+     void XtDaemon::shutdown()
+     {
+-        XTLOGINFO("");
+-        bDaemonStarted = false;
+-
+-        {
+-            std::lock_guard<std::mutex> lock_img(imageQueueMutex);
+-            imageQueueCV.notify_all();
+-        }
+-        {
+-            std::lock_guard<std::mutex> lock_raw(rawframeQueueMutex);
+-            rawframeQueueCV.notify_all();
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_event(eventQueueMutex);
+-            eventQueueCV.notify_all();
+-        }
+-
+-        std::this_thread::sleep_for(std::chrono::seconds(1));
+-
+-        // 4. 清理队列资源（避免内存泄漏）
+-        {
+-            std::lock_guard<std::mutex> lock_img(imageQueueMutex);
+-            while (!imageQueue.empty())
+-            {
+-                imageQueue.pop();
+-            }
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_raw(rawframeQueueMutex);
+-            while (!rawframeQueue.empty())
+-            {
+-                rawframeQueue.pop();
+-            }
+-        }
+-
+-        {
+-            std::lock_guard<std::mutex> lock_event(eventQueueMutex);
+-            while (!eventQueue.empty())
+-            {
+-                eventQueue.pop();
+-            }
+-        }
+-
+-        commnunication->disconnect();
+-        commnunication->closeUdp();
+-
++        bDaemonStarted=false;bDaemonRuning=false;
++        eventQueueCV.notify_all();
++        auto join_thread=[](std::thread*& worker){
++            if(worker && worker->joinable())worker->join();
++            delete worker;worker=nullptr;
++        };
++        // Joining can wait for the last receiver/filter operation. The source
++        // process watchdog provides the absolute deadline, including fsync.
++        // Stop ingress first; accepted samples then flow through FIFO drains.
++        join_thread(threadDaemon);
++        join_thread(threadReceiver);join_thread(threadUdpReceiver);
++        rawframeQueue.close();join_thread(threadrawFrameProcess);
++        imageQueue.close();join_thread(threadImageQueue);join_thread(threadEventQueue);
++        {std::lock_guard<std::mutex> lock(eventQueueMutex);
++            while(!eventQueue.empty())eventQueue.pop();}
++        commnunication->disconnect();commnunication->closeUdp();
+         updateSdkState(STATE_UNSTARTUP);
+         XTLOGINFO("daemon Shutdown completed successfully");
+     }
+@@ -363,6 +309,11 @@
+                                        uint32_t timeoutms)
+     {
+         RespResult respResult;
++
++        // Only reviewed reads, stream control and user-authorized transient imaging setters.
++        // Network, clock, persistence, firmware, reset and motor commands remain denied.
++        if (!wc_xt_driver::allowed_sensor_command(cmdId, data))
++            return RespResult{CmdResp_REJECT, {}};
+ 
+         respResult.ret_code = CmdResp_TIMEOUT;
+         if (commnunication->isConnected == false)
+@@ -508,6 +459,8 @@
+ 
+     bool XtDaemon::transmitCmd(uint8_t cmdId, XByteArray data) // 只发不等待回应
+     {
++        if (!wc_xt_driver::allowed_sensor_command(cmdId, data))
++            return false;
+         if (commnunication->isConnected == false)
+             return {};
+         const std::lock_guard<std::mutex> lock(cmdLock);
+@@ -611,7 +564,7 @@
+                 }
+             }
+ 
+-            if (xtdaemon->isSelNet)
++            if (xtdaemon->isSelNet && xtdaemon->bDaemonStarted)
+             {
+                 if (xtdaemon->communctUsb->isConnected)
+                 {
+@@ -800,6 +753,7 @@
+     bool XtDaemon::ParseFrame(XByteArray &frameData, std::string frame_label)
+     {
+         uint32_t pkgDatasize = frameData.size();
++        if (pkgDatasize < 52) return false;
+         uint8_t cmdid = frameData[0];
+         uint8_t version = frameData[pkgDatasize - 1];
+         uint8_t endian = Endian_Big;
+@@ -865,7 +819,7 @@
+             uint16_t datainfosize = Utils::getValueUint16Endian(
+                 &(frameData[pkgDatasize - 4]), Endian_Little);
+ 
+-            if (datainfosize != sizeof(frame->info))
++            if (datainfosize != sizeof(frame->info) || datainfosize > pkgDatasize - 16)
+             {
+                 std::cout << "size error: " + std::to_string(datainfosize)
+                           << "  " + std::to_string(sizeof(frame->info))
+@@ -893,6 +847,7 @@
+             if (frame->info.imusize == sizeof(frame->imu))
+             {
+                 uint16_t imusize = frame->info.imusize;
++                if (imusize > infopos - 16) return false;
+                 int imupos = infopos - imusize;
+                 for (int i = 0; i < imusize; i++)
+                     pimu[i] = frameData[imupos + i];
+@@ -940,11 +895,9 @@
+         frame->frameData.insert(frame->frameData.begin(), payloadlen.begin(), payloadlen.end());
+         frame->frameData.insert(frame->frameData.begin(), startmark.begin(), startmark.end());
+         frame->frameData.insert(frame->frameData.end(), endmark.begin(), endmark.end());
+-        {
+-            std::lock_guard<std::mutex> lock(rawframeQueueMutex);
+-            rawframeQueue.push(frame);
+-        }
+-        rawframeQueueCV.notify_one(); // 通知处理线程
++        // Bounded assembled-frame ingress. A rejection remains visible in the
++        // atomic diagnostics; strict capture will fail, never silently COMPLETE.
++        if(!rawframeQueue.push(frame,wc_frame_storage_bytes(*frame)))return false;
+         fpscounter++;
+ 
+         return true;
+@@ -1130,74 +1083,43 @@
+     //     xtdaemon->threadrawFrameProcess = nullptr;
+     // }
+ 
+-    void XtDaemon::ImageQueueFunc(XtDaemon *xtdaemon)
+-    {
+-
++    void XtDaemon::ImageQueueFunc(XtDaemon* xtdaemon)
++    {
+ #if defined(__linux__)
+-        pthread_setname_np(pthread_self(), "XTImageTh");
++        pthread_setname_np(pthread_self(),"XTImageTh");
+ #endif
+-        while (xtdaemon->bDaemonRuning)
+-        {
+-            std::shared_ptr<Frame> frame;
+-            {
+-                std::unique_lock<std::mutex> lock(xtdaemon->imageQueueMutex);
+-                xtdaemon->imageQueueCV.wait(lock, [xtdaemon]
+-                                            { return xtdaemon->bDaemonRuning == false || !xtdaemon->imageQueue.empty(); });
+-                if (!xtdaemon->bDaemonRuning)
+-                    break;
+-                // 确保只保留最新一帧
+-                while (xtdaemon->imageQueue.size() > 1)
+-                {
+-                    xtdaemon->imageQueue.pop();
+-                    XTLOGWRNEXT(xtdaemon->logtagname, "image discard");
+-                }
+-                frame = xtdaemon->imageQueue.front();
+-                xtdaemon->imageQueue.pop(); // 立即弹出，防止其他线程干扰
+-            } // 自动释放锁
+-            // 执行回调
++        FrameQueue::Entry entry;
++        while(xtdaemon->imageQueue.take(entry,!xtdaemon->strictFrameDelivery.load())) {
+             {
+                 std::lock_guard<std::mutex> cbLock(xtdaemon->callbackLock);
+-                // std::cout << "xtdaemon->is_playing: " << xtdaemon->is_playing << std::endl;
+-                if (xtdaemon->sdkState != STATE_TXRX_VERIFYING || xtdaemon->is_playing)
+-                {
+-                    xtdaemon->ImageCallback(frame);
+-                }
+-            }
+-        }
+-    }
+-
+-    void XtDaemon::rawFrameQThreadFunc(XtDaemon *xtdaemon)
++                if(xtdaemon->sdkState!=STATE_TXRX_VERIFYING || xtdaemon->is_playing)
++                    xtdaemon->ImageCallback(entry.value);
++                else {
++                    xtdaemon->imageQueue.discard_active(entry.bytes);
++                    entry.value.reset();continue;
++                }
++            }
++            entry.value.reset();xtdaemon->imageQueue.complete(entry.bytes);
++        }
++    }
++
++    void XtDaemon::rawFrameQThreadFunc(XtDaemon* xtdaemon)
+     {
+ #if defined(__linux__)
+-        pthread_setname_np(pthread_self(), "XTrawFramTh");
++        pthread_setname_np(pthread_self(),"XTrawFramTh");
+ #endif
+-        while (xtdaemon->bDaemonRuning)
+-        {
+-            std::unique_lock<std::mutex> lock(xtdaemon->rawframeQueueMutex);
+-            xtdaemon->rawframeQueueCV.wait(lock, [xtdaemon]
+-                                           { return xtdaemon->bDaemonRuning == false || !xtdaemon->rawframeQueue.empty(); });
+-
+-            if (!xtdaemon->bDaemonRuning)
+-                break;
+-
+-            // 丢弃旧帧，保留最新一帧
+-            while (xtdaemon->rawframeQueue.size() > 1)
+-            {
+-                xtdaemon->rawframeQueue.pop();
+-                XTLOGWRNEXT(xtdaemon->logtagname, "frame discard");
+-            }
+-
+-            auto frame = xtdaemon->rawframeQueue.front();
+-            lock.unlock(); // 释放队列锁
+-
+-            frame->resetData();
+-            frame->sortData(frame->frameData);
+-            xtdaemon->reportImage(frame);
+-
+-            lock.lock();
+-            xtdaemon->rawframeQueue.pop();
+-        }
+-        xtdaemon->threadrawFrameProcess = nullptr;
++        FrameQueue::Entry entry;
++        while(xtdaemon->rawframeQueue.take(entry,!xtdaemon->strictFrameDelivery.load())) {
++            auto frame=entry.value;
++            frame->resetData();frame->sortData(frame->frameData);
++            if(frame->sort_data_valid)xtdaemon->reportImage(frame);
++            else {
++                auto rejected=std::make_shared<CBEventData>("wc_frame_rejected",0,XByteArray{},0);
++                const std::lock_guard<std::mutex> lock(xtdaemon->callbackLock);
++                xtdaemon->EventCallback(rejected);
++            }
++            frame.reset();entry.value.reset();xtdaemon->rawframeQueue.complete(entry.bytes);
++        }
+     }
+ 
+     void XtDaemon::updateSdkState(SdkState state)
+@@ -1240,7 +1162,7 @@
+ 
+         if (UsingEventThread)
+         {
+-            eventQueue.push(eventdata);
++            {std::lock_guard<std::mutex> lock(eventQueueMutex);eventQueue.push(eventdata);}
+             eventQueueCV.notify_one();
+         }
+         else
+@@ -1286,16 +1208,22 @@
+ 
+         if (UsingImageThread)
+         {
++            frame->wc_receive_system_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
++            frame->wc_receive_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++            if (needPointcloud) {
++                auto raw = std::make_shared<Frame>(*frame);
++                raw->wc_before_host_filter.reset();
++                // Per-call bypass survives lazy lens-table refresh and never
++                // toggles shared transform state during concurrent reads.
++                cartesianTransform->pcltransCamparm(raw, true);
++                frame->wc_before_host_filter=raw;
++            }
+             baseFilter->doBaseFilter(frame);
+             if (needPointcloud)
+             {
+                 cartesianTransform->pcltransCamparm(frame);
+             }
+-            {
+-                std::lock_guard<std::mutex> lock(imageQueueMutex);
+-                imageQueue.push(frame);
+-            }
+-            imageQueueCV.notify_one(); // 通知处理线程
++            imageQueue.push(frame,wc_frame_storage_bytes(*frame));
+         }
+         else
+         {
+diff --git a/xtsdk_cpp/xtsdk/xtdaemon.h b/xtsdk_cpp/xtsdk/xtdaemon.h
+--- a/xtsdk_cpp/xtsdk/xtdaemon.h
++++ b/xtsdk_cpp/xtsdk/xtdaemon.h
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+ * Copyright (C) 2022 Xintan Technology Corporation
+ *
+ * Author: Marco
+@@ -6,10 +6,12 @@
+ #pragma once
+ 
+ #include <functional>
++#include <atomic>
+ #include <thread>
+ #include <mutex>
+ #include <condition_variable>
+ #include <queue>
++#include "wc_xt_driver/bounded_work_queue.hpp"
+ 
+ #include "xtsdk.h"
+ #include "communication.h"
+@@ -46,6 +48,8 @@
+ 
+ 	void startup();
+ 	void shutdown();
++    void setStrictFrameDelivery(bool strict);
++    WcQueueDiagnostics getQueueDiagnostics() const;
+ 
+ 
+     RespResult transceiveCmd(uint8_t cmdId, XByteArray data, uint32_t timeoutms=300);
+@@ -76,8 +80,8 @@
+ 
+ 	bool isSelNet;
+ 
+-    SdkState sdkState;
+-    DevStateCode devState;
++    std::atomic<SdkState> sdkState;
++    std::atomic<DevStateCode> devState;
+     uint8_t stateCode;
+ 
+     int continueNoRespCount;
+@@ -118,8 +122,8 @@
+     std::thread * threadUdpReceiver;
+     std::thread * threadrawFrameProcess;
+ 
+-	bool bDaemonStarted;
+-	bool bDaemonRuning;
++	std::atomic<bool> bDaemonStarted;
++	std::atomic<bool> bDaemonRuning;
+ 
+ 	bool threadDaemonRuning;
+ 	bool threadReceiveRuning;
+@@ -141,12 +145,14 @@
+     std::atomic<bool> bwaitCmdreponse;
+     bool bwaitCmdreponseok;
+ 
+-    std::queue< std::shared_ptr<Frame> > rawframeQueue;
++    using FrameQueue=wc_xt_driver::BoundedWorkQueue<std::shared_ptr<Frame>>;
++    FrameQueue rawframeQueue;
++    std::atomic<bool> strictFrameDelivery{false};
+ 
+     bool UsingImageThread;
+     std::thread * threadImageQueue;
+     static void ImageQueueFunc(XtDaemon * xtdaemon);
+-    std::queue< std::shared_ptr<Frame> > imageQueue;
++    FrameQueue imageQueue;
+ 
+ 
+     bool UsingEventThread;
+@@ -167,14 +173,12 @@
+     uint8_t endianType;
+ 
+     // 对于imageQueue
+-    std::mutex imageQueueMutex;
+-    std::condition_variable imageQueueCV;
++
+     std::mutex eventQueueMutex;
+     std::condition_variable eventQueueCV;
+ 
+     // 对于rawframeQueue
+-    std::mutex rawframeQueueMutex;
+-    std::condition_variable rawframeQueueCV;
++
+ };
+ 
+ } //end namespace XinTan
+diff --git a/xtsdk_cpp/xtsdk/xtsdk.cpp b/xtsdk_cpp/xtsdk/xtsdk.cpp
+--- a/xtsdk_cpp/xtsdk/xtsdk.cpp
++++ b/xtsdk_cpp/xtsdk/xtsdk.cpp
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -187,6 +187,18 @@
+         XTLOGINFO("xtsdk Shutdown completed successfully");
+     }
+ 
++    void XtSdk::setStrictFrameDelivery(bool strict)
++    {
++        XTDAEMONUSING;
++        xtdaemon->setStrictFrameDelivery(strict);
++    }
++
++    WcQueueDiagnostics XtSdk::getQueueDiagnostics()
++    {
++        XTDAEMONUSING;
++        return xtdaemon->getQueueDiagnostics();
++    }
++
+     bool XtSdk::isconnect()
+     {
+         XTDAEMONUSING;
+@@ -336,6 +348,22 @@
+         return xtdaemon->baseFilter->setDustFilter(threshold, framecount, validpercent, timedf);
+     }
+ 
++    bool XtSdk::setSpatialFilter(const float &alpha, const uint32_t &delta, const uint8_t &iterations)
++    {
++        XTDAEMONUSING;
++        return xtdaemon->baseFilter->setSpatialFilter(alpha, delta, iterations);
++    }
++    bool XtSdk::setSdkAvgFilter(uint16_t size, uint16_t timedf)
++    {
++        XTDAEMONUSING;
++        return xtdaemon->baseFilter->setAvgFilter(size, timedf);
++    }
++    uint16_t XtSdk::getSdkFilterFlags()
++    {
++        XTDAEMONUSING;
++        const std::lock_guard<std::mutex> lock(xtdaemon->baseFilter->filterLock);
++        return xtdaemon->baseFilter->filter_flag;
++    }
+     bool XtSdk::clearAllSdkFilter()
+     {
+         XTDAEMONUSING;
+@@ -605,9 +633,9 @@
+             struct DevInfo_t rawdevinfo;
+             memcpy(&rawdevinfo, respResult.data.data(), sizeof(rawdevinfo));
+ 
+-            devInfo.sn = (char *)rawdevinfo.sn;
+-            devInfo.fwVersion = (char *)(rawdevinfo.fw);
+-            devInfo.bootVersion = (char *)rawdevinfo.bootver;
++            devInfo.sn.assign(reinterpret_cast<char *>(rawdevinfo.sn), strnlen(reinterpret_cast<char *>(rawdevinfo.sn), sizeof(rawdevinfo.sn)));
++            devInfo.fwVersion.assign(reinterpret_cast<char *>(rawdevinfo.fw), strnlen(reinterpret_cast<char *>(rawdevinfo.fw), sizeof(rawdevinfo.fw)));
++            devInfo.bootVersion.assign(reinterpret_cast<char *>(rawdevinfo.bootver), strnlen(reinterpret_cast<char *>(rawdevinfo.bootver), sizeof(rawdevinfo.bootver)));
+             devInfo.chipidStr = std::to_string(rawdevinfo.chipid) + " " +
+                                 std::to_string(rawdevinfo.waferid);
+ 
+@@ -668,6 +696,7 @@
+                 offset += 6;
+                 data.assign(respResult.data.begin() + offset,
+                             respResult.data.begin() + 18 + offset);
++                data.push_back(0);
+                 osfw << data.data();
+                 devInfo.fwVersion = osfw.str();
+ 
+@@ -1105,7 +1134,7 @@
+         XTDAEMONUSING;
+         XTLOGINFO(std::to_string(freqType1) + " " + std::to_string(freqType2) +
+                   " " + std::to_string(freqType3));
+-        uint8_t freq[4];
++        std::array<uint8_t, 5> freq{};
+ 
+         freq[0] = getFreq(freqType1);
+         freq[1] = getFreq(freqType2);
+@@ -1494,8 +1523,8 @@
+         if (xtsdk->isconnect() &&
+             (eventdata->cmdid == 0xfe)) // 端口打开后第一次连接上设备
+         {
+-            RespDevInfo devinfo;
+-            xtsdk->getDevInfo(devinfo);
++            RespDevInfo devinfo{};
++            if (!xtsdk->getDevInfo(devinfo)) return;
+ 
+             transform(devinfo.sn.begin(), devinfo.sn.end(), devinfo.sn.begin(), ::tolower);
+             transform(devinfo.fwVersion.begin(), devinfo.fwVersion.end(), devinfo.fwVersion.begin(), ::tolower);
+@@ -1533,18 +1562,9 @@
+             }
+             else
+             {
+-                XTLOGINFO("getLensCalidata failed, use default params");
+-                std::cout << "getLensCalidata failed, use default params"
+-                          << std::endl;
+-
+-                camparams = {(float)170.0, (float)170.0,
+-                             (float)160.0, (float)120.0,
+-                             (float)0.0, (float)0.0,
+-                             (float)0.0000000000, (float)0.0,
+-                             (float)0.0};
+-                xtdaemon->cartesianTransform->maptable(camparams);
+-            }
+-            if (xtsdk->isUsedNet())
++                XTLOGINFO("getLensCalidata failed; acquisition wrapper must reject readiness");
++            }
++            if (false && xtsdk->isUsedNet()) // disabled: never rewrite device UDP destination
+             {
+                 if (Utils::ipIsValid(xtdaemon->hostIpStr) ||
+                     (xtdaemon->udpPort != 7687))
+diff --git a/xtsdk_cpp/xtsdk/xtsdk.h b/xtsdk_cpp/xtsdk/xtsdk.h
+--- a/xtsdk_cpp/xtsdk/xtsdk.h
++++ b/xtsdk_cpp/xtsdk/xtsdk.h
+@@ -1,4 +1,4 @@
+-﻿/**************************************************************************************
++/**************************************************************************************
+  * Copyright (C) 2022 Xintan Technology Corporation
+  *
+  * Author: Marco
+@@ -204,6 +204,14 @@
+         float intensity;
+     };*/
+ 
++    // Project queue diagnostics. Counts decoded/assembled frames, not UDP packets.
++    struct WcQueueDiagnostics {
++        uint64_t raw_received=0,raw_dropped=0,raw_highwater_frames=0,raw_highwater_bytes=0,raw_pending_frames=0,raw_pending_bytes=0;
++        uint64_t image_received=0,image_dropped=0,image_highwater_frames=0,image_highwater_bytes=0,image_pending_frames=0,image_pending_bytes=0;
++        uint64_t queue_capacity_frames=64,queue_capacity_bytes=64*1024*1024;
++        bool strict_delivery=false;
++    };
++
+     /**************************** xtsdk 接口类定义  ******************************/
+     class XtSdk
+     {
+@@ -228,7 +236,9 @@
+ 
+         /***********  SDK 运行相关 **********************/
+         void startup();  // 启动sdk运行
+-        void shutdown(); // 端口设备连接
++        void shutdown(); // Stop producers, drain frame queues and join workers.
++        void setStrictFrameDelivery(bool strict); // host-only, before startup
++        WcQueueDiagnostics getQueueDiagnostics(); // atomic snapshot, no callback/I/O lock
+ 
+         bool isconnect(); // 设备连接是否成功
+ 
+@@ -249,6 +259,9 @@
+         bool setSdkDustFilter(uint16_t threshold, uint16_t framecount = 4, uint16_t timedf = 300, uint16_t validpercent = 100);
+         bool setSdkReflectiveFilter(const float &threshold_min, const float &threshold_max);
+ 
++        bool setSpatialFilter(const float &alpha, const uint32_t &delta, const uint8_t &iterations);
++        bool setSdkAvgFilter(uint16_t size, uint16_t timedf = 300);
++        uint16_t getSdkFilterFlags(); // host-only observed effective flags
+         bool clearAllSdkFilter(); // 清除SDK中所有的滤波设置
+ 
+         bool doUdpFrameData(const std::vector<uint8_t> &udpframeData, std::string frame_label = "");
+diff --git a/xtsdk_cpp/xtsdk/xtsdkLibHandler.cpp b/xtsdk_cpp/xtsdk/xtsdkLibHandler.cpp
+--- a/xtsdk_cpp/xtsdk/xtsdkLibHandler.cpp
++++ b/xtsdk_cpp/xtsdk/xtsdkLibHandler.cpp
+@@ -49,8 +49,10 @@
+             std::cerr << "Cannot load symbol createBaseFilter" << std::endl;
+ #if defined(_WIN32) || defined(_WIN64)
+             FreeLibrary(handle);
++            handle=nullptr;
+ #else
+             dlclose(handle);
++            handle=nullptr;
+ #endif
+             // exit(1);
+             bLibLoadSuccess = false;
+@@ -58,6 +60,7 @@
+         }
+         bLibLoadSuccess = true;
+         filter = createBaseFilter(xtdlllogger);
++        bLibLoadSuccess = filter != nullptr;
+ 
+         if(bLibLoadSuccess)
+         {
+@@ -71,11 +74,13 @@
+         if (handle)
+         {
+             FreeLibrary(handle);
++            handle=nullptr;
+         }
+ #else
+         if (handle)
+         {
+             dlclose(handle);
++            handle=nullptr;
+         }
+ #endif
+     }
+@@ -119,11 +124,11 @@
+         filter->doDustFilter(frame);
+     }
+ 
+-    bool LibHandler::setAvgFilterLib(uint16_t size)
+-    {
+-        if (!bLibLoadSuccess)
+-            return false;
+-        return filter->setAvgFilter(size);
++    bool LibHandler::setAvgFilterLib(uint16_t size, uint16_t timedf)
++    {
++        if (!bLibLoadSuccess)
++            return false;
++        return filter->setAvgFilter(size, timedf);
+     }
+ 
+     bool LibHandler::setKalmanFilterLib(uint16_t factor, uint16_t threshold, uint16_t timedf)
+@@ -152,6 +157,13 @@
+         return filter->setSdkReflectiveFilter(threshold_min, threshold_max);
+     }
+ 
++    bool LibHandler::setSpatialFilterLib(const float &alpha, const uint32_t &delta, const uint8_t &iterations)
++    {
++        if (!bLibLoadSuccess)
++            return false;
++        return filter->setSpatialFilter(alpha, delta, iterations);
++    }
++
+     void LibHandler::doMedianFilterLib(const std::shared_ptr<IFrame> &frame)
+     {
+         if (!bLibLoadSuccess)
+@@ -208,6 +220,15 @@
+ 
+         filter->doReflectiveFilter(frame);
+     }
++
++    void LibHandler::doSpatialFilterLib(const std::shared_ptr<IFrame> &frame)
++    {
++        if (!bLibLoadSuccess)
++            return;
++
++        filter->doSpatialFilter(frame);
++    }
++
+     void LibHandler::setSpecParaLib(uint8_t sn[29])
+     {
+         if (!bLibLoadSuccess)
+@@ -216,6 +237,14 @@
+         filter->setSpecPara(sn);
+     }
+ 
++    void LibHandler::resetFiltersLib()
++    {
++        if (!bLibLoadSuccess)
++            return;
++
++        filter->resetFilters();
++    }
++
+     bool LibHandler::getLoadFlag()
+     {
+         return bLibLoadSuccess;
+diff --git a/xtsdk_cpp/xtsdk/xtsdkLibHandler.h b/xtsdk_cpp/xtsdk/xtsdkLibHandler.h
+--- a/xtsdk_cpp/xtsdk/xtsdkLibHandler.h
++++ b/xtsdk_cpp/xtsdk/xtsdkLibHandler.h
+@@ -27,11 +27,11 @@
+     std::string lib_path = "";
+     // DustFilterParams params_dustfilter;
+ 
+-    LibHandle handle;
++    LibHandle handle = nullptr;
+     typedef IBaseFilter_lib *(*CreateBaseFilterFunc)(LogFunction);
+     typedef void (*DestroyInstanceFunc)(IBaseFilter_lib *);
+     // std::shared_ptr<XinTan::BaseFilter_lib> filter;
+-    IBaseFilter_lib *filter;
++    IBaseFilter_lib *filter = nullptr;
+ 
+     bool bLibLoadSuccess = false;
+ 
+@@ -43,7 +43,7 @@
+     LibHandler(std::string &logtag);
+     ~LibHandler();
+     bool setDustFilterLib(uint16_t threshold, uint16_t framecount,
+-                          uint16_t validpercent, uint16_t timedf);
++                          uint16_t validpercent, uint16_t timedf = 300);
+     void doDustFilterLib(const std::shared_ptr<Frame> &frame);
+ 
+ 
+@@ -56,7 +56,10 @@
+     bool setMedianFilterLib(uint16_t size);
+     bool setPostParamLib(const float &dilation_pixels, const int &mode, const uint8_t &winsize, uint8_t motion_size);
+     bool setSdkReflectiveFilterLib(const float &threshold_min, const float &threshold_max);
+-    bool setAvgFilterLib(uint16_t size);
++    bool setAvgFilterLib(uint16_t size, uint16_t timedf = 300);
++    bool setSpatialFilterLib(const float &alpha, const uint32_t &delta, const uint8_t &iterations);
++
++    void resetFiltersLib();
+ 
+     void doMedianFilterLib(const std::shared_ptr<IFrame> &frame);
+     void doKalmanFilterLib(const std::shared_ptr<IFrame> &frame);
+@@ -66,6 +69,7 @@
+     void doCloseProcessLib(const std::shared_ptr<IFrame> &frame);
+     void doMotionTrackLib(const std::shared_ptr<IFrame> &frame);
+     void doReflectiveFilterLib(const std::shared_ptr<IFrame> &frame);
++    void doSpatialFilterLib(const std::shared_ptr<IFrame> &frame);
+     void setSpecParaLib(uint8_t sn[29]);
+ 
+     };

@@ -1,0 +1,138 @@
+{
+  "files": {
+    "IbaseFilter_lib.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "e8e94f4bfdd5b2809a6d743b73a51b78185a7287cab4748f323883863a680a70"
+    },
+    "Iframe.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "752c207a146d2bb1550c880df67dc384f2853f1ecfa2158afef8962791b6c267"
+    },
+    "baseFilter.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "d41a4c99e903daa0cb5dfaf6ed743ba55531609ff5d523906ff057dc687f4700"
+    },
+    "basefilter.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "1d44f9c1fbef45a3101f17b2d8f30d55f2844147bbabc6760902ded3e349efd8"
+    },
+    "cartesianTransform.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "68df27efd64ee6431e451290d691dd884371bd8a696af084727edb6100e4d69e"
+    },
+    "cartesianTransform.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "4e5c2087e64f843ddcbad44c802a03050cf15ed10c94a475cc2bbcb43e6c79c8"
+    },
+    "cmdstructs.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "98ded4ed0d481e6182b850ac67b9c2a206d2bcc4b9891b24231aac3de8a287a7"
+    },
+    "communication.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "ef9cf5b7b9ed55722e133fb8976a7f20ec2a006988436296cb286c802f880220"
+    },
+    "communicationNet.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "292b5aa10a1bf2a755e0362c64ec1c094a165ace0d169e17017b7dd9c8e77dd1"
+    },
+    "communicationNet.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "032091c032b6d3b4d82f369491b8e3b7a2a6f98ff10d47d9fd3882a8df01282b"
+    },
+    "communicationUsb.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "2a6c48ccb85fbec46874dd1836afcf64d3cb33c125b564666678dd714e6ac40e"
+    },
+    "communicationUsb.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "e32a5635ea204fa1d99a3314b83d5c39c57f752988dbbcbbbe0b6ff8fd27af41"
+    },
+    "frame.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "7bdcc972744317e291c7321cfd8a91b79f06f2b7628ddc840a586490d69595ae"
+    },
+    "frame.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "2922dd20456bb8517b1caa2a3f2f779c535718e046be8f7a8a27fe03f858fafb"
+    },
+    "lib/linux/aarch64/libxtsdk_shared.so": {
+      "mode": "binary",
+      "sha256": "3b34f29269858b07bc7b1fb22a7a5b4e709a7e87e7b8a814a57c03eb9f5293e5"
+    },
+    "lib/linux/x86_64/libxtsdk_shared.so": {
+      "mode": "binary",
+      "sha256": "496251194b2edf59cd8ba4ea22c4f1883f9df1c7e076f79210f81b5652809424"
+    },
+    "pyBinding.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "7f031d107cefdce4167bbbd41a1cb1fef46e9cb3ad3f6442b53fe0150c678050"
+    },
+    "tic_toc.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "fb8e26347723e9eb1a10611a21c071da6ca7e32913ebc184e285e9493ce08ff9"
+    },
+    "utils.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "aa3db362985d070abd384027dbaff522c2cf846507bef63a2742c116b7cfff41"
+    },
+    "utils.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "9c89d72df01a2dc2948235c2e5812285199d0674c4ee379e06785d4334c026da"
+    },
+    "version.h.in": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "b739c98b5a0aa1155428b4c292af7781c00e219e8181b773ba37678898790d63"
+    },
+    "wc_frame_storage.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "4acf52f51a3d57e55a4e4ab6e12a5ef224521b054e6e5d5703e275448567138d"
+    },
+    "xtdaemon.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "d9f61931e87ae0476ac9a23f2a5cf5c3b906034b2e124e1ecef7eabe2576ab74"
+    },
+    "xtdaemon.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "6f9714bc299bd63ad3f54f681b32fa42a0063e85a7a790f5e7eef8309a3af3fb"
+    },
+    "xtlogger.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "2ff0820d8811455e9c5fe0b892ef06e38cb5dc7a88cbc4e4500358ece4bedbde"
+    },
+    "xtlogger.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "e6b97d67b53f7bbe0cdca3377065293db02f8d0aef8dca079792d30674a20292"
+    },
+    "xtpcl_filter.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "da37b28d514ef456166451ac70c0d3221b6df1cb51fd51a01c91b8cf1ae15044"
+    },
+    "xtpcl_filter.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "e8ebb566f68f95d4264d8b44a6c2c5fd2e5fd6a8d14174f96c62b055d76b3eb3"
+    },
+    "xtsdk.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "b16bbfeda51d43e8f28100614ff77784e1c60a69262f72d445fa520af1ca1f4d"
+    },
+    "xtsdk.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "b9eb2a7485e866af8f8388ed7f42a0db626f0d2349f632c417f6534781e42e90"
+    },
+    "xtsdkLibHandler.cpp": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "41a5832a5cd3b01b376ff22da127c3af9cb287867b4dcaefd495e6935c43ea5c"
+    },
+    "xtsdkLibHandler.h": {
+      "mode": "text_crlf_to_lf",
+      "sha256": "222c69ba8794e10d90fd6912315f8086c5383b61a2320d0d109e5e0f5587dfe1"
+    }
+  },
+  "filter_backport_origin": "xtsdk_cpp@3d3db067ae9bdc0528202c3087bc10fd3b706638",
+  "filter_runtime_manifest": "xtsdk_filter_3d3db067.manifest.json",
+  "patch_sha256": "633832092c07a47e2e557d0023ddf1f882295a97e2b9bcf640e8f0a7ab9e8ecd",
+  "schema_version": 1,
+  "sdk_commit": "965d31ae726c44b47ad646666c3c5fa2a4d91bf4",
+  "text_normalization": "CRLF to LF only; no whitespace, comment or token normalization"
+}

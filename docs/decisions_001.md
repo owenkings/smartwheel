@@ -1,0 +1,9 @@
+# Implementation decisions
+
+- The user selected /home/nvidia/wheelchair itself as the project root; the initially created phase1_20260911 subdirectory was safely flattened and removed while empty. SDKs, tests, reports, data and maps have separate directories.
+- No code, settings, maps or calibration from /home/nvidia/smartwheel-rtab-old are read or reused. New source is authored here; external input consists of user hardware documents, the official XT source and system-installed ROS/RTAB-Map dependencies.
+- Public ROS messages retain source identity, exact integer time, stable bundle IDs and graph revisions. The native graph adapter uses RTAB-Map core with explicit SensorData IDs rather than matching floating-point keyframe timestamps. This retains the requested RTAB-Map graph optimizer and the ROS icp_odometry front end while preventing ambiguous provenance.
+- Native XT source is fixed at commit 965d31ae726c44b47ad646666c3c5fa2a4d91bf4; changes are recorded under vendor_patches. Same numeric UDP port is supported only with distinct concrete bind IPs, no reuse, and verified sender IP filtering; copying unmodified SDK directories does not achieve isolation.
+- The existing Python user site contains NumPy 2.2.6, incompatible with apt SciPy. Per-process PYTHONNOUSERSITE=1 selects system NumPy 1.21.5/SciPy 1.8.0 and has been verified on Orin. No system packages or shell startup files were changed.
+- All raw sensor recording remains independent of the map acceptance gate. Synthetic sources and test scripts are confined to tests/ and data/synthetic/. Synthetic extrinsics and graph noise assumptions cannot be promoted to real calibration.
+- Sparse 3D occupied/free voxel sets with conservative vertical-coverage projection implement occupancy for this stage. This is not an OctoMap .ot file and is recorded as occupancy/voxels.json. Both original sensor ray origins are preserved, with full rebuild after graph changes.

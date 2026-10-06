@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "device": "/dev/smartwheel_ultrasonic",
+  "expected_by_id": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+  "expected_usb_path": "platform-3610000.usb-usb-0:2.1:1.0",
+  "usb_vid": "1a86",
+  "usb_pid": "7523",
+  "baud": 9600,
+  "function_code": 3,
+  "register": 1,
+  "addresses": [1, 2, 3, 4],
+  "timeout_s": 0.4,
+  "inter_sensor_delay_s": 0.11,
+  "physical_role_status": "UNVERIFIED",
+  "evidence": "2026-10-06 read-only USB enumeration confirmed the serial-less CH340 adapter at USB2.1, by-id usb-1a86_USB_Serial-if00-port0, ttyUSB0. USB2.2 is the uniquely serialized wheel controller; binding uses VID/PID plus exact by-id and USB topology, not numbered tty fallback. 2026-10-04 final v7_all_diagnostic_20261004c captured 33 VALID_RESPONSE transactions with valid CRC across addresses 1-4. Model, distance units and physical roles remain UNVERIFIED. No device configuration writes or address provisioning performed."
+}

@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "source_mode": "real",
+  "sensor_mode": "dual",
+  "cloud_input": "xtcfg_filtered",
+  "encoder_required": true,
+  "motion_prior": {
+    "enabled": false,
+    "coordinate_status": "UNVALIDATED",
+    "time_status": "UNVALIDATED",
+    "T_rig_axle": null,
+    "max_time_uncertainty_ns": null
+  },
+  "device_evidence_status": "DUAL_FILTERED_AND_H30_STATIC_RECORDING_AUDIT_PASS",
+  "device_evidence": "reports/live_static/xtcfg_static_20260912T071455Z-bag_audit.json",
+  "device_evidence_note": "2026-09-12 bounded historical observation, not continuous health: both sides 296 raw/filtered frames; H30 5962 source packets; complete metadata and both audits PASS. Right recovered after ARP failure; intermittent link root cause unresolved. This does not validate extrinsics, common measurement time or live mapping.",
+  "sensor_ids": {
+    "left": "XTM60B00000000000012",
+    "right": "XTM60B00000000000013"
+  },
+  "lidar_left": {
+    "address": "192.168.0.101",
+    "receiver_address": "192.168.0.100",
+    "udp_port": 7687
+  },
+  "lidar_right": {
+    "address": "192.168.1.101",
+    "receiver_address": "192.168.1.100",
+    "udp_port": 7687
+  },
+  "socket_binding_verified": true,
+  "h30": {
+    "device_alias": "/dev/smartwheel_h30_imu",
+    "baudrate": 460800,
+    "status": "STATIC_FRAMES_VERIFIED_ORIENTATION_REFERENCE_UNVALIDATED"
+  },
+  "T_rig_left": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "rig_definition": "left verified FLU origin; axis conversion still requires verification",
+  "T_rig_right": null,
+  "T_rig_imu": null,
+  "T_rig_base": null,
+  "ground_reference": null,
+  "calibration_status": "UNVALIDATED",
+  "time_models": {
+    "left": null,
+    "right": null
+  },
+  "quality_profile_status": "UNVALIDATED",
+  "sdk_config_write_allowed": true,
+  "sdk_config_write_scope": "User-authorized supplied per-side xtcfg imaging and host filtering only; no network, clock, reset, firmware, or motor commands",
+  "mounting_user_observations": {
+    "source": "user_2026-09-12",
+    "lidar_spacing_approx_m": null,
+    "previous_reported_spacing_m": 0.6,
+    "spacing_status": "UNKNOWN_ENDPOINTS_USER_RETRACTED_AS_MEASUREMENT",
+    "spacing_is_measured_optical_origin_baseline": false,
+    "imu_location": "on top of left lidar module enclosure",
+    "imu_x_direction": "left lidar forward",
+    "lidar_body_edges_above_ground_m": {
+      "left": {
+        "lower": 0.7,
+        "upper": 0.76
+      },
+      "right": {
+        "lower": 0.7,
+        "upper": 0.76
+      }
+    },
+    "height_measurement_method": "user tape measurement; uncertainty and exact edge points unknown",
+    "height_measurement_uncertainty_m": null,
+    "h30_added_after_cad_design": true,
+    "imu_enclosure_edge_relation": {
+      "above_lidar_body_top_m": 0.002,
+      "forward_protrusion_m": 0.002,
+      "right_protrusion_m": 0.004,
+      "reference": "user-reported shell/lid corner relationship, not sensor origins",
+      "sensor_origin_transform_derived": false
+    },
+    "left_cad_review": "reports/cad_mount_20260912/README.md",
+    "left_cad_lid_top_minus_radar_envelope_top_m": 0.00205,
+    "imu_mount_roll_about_forward_axis_rad": null,
+    "left_module_tilt": "toward left, angle unknown",
+    "right_module_tilt": "toward right, angle unknown",
+    "right_tilt_observable_from_left_imu_alone": false,
+    "imu_y_direction": "toward the outer/left side of the left lidar, perpendicular to its forward axis",
+    "imu_axis_clarification": {
+      "source": "user_2026-09-13",
+      "user_statement": "IMU在左雷达盒子上方紧挨着，X轴与雷达镜片发射接收方向一致，Y轴方向为左雷达的外侧，与X轴垂直",
+      "interpretation": "X/Y interpreted as marked positive axes; outward interpreted as the left lidar's own left direction, co-tilted with the enclosure, not world-horizontal left",
+      "R_left_imu_candidate": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ],
+      "rotation_status": "USER_REPORTED_AXES_PENDING_GEOMETRY_CHECK",
+      "nominal_mount_roll_rad": 0.0,
+      "z_direction": "left lidar's own up, inferred from +X cross +Y; not necessarily world vertical",
+      "angular_accuracy_rad": null,
+      "translation_m": null,
+      "scope": "candidate mounting rotation for offline static gravity leveling; full extrinsic and ground reference remain unvalidated"
+    }
+  },
+  "camera_recording": false,
+  "navigation_validated": false
+}

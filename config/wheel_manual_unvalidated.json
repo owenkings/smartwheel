@@ -1,0 +1,11 @@
+{
+  "schema": "wc_manual_dry_run_v1",
+  "hardware_enabled": false,
+  "linear_speed_m_s": 0.1,
+  "angular_speed_rad_s": 0.2,
+  "key_timeout_s": 0.25,
+  "link_timeout_s": 0.25,
+  "controller_disconnect_stop_verified": false,
+  "stop_brake_semantics_verified": false,
+  "blocking_reason": "Old host watchdog and control-word writes do not establish controller-side stop on link/host failure. Real manual motor dispatch is not implemented or enabled."
+}

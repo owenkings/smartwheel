@@ -1,0 +1,28 @@
+{
+  "schema": "wc_manual_stop_evidence_v1",
+  "state": "UNVALIDATED",
+  "device_id": "ZLAC8030D-0000000014",
+  "firmware_id": null,
+  "reviewer": null,
+  "reviewed_at": null,
+  "command_profile_sha256": null,
+  "command_registers_units_directions_verified": false,
+  "controller_disconnect_stop_verified": false,
+  "zero_velocity_hold_verified": false,
+  "physical_stop_and_brake_behavior_verified": false,
+  "sources": [],
+  "stop_strategy": null,
+  "stationary_feedback_abs_raw_max": null,
+  "timing": {
+    "transaction_timeout_s": 0.08,
+    "key_timeout_s": 0.25,
+    "command_period_s": 0.1,
+    "controller_watchdog_timeout_s": null,
+    "zero_feedback_timeout_s": null
+  },
+  "state_checks": [],
+  "required_state_check_purposes": ["firmware", "drive_enabled", "velocity_mode", "controller_watchdog", "stop_policy"],
+  "state_check_schema": {"purpose": "REPLACE_WITH_REVIEWED_PURPOSE", "request_hex": null, "word_index": null, "mask": null, "equals": null},
+  "source_schema": {"kind": "protocol OR onsite_stop_test", "path": "project-relative reviewed source path", "sha256": null},
+  "note": "Unknown register addresses/values and watchdog/stop behavior remain null. Obtain the correct firmware RS485 protocol and onsite stop evidence; this template must fail before opening serial. No guess of 0x200E stop/emergency values is embedded."
+}

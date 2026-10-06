@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "archive_root": "/media/nvidia/WHEELCHAIR_DATA/wheelchair",
+  "mount_point": "/media/nvidia/WHEELCHAIR_DATA",
+  "required_uuid": "0000-0000",
+  "original_project_root": "/home/nvidia/wheelchair",
+  "fallback_allowed": false
+}

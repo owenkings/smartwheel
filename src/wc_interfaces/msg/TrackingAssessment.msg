@@ -1,0 +1,16 @@
+std_msgs/Header header
+string session_id
+uint64 bundle_id
+string odom_epoch
+string tracking_state
+bool accepted
+string[] rejection_reasons
+uint32 left_solver_input_count
+uint32 right_solver_input_count
+bool inliers_available
+uint32 inliers
+bool residual_available
+float64 residual
+bool degeneracy_available
+float64 degeneracy_metric
+nav_msgs/Odometry odometry

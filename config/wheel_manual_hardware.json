@@ -1,0 +1,22 @@
+{
+  "schema": "wc_manual_hardware_v1",
+  "default_mode": "dry-run",
+  "hardware_enabled": false,
+  "command_profile": {
+    "slave_id": 1,
+    "first_register": 8328,
+    "register_count": 2,
+    "wheel_radius_m": 0.165,
+    "track_width_m": 0.58,
+    "rpm_to_register_scale": 8.9,
+    "register_to_feedback_rpm": 0.112,
+    "left_sign": -1,
+    "right_sign": 1,
+    "max_linear_m_s": 0.1,
+    "max_angular_rad_s": 0.2,
+    "max_wheel_rpm": 15.0
+  },
+  "profile_state": "HISTORICAL_CANDIDATE_REQUIRES_BOUND_EVIDENCE",
+  "provenance": "Reviewed old zlac8030_base.yaml / _write_wheel_commands: FC10 slave1 0x2088/89 paired signed velocity values, 8.9 register/rpm. These candidate values are not current on-device validation.",
+  "note": "Changing hardware_enabled does not enable dispatch. --mode real additionally needs reviewed source hashes/profile binding, live state predicates and stationary feedback, exact onsite confirmation, then user E. No mode/enable/clear-fault/brake-release/control-word writes exist."
+}

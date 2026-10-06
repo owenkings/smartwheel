@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>wc_slam</name>
+  <version>0.1.0</version>
+  <description>Audited dual-lidar accepted-bundle graph adapter using installed RTAB-Map core.</description>
+  <maintainer email="local@wheelchair.invalid">Wheelchair phase 1 engineering</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>tf2_ros</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>wc_interfaces</depend>
+  <depend>rtabmap</depend>
+  <depend>libopencv-dev</depend>
+  <depend>libssl-dev</depend>
+  <depend>eigen</depend>
+  <exec_depend>python3</exec_depend>
+  <test_depend>tf2_msgs</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

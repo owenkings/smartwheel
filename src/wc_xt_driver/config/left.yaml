@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    side: left
+    expected_serial: XTM60B00000000000012
+    device_ip: 192.168.0.101
+    receive_ip: 192.168.0.100
+    receive_port: 7687
+    frame_id: lidar_left
+    connect_timeout_seconds: 20

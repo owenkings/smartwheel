@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "mapping_status": "USER_CONFIRMED",
+  "mapping_note": "2026-09-12 user message, paraphrased: right-front is USB4, left-side is USB2, right-side is USB3. Left-front remains USB1 because the user did not change that assignment. This confirms direction-to-port assignment only; it does not establish geometric calibration or synchronization. Serial is shared by all four cameras.",
+  "rotation_note": "2026-10-05 actual saved frames from v7_run_20261005_02 show the inherited 180-degree preview rotation upside down. Display rotation set to 0; retained BGR bytes and physical extrinsics are unchanged.",
+  "rotation_status": "CONFIG_ONLY",
+  "default_profile": "monitor_320",
+  "profiles": {
+    "monitor_320": {
+      "width": 320,
+      "height": 240,
+      "fourcc": "MJPG",
+      "capture_fps": 30.0,
+      "publish_hz": 8.0
+    },
+    "detail_640": {
+      "width": 640,
+      "height": 480,
+      "fourcc": "MJPG",
+      "capture_fps": 30.0,
+      "publish_hz": 8.0
+    },
+    "detail_640_10fps": {
+      "width": 640,
+      "height": 480,
+      "fourcc": "MJPG",
+      "capture_fps": 10.0,
+      "publish_hz": 8.0
+    }
+  },
+  "timeouts": {
+    "open_s": 15.0,
+    "read_s": 3.0,
+    "stale_s": 1.0
+  },
+  "cameras": [
+    {
+      "role": "left_front",
+      "port": 1,
+      "rotate_deg": 0,
+      "vid": "0bda",
+      "pid": "5858",
+      "serial": "000000000011"
+    },
+    {
+      "role": "right_front",
+      "port": 4,
+      "rotate_deg": 0,
+      "vid": "0bda",
+      "pid": "5858",
+      "serial": "000000000011"
+    },
+    {
+      "role": "left_side",
+      "port": 2,
+      "rotate_deg": 0,
+      "vid": "0bda",
+      "pid": "5858",
+      "serial": "000000000011"
+    },
+    {
+      "role": "right_side",
+      "port": 3,
+      "rotate_deg": 0,
+      "vid": "0bda",
+      "pid": "5858",
+      "serial": "000000000011"
+    }
+  ]
+}

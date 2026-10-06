@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "status": "EXPERIMENT",
+  "source_mode": "real",
+  "mapping_enabled": false,
+  "cloud_source": "filtered",
+  "continuous_mapping": true,
+  "odometry_source": "wheel_imu",
+  "motion_model": "se3_gyro",
+  "gyro_bias_config": null,
+  "cloud_filter": {
+    "enabled": false,
+    "range": {
+      "enabled": true,
+      "min_m": 0.3,
+      "max_m": 15.0
+    },
+    "organized_support": {
+      "enabled": true,
+      "min_neighbors": 2,
+      "distance_offset_m": 0.03,
+      "distance_scale": 0.02
+    },
+    "ground_height": {
+      "enabled": true,
+      "min_m": -0.1,
+      "max_m": 2.5
+    }
+  },
+  "map_profile": null,
+  "wheel_imu_covariance": {
+    "status": "UNVALIDATED_MODEL_WEIGHTS",
+    "pose_diagonal": [
+      0.25,
+      0.25,
+      1.0,
+      0.09,
+      0.09,
+      0.09
+    ],
+    "twist_diagonal": [
+      0.04,
+      0.25,
+      0.25,
+      0.01,
+      0.01,
+      0.04
+    ]
+  },
+  "measurement_note": "Hardware geometry and wheel-scale candidates are read only from hardware_setup_config at session startup; source bytes/hash and resolved transforms are archived per map.",
+  "hardware_setup_config": "config/hardware_setup.json",
+  "cameras_enabled": true,
+  "rviz_renderer": "software",
+  "camera_config": "config/cameras.json",
+  "imu_sensor_id": "H30-0000000015",
+  "wheel_hardware_config": "config/wheel_feedback_current.json",
+  "input_rate_hz": 5.0,
+  "archive_publication_mode": "queued_realtime",
+  "archive_checkpoint_policy": "on_close",
+  "max_pair_delta_ns": 50000000,
+  "formal_acceptance": false,
+  "navigation_validated": false,
+  "common_measurement_time_validated": false
+}

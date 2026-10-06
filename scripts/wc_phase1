@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""The project CLI; all implementation lives in wc_runtime.cli."""
+import os
+from pathlib import Path
+import sys
+
+root=Path('/home/nvidia/wheelchair')
+os.environ['PYTHONNOUSERSITE']='1'
+if not sys.flags.no_user_site:
+    os.execv(sys.executable,[sys.executable,'-s',__file__,*sys.argv[1:]])
+sys.path.insert(0,str(root/'src'))
+from wc_runtime.cli import main
+raise SystemExit(main())

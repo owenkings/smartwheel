@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>双雷达对应点 · 外参初值</title>
+  <link rel="stylesheet" href="/picker.css">
+  <script src="/picker.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div><p class="eyebrow">WHEELCHAIR / OFFLINE CALIBRATION</p><h1>双雷达对应点</h1></div>
+      <span class="badge">外参初值 · 未独立验证</span>
+    </header>
+    <p class="intro">在两幅点云中选择<strong>同一个物理角点</strong>，组成一对。至少需要 3 对不共线的点，建议选择 6～10 对分散的角点。只能选择已有点，不能输入或生成坐标。</p>
+    <div id="source-status" class="source-status" role="status">正在读取点云…</div>
+    <div class="level-toolbar"><label for="display-frame">左云显示参考</label><select id="display-frame" disabled><option value="level">水平参考（候选）</option><option value="raw" selected>原始左雷达坐标</option></select><span id="level-status" role="status">等待读取参考。</span></div>
+    <details class="metadata"><summary>来源、坐标与时间说明</summary><pre id="source-details"></pre></details>
+    <div class="toolbar main-toolbar">
+      <div class="mode-switch" role="group" aria-label="交互模式">
+        <button id="mode-browse" type="button" class="active" aria-pressed="true">浏览</button>
+        <button id="mode-pick" type="button" aria-pressed="false">选点</button>
+      </div>
+      <span id="mode-help">拖动旋转 · Shift + 拖动平移 · 滚轮缩放</span>
+      <div class="toolbar-tail"><button id="undo" type="button" disabled>撤销</button><button id="clear" type="button" disabled>清空</button></div>
+    </div>
+    <div class="cloud-grid">
+      <section class="cloud-card" aria-labelledby="left-title">
+        <div class="card-heading"><h2 id="left-title"><span class="dot left-dot"></span>左雷达</h2><span id="left-count"></span></div>
+        <div class="view-tools" data-view="left"><button data-preset="oblique" type="button">斜俯视</button><button data-preset="front" type="button">前视</button><button data-preset="top" type="button">顶视</button><button data-preset="side" type="button">侧视</button><button data-preset="fit" type="button">适应视图</button></div>
+        <canvas id="left-canvas" tabindex="0" aria-label="左雷达点云，浏览或选择已有点"></canvas>
+        <div id="left-readout" class="readout">左侧原始坐标 · FLU · 米</div>
+      </section>
+      <section class="cloud-card" aria-labelledby="right-title">
+        <div class="card-heading"><h2 id="right-title"><span class="dot right-dot"></span>右雷达</h2><span id="right-count"></span></div>
+        <div class="view-tools" data-view="right"><button data-preset="oblique" type="button">斜俯视</button><button data-preset="front" type="button">前视</button><button data-preset="top" type="button">顶视</button><button data-preset="side" type="button">侧视</button><button data-preset="fit" type="button">适应视图</button></div>
+        <canvas id="right-canvas" tabindex="0" aria-label="右雷达点云，浏览或选择已有点"></canvas>
+        <div id="right-readout" class="readout">右侧原始坐标 · FLU · 米</div>
+      </section>
+    </div>
+    <p id="picker-frame-note" class="view-note">前视沿 +X 观察，画面左为 +Y、上为 +Z；顶视和侧视只是浏览视角。两侧各自显示在原始坐标系中。</p>
+    <section class="selection-card" aria-labelledby="pairs-title">
+      <div class="card-heading"><h2 id="pairs-title">对应点对</h2><span id="pair-count">0 对</span></div>
+      <p id="selection-hint" class="hint" aria-live="polite">读取完成后，切换到“选点”开始。</p>
+      <div class="table-scroll"><table><thead><tr><th>编号</th><th>左雷达原始点 ID / XYZ（米）</th><th>右雷达原始点 ID / XYZ（米）</th><th>拟合残差（毫米）</th><th>操作</th></tr></thead><tbody id="pair-rows"></tbody></table></div>
+      <div class="action-row"><button id="solve" class="primary" type="button" disabled>计算并保存外参初值</button><button id="export" type="button" disabled>只导出选点</button><span id="request-status" role="status"></span></div>
+      <p id="error" class="error" role="alert" hidden></p>
+      <div id="saved" class="saved" hidden><span id="saved-label">已保存到 Orin：</span><code id="export-path"></code></div>
+    </section>
+    <section id="result-section" class="result-card" aria-labelledby="result-title" hidden>
+      <div class="card-heading"><h2 id="result-title">初值叠加预览</h2><span id="result-status" class="badge"></span></div>
+      <p class="result-warning">这是雷达之间的<strong>外参初值</strong>，不是内参，也没有写入正式配置。低拟合残差不能证明选点正确、时间同步或安装稳定；仍需独立场景验证。</p>
+      <div class="result-grid">
+        <div><div class="overlay-legend"><span><i class="dot left-dot"></i>左雷达</span><span><i class="dot right-dot"></i>右雷达经初值变换</span><button id="overlay-fit" type="button">适应视图</button></div><canvas id="overlay-canvas" tabindex="0" aria-label="两色点云外参初值叠加预览"></canvas><p id="overlay-frame-note" class="hint">左雷达原始坐标 · 拖动旋转 · Shift + 拖动平移 · 滚轮缩放</p></div>
+        <div class="matrix-box"><p id="rmse" class="metric"></p><p>p<sub>left</sub> = R<sub>left←right</sub> p<sub>right</sub> + t<sub>left←right</sub></p><h3>旋转 R（无量纲）</h3><pre id="rotation"></pre><h3>平移 t（米）</h3><pre id="translation"></pre><p id="result-reasons" class="hint"></p><p class="hint">缩放固定为 1；实时使用资格：否。</p></div>
+      </div>
+    </section>
+    <footer>本页面只读取点云、保存选点及初值文件，不发布 TF，不改正式标定，不控制设备。</footer>
+  </main>
+</body>
+</html>

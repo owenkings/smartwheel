@@ -1,0 +1,19 @@
+{
+  "manufacturer_manual": {
+    "url": "https://www.zlingkj.com/Data/zlingkj/upload/file/20250212/ZLAC8030D%E4%BC%BA%E6%9C%8D%E8%BD%AE%E6%AF%82%E9%A9%B1%E5%8A%A8%E5%99%A8%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8CVersion%201.00-20241212.pdf",
+    "sha256": "9fa9c2a135c0580b54fa7467fcc407460b1d4504eea880daf597b3ea3e6e8e7d",
+    "bytes": 796929,
+    "physical_pdf_pages": 10,
+    "supports": ["ZLAC8030D dual wheel driver", "RS485 Modbus RTU", "default 115200 baud", "range 9600-128000 baud", "CANopen also supported"],
+    "does_not_supply": ["feedback register table", "feedback raw unit scale", "encoder counts per revolution", "installed wheel dimensions", "actual timestamp semantics"]
+  },
+  "user_specified_repository_report": {
+    "url": "https://github.com/owenkings/smartwheel/blob/19188466ff48d9874bcd148a14da1e714b14732b/docs/hardware/ZLAC_ENCODER_READONLY_REPORT.md",
+    "historical_read_addresses": ["0x20AB", "0x20AC"],
+    "historical_valid_stationary_response": "01 03 02 00 00 B8 44",
+    "unit_scale_claim": "0.112 rpm/raw explicitly provisional in the report",
+    "not_current_project_verification": true,
+    "no_controller_or_legacy_code_executed": true
+  },
+  "decision": "No production protocol profile is marked verified. Generic FC03 decoding and explicit configured units are implemented; unknown scaling, geometry and common time refuse wheel odometry. Raw-only recording remains available."
+}

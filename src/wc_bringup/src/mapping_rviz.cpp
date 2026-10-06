@@ -1,0 +1,494 @@
+// SPDX-License-Identifier: Apache-2.0
+// Native RViz with a session-only close policy. Map saving belongs to mapping_app.
+// Public APIs checked against ros2/rviz humble: visualizer_app.hpp,
+// visualization_frame.hpp, visualizer_app.cpp and rviz2/src/main.cpp.
+#include <algorithm>
+#include <exception>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <QApplication>
+#include <QEvent>
+#include <QDockWidget>
+#include <QElapsedTimer>
+#include <QJsonArray>
+#include <QLayout>
+#include <QMainWindow>
+#include <QObject>
+#include <QPixmap>
+#include <QScreen>
+#include <QTimer>
+#include <QWidget>
+#include <QWindow>
+#include <QVBoxLayout>
+#include <OgreCamera.h>
+#include <OgreRenderTarget.h>
+#include <OgreRenderSystem.h>
+#include <OgreRenderSystemCapabilities.h>
+#include <OgreRoot.h>
+#include <OgreViewport.h>
+
+#include "rclcpp/rclcpp.hpp"
+#include "rviz_common/logging.hpp"
+#include "rviz_common/ros_integration/ros_client_abstraction.hpp"
+#include "rviz_common/visualization_frame.hpp"
+#include "rviz_common/visualizer_app.hpp"
+#include "rviz_rendering/render_window.hpp"
+#include "wc_bringup/mapping_render_diagnostics.hpp"
+#include "wc_bringup/mapping_teleop.hpp"
+#include "wc_bringup/mapping_health.hpp"
+
+namespace
+{
+
+// This filter belongs to this process and this one native frame. It does not
+// dismiss arbitrary dialogs, write display files, or change another RViz window.
+class SessionViewCloseFilter final : public QObject
+{
+public:
+  explicit SessionViewCloseFilter(rviz_common::VisualizationFrame & frame)
+  : frame_(frame)
+  {
+    frame_.installEventFilter(this);
+  }
+
+protected:
+  bool eventFilter(QObject * watched, QEvent * event) override
+  {
+    if (watched == &frame_ && event->type() == QEvent::Close) {
+      // Only unsaved view/layout edits are discarded. Returning false lets the
+      // native closeEvent run its normal cleanup and application exit sequence.
+      frame_.setWindowModified(false);
+    }
+    return false;
+  }
+
+private:
+  rviz_common::VisualizationFrame & frame_;
+};
+
+QJsonArray diagnostic_rect(const QRect & value)
+{return {value.x(), value.y(), value.width(), value.height()};}
+
+QJsonObject diagnostic_geometry(QWidget * widget)
+{
+  if (widget == nullptr) {return {{"present", false}};}
+  return {{"present", true}, {"class", widget->metaObject()->className()},
+    {"name", widget->objectName()}, {"geometry", diagnostic_rect(widget->geometry())},
+    {"frame_geometry", diagnostic_rect(widget->frameGeometry())},
+    {"minimum_size", QJsonArray{widget->minimumWidth(), widget->minimumHeight()}},
+    {"visible", widget->isVisible()}, {"active", widget->isActiveWindow()}};
+}
+
+// Opt-in observation only. These synchronous captures may stall the GUI and
+// disk; record their duration rather than treating diagnostic runs as timing
+// acceptance. Never renderNow(), reset, resize, hide/show, or synthesize input.
+class RenderDiagnostics final : public QObject
+{
+public:
+  RenderDiagnostics(rviz_common::VisualizationFrame & frame,
+    const wc_bringup::TeleopSession & session, const rclcpp::Logger & logger,
+    const QList<int> & schedule)
+  : QObject(&frame), frame_(frame), output_(session), logger_(logger)
+  {
+    started_.start();
+    QJsonArray scheduled_seconds;
+    for (int seconds : schedule) {scheduled_seconds.append(seconds);}
+    output_.write_json(QStringLiteral("identity.json"), {
+      {"schema", "wc_mapping_render_diagnostics_v2"}, {"session_id", session.session_id},
+      {"pid", static_cast<double>(QCoreApplication::applicationPid())},
+      {"source_mode", "real"}, {"enabled_by", "WC_MAPPING_RENDER_DIAGNOSTICS=1"},
+      {"scheduled_seconds", scheduled_seconds}, {"visual_review_status", "PENDING"},
+      {"capture_order", QJsonArray{"qt_before_ogre", "ogre", "qt_after_ogre", "qt_later_1s"}},
+      {"interference_note", "Ogre readback can select a viewport/context and synchronizes pixel reads. Synchronous Ogre/Qt capture and PNG/JSON writes can delay the GUI and disk IO. Capture success does not prove a visible map or unchanged rendering state/timing."},
+      {"geometry_changed_by_diagnostics", false}});
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {stopped_ = true;});
+    for (int seconds : schedule) {
+      QTimer::singleShot(seconds * 1000, this, [this, seconds]() {
+        if (!stopped_) {capture(seconds);}
+      });
+    }
+    RCLCPP_WARN(logger_, "Optional render diagnostics enabled in %s; synchronous capture can affect timing",
+      output_.path().toUtf8().constData());
+  }
+
+private:
+  QJsonObject observe(int seconds) const
+  {
+    QJsonObject value{{"scheduled_seconds", seconds},
+      {"elapsed_ms", static_cast<double>(started_.elapsed())},
+      {"frame", diagnostic_geometry(&frame_)},
+      {"central", diagnostic_geometry(frame_.centralWidget())}};
+    auto * render = frame_.getRenderWindow();
+    value["render_qwindow"] = render == nullptr ? QJsonObject{{"present", false}} :
+      QJsonObject{{"present", true}, {"geometry", diagnostic_rect(render->geometry())},
+      {"visible", render->isVisible()}, {"exposed", render->isExposed()},
+      {"device_pixel_ratio", render->devicePixelRatio()},
+      {"ogre_viewport_present", rviz_rendering::RenderWindowOgreAdapter::getOgreViewport(render) != nullptr}};
+    if (render != nullptr) {
+      auto qwindow = value["render_qwindow"].toObject();
+      // QWindow::winId creates a native surface when absent. Do not let a
+      // diagnostic recreate a surface: read the ID only for an existing handle.
+      qwindow["native_handle_present"] = render->handle() != nullptr;
+      if (render->handle() != nullptr) {
+        qwindow["xid"] = QStringLiteral("0x") + QString::number(static_cast<qulonglong>(render->winId()), 16);
+      }
+      value["render_qwindow"] = qwindow;
+      auto * viewport = rviz_rendering::RenderWindowOgreAdapter::getOgreViewport(render);
+      if (viewport != nullptr && viewport->getTarget() != nullptr) {
+        const auto background = viewport->getBackgroundColour();
+        QJsonObject dimensions{
+          {"relative_left_top_width_height", QJsonArray{
+            viewport->getLeft(), viewport->getTop(), viewport->getWidth(), viewport->getHeight()}},
+          {"actual_left_top_width_height", QJsonArray{
+            viewport->getActualLeft(), viewport->getActualTop(),
+            viewport->getActualWidth(), viewport->getActualHeight()}},
+          {"dimensions_updated", viewport->_isUpdated()},
+          {"clear_every_frame", viewport->getClearEveryFrame()},
+          {"clear_buffers", static_cast<int>(viewport->getClearBuffers())},
+          {"background_rgba", QJsonArray{background.r, background.g, background.b, background.a}}};
+        const auto * camera = viewport->getCamera();
+        if (camera != nullptr) {
+          dimensions["camera_name"] = QString::fromStdString(camera->getName());
+          dimensions["camera_aspect_ratio"] = static_cast<double>(camera->getAspectRatio());
+          dimensions["camera_auto_aspect_ratio"] = camera->getAutoAspectRatio();
+        }
+        value["ogre_viewport"] = dimensions;
+        auto * target = viewport->getTarget();
+        QJsonObject ogre{{"name", QString::fromStdString(target->getName())},
+          {"width", static_cast<int>(target->getWidth())}, {"height", static_cast<int>(target->getHeight())},
+          {"active", target->isActive()}, {"auto_updated", target->isAutoUpdated()}};
+        // Humble's Ogre 1.12.1 GLXWindow exposes WINDOW as an X11 Window
+        // (unsigned long). It normally is a CHILD of the Qt render window,
+        // because RViz passes parentWindowHandle; different IDs are expected.
+        unsigned long native_window = 0;
+        try {
+          target->getCustomAttribute("WINDOW", &native_window);
+          ogre["window_xid"] = QStringLiteral("0x") + QString::number(static_cast<qulonglong>(native_window), 16);
+          ogre["window_xid_available"] = native_window != 0;
+        } catch (const std::exception & error) {
+          ogre["window_xid_available"] = false;
+          ogre["window_xid_error"] = QString::fromUtf8(error.what());
+        }
+        value["ogre_target"] = ogre;
+      }
+    }
+    QJsonArray docks;
+    for (auto * dock : frame_.findChildren<QDockWidget *>()) {
+      auto item = diagnostic_geometry(dock); item["title"] = dock->windowTitle();
+      item["floating"] = dock->isFloating(); docks.append(item);
+    }
+    value["docks"] = docks;
+    return value;
+  }
+
+  QJsonObject capture_qt(const QString & basename)
+  {
+    auto * handle = frame_.windowHandle();
+    QScreen * screen = handle != nullptr ? handle->screen() : nullptr;
+    if (screen == nullptr || handle->handle() == nullptr) {
+      throw std::runtime_error("Owned frame native screen unavailable");
+    }
+    const WId client_id = handle->winId();
+    const QString path = output_.new_file(basename);
+    QElapsedTimer cost; cost.start();
+    const QPixmap pixels = screen->grabWindow(client_id);
+    const auto grab_ms = cost.elapsed();
+    cost.restart();
+    if (pixels.isNull() || !pixels.save(path, "PNG")) {
+      throw std::runtime_error("Qt owned-window capture failed");
+    }
+    if (frame_.windowHandle() != handle || handle->handle() == nullptr || handle->winId() != client_id) {
+      throw std::runtime_error("Owned Qt native client changed while captured");
+    }
+    return {{"file", path}, {"grab_ms", static_cast<double>(grab_ms)},
+      {"png_write_ms", static_cast<double>(cost.elapsed())},
+      {"pixel_width", pixels.width()}, {"pixel_height", pixels.height()},
+      {"device_pixel_ratio", pixels.devicePixelRatio()},
+      {"pid", static_cast<double>(QCoreApplication::applicationPid())},
+      {"client_xid", QStringLiteral("0x") + QString::number(static_cast<qulonglong>(client_id), 16)},
+      {"capture_method", "in_process_qscreen_grabWindow_owned_client"}};
+  }
+
+  void capture_later(int seconds, const QString & phase)
+  {
+    if (stopped_) {return;}
+    QElapsedTimer total; total.start();
+    QJsonObject value;
+    try {
+      value = observe(seconds);
+      value["requested_delay_after_initial_capture_ms"] = 1000;
+      value["qt_later"] = capture_qt(phase + QStringLiteral("_qt_later.png"));
+      value["after"] = observe(seconds);
+      value["capture_status"] = "CAPTURED_REQUIRES_VISUAL_REVIEW";
+    } catch (const std::exception & error) {
+      stopped_ = true; value["capture_status"] = "FAILED";
+      value["error"] = QString::fromUtf8(error.what());
+    } catch (...) {
+      stopped_ = true; value["capture_status"] = "FAILED";
+      value["error"] = "Unknown later screenshot exception";
+    }
+    value["elapsed_before_result_write_ms"] = static_cast<double>(total.elapsed());
+    try {
+      output_.write_json(phase + QStringLiteral("_later.json"), value);
+      RCLCPP_WARN(logger_, "Render diagnostic %s later capture completed in %.3f ms including result write",
+        phase.toUtf8().constData(), total.nsecsElapsed()/1.e6);
+    } catch (const std::exception & error) {
+      stopped_ = true;
+      RCLCPP_WARN(logger_, "Cannot save later render diagnostic: %s", error.what());
+    }
+  }
+
+  void capture(int seconds)
+  {
+    const QString phase = QStringLiteral("phase_%1").arg(seconds, 2, 10, QLatin1Char('0'));
+    QJsonObject value;
+    QElapsedTimer total; total.start();
+    try {
+      value = observe(seconds);
+      output_.write_json(phase + QStringLiteral("_before.json"), value);
+      value["before_json_write_ms"] = static_cast<double>(total.elapsed());
+      auto * render = frame_.getRenderWindow();
+      if (render == nullptr || rviz_rendering::RenderWindowOgreAdapter::getOgreViewport(render) == nullptr) {
+        throw std::runtime_error("Native render window or initialized Ogre viewport unavailable");
+      }
+      value["qt_before_ogre"] = capture_qt(phase + QStringLiteral("_qt_before_ogre.png"));
+      value["before_ogre"] = observe(seconds);
+      const QString ogre_path = output_.new_file(phase + QStringLiteral("_ogre.png"));
+      QElapsedTimer cost; cost.start();
+      render->captureScreenShot(ogre_path.toStdString());
+      value["ogre_capture_ms"] = static_cast<double>(cost.elapsed());
+      value["ogre_file"] = ogre_path;
+      if (QFileInfo(ogre_path).size() <= 0) {throw std::runtime_error("Ogre screenshot is empty");}
+      value["after_ogre"] = observe(seconds);
+      value["qt_after_ogre"] = capture_qt(phase + QStringLiteral("_qt_after_ogre.png"));
+      value["capture_status"] = "CAPTURED_REQUIRES_VISUAL_REVIEW";
+      value["after"] = observe(seconds);
+      // Return to the normal event loop before observing a later presented
+      // frame. No processEvents(), renderNow(), forced update, or buffer swap.
+      QTimer::singleShot(1000, this, [this, seconds, phase]() {capture_later(seconds, phase);});
+    } catch (const std::exception & error) {
+      stopped_ = true;
+      value["capture_status"] = "FAILED";
+      value["error"] = QString::fromUtf8(error.what());
+      RCLCPP_WARN(logger_, "Render diagnostic %s failed: %s", phase.toUtf8().constData(), error.what());
+    } catch (...) {
+      stopped_ = true; value["capture_status"] = "FAILED";
+      value["error"] = "Unknown screenshot exception";
+      RCLCPP_WARN(logger_, "Render diagnostic %s failed with unknown exception", phase.toUtf8().constData());
+    }
+    value["elapsed_before_result_write_ms"] = static_cast<double>(total.elapsed());
+    try {
+      output_.write_json(phase + QStringLiteral(".json"), value);
+      RCLCPP_WARN(logger_, "Render diagnostic %s completed in %.3f ms including result write",
+        phase.toUtf8().constData(), total.nsecsElapsed()/1.e6);
+    } catch (const std::exception & error) {
+      stopped_ = true;
+      RCLCPP_WARN(logger_, "Cannot save render diagnostic result: %s", error.what());
+    }
+  }
+
+  rviz_common::VisualizationFrame & frame_;
+  wc_bringup::render_diagnostics::OutputDirectory output_;
+  rclcpp::Logger logger_;
+  QElapsedTimer started_;
+  bool stopped_ = false;
+};
+
+void maybe_start_render_diagnostics(rviz_common::VisualizationFrame & frame,
+  const QStringList & arguments, const rclcpp::Logger & logger)
+{
+  if (!wc_bringup::render_diagnostics::enabled(qgetenv("WC_MAPPING_RENDER_DIAGNOSTICS"))) {return;}
+  try {
+    const auto schedule = wc_bringup::render_diagnostics::capture_schedule(
+      qgetenv("WC_MAPPING_RENDER_DIAGNOSTICS_DELAY_S"));
+    new RenderDiagnostics(frame, wc_bringup::teleop_session_from_arguments(arguments), logger, schedule);
+  } catch (const std::exception & error) {
+    RCLCPP_WARN(logger, "Optional render diagnostics refused: %s", error.what());
+  }
+}
+
+void fit_initial_window(rviz_common::VisualizationFrame & frame, const rclcpp::Logger & logger)
+{
+  QScreen * screen = frame.windowHandle() != nullptr ? frame.windowHandle()->screen() : nullptr;
+  if (screen == nullptr) {screen = QGuiApplication::primaryScreen();}
+  if (screen == nullptr) {return;}
+  // availableGeometry excludes desktop panels/taskbars. Account for the native
+  // window decorations as well: QWidget::resize controls the client area only.
+  const QRect available = screen->availableGeometry().adjusted(12, 12, -12, -12);
+  const int border_width = std::max(0, frame.frameGeometry().width()-frame.width());
+  const int border_height = std::max(0, frame.frameGeometry().height()-frame.height());
+  const QSize target(std::max(1, std::min(1400, available.width()-border_width)),
+    std::max(1, std::min(900, available.height()-border_height)));
+  if (frame.layout() != nullptr) {frame.layout()->activate();}
+  frame.resize(target);
+  // For a top-level window QWidget::move places its frame (including titlebar).
+  frame.move(available.left()+std::max(0, (available.width()-frame.frameGeometry().width())/2),
+    available.top()+std::max(0, (available.height()-frame.frameGeometry().height())/2));
+  const QSize central = frame.centralWidget() != nullptr ? frame.centralWidget()->size() : QSize();
+  const QRect actual = frame.frameGeometry();
+  RCLCPP_INFO(logger, "Initial native layout: available=%dx%d, client=%dx%d, frame=%dx%d, central=%dx%d",
+    available.width(), available.height(), frame.width(), frame.height(), actual.width(), actual.height(),
+    central.width(), central.height());
+  if (!available.contains(actual)) {
+    // Preserve any unknown user panel's minimum size; do not clip its controls
+    // or silently replace the original RViz/OpenGL rendering widget.
+    RCLCPP_WARN(logger, "Native panel minimum sizes exceed the available desktop; adjust optional panels in Panels menu");
+  }
+}
+
+void arrange_initial_docks(rviz_common::VisualizationFrame & frame, QDockWidget & teleop)
+{
+  QDockWidget * displays = nullptr;
+  QDockWidget * views = nullptr;
+  QDockWidget * tools = nullptr;
+  QDockWidget * cameras = nullptr;
+  // Match only names declared by this application's RViz configuration. Do
+  // not redock, hide, resize or rename additional user/plugin panels.
+  for (auto * dock : frame.findChildren<QDockWidget *>()) {
+    if (dock->windowTitle() == QStringLiteral("Displays")) {displays = dock;}
+    else if (dock->windowTitle() == QStringLiteral("Views")) {views = dock;}
+    else if (dock->windowTitle() == QStringLiteral("Tool Properties")) {tools = dock;}
+    else if (dock->windowTitle() == QStringLiteral("四路实时摄像头")) {cameras = dock;}
+  }
+  frame.setDockOptions(frame.dockOptions() | QMainWindow::AllowTabbedDocks);
+  if (displays != nullptr) {
+    displays->setFloating(false);
+    frame.addDockWidget(Qt::LeftDockWidgetArea, displays);
+    for (auto * secondary : {views, tools}) {
+      if (secondary != nullptr) {
+        secondary->setFloating(false);
+        frame.addDockWidget(Qt::LeftDockWidgetArea, secondary);
+        frame.tabifyDockWidget(displays, secondary);
+      }
+    }
+    displays->show(); displays->raise();
+  }
+  if (cameras != nullptr) {
+    cameras->setFloating(false);
+    frame.addDockWidget(Qt::RightDockWidgetArea, cameras);
+    cameras->show();
+  }
+  teleop.setFloating(false);
+  frame.addDockWidget(Qt::BottomDockWidgetArea, &teleop);
+  frame.setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+  frame.setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
+  teleop.show();
+  QList<QDockWidget *> side_docks;
+  QList<int> widths;
+  if (displays != nullptr) {side_docks.append(displays); widths.append(280);}
+  if (cameras != nullptr) {side_docks.append(cameras); widths.append(500);}
+  if (!side_docks.isEmpty()) {frame.resizeDocks(side_docks, widths, Qt::Horizontal);}
+  frame.resizeDocks({&teleop}, {210}, Qt::Vertical);
+}
+
+void connect_logging(const rclcpp::Logger & logger)
+{
+  rviz_common::set_logging_handlers(
+    [logger](const std::string & message, const std::string &, size_t) {
+      RCLCPP_DEBUG(logger, "%s", message.c_str());
+    },
+    [logger](const std::string & message, const std::string &, size_t) {
+      RCLCPP_INFO(logger, "%s", message.c_str());
+    },
+    [logger](const std::string & message, const std::string &, size_t) {
+      RCLCPP_WARN(logger, "%s", message.c_str());
+    },
+    [logger](const std::string & message, const std::string &, size_t) {
+      RCLCPP_ERROR(logger, "%s", message.c_str());
+    });
+}
+
+void log_renderer_identity(const rclcpp::Logger & logger)
+{
+  // These public getters read Ogre's initialized capabilities cache. Do not
+  // select a context, issue GL calls, or infer the device from environment flags.
+  auto * root = Ogre::Root::getSingletonPtr();
+  auto * system = root != nullptr ? root->getRenderSystem() : nullptr;
+  const auto * capabilities = system != nullptr ? system->getCapabilities() : nullptr;
+  if (capabilities == nullptr) {
+    RCLCPP_WARN(logger, "Initialized Ogre renderer identity unavailable");
+    return;
+  }
+  RCLCPP_INFO(logger, "Actual Ogre renderer: device=%s, vendor_category=%s, parsed_GL_version=%s "
+    "(GL version parsed by Ogre; not the Mesa/NVIDIA package version)",
+    capabilities->getDeviceName().c_str(),
+    Ogre::RenderSystemCapabilities::vendorToString(capabilities->getVendor()).c_str(),
+    capabilities->getDriverVersion().toString().c_str());
+}
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  const auto logger = rclcpp::get_logger("mapping_rviz");
+  try {
+    // Qt consumes only its arguments; native RViz receives the original ROS
+    // remappings as well as -d, -f and the other standard RViz options.
+    auto qt_arguments = rclcpp::remove_ros_arguments(argc, argv);
+    std::vector<char *> qt_argv;
+    qt_argv.reserve(qt_arguments.size() + 1);
+    for (auto & argument : qt_arguments) {
+      qt_argv.push_back(&argument[0]);
+    }
+    int qt_argc = static_cast<int>(qt_argv.size());
+    qt_argv.push_back(nullptr);
+    QApplication application(qt_argc, qt_argv.data());
+    connect_logging(logger);
+
+    rviz_common::VisualizerApp native_rviz(
+      std::make_unique<rviz_common::ros_integration::RosClientAbstraction>());
+    native_rviz.setApp(&application);
+    if (!native_rviz.init(argc, argv)) {
+      return 1;
+    }
+    log_renderer_identity(logger);
+
+    // VisualizerApp deliberately keeps its frame pointer private. Query the
+    // public Qt widget tree instead of modifying RViz or relying on its layout.
+    rviz_common::VisualizationFrame * frame = nullptr;
+    for (QWidget * widget : QApplication::topLevelWidgets()) {
+      if (auto * candidate = qobject_cast<rviz_common::VisualizationFrame *>(widget)) {
+        if (frame != nullptr) {
+          RCLCPP_ERROR(logger, "Multiple native RViz frames; close policy not installed");
+          return 1;
+        }
+        frame = candidate;
+      }
+    }
+    if (frame == nullptr) {
+      RCLCPP_ERROR(logger, "Native RViz frame unavailable; close policy not installed");
+      return 1;
+    }
+
+    // Stack lifetime removes the filter before VisualizerApp destroys its frame.
+    SessionViewCloseFilter close_filter(*frame);
+    QStringList original_qt_arguments;
+    for (const auto & argument : qt_arguments) {
+      original_qt_arguments.append(QString::fromStdString(argument));
+    }
+    auto * teleop_dock = new QDockWidget(QStringLiteral("WASD / 手推建图"), frame);
+    teleop_dock->setObjectName(QStringLiteral("mapping_teleop_dock"));
+    auto * bottom = new QWidget(teleop_dock);
+    auto * bottom_layout = new QVBoxLayout(bottom); bottom_layout->setContentsMargins(0, 0, 0, 0);
+    bottom_layout->addWidget(new wc_bringup::MappingHealthPanel(original_qt_arguments, bottom));
+    bottom_layout->addWidget(new wc_bringup::MappingTeleopPanel(
+      wc_bringup::teleop_session_from_arguments(original_qt_arguments), frame, bottom));
+    teleop_dock->setWidget(bottom);
+    frame->addDockWidget(Qt::BottomDockWidgetArea, teleop_dock);
+    arrange_initial_docks(*frame, *teleop_dock);
+    // Let native dock/tab and font-metric layout requests settle, then perform
+    // two bounded startup fits. There is no persistent resize policy that can
+    // fight a user's later window size or panel changes.
+    QTimer::singleShot(0, frame, [frame, logger]() {fit_initial_window(*frame, logger);});
+    QTimer::singleShot(250, frame, [frame, logger]() {fit_initial_window(*frame, logger);});
+    maybe_start_render_diagnostics(*frame, original_qt_arguments, logger);
+    RCLCPP_INFO(logger, "Native RViz ready; closing discards temporary view edits. "
+      "The mapping application owns map saving.");
+    return application.exec();
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR(logger, "RViz initialization failed: %s", error.what());
+    return 1;
+  }
+}

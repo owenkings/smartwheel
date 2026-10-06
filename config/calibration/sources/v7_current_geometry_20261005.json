@@ -1,0 +1,521 @@
+{
+  "schema": "wc_geometry_confirmation_v1",
+  "schema_version": 1,
+  "date": "2026-10-05",
+  "operator": "USER",
+  "assembly_revision": "V7_20261002",
+  "source": "USER_CURRENT_SESSION_CONFIRMATIONS",
+  "raw_document": {
+    "snapshot_path": "config/calibration/sources/measurement_record_20261005.md",
+    "sha256": "634ddbe0e61b9d14d6315fe1cf3811102ac32c438124cd816d3117993c4faa96"
+  },
+  "latest_confirmations": {
+    "both_boxes_pitch_level_by_spirit_level": true,
+    "outer_front_top_corner_spacing_mm": 623,
+    "C4_H_reference": "CENTER_OF_OUTER_TIRE_SIDE_FACE",
+    "outer_tire_span_mm": 700,
+    "C4_inward_offset_mm": 38.5,
+    "closure_mm": 623,
+    "boxes_parallel": true,
+    "left_and_right_corner_heights_equal": true,
+    "left_and_right_corner_forward_offsets_equal": true,
+    "left_lid": "V2 fully closed, lock in place",
+    "mounts_firm": true,
+    "imu_native_axes": "X forward, Y left, Z up",
+    "ultrasonic_capture": "SKIP_FOUR_CHANNELS_FOR_CURRENT_CAPTURE"
+  },
+  "layout_override": {
+    "base_source_id": "v7_installation_20261002",
+    "base_sha256": "b2b63b7b2c59c8dc0c48755b1cf4f17baee684b14f384961c09d827e136ec46e",
+    "type": "SYMMETRIC_LATERAL_TRANSLATION",
+    "old_corner_spacing_mm": 601.2,
+    "new_corner_spacing_mm": 623,
+    "delta_M_mm": {
+      "left": [
+        0,
+        10.9,
+        0
+      ],
+      "right": [
+        0,
+        -10.9,
+        0
+      ]
+    },
+    "same_box_geometry_preserved": true,
+    "superseded_current_measurement_ids": [
+      "clamp_seat_faces",
+      "clamp_plate_faces",
+      "clamp_center_spacing",
+      "inner_box_wall_gap",
+      "lidar_window_spacing",
+      "nominal_lidar_face_spacing"
+    ],
+    "current_inner_wall_gap_mm": 415,
+    "current_lidar_face_spacing_mm": 457.5
+  },
+  "current_mechanical_geometry": {
+    "cad_to_M": {
+      "left": [
+        [
+          0,
+          -1,
+          0,
+          50
+        ],
+        [
+          1,
+          0,
+          0,
+          128.6
+        ],
+        [
+          0,
+          0,
+          1,
+          13.5
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "right": [
+        [
+          0,
+          -1,
+          0,
+          50
+        ],
+        [
+          1,
+          0,
+          0,
+          -390.4
+        ],
+        [
+          0,
+          0,
+          1,
+          13.5
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ]
+    },
+    "reference_points": [
+      {
+        "sensor_frame": "lidar_left",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          228.75,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          38.5,
+          65
+        ],
+        "envelope_center_mm": [
+          29.5,
+          228.75,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "lidar_right",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -228.75,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          38.5,
+          65
+        ],
+        "envelope_center_mm": [
+          29.5,
+          -228.75,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "camera_left_front_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          281.5,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          31,
+          41,
+          41
+        ],
+        "envelope_center_mm": [
+          34.5,
+          281.5,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "camera_right_front_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -281.5,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          31,
+          41,
+          41
+        ],
+        "envelope_center_mm": [
+          34.5,
+          -281.5,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "camera_left_side_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          -22.5,
+          309.5,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          31,
+          41
+        ],
+        "envelope_center_mm": [
+          -22.5,
+          294.0,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          0,
+          1,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "camera_right_side_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          -22.5,
+          -309.5,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          31,
+          41
+        ],
+        "envelope_center_mm": [
+          -22.5,
+          -294.0,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          0,
+          -1,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "double_hole_left_front_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          259.5,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          18,
+          61.3,
+          45.3
+        ],
+        "envelope_center_mm": [
+          41,
+          259.5,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "double_hole_right_front_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -259.5,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          18,
+          61.3,
+          45.3
+        ],
+        "envelope_center_mm": [
+          41,
+          -259.5,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "double_hole_left_side_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          0,
+          309.5,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          61.3,
+          18,
+          45.3
+        ],
+        "envelope_center_mm": [
+          0,
+          300.5,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          0,
+          1,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "double_hole_right_side_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          0,
+          -309.5,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          61.3,
+          18,
+          45.3
+        ],
+        "envelope_center_mm": [
+          0,
+          -300.5,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          0,
+          -1,
+          0
+        ]
+      },
+      {
+        "sensor_frame": "imu_native",
+        "point_kind": "CAD_BOTTOM_FACE_CENTER",
+        "position_mm": [
+          -2.5,
+          279.5,
+          167.8
+        ],
+        "envelope_dimensions_mm": [
+          46,
+          59.5,
+          11.7
+        ],
+        "envelope_center_mm": [
+          -2.5,
+          279.5,
+          173.65
+        ],
+        "nominal_view_direction_M": [
+          0,
+          0,
+          1
+        ]
+      }
+    ],
+    "auxiliary_points": [
+      {
+        "sensor_frame": "imu_native",
+        "point_kind": "CAD_PACKAGE_CENTER",
+        "position_mm": [
+          -7.77,
+          279.83,
+          175.84
+        ]
+      }
+    ]
+  },
+  "current_transforms": {
+    "T_axle_M": [
+      [
+        1,
+        0,
+        0,
+        0.273
+      ],
+      [
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0.4582
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "R_M_imu": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "t_M_imu": null
+  },
+  "wheel_geometry_m": {
+    "radius": 0.185,
+    "track_width": 0.61
+  },
+  "historical_measurements": [
+    {
+      "id": "clamp_seat_faces",
+      "value_mm": 479,
+      "status": "USER_REPORTED_MEASUREMENT",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 80,
+          "line_end": 80
+        }
+      ],
+      "note": "朝座椅面的卷尺读数。"
+    },
+    {
+      "id": "clamp_plate_faces",
+      "value_mm": 489,
+      "status": "USER_REPORTED_MEASUREMENT",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 81,
+          "line_end": 81
+        }
+      ],
+      "note": "贴铁片面的卷尺读数。"
+    },
+    {
+      "id": "clamp_center_spacing",
+      "value_mm": 492.2,
+      "status": "DERIVED_NOMINAL",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 86,
+          "line_end": 86
+        }
+      ],
+      "note": "489+3.2；用于机械初值，不进一步细调。"
+    },
+    {
+      "id": "inner_box_wall_gap",
+      "value_mm": 394,
+      "status": "USER_REPORTED_MEASUREMENT",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 102,
+          "line_end": 102
+        }
+      ],
+      "note": "仅一个读数，前后/上下平行度未知。"
+    },
+    {
+      "id": "lidar_window_spacing",
+      "value_mm": 436,
+      "status": "USER_REPORTED_MEASUREMENT",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 103,
+          "line_end": 103
+        }
+      ],
+      "note": "实测雷达窗中心距，非数据原点间距。"
+    },
+    {
+      "id": "nominal_lidar_face_spacing",
+      "value_mm": 435.7,
+      "status": "DERIVED_NOMINAL",
+      "evidence": [
+        {
+          "source_id": "v7_installation_20261002",
+          "line_start": 183,
+          "line_end": 183
+        }
+      ],
+      "note": "由机械参考点相减。"
+    }
+  ],
+  "note": "此确认记录含原始文档之后的最新用户声明，覆盖旧横向布局与俯仰待测项；原始文档逐字节保留。当前不创建雷达数据原点或IMU平移。"
+}
