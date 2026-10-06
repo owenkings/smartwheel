@@ -347,9 +347,9 @@
       "transformations": []
     },
     "docs/usb_storage.md": {
-      "sha256": "89d65f7f613192b070b4bb7a5d6aea01967ea694ec0559f888932fa87c269db9",
-      "bytes": 4104,
-      "source_sha256": "0cf84e7a4b61e928db4755f85868f82c7c7652b27f7f3b366b988b5b6ca77a74",
+      "sha256": "f98919238fe6cad76226ed8e6558b10ed7bd463597b8ad06cc2f8676054f429a",
+      "bytes": 4129,
+      "source_sha256": "4f2a27e6c4f153b906059800cb476b5a7f9487985729a10b8c5d1489983a6298",
       "transformations": [
         "mount_label"
       ]

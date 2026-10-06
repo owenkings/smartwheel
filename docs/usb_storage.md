@@ -12,7 +12,7 @@ U 盘未挂载、换成其他盘或会话中改变挂载身份时，程序报错
 | `data/calibration` | 点云对应点、外参候选及标定记录 |
 | `reports` | 历史测试、诊断、运行与构建报告 |
 | `maps` | 地图版本 |
-| `research_cache/wc_compare` | 本次从内存保留下来的研究中间结果 |
+| `research_cache/wc_compare_20261006.tar.gz` | 本次内存研究缓存的无损归档，可解包恢复 |
 | `migration_20261006` | 迁移清单、SHA-256、原位置删除记录及回退源码/Git |
 | `docs/history`、`handoffs`、`log` | 过往验收说明、交接记录和构建日志 |
 
