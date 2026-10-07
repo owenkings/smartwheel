@@ -109,6 +109,6 @@ def capture_destination(project_root, output_root=None, required_uuid=None):
         from .storage_policy import StoragePolicy
         policy = StoragePolicy(project_root)
         output = policy.resolve('data/experiments')
-        return output, (CaptureDestination(output, policy.required_uuid) if policy.enabled else None)
+        return output, policy.destination_guard(output)
     guard = CaptureDestination(output_root, required_uuid)
     return guard.output_root, guard

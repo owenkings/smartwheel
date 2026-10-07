@@ -1,13 +1,36 @@
 """Actual storage accounting with temporary files and simulated clocks/capacity."""
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import socket
+import stat
 from types import SimpleNamespace
 
 import pytest
 
 from wc_runtime import capture_storage as storage
+
+
+@contextmanager
+def owned_socket(endpoint):
+    """Remove only this fixture's bound socket, after its descriptor is closed."""
+    identity = None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
+            owner.bind(str(endpoint))
+            st = endpoint.lstat()
+            identity = (st.st_dev, st.st_ino)
+            yield owner
+    finally:
+        if identity is not None:
+            try:
+                st = endpoint.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                assert stat.S_ISSOCK(st.st_mode) and (st.st_dev, st.st_ino) == identity, 'fixture socket was replaced; preserve it'
+                endpoint.unlink()
 
 
 @pytest.fixture
@@ -236,14 +259,22 @@ def test_disappearing_atomic_entry_is_counted_as_a_race_not_read_as_content(capt
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='real AF_UNIX filesystem type requires target POSIX')
+def test_owned_socket_is_removed_when_test_body_raises(capture_paths):
+    endpoint = capture_paths[0] / 'failed-body.sock'
+    with pytest.raises(RuntimeError, match='fixture assertion failed'):
+        with owned_socket(endpoint):
+            raise RuntimeError('fixture assertion failed')
+    assert not endpoint.exists()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='real AF_UNIX filesystem type requires target POSIX')
 @pytest.mark.parametrize('memory', [True, False])
 def test_live_manual_socket_has_no_archive_bytes_but_must_be_removed_before_closing(capture_paths, monkeypatch, memory):
     staged, _, _ = capture_paths
     write(staged/'raw', 20)
     endpoint = staged/'manual.sock'
     value, _, _ = monitor(capture_paths, monkeypatch, memory=memory)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
-        owner.bind(str(endpoint))
+    with owned_socket(endpoint):
         report = value.check()
         assert report['ram_bytes'] == (20 if memory else 0)
         assert report['manual_socket_count'] == (1 if memory else 0)
@@ -251,7 +282,6 @@ def test_live_manual_socket_has_no_archive_bytes_but_must_be_removed_before_clos
         with pytest.raises(RuntimeError, match='CAPTURE_STORAGE_MEASUREMENT_FAILED.*manual socket remains'):
             value.check(closing=True)
         assert value.last_report['status'] == 'UNKNOWN'
-    endpoint.unlink()
     assert value.check(closing=True)['status'] == 'AVAILABLE'
 
 
@@ -263,8 +293,7 @@ def test_no_other_socket_is_ignored_as_capture_data(capture_paths, monkeypatch, 
                 'lidar': sources/'left/manual.sock'}[location]
     endpoint.parent.mkdir(parents=True, exist_ok=True)
     value, _, _ = monitor(capture_paths, monkeypatch)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
-        owner.bind(str(endpoint))
+    with owned_socket(endpoint):
         with pytest.raises(RuntimeError, match='CAPTURE_STORAGE_MEASUREMENT_FAILED.*nonregular'):
             value.check()
 

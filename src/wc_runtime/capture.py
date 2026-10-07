@@ -293,7 +293,10 @@ def source_commands(root, run, directory, session, profile, *, manual_drive=Fals
             '--raw-output', directory/'sources/wheel_feedback.jsonl',
             '--summary-path', directory/'sources/wheel_summary.json',
             '--require-recorder', '--close-timeout-s', '30'])
-        commands['manual_ui'] = ros_command(['ros2', 'run', 'wc_bringup', 'manual_capture_ui',
+        # Execute the same installed binary checked by preflight. The component
+        # owner delivers SIGINT to its direct child; ros2 run would swallow that
+        # signal while waiting for a UI child which never received it.
+        commands['manual_ui'] = ros_command([root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui',
             '--session-root', directory, '--session-id', session])
     if profile in CAMERA_PROFILES:
         from wc_cameras.config import ROLES
@@ -730,16 +733,16 @@ def finalize_capture(directory, run, manifest, hashes, results, failures, stop_r
     return 0 if committed and prospective['recording_complete'] else 2
 
 
-def snapshot(root, directory, *, profile='all_sensors'):
+def snapshot(root, directory, *, profile='all_sensors', storage_policy=None):
     selection = source_selection(profile)
     cfg = directory/'configuration'
     cfg.mkdir()
     paths = {'runtime_config.json': 'config/mapping_live.json', 'hardware_setup.json': 'config/hardware_setup.json',
              'wheel_feedback.json': 'config/wheel_feedback_current.json'}
-    if (root/'config/storage.json').is_file(): paths['storage.json'] = 'config/storage.json'
     if profile in CAMERA_PROFILES: paths['cameras.json'] = 'config/cameras.json'
     if profile == 'all_sensors': paths['ultrasonic.json'] = 'config/ultrasonic_capture.json'
-    hashes = {}
+    from .storage_policy import StoragePolicy
+    hashes = (storage_policy or StoragePolicy(root)).snapshot_configuration(cfg)
     atomic_json(cfg/'source_selection.json', dict(profile=profile, **selection))
     hashes['configuration/source_selection.json'] = digest(cfg/'source_selection.json')
     from .capture_support import data_capabilities
@@ -864,7 +867,8 @@ def run_capture(args):
         (directory/'ready').mkdir()
         from .capture_support import progress
         progress(directory,'PREPARING')
-        hashes = snapshot(ROOT, directory, profile=args.profile)
+        hashes = snapshot(ROOT, directory, profile=args.profile,
+                          storage_policy=getattr(destination_guard, 'storage_policy', None))
         from .capture_contract import build_capture_contract, read_source_readiness
         contract = build_capture_contract(directory/'configuration',args.profile,args.session,
                                            imu_sensor_id='H30-'+H30_SERIAL)

@@ -1,8 +1,9 @@
 """Shared data location policy; executable code and device locks stay local.
 
 Historical project-relative references are resolved, never rewritten in frozen
-archives. A configured removable volume is mandatory; there is no local fallback.
+archives. A machine-local override selects the destination. Configured destinations never fall back.
 """
+import hashlib
 import json
 from pathlib import Path
 
@@ -31,41 +32,106 @@ class StoragePolicy:
         self.mount_point = None
         self.required_uuid = None
         self.original_project_root = self.project_root
-        configuration = _ordinary(self.project_root/'config/storage.json')
+        self.backend = 'legacy'
+        self.configuration_files = {}
+        self.configuration_path = None
+        self.configuration_value = None
+        base = _ordinary(self.project_root/'config/storage.json')
+        local = _ordinary(self.project_root/'config/storage.local.json')
+        configuration = local if local.exists() else base
+        # Read both original byte streams once. Only the selected file is parsed.
+        for path in (base, local):
+            if path.exists():
+                if not path.is_file() or path.stat().st_size > 16384:
+                    raise ValueError('STORAGE_CONFIG_INVALID: expected a small ordinary JSON file')
+                self.configuration_files[path.name] = path.read_bytes()
         if not configuration.exists():
             if self.project_root == ORIN_PROJECT:
-                raise ValueError('STORAGE_CONFIG_MISSING: configured Orin must not fall back to its internal disk')
+                raise ValueError('STORAGE_CONFIG_MISSING: explicit storage configuration is required')
             return  # Legacy checkouts and synthetic tests keep their old contract.
-        if not configuration.is_file() or configuration.stat().st_size > 16384:
-            raise ValueError('STORAGE_CONFIG_INVALID: expected a small ordinary JSON file')
-        value = json.loads(configuration.read_text(encoding='utf-8'))
-        if (not isinstance(value, dict) or type(value.get('schema_version')) is not int
-                or value['schema_version'] != 1 or type(value.get('enabled')) is not bool):
-            raise ValueError('STORAGE_CONFIG_INVALID: schema_version=1 and explicit enabled required')
-        if not value['enabled']:
-            return
+        self.configuration_path = configuration
+        value = json.loads(self.configuration_files[configuration.name].decode('utf-8'))
+        self.configuration_value = value
+        if not isinstance(value, dict) or type(value.get('schema_version')) is not int:
+            raise ValueError('STORAGE_CONFIG_INVALID: explicit schema_version required')
+        if value['schema_version'] == 1:
+            if type(value.get('enabled')) is not bool:
+                raise ValueError('STORAGE_CONFIG_INVALID: schema 1 requires explicit enabled')
+            if not value['enabled']:
+                return
+            self.backend = 'removable'
+        elif value['schema_version'] == 2:
+            if 'enabled' in value and value['enabled'] is not True:
+                raise ValueError('STORAGE_CONFIG_INVALID: schema 2 requires enabled=true when supplied')
+            self.backend = value.get('backend')
+            if self.backend not in ('directory', 'removable'):
+                raise ValueError('STORAGE_CONFIG_INVALID: directory or removable backend required')
+        else:
+            raise ValueError('STORAGE_CONFIG_INVALID: unsupported schema_version')
         if value.get('fallback_allowed') is not False:
-            raise ValueError('STORAGE_CONFIG_INVALID: removable storage must disable fallback')
-        self.archive_root = _ordinary(Path(value.get('archive_root', '')))
-        self.original_project_root = _ordinary(Path(value.get('original_project_root', str(self.project_root))))
-        mount = _ordinary(Path(value.get('mount_point', '')))
-        if not all(path.is_absolute() for path in (self.archive_root, self.original_project_root, mount)):
-            raise ValueError('STORAGE_CONFIG_INVALID: absolute roots are required')
-        if not self.archive_root.is_relative_to(mount) or self.archive_root == mount:
-            raise ValueError('STORAGE_CONFIG_INVALID: archive root must be a child of the mount')
+            raise ValueError('STORAGE_CONFIG_INVALID: configured storage must disable fallback')
+        def configured_path(field, default=None):
+            raw = value.get(field, default)
+            if not isinstance(raw, str) or not raw:
+                raise ValueError('STORAGE_CONFIG_INVALID: nonempty '+field+' required')
+            path = _ordinary(Path(raw).expanduser())
+            if not path.is_absolute():
+                raise ValueError('STORAGE_CONFIG_INVALID: absolute or home-relative roots required')
+            return path
+        self.archive_root = configured_path('archive_root')
+        self.original_project_root = configured_path('original_project_root', str(self.project_root))
         if self.archive_root.is_relative_to(self.project_root) or self.project_root.is_relative_to(self.archive_root):
             raise ValueError('STORAGE_CONFIG_INVALID: archive and code roots must be separate')
-        self.required_uuid = value.get('required_uuid')
-        self.mount_point = mount
+        if self.backend == 'removable':
+            mount = configured_path('mount_point')
+            if not self.archive_root.is_relative_to(mount) or self.archive_root == mount:
+                raise ValueError('STORAGE_CONFIG_INVALID: archive root must be a child of the mount')
+            self.required_uuid = value.get('required_uuid')
+            self.mount_point = mount
+        elif 'required_uuid' in value or 'mount_point' in value:
+            raise ValueError('STORAGE_CONFIG_INVALID: directory backend does not accept USB identity fields')
         self.enabled = True
+
+    def destination_guard(self, output_root):
+        if self.backend == 'removable':
+            from .capture_destination import CaptureDestination
+            guard = CaptureDestination(output_root, self.required_uuid)
+            if guard.mount_root != self.mount_point:
+                raise ValueError('STORAGE_CONFIG_INVALID: actual mount differs from configured mount')
+        elif self.backend == 'directory':
+            from .storage_directory import DirectoryDestination
+            guard = DirectoryDestination(output_root)
+        else:
+            return None
+        guard.storage_policy = self
+        return guard
+
+    def snapshot_configuration(self, directory):
+        """Write the selected original bytes and frozen base/local provenance."""
+        directory = Path(directory)
+        hashes = {}
+        if self.configuration_path is None:
+            return hashes
+        selected = self.configuration_files[self.configuration_path.name]
+        files = {'storage.json': selected}
+        for name, raw in self.configuration_files.items():
+            files['storage_local.json' if name == 'storage.local.json' else 'storage_base.json'] = raw
+        info = dict(schema_version=1, selected_file=self.configuration_path.name,
+            selection_policy='LOCAL_OVERRIDE_ELSE_BASE', backend=self.backend,
+            effective_sha256=hashlib.sha256(selected).hexdigest(),
+            original_files={name: hashlib.sha256(raw).hexdigest()
+                            for name, raw in self.configuration_files.items()})
+        files['storage_selection.json'] = (json.dumps(info, ensure_ascii=False, indent=2)+'\n').encode('utf-8')
+        for name, raw in files.items():
+            target = directory/name
+            with target.open('xb') as stream:
+                stream.write(raw)
+            hashes['configuration/'+name] = hashlib.sha256(raw).hexdigest()
+        return hashes
 
     def check(self):
         if self.enabled and self.guard is None:
-            from .capture_destination import CaptureDestination
-            guard = CaptureDestination(self.archive_root, self.required_uuid)
-            if guard.mount_root != self.mount_point:
-                raise ValueError('STORAGE_CONFIG_INVALID: actual mount differs from configured mount')
-            self.guard = guard
+            self.guard = self.destination_guard(self.archive_root)
         return self.guard.check() if self.guard is not None else {'status': 'LEGACY_PROJECT_STORAGE'}
 
     def _external(self, path):

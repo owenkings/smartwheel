@@ -1,4 +1,4 @@
-# Private XT SDK integration
+# XT SDK integration
 
 Upstream: https://github.com/XT-Toffuture/xtsdk_ros.git
 Pinned commit: `965d31ae726c44b47ad646666c3c5fa2a4d91bf4`.
@@ -21,7 +21,7 @@ Changes:
 
 Original same-port finding: upstream `communicationNet.cpp` binds `0.0.0.0:port`, sets `reuse_address(true)`, and passes UDP payloads to reassembly without checking `remote_ep`. Two identical copies cannot establish separate ownership of both streams. This patch permits the numeric port 7687 on two distinct local IPs, with source filtering. Root executed all four native target tests successfully: `xt_packet_test`, `xt_loopback_test`, `xt_hdr_bounds_test`, and `xt_shutdown_test`; the shutdown test also passed ten consecutive repetitions (`reports/builds/shutdown_repeat10.log`). These software tests do not establish optical isolation or physical scale.
 
-Root also completed real concurrent bags `static_20260911T141849Z` and `static_20260911T144022Z`, each containing 296 left and 296 right authoritative frames. Both recorded-data audits are `DATA_REVIEW_OK`. Actual readback identifies left `XTM60B00000000000012`, device `192.168.0.101` to receiver `192.168.0.100:7687`; right `XTM60B00000000000013`, device `192.168.1.101` to receiver `192.168.1.100:7687`. The source identities and epochs are distinct, with no raw-key collision in the audited recordings. This is actual same-port concurrent reception evidence for those endpoints, not evidence of absent optical interference, metric accuracy, physical mounting, or validated sample synchronization. See `reports/sensor_handoff.md` and `reports/live_static/`; the second session's component logs are archived in `reports/live_static/static_20260911T144022Z/` and show both drivers completed SDK cleanup and exited cleanly.
+Root also completed real concurrent bags `static_20260911T141849Z` and `static_20260911T144022Z`, each containing 296 left and 296 right authoritative frames. Both recorded-data audits are `DATA_REVIEW_OK`. The private recordings verified distinct identities. This public documentation substitutes example serials: left `XTM60B00000000000012`, device `192.168.0.101` to receiver `192.168.0.100:7687`; right `XTM60B00000000000013`, device `192.168.1.101` to receiver `192.168.1.100:7687`. The source identities and epochs are distinct, with no raw-key collision in the audited recordings. The private recordings provide same-port concurrent reception evidence for their original endpoints; the public example serials are not actual readback, not evidence of absent optical interference, metric accuracy, physical mounting, or validated sample synchronization. See `reports/sensor_handoff.md` and `reports/live_static/`; the second session's component logs are archived in `reports/live_static/static_20260911T144022Z/` and show both drivers completed SDK cleanup and exited cleanly.
 
 Build/test and live hardware execution are root-owned on Orin. `wc_xt_driver` defaults to disabled hardware and a read-only probe. Identity/endpoint mismatch refuses acquisition. A read-only probe never applies imaging setters. A managed live acquisition strictly parses all 46 xtcfg fields. The default `preserve_current` policy retains device imaging settings and applies the selected supported host filters; device setters require the explicit reviewed `apply_xtcfg` policy. The xtcfg input file remains unchanged; before/after readbacks, command ACKs and every field disposition are stored. `pclFilterOn` remains explicitly unsupported and causes a PARTIAL_XTCFG label, not a quality-test gate or an acquisition refusal.
 
@@ -54,4 +54,8 @@ These commands are for the verified Orin user/project only. They are documentati
 )
 ```
 
-The reproduction recipe above restores reviewed SDK source only. Before building this revision, also provide the ABI-matched filter runtime at the path and hashes declared in `xtsdk_filter_3d3db067.manifest.json`; the original `.so` is deliberately retained. CMake refuses a missing/mismatched new bundle.
+The reproduction recipe above restores reviewed SDK source only. This branch includes the two unchanged ABI-matched filter runtime binaries; verify the path and hashes declared in `xtsdk_filter_3d3db067.manifest.json`; the original `.so` is deliberately retained. CMake refuses a missing/mismatched new bundle.
+
+## Included filter runtime
+
+Only the fixed aarch64 and x86_64 filter libraries are vendored under `SDKs/xtsdk_filter_3d3db067/`. The rest of the SDK uses the clone recipe above. See the [bundle NOTICE](../SDKs/xtsdk_filter_3d3db067/NOTICE.md) for exact upstream ownership and hashes, and the [deployment guide](../docs/deployment.md) for ABI dependencies and a complete build.

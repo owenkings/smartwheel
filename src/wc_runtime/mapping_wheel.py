@@ -794,6 +794,7 @@ class RosOutput:
     def __init__(self):
         import rclpy
         from rclpy.context import Context
+        from rclpy.executors import SingleThreadedExecutor
         from rclpy.signals import SignalHandlerOptions
         from std_msgs.msg import String
         from nav_msgs.msg import Odometry
@@ -809,6 +810,9 @@ class RosOutput:
         self.odom = self.node.create_publisher(Odometry, '/wc_mapping/wheel/odom_preview', 20)
         self.preview = self.node.create_publisher(String, '/wc_mapping/wheel/preview_diagnostics', 20)
         self.manual = self.node.create_publisher(String, '/wc_mapping/wheel/manual_status', 10)
+        # This publisher owns a private context. The implicit global executor
+        # uses an uninitialized default context when discovery is not immediate.
+        self.executor = SingleThreadedExecutor(context=self.context)
 
     def publish(self, record, candidate):
         try:
@@ -825,13 +829,18 @@ class RosOutput:
         while self.raw.get_subscription_count() < 1:
             if cancelled() or time.monotonic() >= deadline:
                 raise FeedbackError('recording subscriber discovery timeout')
-            self.ros.spin_once(self.node, timeout_sec=.05)
+            self.ros.spin_once(self.node, executor=self.executor, timeout_sec=.05)
         return True
 
     def close(self):
-        self.node.destroy_node()
-        if self.context.ok():
-            self.ros.shutdown(context=self.context, uninstall_handlers=False)
+        try:
+            self.executor.shutdown(timeout_sec=1.0)
+        finally:
+            try:
+                self.node.destroy_node()
+            finally:
+                if self.context.ok():
+                    self.ros.shutdown(context=self.context, uninstall_handlers=False)
 
     def wait_for_recording_ack(self):
         from rclpy.duration import Duration
@@ -994,6 +1003,10 @@ def main(argv=None):
             raise FeedbackError(owner.failure)
     except Exception as error:
         result, failure = 1, str(error)
+        # Keep the actual failing call in wheel.log, rather than only a terse
+        # exception string such as "__enter__" in the final status.
+        import traceback
+        traceback.print_exc()
         if owner is not None:
             owner.fault(failure)
     finally:

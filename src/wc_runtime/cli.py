@@ -144,11 +144,13 @@ def driver_command(args, probe):
 
 def main(argv=None):
     values = list(sys.argv[1:] if argv is None else argv)
-    if values and values[0] in ('capture', 'compare'):
+    if values and values[0] in ('capture', 'compare', 'refine'):
         if values[0] == 'capture':
             from .capture import main as operation
-        else:
+        elif values[0] == 'compare':
             from .mapping_compare import main as operation
+        else:
+            from .mapping_refine import main as operation
         try:
             return operation(values[1:])
         except (OSError, ValueError, RuntimeError, KeyError) as exc:
@@ -156,6 +158,9 @@ def main(argv=None):
             return 2
     parser=argparse.ArgumentParser(description='Dual XT-M60 mapping project; stop affects only project processes, not vehicle motion.')
     sub=parser.add_subparsers(dest='command',required=True)
+    sub.add_parser('capture',help='Record selected original sources; capture --help for options')
+    sub.add_parser('compare',help='Replay controlled estimator/filter comparisons; compare --help')
+    sub.add_parser('refine',help='Offline validated motion calibration and gated geometry; refine --help')
     doctor=sub.add_parser('doctor',help='Read-only environment and configuration report')
     doctor.add_argument('--session-root', type=Path)
     doctor.add_argument('--verify-archive', action='store_true', help='Recompute source/index/bag and immutable file hashes')

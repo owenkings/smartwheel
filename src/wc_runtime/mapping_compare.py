@@ -346,6 +346,12 @@ def validate_comparison_rates(input_rates, native_rate):
         raise ValueError('native replay rate must be positive and not exceed any capped frontend cell or 10 Hz')
 
 
+def validate_native_wall_interval(interval):
+    """Bound wall-clock pacing independently of recorded-time sampling."""
+    if not math.isfinite(interval) or not .05 <= interval <= 10.:
+        raise ValueError('native wall interval must be finite and in [0.05,10] seconds')
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
@@ -370,6 +376,10 @@ def main(argv=None):
     parser.add_argument('--domain',type=int,default=89)
     parser.add_argument('--native-rate-hz',type=float,default=1.)
     parser.add_argument('--native-limit',type=int,default=0)
+    parser.add_argument('--native-wall-interval-s',type=float,default=1.,
+        help='Minimum wall-clock interval between native frames, [0.05,10] seconds; '
+             'each original-stamp Info acknowledgement is still required. '
+             'Does not change recorded timestamps or native sampling rate')
     args=parser.parse_args(argv)
     output=args.output.absolute(); source=args.dataset.absolute(); root=args.project_root.resolve(strict=True)
     # Keep the original syntax checks before aliases are resolved, so a
@@ -390,6 +400,7 @@ def main(argv=None):
     if args.source_limit<0 or args.native_limit<0:
         raise ValueError('invalid source limits')
     validate_comparison_rates(args.input_rate_hz,args.native_rate_hz)
+    validate_native_wall_interval(args.native_wall_interval_s)
     if args.truth_min_common_samples<1: raise ValueError('truth minimum common sample count must be positive')
     if any(len(values)!=len(set(values)) for values in (args.estimators,args.input_rate_hz,args.filter)):
         raise ValueError('duplicate experiment factor values')
@@ -421,7 +432,12 @@ def main(argv=None):
                    'destination':storage_policy.check()},
         'offline_geometry_initialization':runtime.get('offline_geometry_initialization'),
         'truth_coverage_policy':{'min_common_samples':args.truth_min_common_samples,'declared_before_evaluation':True},
-        'prefix_only':bool(args.source_limit),'cells':{},'native_map':{'status':'NOT_RUN'}}
+        'prefix_only':bool(args.source_limit),'cells':{},'native_map':{'status':'NOT_RUN'},
+        'native_replay_pacing':{'enabled':args.native_map,
+            'minimum_wall_interval_s':args.native_wall_interval_s,
+            'wait_for_each_original_stamp_info_ack':True,'frame_ack_timeout_s':30.,
+            'source_timestamps_changed':False,'source_sampling_changed':False,
+            'policy':'Publish the next selected frame only after the current original-stamp Info ACK and the wall interval'}}
     report['algorithm_hashes']={str(path.relative_to(root)):digest(path) for path in
         (Path(__file__),Path(__file__).with_name('mapping_planar.py'),Path(__file__).with_name('mapping_prior.py'),
          Path(__file__).with_name('mapping_input.py'),Path(__file__).with_name('single_mapping_input.py'),
@@ -599,7 +615,8 @@ def run_native_maps(root,output,cells,common,args,*,storage_root=None):
     import rclpy
     native=output/'native'; native.mkdir()
     selected=subsample(common,args.native_rate_hz,args.native_limit)
-    selected_args=argparse.Namespace(input_hz=args.native_rate_hz,wall_interval=1.,frame_timeout=30.)
+    selected_args=argparse.Namespace(input_hz=args.native_rate_hz,
+        wall_interval=args.native_wall_interval_s,frame_timeout=30.)
     result={'status':'FAILED','selected_original_stamp_ns':selected,'domain':args.domain,'cells':{}}
     lock_dir=root/'.phase1_runtime/locks'; lock_dir.mkdir(parents=True,exist_ok=True)
     with (lock_dir/('domain-'+str(args.domain)+'-geometry-review.lock')).open('a') as lock:

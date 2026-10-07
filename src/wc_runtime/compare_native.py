@@ -84,8 +84,39 @@ def load_spec(root, directory, config, *, storage_root=None):
     expected = {'RGBD/NeighborLinkRefining': 'false', 'RGBD/ProximityByTime': 'false',
                 'RGBD/ProximityBySpace': 'false', 'Rtabmap/LoopThr': '1', 'RGBD/AggressiveLoopThr': '1'}
     require(all(parameters.get(key) == value for key, value in expected.items()), 'Native loop/refinement must remain disabled')
-    parameters['use_sim_time'] = True  # Sole offline processing override.
+    parameters['use_sim_time'] = True  # Replay clock; per-instance rate is set by run_cell.
     return result
+
+
+def with_native_detection_rate(spec, input_hz):
+    """Set only this new offline instance's rate; preserve the loaded spec/config."""
+    require(math.isfinite(input_hz) and 0 < input_hz <= 10,
+            'Offline native DetectionRate must be finite and in (0,10] Hz')
+    result = copy.deepcopy(spec)
+    parameters = result['nodes'][0]['parameters'][0]
+    key = 'Rtabmap/DetectionRate'
+    explicit = key in parameters
+    provenance = {'parameter': key, 'previous_was_explicit': explicit,
+                  'previous_explicit_value': copy.deepcopy(parameters.get(key)),
+                  'previous_value_source': 'LOADED_OFFLINE_SPEC' if explicit else 'UNSPECIFIED_BACKEND_DEFAULT',
+                  'requested_hz': float(input_hz), 'applied_value': str(input_hz),
+                  'effective_hz': None, 'scope': 'NEW_OFFLINE_NATIVE_INSTANCE_ONLY'}
+    parameters[key] = provenance['applied_value']
+    return result, provenance
+
+
+def verify_native_detection_rate_readback(report, detection_hz):
+    """Retain failed readbacks in JSON-safe evidence before rejecting a mismatch."""
+    provenance = report['native_detection_rate']
+    finite = math.isfinite(detection_hz)
+    report['effective_native_detection_rate_hz'] = detection_hz if finite else None
+    provenance['effective_hz'] = detection_hz if finite else None
+    provenance['readback_value'] = str(detection_hz)
+    matches = finite and detection_hz > 0 and math.isclose(
+        detection_hz, provenance['requested_hz'], rel_tol=1e-9, abs_tol=1e-12)
+    provenance['readback_matches_request'] = matches
+    require(matches, 'Native DetectionRate readback differs from the requested offline rate: '
+            +str(detection_hz)+' vs '+str(provenance['requested_hz']))
 
 
 def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, storage_root=None):
@@ -111,6 +142,7 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
     require(config.get('odometry_source') == 'wheel_imu', 'Native A/B requires wheel_imu authority')
     write(directory/'runtime_config.json', config)
     spec = load_spec(root, directory, config, storage_root=storage_root)
+    spec, detection_rate = with_native_detection_rate(spec, args.input_hz)
     write(directory/'native_spec.json', spec)
     native = spec['nodes'][0]
     parameters = directory/'native_params.yaml'
@@ -128,7 +160,9 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
               'selected_source_span_s': (selected[-1]-selected[0])*1e-9,
               'input_hz_max': args.input_hz, 'wall_min_interval_s': args.wall_interval,
               'published_pairs': 0, 'acknowledged_pairs': 0, 'processed_info': [], 'graphs': [],
-              'offline_override': {'use_sim_time': True},
+              'offline_override': {'use_sim_time': True,
+                                   'Rtabmap/DetectionRate': detection_rate['applied_value']},
+              'native_detection_rate': detection_rate,
               'comparison_scope': 'Same recorded source inputs; estimator/filter/input-rate factors are frozen in each cell config.',
               'limitation': 'Common source-time subsample, not full frontend frame replay or accuracy acceptance.'}
     node = rclpy.create_node('route1_native_replay_'+name)
@@ -177,8 +211,8 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
                                  stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         spin_until(lambda: cloud_pub.get_subscription_count() >= 1 and odom_pub.get_subscription_count() >= 1,
                    30., 'Native scan/odom subscribers not ready')
-        # Read the live native parameter, including the baseline's undeclared-in
-        # launch default. Do not assume a ROS/upstream release's DetectionRate.
+        # Read back the explicitly requested rate from this isolated offline
+        # instance; never infer that writing the YAML made the setting effective.
         client = node.create_client(GetParameters, '/wc_mapping/app/rtabmap/get_parameters')
         spin_until(client.service_is_ready, 10., 'Native parameter service unavailable')
         request = GetParameters.Request(names=['Rtabmap/DetectionRate'])
@@ -189,9 +223,7 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
         value = response.values[0]
         require(value.type in (2, 3, 4), 'Native DetectionRate parameter is undeclared or has unexpected type')
         detection_hz = float(value.string_value if value.type == 4 else value.double_value if value.type == 3 else value.integer_value)
-        require(math.isfinite(detection_hz) and detection_hz >= 0, 'Invalid native DetectionRate')
-        require(detection_hz == 0 or args.input_hz <= detection_hz, 'Requested input exceeds native DetectionRate; choose lower --input-hz')
-        report['effective_native_detection_rate_hz'] = detection_hz
+        verify_native_detection_rate_readback(report, detection_hz)
         last_wall = None
         for key in selected:
             row = rows[key]

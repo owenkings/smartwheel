@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "backend": "removable",
+  "archive_root": "/media/USER/DISK/wheelchair",
+  "mount_point": "/media/USER/DISK",
+  "required_uuid": "REPLACE-WITH-ACTUAL-UUID",
+  "fallback_allowed": false
+}

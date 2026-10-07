@@ -214,7 +214,7 @@ def authoritative_odometry(cloud, pose, report, prior):
     return result
 
 
-def replay_cell(root, output, runtime, candidate, packets, name, estimator, filtering, source_limit, input_rate_hz, *, storage_root=None):
+def replay_cell(root, output, runtime, candidate, packets, name, estimator, filtering, source_limit, input_rate_hz, *, storage_root=None, prior_factory=None):
     resources_before=resource_snapshot()
     from rclpy.serialization import serialize_message
     from sensor_msgs.msg import PointCloud2, PointField
@@ -263,7 +263,10 @@ def replay_cell(root, output, runtime, candidate, packets, name, estimator, filt
         settle(owner, mono, lambda: owner.transforms is not None)
         prior_config = json.loads((directory / 'prior_config.json').read_text(encoding='utf-8'))
         prior_config['estimator'] = estimator
-        prior = production.MotionPrior(prior_config, config['session_id'], clock=lambda: mono*1e-9)
+        # Offline refinement may provide a validated, session-scoped adapter.
+        # The normal compare/live behavior retains the production prior exactly.
+        factory = production.MotionPrior if prior_factory is None else prior_factory
+        prior = factory(prior_config, config['session_id'], clock=lambda: mono*1e-9)
         write_json(directory / 'resolved_estimator_config.json', prior.config)
         require(prior.config.get('motion_model', 'se3_gyro') == model, 'Production estimator did not retain requested motion model')
 
@@ -302,6 +305,10 @@ def replay_cell(root, output, runtime, candidate, packets, name, estimator, filt
                         break
                     cloud, pose, report = prepared
                     key = report['stamp_ns']
+                    if prior_factory is not None:
+                        report['source_pose_samples'] = {
+                            str(offset): prior.pose_at(key+int(offset)).tolist()
+                            for offset in report.get('source_offsets_ns', [0])}
                     require(key not in forwarded and stamp(cloud.header.stamp) == key, 'Duplicate/redated derived scan')
                     require(np.isfinite(pose).all(), 'Non-finite production pose')
                     points = decode_pointcloud2(cloud)

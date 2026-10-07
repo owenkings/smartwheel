@@ -1,7 +1,10 @@
 # U 盘数据存储与迁移
 
+本页描述既有 U 盘部署和历史迁移的示例。它不是程序默认值，也不要求其他 Orin 使用 U 盘。新部署优先阅读 [代码与数据分离说明](storage_portability.md)。示例中的挂载路径须由部署者核实。
+
 代码仍在 `/home/nvidia/wheelchair`；长期数据统一保存在
-`/media/nvidia/WHEELCHAIR_DATA/wheelchair`。`config/storage.json` 固定挂载点和文件系统 UUID。
+`/media/nvidia/WHEELCHAIR_DATA/wheelchair`。`config/storage.local.json` 保存这台 Orin 的挂载点和文件系统 UUID，且不上传 Git。
+仓库的 `config/storage.json` 是通用目录默认，其他机器不需要这只 U 盘；配置方法见 [代码与数据分离说明](storage_portability.md)。
 原 `data/...`、`reports/...`、`maps/...` 参数由程序映射到 U 盘同名目录。
 U 盘未挂载、换成其他盘或会话中改变挂载身份时，程序报错，不回退写内部盘。
 
@@ -12,7 +15,7 @@ U 盘未挂载、换成其他盘或会话中改变挂载身份时，程序报错
 | `data/calibration` | 点云对应点、外参候选及标定记录 |
 | `reports` | 历史测试、诊断、运行与构建报告 |
 | `maps` | 地图版本 |
-| `research_cache/wc_compare_20261006.tar.gz` | 本次内存研究缓存的无损归档，可解包恢复 |
+| `research_cache/wc_compare_20261006_metadata.tar.gz` | 旧计算缓存的参数、轨迹、日志和结论，288个文件；不包含完整点云缓存 |
 | `migration_20261006` | 迁移清单、SHA-256、原位置删除记录及回退源码/Git |
 | `docs/history`、`handoffs`、`log` | 过往验收说明、交接记录和构建日志 |
 

@@ -1,4 +1,17 @@
-/SDKs/
+/SDKs/*
+!/SDKs/xtsdk_filter_3d3db067/
+/SDKs/xtsdk_filter_3d3db067/*
+!/SDKs/xtsdk_filter_3d3db067/NOTICE.md
+!/SDKs/xtsdk_filter_3d3db067/lib/
+/SDKs/xtsdk_filter_3d3db067/lib/*
+!/SDKs/xtsdk_filter_3d3db067/lib/linux/
+/SDKs/xtsdk_filter_3d3db067/lib/linux/*
+!/SDKs/xtsdk_filter_3d3db067/lib/linux/aarch64/
+!/SDKs/xtsdk_filter_3d3db067/lib/linux/x86_64/
+/SDKs/xtsdk_filter_3d3db067/lib/linux/aarch64/*
+/SDKs/xtsdk_filter_3d3db067/lib/linux/x86_64/*
+!/SDKs/xtsdk_filter_3d3db067/lib/linux/aarch64/libxtsdk_shared.so
+!/SDKs/xtsdk_filter_3d3db067/lib/linux/x86_64/libxtsdk_shared.so
 /data/
 /maps/
 /reports/
@@ -23,3 +36,7 @@ __pycache__/
 *.tar.gz
 /config/*.local.json
 /config/local/
+/reports/test_runs/
+/reports/builds/
+/state/source_history.bundle
+/logs/

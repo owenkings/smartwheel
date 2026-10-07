@@ -84,10 +84,41 @@ def test_manual_capture_uses_one_owner_and_preserves_read_only_default(capture_t
     assert 'wc_runtime.mapping_wheel' in manual['wheel']
     assert 'wc_motion.feedback_transport' not in json.dumps(manual)
     assert set(manual)-set(default) == {'manual_ui'}
-    assert manual['manual_ui'][:4] == ['ros2', 'run', 'wc_bringup', 'manual_capture_ui']
+    assert manual['manual_ui'] == [
+        str(PROJECT/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui'),
+        '--session-root', str(capture_temp/'data'), '--session-id', 'session']
     assert '--require-recorder' in manual['wheel']
     assert '--config' in manual['wheel'] and '--summary-path' in manual['wheel'] and '--raw-output' in manual['wheel']
     assert not any(value in json.dumps(manual) for value in ('mapping_prior', 'rtabmap', 'slam_backend'))
+
+
+def test_manual_ui_uses_project_install_and_keeps_paths_as_separate_arguments(capture_temp, monkeypatch):
+    from wc_runtime import cli
+    monkeypatch.setattr(cli, 'ros_command', lambda arguments: list(map(str, arguments)))
+    root = capture_temp/'project with spaces'
+    directory = capture_temp/'capture with spaces'
+    commands = capture.source_commands(root, root/'run', directory, 'identified_session',
+                                       'mapping_core', manual_drive=True)
+    assert commands['manual_ui'] == [
+        str(root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui'),
+        '--session-root', str(directory), '--session-id', 'identified_session']
+    assert 'ros2' not in commands['manual_ui'] and 'run' not in commands['manual_ui']
+
+
+def test_manual_ui_keeps_ros_environment_exec_wrapper(capture_temp):
+    from wc_runtime import cli
+    root = Path('/home/nvidia/wheelchair')
+    directory = capture_temp/'session'
+    commands = capture.source_commands(root, root/'.phase1_runtime', directory, 'session',
+                                       'mapping_core', manual_drive=True)
+    expected = cli.ros_command([
+        root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui',
+        '--session-root', directory, '--session-id', 'session'])
+    assert commands['manual_ui'] == expected
+    # Sourcing still supplies the installed Qt/ROS library environment, but
+    # exec replaces the shell with the exact preflight-checked UI process.
+    assert 'exec "$@"' in commands['manual_ui'][4]
+    assert commands['manual_ui'][6].endswith('/wc_bringup/manual_capture_ui')
 
 
 def test_manual_runtime_authorization_does_not_fill_unknown_geometry(capture_temp):
@@ -256,7 +287,7 @@ def mock_capture_run(monkeypatch, capture_temp, *, mode='duration_reached', manu
             name = 'wheel'
             if mode != 'no_readiness':
                 write_json(directory/'wheel_ready.json',ready_evidence(session))
-        elif 'manual_capture_ui' in command:
+        elif any(Path(argument).name == 'manual_capture_ui' for argument in command):
             name = 'manual_ui'
             assert capture.wheel_ready(directory,session)
             manifest = json.loads((directory/'capture_manifest.json').read_text(encoding='utf-8'))
