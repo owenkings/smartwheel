@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+from .project_paths import compare_staging_root
 import sqlite3
 import time
 
@@ -318,9 +319,9 @@ def comparison_storage_root(root,output,memory_work=False):
     """Only this explicit offline job may use an owned tmpfs scratch subtree."""
     if not memory_work:
         return root
-    base=Path('/dev/shm/wc_compare')
+    base=compare_staging_root()
     if output.parent!=base or '..' in output.parts:
-        raise ValueError('--memory-work requires a new child of /dev/shm/wc_compare')
+        raise ValueError('--memory-work requires a new child of '+str(base))
     if any(p.is_symlink() for p in (output,*output.parents)):
         raise ValueError('memory comparison must not follow symlinks')
     mounts=Path('/proc/mounts').read_text().splitlines()
@@ -365,7 +366,7 @@ def main(argv=None):
     parser.add_argument('--gyro-bias',type=Path,help='Optional explicit bias file with same-name evidence')
     parser.add_argument('--allow-partial',action='store_true')
     parser.add_argument('--mechanical-initial',action='store_true',help='Explicit offline V7 mechanical-face initial geometry; does not change live calibration')
-    parser.add_argument('--memory-work',action='store_true',help='Derived scratch output under /dev/shm/wc_compare; export results to persistent storage afterwards')
+    parser.add_argument('--memory-work',action='store_true',help='Derived scratch output under /dev/shm/wc_compare_<UID>; export results to persistent storage afterwards')
     parser.add_argument('--source-limit',type=int,default=0,help='Diagnostic prefix only; 0 consumes all source events')
     parser.add_argument('--truth-json',type=Path)
     parser.add_argument('--truth-min-common-samples',type=int,default=1,

@@ -30,7 +30,6 @@ from .protocol import FeedbackError, parse_exchange, read_request
 
 
 QUERY = read_request(1, 0x20AB, 2)
-SERIAL = '0000000014'
 # At the observed four events per 10 Hz read, 1024 event slots correspond to
 # 25.6 s by count alone. The independent byte limit can fill sooner; neither
 # budget guarantees tolerable disk latency or changes any source age limit.
@@ -54,10 +53,15 @@ def validate_config(config):
         raise FeedbackError('explicit reviewed FC03 request evidence required')
     if config.get('request_hex') != QUERY.hex() or config.get('baud') != 115200:
         raise FeedbackError('this transport permits only the reviewed 115200 baud FC03 query')
-    if config.get('hardware_serial') != SERIAL or config.get('device_id') != 'ZLAC8030D-'+SERIAL:
-        raise FeedbackError('reviewed unique 8030D device identity required')
-    if config.get('device') != '/dev/smartwheel_zlac8030' or config.get('expected_by_id') != '/dev/serial/by-id/usb-1a86_USB_Single_Serial_'+SERIAL+'-if00':
-        raise FeedbackError('reviewed serial alias and by-id required; no numbered-port fallback')
+    from wc_runtime.device_bindings import device_path, identity_token
+    try:
+        serial = identity_token(config.get('hardware_serial'))
+        device_path(config.get('device'))
+        by_id = device_path(config.get('expected_by_id'), by_id=True)
+    except ValueError as error:
+        raise FeedbackError(str(error)) from error
+    if config.get('device_id') != 'ZLAC8030D-'+serial or serial not in Path(by_id).name:
+        raise FeedbackError('configured serial, by-id and 8030D device_id must match')
     if config.get('usb_vid') != '1a86' or config.get('usb_pid') != '55d3':
         raise FeedbackError('reviewed USB VID/PID required')
     bounded(config.get('timeout_s'), 'transaction timeout', .01, .5)
@@ -159,8 +163,8 @@ class FeedbackSerialLease:
             raise FeedbackError('closed lease and absolute shared runtime root required')
         device, identity = self.identity_checker(self.config)
         self.device = device
-        locks = self.run_root.resolve()/'locks'
-        locks.mkdir(parents=True, exist_ok=True)
+        from wc_runtime.project_paths import shared_lock_root
+        locks = shared_lock_root()
         path = locks/f'serial-{os.major(identity.st_rdev)}-{os.minor(identity.st_rdev)}.lock'
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
         self.lock = os.fdopen(descriptor, 'a+', encoding='utf-8')
@@ -203,7 +207,7 @@ class FeedbackSerialLease:
             time.sleep(delay)
             self.lock.seek(0)
             self.lock.truncate()
-            json.dump({'pid': os.getpid(), 'serial': SERIAL, 'request_hex': QUERY.hex(), **self.host_configuration}, self.lock)
+            json.dump({'pid': os.getpid(), 'serial': self.config['hardware_serial'], 'request_hex': QUERY.hex(), **self.host_configuration}, self.lock)
             self.lock.flush()
             return self
         except BaseException:
@@ -564,7 +568,7 @@ def main(argv=None):
         from .history_preview import HistoryPreview, assign_preview_odometry
         preview_path = args.preview_config or args.config.with_name('wheel_history_calibration.json')
         preview = HistoryPreview(json.loads(preview_path.read_text(encoding='utf-8')),
-                                 continuous=args.continuous_preview)
+                                 continuous=args.continuous_preview, expected_device_id=config['device_id'])
     node = ros = publisher = preview_publisher = preview_diagnostics = None
     stopped = False
 

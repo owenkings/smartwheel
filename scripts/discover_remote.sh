@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Read-only. Do not source historical workspaces or start any sensor program.
 set -u
-test "$(id -un)" = nvidia || exit 41
-test "$(uname -m)" = aarch64 || exit 42
-cd /home/nvidia/wheelchair || exit 43
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export WHEELCHAIR_PROJECT_ROOT="$PROJECT_ROOT" PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+cd "$PROJECT_ROOT" || exit 43
+python3 -s -c 'from wc_runtime.project_paths import require_linux_runtime; require_linux_runtime()' || exit 42
 hostname
 id
 pwd -P
-for path in /AGENTS.md /home/AGENTS.md /home/nvidia/AGENTS.md /home/nvidia/wheelchair/AGENTS.md; do
+for path in "$PROJECT_ROOT/AGENTS.md" "$PROJECT_ROOT/docs/task_pack/AGENTS.md"; do
   if test -f "$path"; then
     printf 'INSTRUCTIONS_FILE %s\n' "$path"
     cat "$path"
@@ -15,11 +17,10 @@ for path in /AGENTS.md /home/AGENTS.md /home/nvidia/AGENTS.md /home/nvidia/wheel
 done
 cat /etc/os-release
 test ! -f /etc/nv_tegra_release || cat /etc/nv_tegra_release
-df -h /home/nvidia/wheelchair
+df -h "$PROJECT_ROOT"
 free -h
-ls -la /home/nvidia/wheelchair
-find /home/nvidia -maxdepth 1 -type d -name '*ws*' -print
-find /home/nvidia/wheelchair -maxdepth 5 -type f \( -name AGENTS.md -o -name package.xml -o -name metadata.yaml -o -name '*.xtcfg' -o -name 'communication_config.json' -o -iname '*calibration*.yaml' -o -iname '*sdk*.zip' -o -name README.md \) -print | head -160
+ls -la "$PROJECT_ROOT"
+find "$PROJECT_ROOT" -maxdepth 5 -type f \( -name AGENTS.md -o -name package.xml -o -name metadata.yaml -o -name '*.xtcfg' -o -name 'communication_config.json' -o -iname '*calibration*.yaml' -o -iname '*sdk*.zip' -o -name README.md \) -print | head -160
 ps -eo pid,user,comm --sort=-rss | head -45
 ss -luntp
 ip -brief addr
@@ -36,9 +37,9 @@ import importlib.util, json, platform
 print(json.dumps({'python':platform.python_version(), 'modules':{name:bool(importlib.util.find_spec(name)) for name in ('numpy','scipy','pytest','yaml','serial','rclpy','rosbag2_py')}}, sort_keys=True))
 PY
 ls -d /opt/ros/* 2>/dev/null
-if test -f /opt/ros/humble/setup.bash; then
+if WC_ROS_SETUP="$(python3 -s -c 'from wc_runtime.project_paths import ros_setup_path; print(ros_setup_path())')"; then
   set +u
-  source /opt/ros/humble/setup.bash
+  source "$WC_ROS_SETUP"
   python3 - <<'PY'
 import json
 from ament_index_python.packages import get_packages_with_prefixes

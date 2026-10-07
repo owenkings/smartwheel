@@ -16,7 +16,8 @@ from wc_sensors.h30 import h30_checksum
 
 
 def arguments(extra=()):
-    return ['--expected-by-id', '/dev/serial/by-id/SYN', '--session-id', 'SYN-poll',
+    return ['--device', '/dev/SYN', '--expected-by-id', '/dev/serial/by-id/SYN',
+            '--hardware-serial', 'SYN', '--sensor-id', 'H30-SYN', '--session-id', 'SYN-poll',
             '--run-root', str(ROOT / '.phase1_runtime'), *extra]
 
 

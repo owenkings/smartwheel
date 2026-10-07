@@ -74,6 +74,49 @@ QString key_name(int key)
 }
 }  // namespace
 
+QString checked_manual_socket_directory(const QString & project, const QString & directory,
+  const QString & identity, const QString & claimed)
+{
+#ifndef Q_OS_UNIX
+  (void)project; (void)directory; (void)identity; (void)claimed;
+  return {};
+#else
+  const QRegularExpression valid_identity(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"));
+  if (!valid_identity.match(identity).hasMatch() || !QFileInfo(project).isAbsolute() ||
+    !QFileInfo(directory).isAbsolute() || QDir::cleanPath(project) != project ||
+    QDir::cleanPath(directory) != directory || !QFileInfo(project).isDir()) {return {};}
+  const QString project_key = QString::fromLatin1(QCryptographicHash::hash(project.toUtf8(),
+      QCryptographicHash::Sha256).toHex().left(12));
+  QByteArray session_input = directory.toUtf8();
+  session_input.append('\0'); session_input.append(identity.toUtf8());
+  const QString session_key = QString::fromLatin1(QCryptographicHash::hash(session_input,
+      QCryptographicHash::Sha256).toHex().left(24));
+  const QString root = QStringLiteral("/tmp/wc-sock-") + QString::number(::geteuid()) +
+    QStringLiteral("-") + project_key;
+  const QString expected = root + QStringLiteral("/") + session_key;
+  if (claimed != expected) {return {};}
+  for (const QString & path : {project, directory, claimed}) {
+    for (QString parent = path; ; ) {
+      const QFileInfo info(parent);
+      if (info.isSymLink()) {return {};}
+      const QString next = info.dir().absolutePath();
+      if (next == parent) {break;}
+      parent = next;
+    }
+  }
+  struct stat info;
+  const auto private_directory = [&](const QString & path, bool may_be_absent) {
+    const QByteArray bytes = QFile::encodeName(path);
+    if (::lstat(bytes.constData(), &info) != 0) {return may_be_absent && errno == ENOENT;}
+    return S_ISDIR(info.st_mode) && info.st_uid == ::geteuid() && (info.st_mode & 0777) == 0700;
+  };
+  // Python creates the UID-owned root. The backend may still be starting its
+  // session leaf; absence is allowed, a wrong type/owner/mode is not.
+  if (!private_directory(root, false) || !private_directory(claimed, true)) {return {};}
+  return expected;
+#endif
+}
+
 TeleopSession teleop_session_from_arguments(const QStringList & arguments)
 {
   TeleopSession result;
@@ -119,32 +162,16 @@ TeleopSession teleop_session_from_arguments(const QStringList & arguments)
   }
   result.directory = info.absolutePath();
   const QString socket_directory = session.value(QStringLiteral("manual_socket_directory")).toString();
-  if (!socket_directory.isEmpty() && socket_directory != result.directory) {
-    // Only this session's deterministic internal control directory may replace
-    // the legacy adjacent socket. Never accept an arbitrary socket from data.
-    const QString project = session.value(QStringLiteral("project_root")).toString();
-    const QString key = QString::fromLatin1(QCryptographicHash::hash(identity.toLatin1(),
-      QCryptographicHash::Sha256).toHex().left(24));
-    const QString expected = QDir(project).filePath(QStringLiteral(".phase1_runtime/control/") + key);
-    if (!QFileInfo(project).isAbsolute() || QDir::cleanPath(project) != project ||
-      socket_directory != expected)
-    {
+  if (!socket_directory.isEmpty()) {
+    const QString checked = checked_manual_socket_directory(
+      session.value(QStringLiteral("project_root")).toString(), result.directory,
+      identity, socket_directory);
+    if (checked.isEmpty()) {
       result.directory.clear();
-      result.unavailable_reason = QStringLiteral("Invalid local session control path");
+      result.unavailable_reason = QStringLiteral("Invalid private session control path");
       return result;
     }
-    for (QString parent = socket_directory; ; ) {
-      const QFileInfo current(parent);
-      if (current.isSymLink()) {
-        result.directory.clear();
-        result.unavailable_reason = QStringLiteral("Linked local session control path");
-        return result;
-      }
-      const QString next = current.dir().absolutePath();
-      if (next == parent) {break;}
-      parent = next;
-    }
-    result.directory = socket_directory;
+    result.directory = checked;
   }
   result.session_id = identity;
   return result;

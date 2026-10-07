@@ -5,6 +5,7 @@ import json
 import lzma
 import os
 from pathlib import Path
+from .project_paths import project_root
 import shutil
 import subprocess
 import time
@@ -292,7 +293,7 @@ def restore(root, record, *, guard=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path('/home/nvidia/wheelchair'))
+    parser.add_argument('--root', type=Path, default=project_root())
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--review',type=Path,help='Exact reviewed allowlist for one closed historical session')
     parser.add_argument('--compress-only',action='store_true',help='Keep original even after verified compression')

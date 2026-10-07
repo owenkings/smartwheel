@@ -137,7 +137,8 @@ def shutdown_runtime(monkeypatch):
     monkeypatch.setattr(runtime, 'assign_ros_frame', lambda record, output:
                         SimpleNamespace(sequence=record['frame_sequence'], imu=object()))
     state.runtime = runtime
-    state.argv = ['--expected-by-id', '/dev/serial/by-id/mock', '--session-id', 'synthetic',
+    state.argv = ['--device', '/dev/SYNTHETIC', '--expected-by-id', '/dev/serial/by-id/mock',
+                  '--hardware-serial', 'mock', '--sensor-id', 'H30-mock', '--session-id', 'synthetic',
                   '--run-root', '/synthetic', '--journal-dir', '/synthetic/journal',
                   '--require-recorder', '--duration', '0', '--stale-timeout', '0']
     return state

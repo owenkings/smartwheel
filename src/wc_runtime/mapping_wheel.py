@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+from .project_paths import capture_staging_root
 import re
 import select
 import signal
@@ -33,7 +34,7 @@ FEEDBACK_FRESH_S = .25
 DISABLED_REASON = '尚未确认控制器 USB/RS485 物理通信中断时的停车行为；本次只读反馈'
 CONTROL_CONTEXT = 'user_manual_mapping'
 QUERY = read_request(1, 0x20AB, 2)
-MEMORY_CAPTURE_ROOT = Path('/dev/shm/wc_capture')
+MEMORY_CAPTURE_ROOT = capture_staging_root()
 
 
 def bounded(value, name, low, high):
@@ -948,7 +949,10 @@ def main(argv=None):
     from .mapping_control_paths import manual_socket_path
     socket_path = manual_socket_path(ROOT, directory, config['session_id'])
     if socket_path.parent != directory:
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = socket_path.parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700):
+            raise FeedbackError('Control socket directory ownership/permissions invalid')
     summary_path = project_path(path_root,args.summary_path) if args.summary_path else None
     if args.require_recorder and (not args.config or summary_path is None):
         raise FeedbackError('capture --require-recorder requires frozen --config and --summary-path')

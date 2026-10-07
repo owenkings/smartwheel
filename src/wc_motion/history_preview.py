@@ -6,12 +6,12 @@ but this module cannot produce formal odometry or a common-time motion prior.
 
 import math
 
-from .feedback_transport import QUERY, SERIAL, bounded
+from .feedback_transport import QUERY, bounded
 from .protocol import FeedbackError, integer, parse_exchange
 
 
 class HistoryPreview:
-    def __init__(self, config, *, continuous=False):
+    def __init__(self, config, *, continuous=False, expected_device_id=None):
         if type(continuous) is not bool:
             raise FeedbackError('continuous preview must be an explicit boolean')
         if config.get('schema') != 'wc_wheel_history_preview_v1' or config.get('state') != 'UNVALIDATED' or config.get('formal_odometry_eligible') is not False:
@@ -19,6 +19,17 @@ class HistoryPreview:
         if not config.get('provenance'):
             raise FeedbackError('historical parameter provenance required')
         self.config = config
+        from wc_runtime.device_bindings import identity_token
+        configured = config.get('device_id')
+        try:
+            for identity in (configured, expected_device_id):
+                if identity is not None:
+                    identity_token(identity, prefix='ZLAC8030D-')
+        except ValueError as error:
+            raise FeedbackError(str(error)) from error
+        if configured is not None and expected_device_id is not None and configured != expected_device_id:
+            raise FeedbackError('wheel conversion identity differs from expected input identity')
+        self.device_id = expected_device_id or configured
         self.continuous = continuous
         for name, low, high in (('wheel_radius_m', .01, 1), ('track_width_m', .1, 2),
                                ('register_to_wheel_rpm', .0001, 100), ('max_gap_s', .01, 1), ('max_wheel_speed_m_s', .01, 3)):
@@ -46,8 +57,19 @@ class HistoryPreview:
             raise
 
     def _update(self, record):
-        if record.get('schema') != 'wc_wheel_feedback_v1' or record.get('device_id') != 'ZLAC8030D-'+SERIAL or record.get('status') != 'RESPONSE_VALID':
-            raise FeedbackError('preview requires valid current-device feedback')
+        if record.get('schema') != 'wc_wheel_feedback_v1' or record.get('status') != 'RESPONSE_VALID':
+            raise FeedbackError('preview requires valid identified feedback')
+        from wc_runtime.device_bindings import identity_token
+        try:
+            identity = identity_token(record.get('device_id'), prefix='ZLAC8030D-')
+        except ValueError as error:
+            raise FeedbackError(str(error)) from error
+        # Old archives did not declare an expected controller; bind their first
+        # input identity and reject mixed devices, without consulting live config.
+        if self.device_id is None:
+            self.device_id = identity
+        if identity != self.device_id:
+            raise FeedbackError('preview feedback device identity changed')
         request, response = bytes.fromhex(record['request_hex']), bytes.fromhex(record['response_hex'])
         if request != QUERY:
             raise FeedbackError('preview request is not the reviewed feedback query')

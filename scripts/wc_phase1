@@ -4,7 +4,21 @@ import os
 from pathlib import Path
 import sys
 
-root=Path('/home/nvidia/wheelchair')
+# Locate this checkout from either scripts/ or its in-tree ROS install.
+# Never select a project merely because it is the caller's current directory.
+sys.dont_write_bytecode = True
+_candidates = list(Path(__file__).resolve().parents)
+for _candidate in _candidates:
+    if ((_candidate/'src/wc_runtime').is_dir() and
+            (_candidate/'config/storage.json').is_file() and
+            (_candidate/'scripts/wc_phase1').is_file()):
+        sys.path.insert(0, str(_candidate/'src'))
+        break
+else:
+    raise RuntimeError('Cannot locate the wheelchair checkout; set WHEELCHAIR_PROJECT_ROOT')
+from wc_runtime.project_paths import project_root
+root = project_root(start=__file__)
+os.environ['WHEELCHAIR_PROJECT_ROOT'] = str(root)
 os.environ['PYTHONNOUSERSITE']='1'
 if not sys.flags.no_user_site:
     os.execv(sys.executable,[sys.executable,'-s',__file__,*sys.argv[1:]])

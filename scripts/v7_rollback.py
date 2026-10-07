@@ -16,8 +16,20 @@ try:
 except ImportError:  # A read-only preview is also useful on a copied Windows tree.
     fcntl = None
 
-ROOT = Path('/home/nvidia/wheelchair')
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
+# Locate this checkout from either scripts/ or its in-tree ROS install.
+# Never select a project merely because it is the caller's current directory.
+sys.dont_write_bytecode = True
+_candidates = list(Path(__file__).resolve().parents)
+for _candidate in _candidates:
+    if ((_candidate/'src/wc_runtime').is_dir() and
+            (_candidate/'config/storage.json').is_file() and
+            (_candidate/'scripts/wc_phase1').is_file()):
+        sys.path.insert(0, str(_candidate/'src'))
+        break
+else:
+    raise RuntimeError('Cannot locate the wheelchair checkout; set WHEELCHAIR_PROJECT_ROOT')
+from wc_runtime.project_paths import project_root
+ROOT = project_root(start=__file__)
 from wc_runtime.storage_policy import StoragePolicy
 SOURCE_PREFIXES = {'src', 'scripts', 'config', 'tests', 'docs'}
 FIXED_LOCKS = (

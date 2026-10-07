@@ -53,17 +53,17 @@ def decode(response, address):
 def validate_config(value):
     if not isinstance(value, dict):
         raise ValueError('ultrasonic configuration must be an object')
-    expected = {'device': '/dev/smartwheel_ultrasonic', 'baud': 9600,
+    expected = {'baud': 9600,
                 'usb_vid': '1a86', 'usb_pid': '7523', 'register': 1,
-                'addresses': [1, 2, 3, 4], 'function_code': 3,
-                'expected_by_id': '/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0'}
+                'addresses': [1, 2, 3, 4], 'function_code': 3}
     if any(value.get(k) != v for k, v in expected.items()):
         raise ValueError('ultrasonic configuration differs from reviewed read-only protocol')
     # This CH340 has no unique serial number. The explicit configuration must
     # pin its physical topology; never infer identity from ttyUSB numbering.
-    path = value.get('expected_usb_path')
-    if not isinstance(path, str) or not re.fullmatch(r'platform-3610000\.usb-usb-0:\d+(?:\.\d+)*:\d+\.\d+', path):
-        raise ValueError('explicit ultrasonic USB topology required')
+    from .device_bindings import device_path, topology
+    device_path(value.get('device'))
+    device_path(value.get('expected_by_id'), by_id=True)
+    topology(value.get('expected_usb_path'))
     if any(type(value.get(k)) not in (int, float) for k in ('timeout_s', 'inter_sensor_delay_s')) or \
             not .1 <= value['timeout_s'] <= .5 or not .1 <= value['inter_sensor_delay_s'] <= 1:
         raise ValueError('bounded response timeout and inter-sensor interval required')
@@ -122,8 +122,8 @@ class DistanceLease:
         import termios
         from wc_imu.ros_node import require_unoccupied
         device, checked = identity(self.config)
-        locks = self.run_root / 'locks'
-        locks.mkdir(parents=True, exist_ok=True)
+        from .project_paths import shared_lock_root
+        locks = shared_lock_root()
         self.lock = os.open(str(locks / ('serial-%d-%d.lock' %
             (os.major(checked.st_rdev), os.minor(checked.st_rdev)))), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:

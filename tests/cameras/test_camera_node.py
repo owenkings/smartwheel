@@ -127,7 +127,7 @@ class CameraContractTests(unittest.TestCase):
         with self.assertRaises(CameraError):
             validate_config(config)
         config = copy.deepcopy(self.config)
-        config['cameras'][0]['serial'] = 'different-camera'
+        config['cameras'][0]['serial'] = 'invalid camera serial with spaces'
         with self.assertRaises(CameraError):
             validate_config(config)
 

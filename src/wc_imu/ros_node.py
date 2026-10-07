@@ -95,9 +95,9 @@ class ReadOnlySerialLease:
         if not self.run_root.is_absolute():
             raise ImuAcquisitionError('shared RUN_ROOT must be an explicit absolute path')
         self.device, identity = self.identity_checker(self.alias, self.by_id, self.hardware_serial)
-        locks = self.run_root.resolve() / 'locks'
-        locks.mkdir(parents=True, exist_ok=True)
-        lock_path = locks / f'serial-h30-{os.major(identity.st_rdev)}-{os.minor(identity.st_rdev)}.lock'
+        from wc_runtime.project_paths import shared_lock_root
+        locks = shared_lock_root()
+        lock_path = locks / f'serial-{os.major(identity.st_rdev)}-{os.minor(identity.st_rdev)}.lock'
         if lock_path.is_symlink():
             raise ImuAcquisitionError('resource lock may not be a symlink')
         self.lock_file = lock_path.open('a+', encoding='utf-8')
@@ -227,10 +227,10 @@ def read_with_host_arrival(serial):
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument('--device', default='/dev/smartwheel_h30_imu')
-    result.add_argument('--expected-by-id', required=True)
-    result.add_argument('--hardware-serial', default='0000000015')
-    result.add_argument('--sensor-id', default='H30-0000000015')
+    result.add_argument('--device')
+    result.add_argument('--expected-by-id')
+    result.add_argument('--hardware-serial')
+    result.add_argument('--sensor-id')
     result.add_argument('--session-id', required=True)
     result.add_argument('--journal-dir', type=Path, help='Optional source-side packets, read batches and synchronized summary')
     result.add_argument('--require-recorder', action='store_true', help='Wait for source subscription before serial open')
@@ -243,8 +243,25 @@ def parser():
     return result
 
 
+def resolve_binding(arguments):
+    """Resolve one consistent snapshot before importing ROS or opening serial."""
+    from wc_runtime.device_bindings import load_device_bindings, validate_device_bindings
+    keys = ('device', 'expected_by_id', 'hardware_serial', 'sensor_id')
+    explicit = {key: getattr(arguments, key) for key in keys if getattr(arguments, key) is not None}
+    # A complete frozen command is independent of today's machine config.
+    imu = explicit if len(explicit) == len(keys) else {**load_device_bindings()['imu'], **explicit}
+    try:
+        imu = validate_device_bindings({'schema_version': 1, 'imu': imu, 'network': {'interface': None}})['imu']
+    except ValueError as error:
+        raise ImuAcquisitionError(str(error)) from error
+    for key in keys:
+        setattr(arguments, key, imu[key])
+    return imu
+
+
 def main(argv=None):
     arguments, ros_arguments = parser().parse_known_args(argv)
+    resolve_binding(arguments)
     if (not math.isfinite(arguments.duration) or not 0 <= arguments.duration <= 43200 or
             not math.isfinite(arguments.stale_timeout) or arguments.stale_timeout < 0):
         raise ImuAcquisitionError('duration must be 0 (until stopped) or positive up to 12h; stale-timeout must be finite nonnegative')

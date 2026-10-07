@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Offline frozen cloud picking; no sensor driver or motor command is started.
 set -euo pipefail
-cd /home/nvidia/wheelchair
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export WHEELCHAIR_PROJECT_ROOT="$PROJECT_ROOT"
+export PYTHONDONTWRITEBYTECODE=1
+cd "$PROJECT_ROOT"
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="/home/nvidia/wheelchair/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -s -m wc_runtime.calibration_picker "$@"

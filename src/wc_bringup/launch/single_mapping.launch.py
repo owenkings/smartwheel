@@ -13,7 +13,9 @@ from pathlib import Path
 from wc_runtime.storage_policy import resolve_storage_path
 
 
-PROJECT_ROOT = Path('/home/nvidia/wheelchair')
+from wc_runtime.project_paths import project_root as resolve_project_root
+
+PROJECT_ROOT = resolve_project_root(start=__file__)
 
 
 def build_spec(side, session_root, *, project_root=None):
@@ -173,7 +175,8 @@ def configure(context):
     from launch_ros.actions import Node
 
     spec = build_spec(LaunchConfiguration('side').perform(context),
-                      LaunchConfiguration('session_root').perform(context))
+                      LaunchConfiguration('session_root').perform(context),
+                      project_root=LaunchConfiguration('project_root').perform(context))
     processes = [Node(**node, output='screen', sigterm_timeout='20',
                       sigkill_timeout='5') for node in spec['nodes']]
     # Register handlers before starting either process, including startup failure.
@@ -191,5 +194,6 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('side', choices=['left', 'right']),
         DeclareLaunchArgument('session_root'),
+        DeclareLaunchArgument('project_root', default_value=str(PROJECT_ROOT)),
         OpaqueFunction(function=configure),
     ])

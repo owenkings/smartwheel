@@ -169,7 +169,7 @@ def setup_cli_clone(tmp_path):
     clone=tmp_path/'clone';(clone/'scripts').mkdir(parents=True)
     (clone/'config').mkdir();(clone/'src/wc_runtime').mkdir(parents=True)
     shutil.copyfile(work/'scripts/configure_storage',clone/'scripts/configure_storage')
-    for name in ('__init__.py','storage_policy.py','storage_directory.py','capture_destination.py'):
+    for name in ('__init__.py','project_paths.py','storage_policy.py','storage_directory.py','capture_destination.py'):
         shutil.copyfile(work/'src/wc_runtime'/name,clone/'src/wc_runtime'/name)
     return clone
 

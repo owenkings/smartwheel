@@ -54,6 +54,7 @@ set(WC_VENDOR_CHECKER "${CMAKE_CURRENT_SOURCE_DIR}/cmake/verify_vendor.py")
 set(WC_PROJECT_INPUTS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt" "${WC_VENDOR_CHECKER}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/xt_source_node.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/owned_stop.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/acquisition_budget.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/host_lock.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/bounded_work_queue.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/shutdown_deadline.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/wc_xt_driver/device_config_policy.hpp"

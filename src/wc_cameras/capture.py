@@ -5,6 +5,7 @@ kernel may outlive them and must be reported as a cleanup failure. The child
 retains the common port flock until its device closes.
 """
 import ctypes
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -16,20 +17,20 @@ import stat
 import subprocess
 import time
 
-from .config import CameraError, port_path
+from .config import CameraError, camera_device, camera_id_path
 
 
 def verify_properties(camera, properties):
     expected = {'ID_VENDOR_ID': camera['vid'], 'ID_MODEL_ID': camera['pid'],
                 'ID_SERIAL_SHORT': camera['serial'],
-                'ID_PATH': f"platform-3610000.usb-usb-0:3.{camera['port']}:1.0"}
+                'ID_PATH': camera_id_path(camera)}
     if any(properties.get(key) != val for key, val in expected.items()) or ':capture:' not in properties.get('ID_V4L_CAPABILITIES', ''):
         raise CameraError('USB port identity or capture capability mismatch')
     return expected
 
 
 def verify_device(camera):
-    path = port_path(camera['port'])
+    path = camera_device(camera)
     resolved = path.resolve(strict=True)
     device_stat = resolved.stat()
     if not stat.S_ISCHR(device_stat.st_mode):
@@ -60,9 +61,11 @@ class CameraLease:
         import fcntl
         if not self.run_root.is_absolute():
             raise CameraError('run-root must be an absolute shared path')
-        locks = self.run_root.resolve() / 'locks'
-        locks.mkdir(parents=True, exist_ok=True)
-        name = locks / f"camera-usb3_{self.camera['port']}.lock"
+        from wc_runtime.project_paths import shared_lock_root
+        locks = shared_lock_root()
+        # All indices and checkouts of this physical USB camera share one lock.
+        key = hashlib.sha256(camera_id_path(self.camera).encode('utf-8')).hexdigest()[:32]
+        name = locks / ('camera-'+key+'.lock')
         descriptor = os.open(str(name), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
         self.lock = os.fdopen(descriptor, 'a+', encoding='utf-8')
         try:
@@ -70,7 +73,7 @@ class CameraLease:
             identity = verify_device(self.camera)
             # Alternate V4L2 indices can belong to the same physical camera.
             # Do not open index0 while another application owns its sibling.
-            by_path = port_path(self.camera['port'])
+            by_path = camera_device(self.camera)
             siblings = sorted(by_path.parent.glob(by_path.name.rsplit('index', 1)[0]+'index[0-9]'))
             if by_path not in siblings:
                 raise CameraError('verified camera by-path disappeared')

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from .project_paths import ros_setup_path
 import sqlite3
 import subprocess
 import sys
@@ -90,7 +91,7 @@ def start(session, side, duration, port):
                 'src/wc_bringup/launch/single_mapping.launch.py', 'src/wc_runtime/single_mapping.py']
     plan['experiment']['source_hashes'] = {p: hash_file(project_path(ROOT, p)) for p in required}
     for executable in ('rtabmap_odom/icp_odometry', 'rtabmap_slam/rtabmap'):
-        if not (Path('/opt/ros/humble/lib')/executable).is_file():
+        if not (ros_setup_path().parent/'lib'/executable).is_file():
             raise RuntimeError('Reviewed native executable missing: '+executable)
     directory.mkdir(parents=True, exist_ok=False)
     (directory/'slam').mkdir()
@@ -205,7 +206,7 @@ def export(session):
     with sqlite3.connect(db.as_uri()+'?mode=ro', uri=True) as source_db:
         with sqlite3.connect(export_db) as copy_db:
             source_db.backup(copy_db)
-    command = ['/opt/ros/humble/bin/rtabmap-export', '--scan', '--cloud', '--poses', '--poses_format', '11',
+    command = [str(ros_setup_path().parent/'bin/rtabmap-export'), '--scan', '--cloud', '--poses', '--poses_format', '11',
                '--opt', '2', '--voxel', '0.03', '--output', 'single_'+state['experiment']['sensor_mode'].removeprefix('single_')+'_map',
                '--output_dir', str(output), str(export_db)]
     with (output/'export.log').open('xb') as log:

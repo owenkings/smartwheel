@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 
 from .mapping_planar import validate_confirmed_bias
+from .device_bindings import identity_token
 
 
 def _read(path, maximum=262144):
@@ -26,7 +27,8 @@ def proposal(session):
     session = Path(session).resolve(strict=True)
     status_raw, status = _read(session/'prior/status.json')
     _, config = _read(session/'runtime_config.json')
-    if config.get('source_mode') != 'real' or config.get('imu_sensor_id') != 'H30-0000000015':
+    identity_token(config.get('imu_sensor_id'), prefix='H30-')
+    if config.get('source_mode') != 'real':
         raise ValueError('Expected an identified real H30 session')
     candidate = status.get('gyro_bias', {}).get('latest_candidate')
     if not isinstance(candidate, dict) or candidate.get('screening_passed') is not True:
@@ -147,6 +149,18 @@ def save_holdout_calibration(rows_path, evidence_path, output, *, capture_datase
         rows = [json.loads(line) for line in rows_raw.decode('utf-8').splitlines() if line.strip()]
         source_provenance={'path':str(rows_path),'sha256':hashlib.sha256(rows_raw).hexdigest()}
     evidence_raw, declaration = _read(evidence_path)
+    # Only identities attached to this input/evidence are eligible. Never read
+    # this machine's live binding to label an archived calibration.
+    identities = {identity_token(r['sensor_id'], prefix='H30-') for r in rows if 'sensor_id' in r}
+    for value in (source_provenance.get('sensor_id'), declaration.get('sensor_id')):
+        if value is not None:
+            identities.add(identity_token(value, prefix='H30-'))
+    if len(identities) != 1:
+        raise ValueError('calibration requires one explicit, consistent input sensor_id')
+    sensor_id = identities.pop()
+    if any('sensor_id' not in row for row in rows) and not declaration.get('sensor_id') and not source_provenance.get('sensor_id'):
+        raise ValueError('unidentified rows require a sensor_id in the independent declaration')
+    source_provenance['sensor_id'] = sensor_id
     declaration['evidence_sha256'] = hashlib.sha256(evidence_raw).hexdigest()
     result = calibrate_stationary(rows,declaration)
     if result['status'] != 'HOLDOUT_PASSED':
@@ -161,7 +175,7 @@ def save_holdout_calibration(rows_path, evidence_path, output, *, capture_datase
     if any(p.is_symlink() or getattr(p,'is_junction',lambda:False)() for p in (output,*output.parents)):
         raise ValueError('linked calibration destinations not allowed')
     result_raw=(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2)+'\n').encode('utf-8')
-    bias = validate_confirmed_bias({'status':'INDEPENDENTLY_CONFIRMED','sensor_id':'H30-0000000015',
+    bias = validate_confirmed_bias({'status':'INDEPENDENTLY_CONFIRMED','sensor_id':sensor_id,
         'bias_native_rad_s':result['bias_native_rad_s'],'evidence_id':declaration['evidence_id'],
         'evidence_sha256':hashlib.sha256(result_raw).hexdigest(),'source':declaration['source'],
         'evidence_note':'10 s warmup + 10 s estimate + independent 10 s held-out residual screening; thresholds experimental.'})
@@ -185,6 +199,18 @@ def capture_calibration_rows(dataset):
     from .compare_replay import digest
     root=Path(dataset).resolve(strict=True); files=sorted((root/'bag').glob('*.db3'))
     if not files: raise ValueError('capture has no original SQLite bag')
+    identity_path = root/'configuration/capture_contract.json'
+    if identity_path.exists():
+        identity_raw, contract = _read(identity_path)
+        imu_spec = contract['sources']['imu']
+        sensor_id = identity_token(imu_spec['source_id'], prefix='H30-')
+        if imu_spec['expected_identity']['sensor_id'] != sensor_id:
+            raise ValueError('frozen capture IMU identity is inconsistent')
+    else:
+        # Legacy archives had an explicit identity in their manifest.
+        identity_path = root/'capture_manifest.json'
+        identity_raw, manifest = _read(identity_path, maximum=16*1024*1024)
+        sensor_id = identity_token(manifest.get('imu_sensor_id'), prefix='H30-')
     events=[]; hashes={}
     for path in files:
         hashes[str(path.relative_to(root))]=digest(path)
@@ -201,6 +227,8 @@ def capture_calibration_rows(dataset):
                     if category=='wheel':
                         record=json.loads(message.data); source_stamp=record['stamp_ns']; mono=record['receive_monotonic_ns']; sequence=record['sequence']
                     else:
+                        if message.sensor_id != sensor_id:
+                            raise ValueError('IMU message identity differs from frozen capture identity')
                         source_stamp=message.host_receive_time.sec*10**9+message.host_receive_time.nanosec
                         mono=int(message.host_monotonic_ns); sequence=int(message.frame_sequence)
                     events.append(dict(category=category,stamp_ns=source_stamp,monotonic_ns=mono,sequence=sequence,
@@ -218,17 +246,19 @@ def capture_calibration_rows(dataset):
             if hashlib.sha256(response).hexdigest()!=record['response_sha256']: raise ValueError('wheel response hash mismatch')
             latest_wheel=(event['stamp_ns'],all(word==0 for word in words))
         elif latest_wheel is not None:
-            if message.sensor_id!='H30-0000000015' or not message.angular_velocity_valid or not message.linear_acceleration_valid:
+            if message.sensor_id!=sensor_id or not message.angular_velocity_valid or not message.linear_acceleration_valid:
                 raise ValueError('identified valid native H30 gyro/acceleration required')
             a,g=message.imu.linear_acceleration,message.imu.angular_velocity
             # Conservative zero-register screen needs no guessed radius/scale.
             # A nonzero register gives a finite failing screen marker (1 m/s).
-            rows.append(dict(stamp_ns=event['stamp_ns'],sequence=event['sequence'],stream_epoch=message.stream_epoch,
+            rows.append(dict(sensor_id=sensor_id,stamp_ns=event['stamp_ns'],sequence=event['sequence'],stream_epoch=message.stream_epoch,
                 original_source_stamp_ns=event['original_source_stamp_ns'],monotonic_ns=event['monotonic_ns'],
                 gyro_native=[g.x,g.y,g.z],acceleration_native=[a.x,a.y,a.z],
                 wheel_velocity_m_s=0. if latest_wheel[1] else 1.,
                 wheel_age_s=(event['stamp_ns']-latest_wheel[0])*1e-9,cdr_sha256=event['cdr_sha256']))
     return rows,{'dataset':str(root),'bag_sha256':hashes,'clock':clock.report(),
+        'sensor_id':sensor_id,'identity_evidence':str(identity_path.relative_to(root)),
+        'identity_evidence_sha256':hashlib.sha256(identity_raw).hexdigest(),
         'wheel_screen':'CRC-checked exactly zero raw registers; no radius/track/scale used',
         'independent_physical_stationarity_required':True,'geometry_required':False}
 

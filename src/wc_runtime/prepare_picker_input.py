@@ -280,7 +280,7 @@ def main(argv=None):
     from .cli import ROOT, target
     target()
     if Path.cwd().resolve() != ROOT:
-        raise RuntimeError('Run from /home/nvidia/wheelchair')
+        raise RuntimeError('Run from the selected project root')
     operation = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'_'+uuid.uuid4().hex[:12]
     directory = project_path(ROOT, Path('reports/point_picker_operations')/operation)
     directory.mkdir(parents=True, exist_ok=False)

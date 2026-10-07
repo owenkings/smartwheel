@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "imu": {
+    "device": "/dev/smartwheel_h30_imu",
+    "expected_by_id": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_0000000015-if00",
+    "hardware_serial": "0000000015",
+    "sensor_id": "H30-0000000015"
+  },
+  "network": {
+    "interface": null
+  }
+}

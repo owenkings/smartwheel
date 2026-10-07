@@ -17,9 +17,10 @@ import uuid
 import pytest
 
 from wc_runtime.supervisor import stop_registered, ticks
+from wc_runtime.project_paths import shared_lock_root, project_root
 
 
-PROJECT = Path('/home/nvidia/wheelchair')
+PROJECT = project_root()
 RUNTIME = PROJECT/'.phase1_runtime'
 HELPER = Path(__file__).with_name('process_helper.py').resolve()
 
@@ -69,7 +70,7 @@ def kill_verified(record):
 
 class Harness:
     def __init__(self):
-        assert sys.platform == 'linux' and PROJECT.is_dir(), 'run these operations tests on the confirmed target Linux project'
+        assert sys.platform == 'linux' and PROJECT.is_dir(), 'run these operations tests in the selected Linux project'
         self.token = 'ops-test-'+uuid.uuid4().hex
         self.root = RUNTIME/'sessions'/self.token/'operations'
         self.root.mkdir(parents=True, exist_ok=False)
@@ -225,7 +226,7 @@ def test_supervisor_sigkill_does_not_orphan_its_process_tree(harness):
 
 def test_resource_lock_survives_supervisor_death_until_descendant_cleanup(harness):
     lock_name = harness.token+'-held-through-cleanup.lock'
-    lock_path = RUNTIME/'locks'/lock_name
+    lock_path = shared_lock_root()/lock_name
     harness.launch([harness.command('spawn-stay', '--grandchild-new-session')], locks=[lock_name])
     harness.started(2)
     kill_verified(harness.supervisor_record)
@@ -278,7 +279,7 @@ def test_command_substrings_do_not_make_an_unrelated_process_a_supervisor(harnes
 
 def test_lock_conflict_fails_before_component_start(harness):
     lock_name = harness.token+'.lock'
-    lock_path = RUNTIME/'locks'/lock_name
+    lock_path = shared_lock_root()/lock_name
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open('a+') as owner:
         fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

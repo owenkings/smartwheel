@@ -76,8 +76,9 @@ def main(argv=None):
     source_mode = config['source_mode']
     session_id = config['session_id']
     root = Path(config['session_root']).resolve()
-    if not root.is_relative_to(Path('/home/nvidia/wheelchair').resolve()):
-        raise FusionError('SESSION_PATH_OUTSIDE_PROJECT')
+    from wc_runtime.project_paths import project_root
+    from wc_runtime.storage_policy import resolve_storage_path
+    root = resolve_storage_path(project_root(), root)
     root.mkdir(parents=True, exist_ok=True)
     raw_dir = root / 'raw_observations'
     raw_dir.mkdir(exist_ok=True)

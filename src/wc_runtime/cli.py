@@ -14,7 +14,10 @@ import time
 
 from .supervisor import stop_registered, write_json, shutdown_policy
 
-ROOT = Path('/home/nvidia/wheelchair')
+from .project_paths import project_root, require_linux_runtime, ros_setup_path
+from .device_bindings import load_device_bindings
+
+ROOT = project_root()
 RUN = ROOT/'.phase1_runtime'
 TOPICS = ['/wc_mapping/lidar_left/source_frame', '/wc_mapping/lidar_right/source_frame',
           '/wc_mapping/lidar_left/source_frame_filtered', '/wc_mapping/lidar_right/source_frame_filtered',
@@ -23,16 +26,29 @@ TOPICS = ['/wc_mapping/lidar_left/source_frame', '/wc_mapping/lidar_right/source
           '/wc_mapping/wheel/odom_preview', '/wc_mapping/wheel/preview_diagnostics',
           '/wc_mapping/diagnostics', '/wc_mapping/lidar_left/diagnostics',
           '/wc_mapping/lidar_right/diagnostics', '/wc_mapping/imu/diagnostics']
-H30_DEVICE = '/dev/smartwheel_h30_imu'
-H30_BY_ID = '/dev/serial/by-id/usb-1a86_USB_Single_Serial_0000000015-if00'
-H30_SERIAL = '0000000015'
+# A damaged device configuration must not disable stop/status/help/build.
+# Preserve the error; only operations requiring live bindings are blocked.
+try:
+    DEVICE_BINDINGS = load_device_bindings(ROOT)
+    DEVICE_BINDINGS_ERROR = None
+except (OSError, ValueError) as error:
+    DEVICE_BINDINGS = None
+    DEVICE_BINDINGS_ERROR = error
+H30_DEVICE = DEVICE_BINDINGS['imu']['device'] if DEVICE_BINDINGS else None
+H30_BY_ID = DEVICE_BINDINGS['imu']['expected_by_id'] if DEVICE_BINDINGS else None
+H30_SERIAL = DEVICE_BINDINGS['imu']['hardware_serial'] if DEVICE_BINDINGS else None
+
+
+def require_device_bindings():
+    if DEVICE_BINDINGS is None:
+        raise RuntimeError('DEVICE_BINDINGS_INVALID: ' + str(DEVICE_BINDINGS_ERROR)) from DEVICE_BINDINGS_ERROR
+    return DEVICE_BINDINGS
 
 
 def target():
-    if platform.machine() != 'aarch64' or getpass.getuser() != 'nvidia' or socket.gethostname() != 'ubuntu':
-        raise RuntimeError('This operation requires the verified Orin target ubuntu/nvidia/aarch64')
-    if not ROOT.is_dir() or ROOT.is_symlink():
-        raise RuntimeError('Project root is missing or redirected')
+    require_linux_runtime()
+    if project_root() != ROOT or not ROOT.is_dir():
+        raise RuntimeError('Project root is missing or changed')
 
 
 def name(value):
@@ -42,15 +58,18 @@ def name(value):
 
 
 def ros_command(arguments):
-    # Positional arguments are passed independently; user text is never shell code.
-    return ['bash','--noprofile','--norc','-c',
-            'source /opt/ros/humble/setup.bash && source /home/nvidia/wheelchair/install/main/setup.bash && export PYTHONPATH=/home/nvidia/wheelchair/src${PYTHONPATH:+:$PYTHONPATH} && exec "$@"',
-            'wc_phase1',*map(str,arguments)]
+    # Paths and user arguments are positional shell arguments, never shell code.
+    return ['bash', '--noprofile', '--norc', '-c',
+            'source "$1" && source "$2/install/main/setup.bash" && '
+            'export WHEELCHAIR_PROJECT_ROOT="$2" && '
+            'export PYTHONPATH="$2/src${PYTHONPATH:+:$PYTHONPATH}" && shift 2 && exec "$@"',
+            'wc_phase1', str(ros_setup_path()), str(ROOT), *map(str, arguments)]
 
 
 def environment():
     env = dict(PYTHONNOUSERSITE='1', PYTHONPATH=str(ROOT/'src'),
-               ROS_DOMAIN_ID='83', ROS_LOCALHOST_ONLY='1')
+               ROS_DOMAIN_ID='83', ROS_LOCALHOST_ONLY='1', WHEELCHAIR_PROJECT_ROOT=str(ROOT),
+               WHEELCHAIR_ROS_SETUP=str(ros_setup_path()))
     return env
 
 
@@ -104,9 +123,14 @@ def begin(session, role, commands, duration, locks=(), allow_component_exit=Fals
 def device_preflight():
     if shutil.disk_usage(ROOT).free<2*1024**3:
         raise RuntimeError('Less than 2 GiB free; acquisition refused')
-    addresses=subprocess.check_output(['ip','-j','addr','show','dev','eno1'],text=True)
+    network = require_device_bindings()['network']
+    command = ['ip', '-j', 'addr', 'show']
+    if network.get('interface'): command += ['dev', network['interface']]
+    addresses=subprocess.check_output(command,text=True)
     present={item['local'] for interface in json.loads(addresses) for item in interface['addr_info']}
-    if not {'192.168.0.100','192.168.1.100'}.issubset(present):
+    live=json.loads((ROOT/'config/live_unvalidated.json').read_text())
+    required_addresses={live[side]['receiver_address'] for side in ('lidar_left','lidar_right')}
+    if not required_addresses.issubset(present):
         raise RuntimeError('Expected existing receiver addresses absent; do not reconfigure automatically')
     sockets=subprocess.check_output(['ss','-H','-u','-l','-n'],text=True)
     if re.search(r'(?:^|\s)\S*:7687\s',sockets):
@@ -122,6 +146,7 @@ def imu_preflight():
     The H30 process repeats its own identity and exclusive-lease checks at
     acquisition time. No device number or alternative serial port is guessed.
     """
+    require_device_bindings()
     from wc_imu.ros_node import verify_device_identity, require_unoccupied
     actual, _ = verify_device_identity(H30_DEVICE, H30_BY_ID, H30_SERIAL)
     require_unoccupied(actual)
@@ -253,7 +278,7 @@ def main(argv=None):
                 'build','--base-paths',str(ROOT/'src'),'--build-base',str(ROOT/'build/main'),
                 '--install-base',str(ROOT/'install/main'),'--executor','sequential','--event-handlers','console_direct+']
             env=os.environ.copy();env.update(environment());env['CMAKE_BUILD_PARALLEL_LEVEL']='2';env['MAKEFLAGS']='-j2'
-            return subprocess.call(['bash','--noprofile','--norc','-c','source /opt/ros/humble/setup.bash && exec "$@"','wc_build',*command],env=env,cwd=ROOT)
+            return subprocess.call(['bash','--noprofile','--norc','-c','source "$1" && shift && exec "$@"','wc_build',str(ros_setup_path()),*command],env=env,cwd=ROOT)
         if args.command=='test':
             return subprocess.call(ros_command(['bash',ROOT/'tests/run_target_tests.sh']),cwd=ROOT)
         if args.command in ('status','stop'):
@@ -292,7 +317,7 @@ def main(argv=None):
                 if not args.lidar_only:
                     commands.append(ros_command([sys.executable,'-m','wc_imu.ros_node',
                         '--device',H30_DEVICE,'--expected-by-id',H30_BY_ID,
-                        '--hardware-serial',H30_SERIAL,'--sensor-id','H30-'+H30_SERIAL,
+                        '--hardware-serial',H30_SERIAL,'--sensor-id',DEVICE_BINDINGS['imu']['sensor_id'],
                         '--session-id',args.session,'--run-root',str(RUN),
                         '--duration',str(args.duration),'--stale-timeout','2.0',
                         '--poll-period-ms',str(args.imu_poll_period_ms)]))

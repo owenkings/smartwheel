@@ -25,7 +25,7 @@ def test_current_topology_is_configuration_driven_but_other_identity_protocol_fi
     config['expected_usb_path'] = 'platform-3610000.usb-usb-0:3.1:1.0'
     assert source.validate_config(config) == config
     for key, value in [('usb_pid', '55d3'), ('baud', 115200), ('device', '/dev/ttyUSB0'),
-                       ('expected_by_id', '/dev/serial/by-id/OTHER'), ('register', 2)]:
+                       ('expected_by_id', '/dev/ttyUSB0'), ('register', 2)]:
         changed = copy.deepcopy(config); changed[key] = value
         with pytest.raises(ValueError): source.validate_config(changed)
 

@@ -10,6 +10,7 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+from .project_paths import capture_staging_root
 import shutil
 import signal
 import stat
@@ -18,6 +19,7 @@ import sys
 import time
 
 from .source_archive import atomic_json, digest
+from .mapping_control_paths import manual_socket_path
 
 RESERVE_BYTES = 2*1024**3
 MANUAL_READY_TIMEOUT_S = 20
@@ -25,7 +27,7 @@ ALL_SOURCE_READY_TIMEOUT_S = 30
 SOFTWARE_SNAPSHOT_BUDGET_BYTES = 256*1024**2
 PROFILES = ('mapping_core', 'mapping_cameras', 'all_sensors')
 CAMERA_PROFILES = ('mapping_cameras', 'all_sensors')
-MEMORY_STAGING_ROOT = Path('/dev/shm/wc_capture')
+MEMORY_STAGING_ROOT = capture_staging_root()
 MEMORY_RESERVE_BYTES = 4*1024**3
 RECORDER_ITEM_ESTIMATE_BYTES = 2*1024**2
 
@@ -265,9 +267,10 @@ def capacity(profile, duration, free_bytes, camera_profile=None, *, initializati
 
 def source_commands(root, run, directory, session, profile, *, manual_drive=False):
     source_selection(profile)
-    from .cli import ros_command, H30_DEVICE, H30_BY_ID, H30_SERIAL
+    from .cli import ros_command
     py = sys.executable
     config = directory/'configuration'
+    imu = json.loads((config/'device_bindings.json').read_text())['imu']
     commands = {
         'lidar': ros_command(['ros2', 'launch', 'wc_xt_driver', 'dual_sources.launch.py',
             'source_mode:=dual', 'session_id:='+session, 'run_root:='+str(run), 'allow_hardware:=true',
@@ -275,8 +278,8 @@ def source_commands(root, run, directory, session, profile, *, manual_drive=Fals
             'require_recorder:=true',
             'read_only_probe:=false', 'device_config_policy:=preserve_current',
             'publish_cloud_mirror:=false', 'max_runtime_seconds:=0', 'source_stale_seconds:=3']),
-        'imu': ros_command([py, '-m', 'wc_imu.ros_node', '--device', H30_DEVICE,
-            '--expected-by-id', H30_BY_ID, '--hardware-serial', H30_SERIAL, '--sensor-id', 'H30-'+H30_SERIAL,
+        'imu': ros_command([py, '-m', 'wc_imu.ros_node', '--device', imu['device'],
+            '--expected-by-id', imu['expected_by_id'], '--hardware-serial', imu['hardware_serial'], '--sensor-id', imu['sensor_id'],
             '--session-id', session, '--run-root', run, '--duration', '0', '--stale-timeout', '2',
             '--require-recorder', '--journal-dir', directory/'sources/imu']),
         'wheel': ros_command([py, '-m', 'wc_motion.feedback_transport', '--config', config/'wheel_feedback.json',
@@ -332,7 +335,7 @@ def manual_runtime_configuration(setup, wheel_hardware, directory, session):
     return dict(session_id=session, source_mode='real', status='EXPERIMENT', duration_s=0,
                 continuous_mapping=True, wheel_device_id=hardware['device_id'],
                 wheel_hardware_config=str(Path(directory)/'configuration/wheel_feedback.json'),
-                wheel_candidate=resolved['wheel_candidate'], manual_controls=controls,
+                wheel_candidate=dict(resolved['wheel_candidate'], device_id=hardware['device_id']), manual_controls=controls,
                 control_source='capture_manual_drive', capture_manual_drive=True,
                 motion_estimation=False, slam=False,
                 manual_authorization={'source': 'EXPLICIT_CAPTURE_MANUAL_DRIVE_ARGUMENT',
@@ -751,6 +754,17 @@ def snapshot(root, directory, *, profile='all_sensors', storage_policy=None):
     for destination, source in paths.items():
         shutil.copyfile(root/source, cfg/destination)
         hashes[str((cfg/destination).relative_to(directory))] = digest(cfg/destination)
+    from .cli import require_device_bindings
+    device_bindings = require_device_bindings()
+    atomic_json(cfg/'device_bindings.json', device_bindings)
+    hashes['configuration/device_bindings.json'] = digest(cfg/'device_bindings.json')
+    # Preserve the original runtime bytes before deriving the active sensor ID.
+    shutil.copyfile(cfg/'runtime_config.json', cfg/'runtime_config_source.json')
+    hashes['configuration/runtime_config_source.json'] = digest(cfg/'runtime_config_source.json')
+    runtime = json.loads((cfg/'runtime_config.json').read_text())
+    runtime['imu_sensor_id'] = device_bindings['imu']['sensor_id']
+    atomic_json(cfg/'runtime_config.json', runtime)
+    hashes['configuration/runtime_config.json'] = digest(cfg/'runtime_config.json')
     # Preserve referenced calibration evidence and source code identities.
     shutil.copytree(root/'config/calibration', cfg/'calibration')
     shutil.copytree(root/'install/main/wc_xt_driver/share/wc_xt_driver/config', cfg/'lidar')
@@ -780,8 +794,9 @@ def run_capture(args):
     recorder_queue_size = getattr(args, 'recorder_queue_size', 256)
     if type(recorder_queue_size) is not int or not 1 <= recorder_queue_size <= 8192:
         raise ValueError('recorder-queue-size must be an integer 1..8192')
-    from .cli import ROOT, RUN, target, environment, ros_command, H30_SERIAL
+    from .cli import ROOT, RUN, target, environment, ros_command, require_device_bindings
     target()
+    device_bindings = require_device_bindings()
     manual_drive = bool(getattr(args, 'manual_drive', False))
     preview = bool(getattr(args, 'preview', False))
     staging = getattr(args, 'staging', 'disk') # Existing library callers keep their disk contract.
@@ -792,7 +807,7 @@ def run_capture(args):
     destination_options = {'destination_guard':destination_guard} if destination_guard is not None else {}
     if (destination_guard is not None and manual_drive and staging=='disk'
             and destination_guard.metadata['filesystem'] in ('exfat','fuseblk','fuse.exfat')):
-        raise ValueError('manual-drive on exFAT requires --staging memory for its Unix socket')
+        raise ValueError('manual-drive recording on exFAT currently supports only --staging memory; the wheel owner requires an authenticated RAM capture session')
     if destination_guard is not None and not output_root.is_dir():
         raise ValueError('CAPTURE_DESTINATION_UNAVAILABLE: external output-root must already exist')
     checks = preflight(ROOT, args.profile, args.duration, manual_drive=manual_drive,
@@ -851,10 +866,10 @@ def run_capture(args):
     import fcntl
     with ExitStack() as stack:
         if destination_guard is not None: destination_guard.check()
-        (RUN/'locks').mkdir(parents=True, exist_ok=True)
+        RUN.mkdir(parents=True, exist_ok=True)  # Device journals still belong to this checkout.
+        from .runtime_locks import acquire_resource_lock
         for name in ('sensor_owner.lock', 'domain-83-source.lock'):
-            stream = stack.enter_context((RUN/'locks'/name).open('a+'))
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            stack.enter_context(acquire_resource_lock(name))
         if destination_guard is not None: destination_guard.check()
         final_directory.mkdir(parents=destination_guard is None, exist_ok=False)
         if destination_guard is not None: destination_guard.check()
@@ -871,7 +886,7 @@ def run_capture(args):
                           storage_policy=getattr(destination_guard, 'storage_policy', None))
         from .capture_contract import build_capture_contract, read_source_readiness
         contract = build_capture_contract(directory/'configuration',args.profile,args.session,
-                                           imu_sensor_id='H30-'+H30_SERIAL)
+                                           imu_sensor_id=device_bindings['imu']['sensor_id'])
         atomic_json(directory/'configuration/capture_contract.json',contract)
         hashes['configuration/capture_contract.json'] = digest(directory/'configuration/capture_contract.json')
         if manual_drive:
@@ -891,7 +906,8 @@ def run_capture(args):
         manifest = dict(result, schema_version=2, session_id=args.session, status='RECORDING', recording_complete=False,
                         diagnostic_capture=args.diagnostic, bag_path='bag', mode='all',
                         runtime_config_path='configuration/runtime_config.json',
-                        hardware_setup_path='configuration/hardware_setup.json', imu_sensor_id='H30-'+H30_SERIAL,
+                        hardware_setup_path='configuration/hardware_setup.json', imu_sensor_id=device_bindings['imu']['sensor_id'],
+                        project_root=str(ROOT), manual_socket_directory=str(manual_socket_path(ROOT,directory,args.session).parent) if manual_drive else None,
                         input_hashes=hashes, commands=commands, recorder_command=recorder_command,
                         capture_contract_required=True,capture_contract_path='configuration/capture_contract.json',
                         time_policy='RECORDER_RECEIPT_WALL_TIME_WITH_ORIGINAL_SOURCE_MONOTONIC_AND_SEQUENCE_RETAINED',

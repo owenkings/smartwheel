@@ -20,6 +20,10 @@ def test_camera_scope_and_commands_exclude_ultrasound_without_changing_all_senso
     selected = capture.source_selection('mapping_cameras')
     assert set(selected['selected_sources']) == {'lidar_left', 'lidar_right', 'imu', 'wheel'} | CAMERAS
     assert selected['excluded_sources'] == ['ultrasonic']
+    bindings = json.loads((PROJECT/'config/device_bindings.json').read_text(encoding='utf-8'))
+    for directory in (tmp_path/'capture', tmp_path/'all'):
+        (directory/'configuration').mkdir(parents=True)
+        atomic_json(directory/'configuration/device_bindings.json', bindings)
     commands = capture.source_commands(PROJECT, tmp_path/'run', tmp_path/'capture', 'test', 'mapping_cameras')
     assert set(commands) == {'lidar', 'imu', 'wheel'} | CAMERAS
     assert 'ultrasonic' not in json.dumps(commands)
@@ -153,9 +157,18 @@ def test_audit_cannot_change_the_frozen_profile_to_bypass_required_sources(tmp_p
     assert any(row['code'] == 'CAPTURE_SOURCE_SELECTION_MISMATCH' for row in result['issues'])
 
 
-def test_doctor_and_capture_accept_new_profile_without_starting_devices(monkeypatch, capsys):
+def test_doctor_and_capture_accept_new_profile_without_starting_devices(tmp_path, monkeypatch, capsys):
+    root = tmp_path/'project'
+    config = root/'config'
+    config.mkdir(parents=True)
+    archive = tmp_path/'archive'
+    (archive/'data/experiments').mkdir(parents=True)
+    for name in ('live_unvalidated.json', 'hardware_setup.json'):
+        shutil.copyfile(PROJECT/'config'/name, config/name)
+    atomic_json(config/'storage.json', dict(schema_version=2, backend='directory',
+        archive_root=str(archive), fallback_allowed=False))
     monkeypatch.setattr(cli, 'target', lambda: None)
-    monkeypatch.setattr(cli, 'ROOT', PROJECT)
+    monkeypatch.setattr(cli, 'ROOT', root)
     monkeypatch.setattr(capture, 'preflight', lambda *args, **kwargs: dict(capacity={'sufficient': True}))
     monkeypatch.setattr(capture.shutil, 'disk_usage', lambda path: SimpleNamespace(free=10**12))
     assert cli.main(['doctor', '--profile', 'mapping_cameras']) == 0

@@ -8,23 +8,20 @@ clear-fault, mode, control-word, brake-release or autonomous command is emitted.
 
 import argparse
 import ctypes
-import getpass
 import hashlib
 import json
 import math
 import os
-import platform
 from pathlib import Path
 import select
 import signal
-import socket
 import struct
 import sys
 import threading
 import time
 import uuid
 
-from .feedback_transport import FeedbackSerialLease, QUERY, SERIAL, QueryFailure, bounded, validate_config
+from .feedback_transport import FeedbackSerialLease, QUERY, QueryFailure, bounded, validate_config
 from .protocol import FeedbackError, checked_frame, crc16, integer, parse_exchange, read_request
 
 
@@ -63,12 +60,17 @@ class ManualContract:
     by the manufacturer. Hashes prevent using a different parameter/doc revision
     accidentally; the live state is checked independently before every command.
     """
-    def __init__(self, config, evidence, project_root):
+    def __init__(self, config, evidence, project_root, *, expected_device_id=None):
         self.profile = profile_from_config(config)
         self.project_root = Path(project_root).resolve()
         if evidence.get('schema') != 'wc_manual_stop_evidence_v1' or evidence.get('state') != 'REVIEWED_FOR_EMPTY_CHAIR_MANUAL':
             raise FeedbackError('reviewed stop/firmware/watchdog evidence is missing')
-        if evidence.get('device_id') != 'ZLAC8030D-'+SERIAL or not evidence.get('firmware_id'):
+        from wc_runtime.device_bindings import identity_token
+        try:
+            self.device_id = identity_token(evidence.get('device_id'), prefix='ZLAC8030D-')
+        except ValueError as error:
+            raise FeedbackError(str(error)) from error
+        if (expected_device_id is not None and self.device_id != expected_device_id) or not evidence.get('firmware_id'):
             raise FeedbackError('stop evidence must identify this controller and firmware')
         if evidence.get('command_profile_sha256') != canonical_hash(self.profile):
             raise FeedbackError('manual command profile differs from the reviewed evidence')
@@ -183,6 +185,8 @@ class ManualRtuChannel:
     """
     def __init__(self, lease, contract, journal, *, cancel_check=None):
         self.lease, self.contract, self.journal = lease, contract, journal
+        if hasattr(lease, 'config') and lease.config.get('device_id') != contract.device_id:
+            raise FeedbackError('manual evidence and verified serial lease identify different controllers')
         self.lock = threading.RLock()
         self.armed = False
         self.failed = False
@@ -213,7 +217,7 @@ class ManualRtuChannel:
 
     def _emit(self, data):
         self.journal({'schema': 'wc_manual_transaction_v1', 'sequence': self.sequence,
-            'monotonic_ns': time.monotonic_ns(), 'device_id': 'ZLAC8030D-'+SERIAL,
+            'monotonic_ns': time.monotonic_ns(), 'device_id': self.contract.device_id,
             'stop_contract_sha256': self.contract.evidence_hash, **data})
 
     def _exchange(self, request):
@@ -284,7 +288,7 @@ class ManualRtuChannel:
         self.require_not_cancelled()  # A signal during a blocking read cannot lead to a later velocity write.
         if request == QUERY:
             self.journal({'schema': 'wc_wheel_feedback_v1', 'event': 'manual_feedback',
-                'device_id': 'ZLAC8030D-'+SERIAL, 'stream_epoch': self.feedback_epoch,
+                'device_id': self.contract.device_id, 'stream_epoch': self.feedback_epoch,
                 'sequence': self.feedback_sequence, 'request_hex': request.hex(), 'response_hex': response.hex(),
                 'stamp_ns': time.time_ns(), 'receive_monotonic_ns': time.monotonic_ns(),
                 'time_valid': False, 'time_source': 'arrival_only', 'uncertainty_ns': None,
@@ -535,7 +539,9 @@ def _ros_bindings():
 class RosFeedbackPublisher:
     """Publish completed same-owner feedback; never commands, TF or odometry."""
 
-    def __init__(self):
+    def __init__(self, device_id):
+        from wc_runtime.device_bindings import identity_token
+        self.device_id = identity_token(device_id, prefix='ZLAC8030D-')
         self.ros, self.context, no_handlers, self.message_type = _ros_bindings()
         self.node = None
         self.failed = False
@@ -556,7 +562,7 @@ class RosFeedbackPublisher:
             return False
         try:
             if record.get('event') != 'manual_feedback' or record.get('status') != 'RESPONSE_VALID' or \
-                    record.get('device_id') != 'ZLAC8030D-'+SERIAL or record.get('request_hex') != QUERY.hex():
+                    record.get('device_id') != self.device_id or record.get('request_hex') != QUERY.hex():
                 raise FeedbackError('only completed same-owner wheel feedback may be published')
             parse_exchange(QUERY, bytes.fromhex(record['response_hex']))
             self.publisher.publish(self.message_type(data=json.dumps(record, allow_nan=False)))
@@ -624,12 +630,14 @@ def main(argv=None):
     if args.evidence is None or args.run_root is None or not args.run_root.is_absolute():
         raise FeedbackError('real mode requires reviewed evidence and an absolute shared run root')
     config = json.loads(args.config.read_text(encoding='utf-8'))
-    contract = ManualContract(config, json.loads(args.evidence.read_text(encoding='utf-8')), args.run_root.parent)
     feedback_path = args.feedback_config or args.config.with_name('wheel_feedback_current.json')
     feedback_config = validate_config(json.loads(feedback_path.read_text(encoding='utf-8')))
-    if args.run_root.resolve() != Path('/home/nvidia/wheelchair/.phase1_runtime') or \
-            getpass.getuser() != 'nvidia' or socket.gethostname() != 'ubuntu' or platform.machine() != 'aarch64':
-        raise FeedbackError('real manual mode requires the confirmed Orin project/identity')
+    from wc_runtime.project_paths import project_root, runtime_root
+    root = project_root()
+    contract = ManualContract(config, json.loads(args.evidence.read_text(encoding='utf-8')), root,
+                              expected_device_id=feedback_config['device_id'])
+    if args.run_root.resolve() != runtime_root(root):
+        raise FeedbackError('real manual mode requires this project runtime root')
     if not sys.stdin.isatty() or sys.platform != 'linux':
         raise FeedbackError('real manual entry requires the user interactive Linux terminal')
     stopped = False
@@ -667,7 +675,7 @@ def main(argv=None):
             session.preflight()
             channel.require_not_cancelled()
             if args.publish_ros:
-                ros_output = RosFeedbackPublisher()
+                ros_output = RosFeedbackPublisher(contract.device_id)
             import termios
             import tty
             previous = termios.tcgetattr(sys.stdin.fileno())

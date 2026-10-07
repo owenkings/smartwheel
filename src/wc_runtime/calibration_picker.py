@@ -104,7 +104,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     target()
     if Path.cwd().resolve() != ROOT:
-        raise RuntimeError('Run from /home/nvidia/wheelchair')
+        raise RuntimeError('Run from the selected project root')
     source = resolve_input(args.input, args.scene_index)
     open_browser = not args.no_browser
     if open_browser:

@@ -17,6 +17,7 @@ from wc_motion.protocol import FeedbackError, crc16, read_request
 
 
 ROOT = Path(__file__).resolve().parents[2]
+DEVICE_ID = json.loads((ROOT/'config/wheel_feedback_current.json').read_text())['device_id']
 STATE_READ = read_request(1, 0x3000, 5)  # SYNTHETIC only, not an 8030D register claim.
 
 
@@ -41,7 +42,7 @@ def files(tmp_path):
                'mask': 65535, 'equals': value} for index, (purpose, value) in enumerate([
                    ('firmware', 7), ('drive_enabled', 1), ('velocity_mode', 3), ('controller_watchdog', 250), ('stop_policy', 0)])]
     evidence = {'schema': 'wc_manual_stop_evidence_v1', 'state': 'REVIEWED_FOR_EMPTY_CHAIR_MANUAL',
-        'device_id': 'ZLAC8030D-'+mh.SERIAL, 'firmware_id': 'SYNTHETIC-TEST-ONLY',
+        'device_id': DEVICE_ID, 'firmware_id': 'SYNTHETIC-TEST-ONLY',
         'reviewer': 'SYNTHETIC_FIXTURE', 'reviewed_at': 'TEST_ONLY', 'sources': sources,
         'command_profile_sha256': mh.canonical_hash(config['command_profile']),
         'command_registers_units_directions_verified': True, 'controller_disconnect_stop_verified': True,
@@ -467,7 +468,7 @@ def test_raw_publisher_preserves_same_owner_feedback_without_claiming_valid_time
     session, channel, wire, clock, journal = hardware
     session.preflight()
     raw = next(record for record in journal if record.get('schema') == 'wc_wheel_feedback_v1')
-    publisher = mh.RosFeedbackPublisher()
+    publisher = mh.RosFeedbackPublisher(DEVICE_ID)
     assert publisher.publish_record(raw)
     assert not publisher.publish_record({'event': 'transaction_complete', 'request_hex': mh.ZERO_REQUEST.hex()})
     assert len(ros_double.messages) == 1
@@ -490,14 +491,14 @@ def test_ros_creation_failure_releases_its_context_without_replacing_signal_hand
         raise RuntimeError('synthetic node creation failure')
     ros_double.ros.create_node = fail
     with pytest.raises(RuntimeError, match='synthetic'):
-        mh.RosFeedbackPublisher()
+        mh.RosFeedbackPublisher(DEVICE_ID)
     assert not ros_double.context.active
     assert ros_double.events[-1] == ('shutdown', {'context': ros_double.context, 'uninstall_handlers': False})
 
 
 def test_publish_failure_cancels_active_motion_and_does_not_block_stop_feedback(hardware, ros_double):
     session, channel, wire, clock, journal = hardware
-    publisher = mh.RosFeedbackPublisher()
+    publisher = mh.RosFeedbackPublisher(DEVICE_ID)
     def observe(record):
         journal.append(record)
         publisher.publish_record(record)
@@ -520,7 +521,7 @@ def test_publish_failure_cancels_active_motion_and_does_not_block_stop_feedback(
 
 
 def test_ros_rejects_uncompleted_raw_feedback(ros_double):
-    publisher = mh.RosFeedbackPublisher()
+    publisher = mh.RosFeedbackPublisher(DEVICE_ID)
     with pytest.raises(FeedbackError, match='completed'):
         publisher.publish_record({'schema': 'wc_wheel_feedback_v1', 'status': 'TIMEOUT'})
     assert not ros_double.messages and publisher.failed

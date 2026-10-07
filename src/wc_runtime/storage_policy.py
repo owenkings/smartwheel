@@ -6,11 +6,13 @@ archives. A machine-local override selects the destination. Configured destinati
 import hashlib
 import json
 from pathlib import Path
+from .project_paths import project_root as discover_project
 
 
 DATA_NAMES = ('data', 'reports', 'maps')
 LOCAL_NAMES = ('src', 'scripts', 'config', 'install', 'build', '.phase1_runtime',
                'tests', 'docs', 'state', 'vendor_patches')
+# Historical archive alias only; never selects the executing checkout.
 ORIN_PROJECT = Path('/home/nvidia/wheelchair')
 
 
@@ -46,7 +48,7 @@ class StoragePolicy:
                     raise ValueError('STORAGE_CONFIG_INVALID: expected a small ordinary JSON file')
                 self.configuration_files[path.name] = path.read_bytes()
         if not configuration.exists():
-            if self.project_root == ORIN_PROJECT:
+            if self.project_root == ORIN_PROJECT or (self.project_root/'scripts/wc_phase1').is_file():
                 raise ValueError('STORAGE_CONFIG_MISSING: explicit storage configuration is required')
             return  # Legacy checkouts and synthetic tests keep their old contract.
         self.configuration_path = configuration
@@ -206,7 +208,7 @@ logical_storage_path = logical_path
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description='Print a verified data path without creating it.')
-    parser.add_argument('--project-root', type=Path, default=ORIN_PROJECT)
+    parser.add_argument('--project-root', type=Path, default=discover_project())
     parser.add_argument('path')
     args = parser.parse_args(argv)
     print(resolve_storage_path(args.project_root, args.path))

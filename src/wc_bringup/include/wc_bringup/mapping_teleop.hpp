@@ -29,6 +29,12 @@ struct TeleopSession
 // An offline saved-map view must never attach to a vehicle control socket.
 TeleopSession teleop_session_from_arguments(const QStringList & arguments);
 
+// Validate the deterministic short socket location against this exact project
+// and data session. Does not create directories or connect to a socket.
+QString checked_manual_socket_directory(const QString & project, const QString & directory,
+  const QString & identity, const QString & claimed);
+
+
 class MappingTeleopPanel final : public QWidget
 {
 public:

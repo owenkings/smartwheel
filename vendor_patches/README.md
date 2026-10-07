@@ -2,7 +2,7 @@
 
 Upstream: https://github.com/XT-Toffuture/xtsdk_ros.git
 Pinned commit: `965d31ae726c44b47ad646666c3c5fa2a4d91bf4`.
-Source location: `SDKs/xtsdk_ros`. The Windows preparation copy has its upstream Git history; the target contains its reviewed exported snapshot without a fabricated `.git`. No vendor install, selection, firmware or sample program was executed. The exact project changes are in `xtsdk_ros_965d31a.patch`.
+Source location: `<project>/SDKs/xtsdk_ros`, independent of the account name or clone location. A fresh deployment uses the pinned checkout below; a reviewed source export is identified separately and never given a fabricated Git history. The project does not run vendor install, selection, firmware or sample programs. Exact project changes are in `xtsdk_ros_965d31a.patch`.
 
 Every target configure checks the 32 source/header/library entries in `xtsdk_ros_965d31a.manifest.json`, the pinned patch bytes, and a reverse patch check on an isolated copy that normalizes CRLF to LF only. Original SDK binaries remain unchanged; reviewed source changes are recorded by the patch. A real SDK checkout must also match its own recorded HEAD; an export is explicitly `VERIFIED_EXPORTED_SNAPSHOT`, `git_checkout_verified=false`, `sdk_head=null`. Generated build/compiler/input provenance is installed at `install/main/wc_xt_driver/share/wc_xt_driver/provenance/vendor_provenance.json`. A failed check blocks the build; do not bypass it or replace an existing SDK to hide a mismatch.
 
@@ -23,21 +23,19 @@ Original same-port finding: upstream `communicationNet.cpp` binds `0.0.0.0:port`
 
 Root also completed real concurrent bags `static_20260911T141849Z` and `static_20260911T144022Z`, each containing 296 left and 296 right authoritative frames. Both recorded-data audits are `DATA_REVIEW_OK`. The private recordings verified distinct identities. This public documentation substitutes example serials: left `XTM60B00000000000012`, device `192.168.0.101` to receiver `192.168.0.100:7687`; right `XTM60B00000000000013`, device `192.168.1.101` to receiver `192.168.1.100:7687`. The source identities and epochs are distinct, with no raw-key collision in the audited recordings. The private recordings provide same-port concurrent reception evidence for their original endpoints; the public example serials are not actual readback, not evidence of absent optical interference, metric accuracy, physical mounting, or validated sample synchronization. See `reports/sensor_handoff.md` and `reports/live_static/`; the second session's component logs are archived in `reports/live_static/static_20260911T144022Z/` and show both drivers completed SDK cleanup and exited cleanly.
 
-Build/test and live hardware execution are root-owned on Orin. `wc_xt_driver` defaults to disabled hardware and a read-only probe. Identity/endpoint mismatch refuses acquisition. A read-only probe never applies imaging setters. A managed live acquisition strictly parses all 46 xtcfg fields. The default `preserve_current` policy retains device imaging settings and applies the selected supported host filters; device setters require the explicit reviewed `apply_xtcfg` policy. The xtcfg input file remains unchanged; before/after readbacks, command ACKs and every field disposition are stored. `pclFilterOn` remains explicitly unsupported and causes a PARTIAL_XTCFG label, not a quality-test gate or an acquisition refusal.
+Builds and offline processing target Ubuntu 22.04 / ROS 2 Humble on Linux aarch64 and x86_64. Historical hardware results above were obtained on Orin; they do not certify a new host or device. Live acquisition remains an explicit operator action. `wc_xt_driver` defaults to disabled hardware and a read-only probe. Identity/endpoint mismatch refuses acquisition. A read-only probe never applies imaging setters. A managed live acquisition strictly parses all 46 xtcfg fields. The default `preserve_current` policy retains device imaging settings and applies the selected supported host filters; device setters require the explicit reviewed `apply_xtcfg` policy. The xtcfg input file remains unchanged; before/after readbacks, command ACKs and every field disposition are stored. `pclFilterOn` remains explicitly unsupported and causes a PARTIAL_XTCFG label, not a quality-test gate or an acquisition refusal.
 
 Current exact patch SHA256: `633832092c07a47e2e557d0023ddf1f882295a97e2b9bcf640e8f0a7ab9e8ecd`. This supersedes the prior revision and includes the compatible filter backport, raw/filtered pairing and bounded strict SDK queue/drain diagnostics. Native results quoted below are historical until root reruns the updated build. `tests/sensors/test_xt_hdr_bounds.cpp` directly tests the real vendor decoder with synthetic data, all 5 valid stages and all 22 invalid nibble placements, plus truncation, stale validity, odd dimensions, selected unknown frequency and recovery. Its target result is PASS, as reported above; source preparation alone is not a passed test.
 
 ## Reproduce the pinned source without touching an existing checkout
 
-These commands are for the verified Orin user/project only. They are documentation, not automatically executed here. If `SDKs/xtsdk_ros` already exists (including a symlink), the subshell stops and preserves it. Do not reset, delete, replace or reapply over an existing project SDK. The final SDK is built only through this project's reviewed CMake, never a vendor sample or installation/selection script.
+Run these commands from the cloned project root on a supported Linux host. Paths are quoted so the clone directory may contain spaces; no particular username, hostname or network-interface name is required. If `SDKs/xtsdk_ros` already exists (including a symlink), the subshell stops and preserves it. Do not reset, delete, replace or reapply over an existing project SDK. The final SDK is built only through this project's reviewed CMake, never a vendor sample or installation/selection script.
 
 ```bash
 (
   set -euo pipefail
-  test "$(hostname)" = ubuntu
-  test "$(id -un)" = nvidia
-  cd /home/nvidia/wheelchair
-  test "$(pwd -P)" = /home/nvidia/wheelchair
+  test -f scripts/wc_phase1
+  test -d src/wc_runtime
   if test -e SDKs/xtsdk_ros || test -L SDKs/xtsdk_ros; then
     printf '%s\n' 'Existing SDK preserved; stop and review it separately.' >&2
     exit 1
@@ -48,8 +46,9 @@ These commands are for the verified Orin user/project only. They are documentati
   git -C SDKs/xtsdk_ros checkout --detach 965d31ae726c44b47ad646666c3c5fa2a4d91bf4
   test "$(git -C SDKs/xtsdk_ros rev-parse HEAD)" = 965d31ae726c44b47ad646666c3c5fa2a4d91bf4
   printf '%s\n' '633832092c07a47e2e557d0023ddf1f882295a97e2b9bcf640e8f0a7ab9e8ecd  vendor_patches/xtsdk_ros_965d31a.patch' | sha256sum --check -
-  git -C SDKs/xtsdk_ros apply --check /home/nvidia/wheelchair/vendor_patches/xtsdk_ros_965d31a.patch
-  git -C SDKs/xtsdk_ros apply /home/nvidia/wheelchair/vendor_patches/xtsdk_ros_965d31a.patch
+  PATCH_FILE="$PWD/vendor_patches/xtsdk_ros_965d31a.patch"
+  git -C SDKs/xtsdk_ros apply --check "$PATCH_FILE"
+  git -C SDKs/xtsdk_ros apply "$PATCH_FILE"
   git -C SDKs/xtsdk_ros diff --stat
 )
 ```
@@ -59,3 +58,5 @@ The reproduction recipe above restores reviewed SDK source only. This branch inc
 ## Included filter runtime
 
 Only the fixed aarch64 and x86_64 filter libraries are vendored under `SDKs/xtsdk_filter_3d3db067/`. The rest of the SDK uses the clone recipe above. See the [bundle NOTICE](../SDKs/xtsdk_filter_3d3db067/NOTICE.md) for exact upstream ownership and hashes, and the [deployment guide](../docs/deployment.md) for ABI dependencies and a complete build.
+
+The presence of both binaries does not remove their Linux ABI requirements. The filter runtime requires legacy TBB, and the mapping backend requires the matched OpenCV 4.5.4 extraction prepared by `scripts/prepare_opencv45.sh`. Keep the full source and filter manifests unchanged when moving between architectures; let the project build select the host architecture. Native Windows is not a supported runtime, and WSL2 hardware forwarding / GUI behavior has not been field-validated.

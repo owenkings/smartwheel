@@ -2,6 +2,7 @@
 """Read project evidence and verify owned process identities; never stop a process."""
 import datetime
 import errno
+import getpass
 import fcntl
 import hashlib
 import json
@@ -12,9 +13,22 @@ import socket
 import subprocess
 import sys
 
-ROOT = Path('/home/nvidia/wheelchair')
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
+# Locate this checkout from either scripts/ or its in-tree ROS install.
+# Never select a project merely because it is the caller's current directory.
+sys.dont_write_bytecode = True
+_candidates = list(Path(__file__).resolve().parents)
+for _candidate in _candidates:
+    if ((_candidate/'src/wc_runtime').is_dir() and
+            (_candidate/'config/storage.json').is_file() and
+            (_candidate/'scripts/wc_phase1').is_file()):
+        sys.path.insert(0, str(_candidate/'src'))
+        break
+else:
+    raise RuntimeError('Cannot locate the wheelchair checkout; set WHEELCHAIR_PROJECT_ROOT')
+from wc_runtime.project_paths import project_root
+ROOT = project_root(start=__file__)
 from wc_runtime.storage_policy import StoragePolicy
+from wc_runtime.project_paths import require_linux_runtime
 
 
 def digest(path):
@@ -41,8 +55,7 @@ def process_state(pid, ticks, proc_root=Path('/proc')):
 
 
 def main():
-    if (socket.gethostname(),os.getuid(),platform.machine(),Path.cwd().resolve()) != ('ubuntu',1000,'aarch64',ROOT):
-        raise RuntimeError('unexpected target identity/root')
+    require_linux_runtime()
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     storage = StoragePolicy(ROOT)
     output = storage.resolve(Path('reports/delivery')/stamp)
@@ -127,7 +140,7 @@ def main():
                      'install/main/wc_bringup/local/lib/python3.10/dist-packages/wc_fusion/ros_node.py'):
         path = ROOT/relative
         installed[relative] = dict(sha256=digest(path),bytes=path.stat().st_size) if path.is_file() else 'MISSING'
-    identity = dict(hostname=socket.gethostname(),user=os.getlogin() if os.isatty(0) else 'nvidia',
+    identity = dict(hostname=socket.gethostname(),user=getpass.getuser(),
                     uid=os.getuid(),architecture=platform.machine(),root=str(ROOT))
     report = dict(created_utc=stamp,target=identity,formal_phase1_acceptance='NOT_PASSED',
                   evidence=evidence,source_sha256=sources,installed_artifacts=installed,sessions=sessions,locks=locks,udp_7687_listeners=udp,

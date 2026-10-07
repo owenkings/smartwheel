@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
+from .project_paths import ros_setup_path
 import re
 import shutil
 import signal
@@ -448,7 +449,7 @@ def export_database(source, report, temporary, *, project_root, runner=subproces
             with closing(sqlite3.connect(copy)) as destination:
                 original.backup(destination)
         require(fingerprint(database)['sha256'] == before, 'Original database changed during copying')
-        command = ['/opt/ros/humble/bin/rtabmap-export', '--scan', '--cloud', '--map', '--poses',
+        command = [str(ros_setup_path().parent/'bin/rtabmap-export'), '--scan', '--cloud', '--map', '--poses',
                    '--poses_format', '11', '--opt', '2', '--voxel', '.03', '--output', 'map_3d',
                    '--output_dir', str(output), str(copy)]
         with (output/'export.log').open('xb') as log:
@@ -552,7 +553,9 @@ def run_view(report, temporary, *, project_root, renderer='software', max_points
             raise RuntimeError('; '.join(errors))
 
 
-def main(argv=None, *, project_root=Path('/home/nvidia/wheelchair')):
+def main(argv=None, *, project_root=None):
+    from .project_paths import project_root as discover_project
+    project_root = discover_project() if project_root is None else Path(project_root)
     parser = argparse.ArgumentParser(description='只读查看已保存地图；支持会话目录、export 目录或 RTAB-Map .db。')
     parser.add_argument('path', nargs='?', help='已保存的地图目录或数据库，可以位于工程外')
     parser.add_argument('--check', action='store_true', help='只读检查并打印摘要，不打开窗口、不导出副本')

@@ -65,8 +65,8 @@ def test_silent_h30_can_wait_and_resume_but_device_errors_still_exit(monkeypatch
     monkeypatch.setattr(imu, 'frame_record', lambda decoded, **kwargs: {
         **kwargs, 'tid': 1, 'packet_sha256': 'synthetic', 'imu': {'field_validity': {}}})
     monkeypatch.setattr(imu, 'assign_ros_frame', lambda record, message: NS(imu=object(), source_stamp_ns=record['host_receive_ns']))
-    code = imu.main(['--device', '/SYNTHETIC', '--expected-by-id', '/SYNTHETIC',
-                     '--hardware-serial', 'SYNTHETIC', '--session-id', 'synthetic',
+    code = imu.main(['--device', '/dev/SYNTHETIC', '--expected-by-id', '/dev/serial/by-id/SYNTHETIC',
+                     '--hardware-serial', 'SYNTHETIC', '--sensor-id', 'H30-SYNTHETIC', '--session-id', 'synthetic',
                      '--run-root', '/SYNTHETIC', '--duration', '0', '--stale-timeout', str(stale_timeout)])
     assert events == ['open', 'reset', 'close', 'destroy']
     if read_error or stale_timeout:
@@ -87,5 +87,6 @@ def test_silent_h30_can_wait_and_resume_but_device_errors_still_exit(monkeypatch
 def test_invalid_h30_silence_timeout_rejected_before_ros(monkeypatch, timeout):
     monkeypatch.setitem(sys.modules, 'rclpy', NS(init=lambda **kwargs: pytest.fail('invalid timeout reached ROS')))
     with pytest.raises(imu.ImuAcquisitionError, match='nonnegative'):
-        imu.main(['--expected-by-id', '/SYNTHETIC', '--session-id', 'synthetic', '--run-root', '/SYNTHETIC',
+        imu.main(['--device', '/dev/SYNTHETIC', '--expected-by-id', '/dev/serial/by-id/SYNTHETIC',
+                  '--hardware-serial', 'SYNTHETIC', '--sensor-id', 'H30-SYNTHETIC', '--session-id', 'synthetic', '--run-root', '/SYNTHETIC',
                   '--stale-timeout', timeout])

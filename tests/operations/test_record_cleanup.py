@@ -208,8 +208,9 @@ def test_cli_waits_for_record_flush_and_reports_final_failure(tmp_path, monkeypa
 @pytest.mark.skipif(sys.platform != 'linux', reason='Actual synthetic process shutdown requires Linux pidfd/subreaping')
 @pytest.mark.parametrize('exit_code', [0, 17])
 def test_linux_record_writer_flushes_six_seconds_then_preserves_actual_exit(exit_code):
-    project = Path('/home/nvidia/wheelchair')
-    assert project.is_dir(), 'Run this process acceptance on the confirmed target project'
+    from wc_runtime.project_paths import project_root
+    project = project_root()
+    assert project.is_dir(), 'Run this process acceptance in the selected Linux project'
     session = 'ops-record-flush-'+uuid.uuid4().hex
     root = project/'.phase1_runtime'/'sessions'/session/'record'
     root.mkdir(parents=True, exist_ok=False)

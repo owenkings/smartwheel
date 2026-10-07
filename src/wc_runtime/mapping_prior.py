@@ -173,7 +173,8 @@ def validate_config(config):
     if config['motion_model'] not in ('se3_gyro', 'planar_ekf'):
         raise PriorError('motion_model must be se3_gyro or planar_ekf')
     try:
-        config['confirmed_gyro_bias'] = validate_confirmed_bias(config.get('confirmed_gyro_bias'))
+        config['confirmed_gyro_bias'] = validate_confirmed_bias(config.get('confirmed_gyro_bias'),
+                                                              expected_sensor_id=config.get('imu_sensor_id'))
         if config['motion_model'] == 'planar_ekf' or 'planar_ekf' in config:
             config['planar_ekf'] = validate_planar_config(config.get('planar_ekf'))
     except ValueError as error:
@@ -194,8 +195,11 @@ def validate_config(config):
     if config.get('base_frame') not in ('lidar_left', 'lidar_right') or \
             config.get('reference_frame') != 'mapping_reference' or config.get('guess_frame_id') != 'prior_odom':
         raise PriorError('explicit reviewed base/reference/private guess frames required')
-    if config.get('imu_sensor_id') != 'H30-0000000015':
-        raise PriorError('explicit current H30 identity required')
+    from .device_bindings import identity_token
+    try:
+        identity_token(config.get('imu_sensor_id'), prefix='H30-')
+    except ValueError as error:
+        raise PriorError('explicit frozen H30 identity required') from error
     _rotation(config.get('R_base_imu'), 'R_base_imu')
     if config.get('mount_model') == 'forward_aligned_axle':
         if 'T_base_axle' in config or config.get('same_forward') is not True:

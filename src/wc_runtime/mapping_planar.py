@@ -64,7 +64,7 @@ def validate_planar_config(value=None):
     return result
 
 
-def validate_confirmed_bias(value):
+def validate_confirmed_bias(value, *, expected_sensor_id=None):
     """Validate a declared external calibration, not prove the declaration true."""
     if value is None:
         return None
@@ -73,7 +73,9 @@ def validate_confirmed_bias(value):
     if not isinstance(value, dict) or not required <= set(value) or set(value)-required-optional:
         raise ValueError('confirmed_gyro_bias requires explicit bias and evidence provenance')
     result = copy.deepcopy(value)
-    if result['status'] != 'INDEPENDENTLY_CONFIRMED' or result['sensor_id'] != 'H30-0000000015':
+    from .device_bindings import identity_token
+    identity_token(result['sensor_id'], prefix='H30-')
+    if result['status'] != 'INDEPENDENTLY_CONFIRMED' or (expected_sensor_id is not None and result['sensor_id'] != expected_sensor_id):
         raise ValueError('confirmed_gyro_bias declaration/sensor mismatch')
     if result['source'] not in ('external_stationarity_calibration', 'operator_visual_confirmation'):
         raise ValueError('confirmed_gyro_bias source cannot be wheel-only or automatic prior inference')

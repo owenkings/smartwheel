@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+from .project_paths import ros_setup_path
 import re
 import signal
 import shutil
@@ -20,7 +21,7 @@ import time
 import numpy as np
 import yaml
 
-from .cli import ROOT,RUN,target,device_preflight,imu_preflight,ros_command,environment,H30_DEVICE,H30_BY_ID,H30_SERIAL
+from .cli import ROOT,RUN,target,device_preflight,imu_preflight,ros_command,environment,require_device_bindings
 from .prepare_picker_input import project_path,read_json,write_new,json_bytes,_json_loads
 from .storage_policy import logical_path, StoragePolicy
 from .hardware_setup import resolve_hardware_setup
@@ -94,6 +95,9 @@ def rotation(value,label):
 
 def configuration(request):
     config=read_json(ROOT,project_path(ROOT,request['config_path']))
+    if not config.get('offline_experiment', False):
+        config['device_bindings'] = json.loads(json.dumps(require_device_bindings()))
+        config['imu_sensor_id'] = config['device_bindings']['imu']['sensor_id']
     if config.get('schema_version')!=1 or config.get('status')!='EXPERIMENT' or config.get('source_mode')!='real':
         raise ValueError('建图配置须明确标记真实硬件试验')
     if request['mode'] not in ('left','right','all'):raise ValueError('无效雷达模式')
@@ -203,6 +207,7 @@ def configuration(request):
     from wc_motion.feedback_transport import validate_config
     validate_config(hardware)
     wheel=config['wheel_candidate']
+    wheel['device_id']=hardware['device_id']
     from wc_motion.history_preview import HistoryPreview
     HistoryPreview(wheel)
     config.update(mode=request['mode'],session_id=request['session_id'],
@@ -233,7 +238,7 @@ def configuration(request):
         if not bias_path.is_file() or bias_path.stat().st_size>32768:
             raise ValueError('陀螺零偏文件不存在或超过32 KiB')
         bias_raw=bias_path.read_bytes()
-        config['confirmed_gyro_bias']=validate_confirmed_bias(_json_loads(bias_raw.decode('utf-8')))
+        config['confirmed_gyro_bias']=validate_confirmed_bias(_json_loads(bias_raw.decode('utf-8')), expected_sensor_id=config['imu_sensor_id'])
         evidence_path=bias_path.with_name(bias_path.stem+'.evidence.json')
         if not evidence_path.is_file() or evidence_path.is_symlink() or evidence_path.stat().st_size>262144:
             raise ValueError('零偏文件必须附带同名 .evidence.json 依据文件')
@@ -303,7 +308,7 @@ def check_configuration(request):
 def preflight(request):
     target()
     if Path(request['project_root'])!=ROOT or Path.cwd().resolve()!=ROOT:
-        raise RuntimeError('请在 /home/nvidia/wheelchair 工程目录运行')
+        raise RuntimeError('请在 the selected project 工程目录运行')
     if configuration(request).get('offline_experiment'):
         raise ValueError('offline_experiment cannot start live sources; use compare')
     output=project_path(ROOT,request['output_dir'])
@@ -325,7 +330,7 @@ def preflight(request):
         native.append(('rtabmap_slam','rtabmap'))
         if c['odometry_source']=='icp':native.append(('rtabmap_odom','icp_odometry'))
     for package,executable in native:
-        if not (Path('/opt/ros/humble/lib')/package/executable).is_file():
+        if not (ros_setup_path().parent/'lib'/package/executable).is_file():
             raise RuntimeError('目标缺少 '+package+'/'+executable)
     for path in ['src/wc_runtime/mapping_input.py','src/wc_runtime/mapping_prior.py',
                  'src/wc_runtime/mapping_cloud.py','src/wc_runtime/mapping_bias.py',
@@ -365,8 +370,8 @@ def plan(request,config):
         ros_command([sys.executable,'-s','-m','wc_runtime.mapping_prior','--config',directory/'prior_config.json',
                      '--session-id',request['session_id'],'--output-root',directory/'prior','--wait-config-seconds','0',*close_args]),
         ros_command([sys.executable,'-s','-m','wc_runtime.mapping_monitor','--session-root',directory,*close_args]),
-        ros_command([sys.executable,'-s','-m','wc_imu.ros_node','--device',H30_DEVICE,'--expected-by-id',H30_BY_ID,
-                     '--hardware-serial',H30_SERIAL,'--sensor-id',config['imu_sensor_id'],'--session-id',request['session_id'],
+        ros_command([sys.executable,'-s','-m','wc_imu.ros_node','--device',config['device_bindings']['imu']['device'],'--expected-by-id',config['device_bindings']['imu']['expected_by_id'],
+                     '--hardware-serial',config['device_bindings']['imu']['hardware_serial'],'--sensor-id',config['imu_sensor_id'],'--session-id',request['session_id'],
                      '--run-root',RUN,'--duration',str(source_duration),'--stale-timeout','0']),
         ros_command([sys.executable,'-s','-m','wc_motion.feedback_transport','--config',ROOT/config['wheel_hardware_config'],
             '--output',directory/'wheel_feedback.jsonl','--run-root',RUN,'--samples',str(source_duration*10),
@@ -899,7 +904,7 @@ def export(handle):
     with closing(sqlite3.connect(db.as_uri()+'?mode=ro',uri=True)) as source:
         source.execute('PRAGMA query_only=ON')
         with closing(sqlite3.connect(output/'native_export_copy.db')) as dest:source.backup(dest)
-    command=['/opt/ros/humble/bin/rtabmap-export','--scan','--cloud','--map','--poses','--poses_format','11','--opt','2',
+    command=[str(ros_setup_path().parent/'bin/rtabmap-export'),'--scan','--cloud','--map','--poses','--poses_format','11','--opt','2',
              '--voxel','.03','--output','map_3d','--output_dir',str(output),str(output/'native_export_copy.db')]
     with (output/'export.log').open('xb') as stream:
         result=subprocess.run(ros_command(command),cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,timeout=180)

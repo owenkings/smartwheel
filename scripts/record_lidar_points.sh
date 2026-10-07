@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Four-stage sensor capture followed by offline picker preparation; no browser.
 set -euo pipefail
-project=/home/nvidia/wheelchair
+project="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export WHEELCHAIR_PROJECT_ROOT="$project" PYTHONDONTWRITEBYTECODE=1
 # Help works on any host and never imports a device preflight.
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   printf '%s\n' 'Usage: bash scripts/record_lidar_points.sh [ASCII_scene_name]' \

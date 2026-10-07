@@ -100,10 +100,13 @@ def source_hashes(root):
 
 def run_tests(project_root, pytest_args, *, pytest_prefix=None, check_target=True, storage_check=None):
     root = Path(project_root).resolve(strict=True)
-    if check_target and (getpass.getuser() != 'nvidia' or platform.machine() != 'aarch64'):
-        raise RuntimeError('Run on the target nvidia/aarch64 Orin; workstation tests are not target evidence.')
+    if check_target:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+        from wc_runtime.project_paths import require_linux_runtime
+        require_linux_runtime()
     environment = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1',
                        ROS_DOMAIN_ID='89', ROS_LOCALHOST_ONLY='1')
+    environment['WHEELCHAIR_PROJECT_ROOT'] = str(root)
     environment['PYTHONPATH'] = str(root / 'src') + (os.pathsep + environment['PYTHONPATH']
                                                   if environment.get('PYTHONPATH') else '')
     storage_command = [sys.executable, '-s', '-m', 'wc_runtime.storage_policy',
@@ -144,6 +147,9 @@ def run_tests(project_root, pytest_args, *, pytest_prefix=None, check_target=Tru
                 '-o', 'cache_dir=' + str(report / 'pytest_cache'), '--basetemp=' + str(scratch / 'pytest')]
     record = {'schema_version': 1, 'run_id': run_id, 'project_root': str(root),
               'status': 'RUNNING', 'level': 'SYNTHETIC', 'command_argv': command,
+              'execution_platform': {'system': platform.system(), 'architecture': platform.machine(),
+                                     'user': getpass.getuser(), 'hostname': platform.node()},
+              'hardware_validation': 'NOT_RUN',
               'storage_command_argv': storage_command, 'log': str(report / 'pytest.log'),
               'scratch': str(scratch), 'scratch_filesystem': 'system /tmp (POSIX)',
               'source_sha256': fingerprint, 'scratch_cleanup': 'NOT_ATTEMPTED',

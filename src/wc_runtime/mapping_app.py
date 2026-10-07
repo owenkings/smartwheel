@@ -186,7 +186,7 @@ def default_save_destination(request):
     storage = StoragePolicy(request.get('project_root', Path(__file__).absolute().parents[2]))
     if storage.enabled:
         return storage.resolve(Path('maps')/request['session_id'])
-    return Path.home()/'maps'/request['session_id']
+    return storage.resolve(Path('maps')/request['session_id'])
 
 
 def terminal_save_choice(request, handle, *, input_stream=None, output_stream=None):

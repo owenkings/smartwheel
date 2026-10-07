@@ -11,6 +11,7 @@ import sys
 import time
 
 from .component import DEFAULT_SIGINT_GRACE_S, RECORD_SIGINT_GRACE_S, TERM_GRACE_S, KILL_GRACE_S, validate_sigint_grace
+from .runtime_locks import acquire_resource_lock
 
 
 def shutdown_policy(plan):
@@ -110,7 +111,8 @@ def main(argv=None, *, project_root=None):
     parser.add_argument('--plan', required=True, type=Path)
     args = parser.parse_args(argv)
     plan_path = args.plan.resolve()
-    project = Path(project_root or '/home/nvidia/wheelchair').resolve()
+    from .project_paths import project_root as discover_project
+    project = Path(project_root).resolve() if project_root is not None else discover_project()
     if not plan_path.is_relative_to(project/'.phase1_runtime'):
         raise RuntimeError('plan outside project runtime root')
     plan = json.loads(plan_path.read_text())
@@ -136,12 +138,7 @@ def main(argv=None, *, project_root=None):
     result = 0
     try:
         for name in plan['locks']:
-            if '/' in name or name in ('.','..'):
-                raise RuntimeError('invalid lock name')
-            path = project/'.phase1_runtime'/'locks'/name
-            path.parent.mkdir(parents=True,exist_ok=True)
-            stream = path.open('a+')
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            stream = acquire_resource_lock(name)
             lock_streams.append(stream)
         environment = os.environ.copy()
         environment.update(plan['environment'])

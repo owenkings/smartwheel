@@ -19,7 +19,9 @@ import json
 from wc_runtime.storage_policy import StoragePolicy
 
 
-PROJECT_ROOT = Path('/home/nvidia/wheelchair')
+from wc_runtime.project_paths import project_root as resolve_project_root
+
+PROJECT_ROOT = resolve_project_root(start=__file__)
 NAMESPACE = '/wc_mapping/app'
 
 
@@ -253,6 +255,7 @@ def configure(context):
     from wc_runtime.mapping_shutdown import NATIVE_SIGTERM_S
 
     spec = build_spec(LaunchConfiguration('session_root').perform(context),
+                      project_root=LaunchConfiguration('project_root').perform(context),
                       odometry_source=LaunchConfiguration('odometry_source').perform(context))
     processes = [Node(**node, output='screen', sigterm_timeout=str(int(NATIVE_SIGTERM_S)),
                       sigkill_timeout='5') for node in spec['nodes']]
@@ -269,6 +272,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('session_root'),
+        DeclareLaunchArgument('project_root', default_value=str(PROJECT_ROOT)),
         DeclareLaunchArgument('odometry_source', default_value='wheel_imu',
                               choices=['wheel_imu', 'icp']),
         OpaqueFunction(function=configure),

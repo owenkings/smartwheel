@@ -37,7 +37,7 @@ int main(int argc, char ** argv) {
   const QString identity = parser.value(QStringLiteral("session-id"));
   const QFileInfo info(directory);
   if (!info.isAbsolute() || !info.isDir() || info.isSymLink() ||
-    !QRegularExpression(QStringLiteral("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$")).match(identity).hasMatch()) {return 2;}
+    !QRegularExpression(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")).match(identity).hasMatch()) {return 2;}
   for (QString p = directory; ; ) {
     if (QFileInfo(p).isSymLink()) {return 2;}
     const QString parent = QFileInfo(p).dir().absolutePath();
@@ -58,7 +58,11 @@ int main(int argc, char ** argv) {
   title->setWordWrap(true);
   layout->addWidget(title);
   wc_bringup::TeleopSession session;
-  session.directory = directory; session.session_id = identity;
+  session.directory = wc_bringup::checked_manual_socket_directory(
+    manifest.value(QStringLiteral("project_root")).toString(), directory, identity,
+    manifest.value(QStringLiteral("manual_socket_directory")).toString());
+  session.session_id = identity;
+  if (!session.valid()) {return 2;}
   auto * panel = new wc_bringup::MappingTeleopPanel(session, &window, &window);
   layout->addWidget(panel);
   window.resize(850, 420);

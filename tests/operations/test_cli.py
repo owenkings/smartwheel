@@ -144,7 +144,8 @@ def test_record_lidar_only_keeps_both_lidars_and_bag_without_any_serial_check(tm
     commands=args[2]
     assert len(commands)==2, 'only a bag recorder and dual lidar launch are expected'
     assert 'source_mode:=dual' in commands[1] and 'dual_sources.launch.py' in commands[1]
-    assert commands[0][commands[0].index('wc_phase1')+1:][:3]==['ros2','bag','record']
+    prefix = cli.ros_command(['ros2', 'bag', 'record'])
+    assert commands[0][:len(prefix)] == prefix
     assert all('wc_imu.ros_node' not in command for command in commands)
     flat=[token for command in commands for token in command]
     assert not any(token.startswith('/dev/') for token in flat)

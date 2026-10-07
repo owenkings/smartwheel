@@ -178,9 +178,11 @@ def parser():
 
 def camera_description(config, config_hash, camera, profile_name):
     """Shared startup/diagnostic identity; user direction confirmation is not calibration."""
+    from .config import camera_device, camera_id_path
     role = camera['role']
     return {'logical_slot': role, 'slot_label': 'USB3.'+str(camera['port']),
             'topic': topic(role), 'frame_id': 'camera_usb3_'+str(camera['port']),
+            'expected_device': str(camera_device(camera)), 'expected_id_path': camera_id_path(camera),
             'mapping_status': config['mapping_status'], 'mapping_note': config['mapping_note'],
             'physical_direction': role if config['mapping_status'] == 'USER_CONFIRMED' else 'UNKNOWN',
             'rotation_status': config['rotation_status'], 'rotation_degrees': camera['rotate_deg'],
@@ -249,7 +251,7 @@ def main(argv=None):
             message.header.stamp = self.get_clock().now().to_msg()
             row = DiagnosticStatus()
             row.name = '/wc_mapping/cameras/'+args.role
-            row.hardware_id = 'usb3_'+str(camera['port'])+'/0bda:5858/'+camera['serial']
+            row.hardware_id = 'usb3_'+str(camera['port'])+'/'+camera['vid']+':'+camera['pid']+'/'+camera['serial']
             set_diagnostic_level(row, state)  # Arrival time and missing calibration remain explicit after direction confirmation.
             row.message = state+': '+reason
             details = {**description, 'session_id': args.session_id, 'stream_epoch': self.epoch,

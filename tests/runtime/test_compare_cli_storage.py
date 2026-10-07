@@ -29,6 +29,7 @@ def owned_paths(monkeypatch):
     # Only constant system paths are redirected; output/parents/symlinks/stat
     # are actual filesystem operations. No third source tree or hardware.
     monkeypatch.setattr(mapping_compare, 'Path', paths)
+    monkeypatch.setattr(mapping_compare, 'compare_staging_root', lambda: base)
     try:
         yield SimpleNamespace(root=directory, shm=shm, base=base, mounts=mounts)
     finally:

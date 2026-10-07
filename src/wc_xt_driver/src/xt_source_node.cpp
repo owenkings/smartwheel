@@ -98,6 +98,7 @@ int run(int argc, char** argv, Factory make_node) {
 #include "wc_frame_storage.h"
 #include "wc_xt_driver/bounded_work_queue.hpp"
 #include "wc_xt_driver/owned_stop.hpp"
+#include "wc_xt_driver/host_lock.hpp"
 #include "wc_xt_driver/acquisition_budget.hpp"
 #include "wc_xt_driver/xtcfg.hpp"
 #include "wc_xt_driver/device_config_policy.hpp"
@@ -148,23 +149,7 @@ static void check_ip(const std::string& ip) {
 static bool token(const std::string& text) {
   return !text.empty() && text.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == std::string::npos;
 }
-class Lock {
- public:
-  explicit Lock(const fs::path& path) {
-    fd_ = ::open(path.c_str(), O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW, 0600);
-    if (fd_<0 || ::flock(fd_, LOCK_EX|LOCK_NB)) {
-      if(fd_>=0)::close(fd_); fd_=-1; throw std::runtime_error("resource lock busy: "+path.string());
-    }
-    const auto pid=std::to_string(::getpid())+"\n";
-    if (::ftruncate(fd_,0) || ::write(fd_,pid.data(),pid.size()) != static_cast<ssize_t>(pid.size())) {
-      ::close(fd_); fd_=-1;
-      throw std::runtime_error("cannot write lock ownership");
-    }
-  }
-  ~Lock(){if(fd_>=0){::flock(fd_,LOCK_UN);::close(fd_);}}
-  Lock(const Lock&)=delete;
- private:int fd_=-1;
-};
+using Lock = wc_xt_driver::HostResourceLock;
 
 class XtSourceNode : public rclcpp::Node {
  public:
@@ -196,9 +181,8 @@ class XtSourceNode : public rclcpp::Node {
       throw std::invalid_argument("port must meet SDK pre-start range 1..9999; positive connect timeout and nonnegative runtime required (0 means until stopped)");
     if(!fs::path(run_root_).is_absolute()||!fs::is_directory(run_root_))
       throw std::invalid_argument("run_root must be an existing shared absolute directory");
-    fs::create_directories(fs::path(run_root_)/"locks");
-    identity_lock_=std::make_unique<Lock>(fs::path(run_root_)/"locks"/("xt-"+serial_+".lock"));
-    udp_lock_=std::make_unique<Lock>(fs::path(run_root_)/"locks"/("xt-udp-"+receive_ip_+"-"+std::to_string(port_)+".lock"));
+    identity_lock_=std::make_unique<Lock>("xt-"+serial_+".lock");
+    udp_lock_=std::make_unique<Lock>("xt-udp-"+receive_ip_+"-"+std::to_string(port_)+".lock");
     std::ifstream config(config_path,std::ios::binary);
     if(!config)throw std::runtime_error("source_config_path must name the supplied per-device config, retained read-only");
     std::ostringstream data;data<<config.rdbuf(); requested_hash_=sha256(data.str());

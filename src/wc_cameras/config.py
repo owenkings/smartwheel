@@ -35,9 +35,9 @@ def unique_object(pairs):
 def validate_config(value):
     exact_keys(value, ('schema_version', 'mapping_status', 'mapping_note', 'rotation_note', 'rotation_status',
                        'default_profile', 'profiles', 'timeouts', 'cameras'), 'config')
-    if (type(value['schema_version']) is not int or value['schema_version'] != 1
+    if (type(value['schema_version']) is not int or value['schema_version'] not in (1, 2)
             or value['mapping_status'] not in ('UNCONFIRMED', 'USER_CONFIRMED') or value['rotation_status'] != 'CONFIG_ONLY'):
-        raise CameraError('schema_version=1, mapping_status=UNCONFIRMED or USER_CONFIRMED, rotation_status=CONFIG_ONLY required')
+        raise CameraError('schema_version=1 or 2, mapping_status=UNCONFIRMED or USER_CONFIRMED, rotation_status=CONFIG_ONLY required')
     if not all(isinstance(value[k], str) and value[k].strip() for k in ('mapping_note', 'rotation_note')):
         raise CameraError('mapping and rotation evidence notes are required')
     profiles = value['profiles']
@@ -69,15 +69,25 @@ def validate_config(value):
     if not isinstance(cameras, list) or len(cameras) != 4:
         raise CameraError('exactly four cameras required')
     for camera in cameras:
-        exact_keys(camera, ('role', 'port', 'rotate_deg', 'vid', 'pid', 'serial'), 'camera')
+        keys = {'role', 'port', 'rotate_deg', 'vid', 'pid', 'serial'}
+        explicit = 'device' in camera or 'expected_id_path' in camera
+        if explicit or value['schema_version'] == 2:
+            keys.update(('device', 'expected_id_path'))
+        exact_keys(camera, keys, 'camera')
         if camera['role'] not in ROLES or type(camera['port']) is not int or camera['port'] not in range(1, 5):
             raise CameraError('invalid camera role or reviewed USB port')
         if type(camera['rotate_deg']) is not int or camera['rotate_deg'] not in (0, 180):
             raise CameraError('rotate_deg must be 0 or 180')
-        if (camera['vid'], camera['pid'], camera['serial']) != ('0bda', '5858', '000000000011'):
-            raise CameraError('camera identity differs from reviewed hardware')
+        if any(not isinstance(camera[k], str) or not re.fullmatch(r'[0-9a-f]{4}', camera[k]) for k in ('vid', 'pid')):
+            raise CameraError('explicit four-digit lowercase USB VID/PID required')
+        if not isinstance(camera['serial'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', camera['serial']):
+            raise CameraError('explicit camera serial required')
+        camera_device(camera)
+        camera_id_path(camera)
     if {c['role'] for c in cameras} != set(ROLES) or {c['port'] for c in cameras} != set(range(1, 5)):
         raise CameraError('each role and physical USB port must occur exactly once')
+    if len({str(camera_device(c)) for c in cameras}) != 4 or len({camera_id_path(c) for c in cameras}) != 4:
+        raise CameraError('camera device paths and physical USB identities must be unique')
     return value
 
 
@@ -96,6 +106,25 @@ def port_path(port):
     if type(port) is not int or port not in range(1, 5):
         raise CameraError('invalid USB camera port')
     return Path('/dev/v4l/by-path') / f'platform-3610000.usb-usb-0:3.{port}:1.0-video-index0'
+
+
+def camera_device(camera):
+    """Legacy schema-1 ports retain their recorded meaning; new bindings are explicit."""
+    from wc_runtime.device_bindings import device_path
+    value = camera.get('device', port_path(camera['port']).as_posix())
+    try:
+        return Path(device_path(value, by_path=True))
+    except ValueError as error:
+        raise CameraError(str(error)) from error
+
+
+def camera_id_path(camera):
+    from wc_runtime.device_bindings import topology
+    value = camera.get('expected_id_path', f"platform-3610000.usb-usb-0:3.{camera['port']}:1.0")
+    try:
+        return topology(value)
+    except ValueError as error:
+        raise CameraError(str(error)) from error
 
 
 def topic(role):

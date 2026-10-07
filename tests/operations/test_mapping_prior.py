@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from wc_motion.feedback_transport import QUERY, SERIAL
+from wc_motion.feedback_transport import QUERY
 from wc_motion.protocol import crc16
 from wc_runtime.mapping_prior import (MotionPrior, NotReady, PriorError,
     integrate_body_twist, prepare_cloud, validate_config, _owned_output)
@@ -74,7 +74,7 @@ def test_unknown_odometry_source_is_rejected():
 
 def wheel(seq, stamp, left=0, right=0):
     payload = b'\x01\x03\x04'+struct.pack('>HH', left & 65535, right & 65535)
-    return {'schema': 'wc_wheel_feedback_v1', 'device_id': 'ZLAC8030D-'+SERIAL,
+    return {'schema': 'wc_wheel_feedback_v1', 'device_id': json.loads((Path(__file__).resolve().parents[2]/'config/wheel_feedback_current.json').read_text())['device_id'],
             'status': 'RESPONSE_VALID', 'request_hex': QUERY.hex(), 'response_hex': (payload+crc16(payload)).hex(),
             'stamp_ns': stamp, 'receive_monotonic_ns': stamp, 'sequence': seq, 'stream_epoch': 'wheel-fixture',
             'time_valid': False, 'time_source': 'arrival_only', 'uncertainty_ns': None}

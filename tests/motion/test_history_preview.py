@@ -13,7 +13,7 @@ import pytest
 
 from wc_motion.history_preview import HistoryPreview, assign_preview_odometry
 from wc_motion import feedback_transport as transport
-from wc_motion.feedback_transport import QUERY, SERIAL
+from wc_motion.feedback_transport import QUERY
 from wc_motion.protocol import FeedbackError, crc16
 from wc_motion.model import WheelObservation
 
@@ -40,7 +40,7 @@ def config():
 def sample(sequence=0, left=-100, right=100, *, stamp=None):
     payload = b'\x01\x03\x04'+struct.pack('>HH', left & 65535, right & 65535)
     stamp = stamp or 1_000_000_000+sequence*100_000_000
-    return {'schema': 'wc_wheel_feedback_v1', 'device_id': 'ZLAC8030D-'+SERIAL,
+    return {'schema': 'wc_wheel_feedback_v1', 'device_id': json.loads((Path(__file__).resolve().parents[2]/'config/wheel_feedback_current.json').read_text())['device_id'],
         'status': 'RESPONSE_VALID', 'request_hex': QUERY.hex(), 'response_hex': (payload+crc16(payload)).hex(),
         'stamp_ns': stamp, 'receive_monotonic_ns': stamp, 'sequence': sequence, 'stream_epoch': 'synthetic-fixture',
         'time_valid': False, 'time_source': 'arrival_only', 'uncertainty_ns': None}

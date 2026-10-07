@@ -3,11 +3,16 @@
 # packages, runs maintainer scripts, or changes the system's OpenCV selection.
 set -euo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-test "$PROJECT_ROOT" = /home/nvidia/wheelchair
-test "$(id -un)" = nvidia
-test "$(uname -m)" = aarch64
+export WHEELCHAIR_PROJECT_ROOT="$PROJECT_ROOT" PYTHONDONTWRITEBYTECODE=1
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+python3 -s -c 'from wc_runtime.project_paths import require_linux_runtime; require_linux_runtime()'
+# The extraction recipe is pinned to the Ubuntu Jammy package/ABI version.
+source /etc/os-release
+if [[ "${ID:-}" != ubuntu || "${VERSION_ID:-}" != 22.04 ]]; then
+  printf '%s\n' 'This package extraction recipe requires Ubuntu 22.04.' >&2
+  exit 2
+fi
 REPORT_ROOT="$(python3 -s -m wc_runtime.storage_policy reports)"
 mkdir -p SDKs/ubuntu_opencv45/packages SDKs/ubuntu_opencv45/sysroot "$REPORT_ROOT/dependencies" .phase1_runtime/locks
 exec 9>.phase1_runtime/locks/heavy_build.lock

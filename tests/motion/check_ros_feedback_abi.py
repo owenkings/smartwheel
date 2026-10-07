@@ -14,7 +14,7 @@ def main():
     if os.environ.get('ROS_DOMAIN_ID')!='89' or os.environ.get('ROS_LOCALHOST_ONLY')!='1':
         raise RuntimeError('This no-device ROS ABI test requires isolated localhost domain 89')
     original={s:signal.getsignal(s) for s in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP)}
-    publisher=RosFeedbackPublisher()
+    publisher=RosFeedbackPublisher('ZLAC8030D-SYNTHETIC-ABI')
     try:
         assert {s:signal.getsignal(s) for s in original}==original
         assert publisher.publisher.topic_name=='/wc_mapping/wheel/feedback_raw'

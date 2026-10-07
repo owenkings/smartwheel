@@ -79,6 +79,11 @@ def test_capacity_and_capture_do_not_instantiate_motion(tmp_path):
     core = capacity('mapping_core', 10, 10**10)
     all_sensors = capacity('all_sensors', 10, 10**10)
     assert all_sensors['estimated_recording_bytes'] > core['estimated_recording_bytes'] + 250_000_000
+    project = Path(__file__).resolve().parents[2]
+    bindings = json.loads((project/'config/device_bindings.json').read_text(encoding='utf-8'))
+    config = tmp_path/'data/configuration'
+    config.mkdir(parents=True)
+    atomic_json(config/'device_bindings.json', bindings)
     commands = source_commands(tmp_path, tmp_path/'run', tmp_path/'data', 'sample', 'all_sensors')
     assert set(commands) == {'lidar', 'imu', 'wheel', 'ultrasonic', 'camera_left_front',
                              'camera_right_front', 'camera_left_side', 'camera_right_side'}

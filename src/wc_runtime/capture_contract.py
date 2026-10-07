@@ -59,14 +59,15 @@ def build_capture_contract(configuration_dir, profile, session_id, *, imu_sensor
             side=side,register_index=index,register_address=0x20AB+index,
             physical_role_status='LEGACY_MAPPING_UNVALIDATED',units_status='UNVALIDATED')
     if profile in CAMERA_PROFILES:
+        from wc_cameras.config import camera_device, camera_id_path
         cameras = _json(configuration_dir/'cameras.json')
         for camera in cameras['cameras']:
             role = camera['role']
             port = camera['port']
-            identity = dict(device=f'/dev/v4l/by-path/platform-3610000.usb-usb-0:3.{port}:1.0-video-index0',
+            identity = dict(device=str(camera_device(camera)),
                 identity={'ID_VENDOR_ID':camera['vid'],'ID_MODEL_ID':camera['pid'],
                           'ID_SERIAL_SHORT':camera['serial'],
-                          'ID_PATH':f'platform-3610000.usb-usb-0:3.{port}:1.0'})
+                          'ID_PATH':camera_id_path(camera)})
             add('camera_'+role,'camera',role,identity,role=role,port=port,
                 physical_role_status=cameras['mapping_status'])
     if profile == 'all_sensors':

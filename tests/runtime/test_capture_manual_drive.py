@@ -49,6 +49,18 @@ def write_json(path, value):
     path.write_text(json.dumps(value), encoding='utf-8')
 
 
+def frozen_bindings(directory, *, serial='CAPTURE_TEST_A'):
+    """Prepare the immutable session input required by source_commands."""
+    from wc_runtime.device_bindings import validate_device_bindings
+    value = validate_device_bindings(dict(schema_version=1,
+        imu=dict(device='/dev/smartwheel_h30_imu',
+            expected_by_id='/dev/serial/by-id/usb-1a86_USB_Single_Serial_'+serial+'-if00',
+            hardware_serial=serial, sensor_id='H30-'+serial),
+        network=dict(interface=None)))
+    write_json(directory/'configuration/device_bindings.json', value)
+    return value
+
+
 def ready_evidence(session):
     return dict(session_id=session, ready=True, raw_recorder_discovered=True,
                 manual_socket_ready=True, feedback_samples=1, source_type='HYBRID_MANUAL_CAPTURE')
@@ -76,6 +88,7 @@ def test_capacity_accounts_for_source_initialization_before_manual_window():
 def test_manual_capture_uses_one_owner_and_preserves_read_only_default(capture_temp, monkeypatch):
     from wc_runtime import cli
     monkeypatch.setattr(cli, 'ros_command', lambda arguments: list(map(str, arguments)))
+    frozen_bindings(capture_temp/'data')
     default = capture.source_commands(PROJECT, capture_temp/'run', capture_temp/'data', 'session', 'all_sensors')
     manual = capture.source_commands(PROJECT, capture_temp/'run', capture_temp/'data', 'session',
                                      'all_sensors', manual_drive=True)
@@ -97,6 +110,7 @@ def test_manual_ui_uses_project_install_and_keeps_paths_as_separate_arguments(ca
     monkeypatch.setattr(cli, 'ros_command', lambda arguments: list(map(str, arguments)))
     root = capture_temp/'project with spaces'
     directory = capture_temp/'capture with spaces'
+    frozen_bindings(directory)
     commands = capture.source_commands(root, root/'run', directory, 'identified_session',
                                        'mapping_core', manual_drive=True)
     assert commands['manual_ui'] == [
@@ -107,8 +121,9 @@ def test_manual_ui_uses_project_install_and_keeps_paths_as_separate_arguments(ca
 
 def test_manual_ui_keeps_ros_environment_exec_wrapper(capture_temp):
     from wc_runtime import cli
-    root = Path('/home/nvidia/wheelchair')
+    root = PROJECT
     directory = capture_temp/'session'
+    frozen_bindings(directory)
     commands = capture.source_commands(root, root/'.phase1_runtime', directory, 'session',
                                        'mapping_core', manual_drive=True)
     expected = cli.ros_command([
@@ -118,7 +133,42 @@ def test_manual_ui_keeps_ros_environment_exec_wrapper(capture_temp):
     # Sourcing still supplies the installed Qt/ROS library environment, but
     # exec replaces the shell with the exact preflight-checked UI process.
     assert 'exec "$@"' in commands['manual_ui'][4]
-    assert commands['manual_ui'][6].endswith('/wc_bringup/manual_capture_ui')
+    executable = str(root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui')
+    assert commands['manual_ui'].count(executable) == 1
+    assert executable not in commands['manual_ui'][4]  # A positional argument, not shell code.
+
+
+@pytest.mark.parametrize('manual_drive', [False, True])
+def test_source_commands_keep_frozen_bindings_after_current_machine_changes(capture_temp, monkeypatch, manual_drive):
+    from wc_runtime import cli
+    monkeypatch.setattr(cli, 'ros_command', lambda arguments: list(map(str, arguments)))
+    root, directory = capture_temp/'project', capture_temp/'capture'
+    original = frozen_bindings(directory, serial='FROZEN_A')
+    path = directory/'configuration/device_bindings.json'
+    raw = path.read_bytes()
+    before = capture.source_commands(root, root/'run', directory, 'frozen_session',
+                                     'mapping_core', manual_drive=manual_drive)
+    changed = frozen_bindings(capture_temp/'other_session', serial='CURRENT_B')
+    changed['imu']['device'] = '/dev/current_machine_h30'
+    write_json(root/'config/device_bindings.json', changed)
+    write_json(root/'config/device_bindings.local.json', changed)
+    monkeypatch.setattr(cli, 'DEVICE_BINDINGS', changed)
+    monkeypatch.setattr(cli, 'H30_DEVICE', changed['imu']['device'])
+    monkeypatch.setattr(cli, 'H30_BY_ID', changed['imu']['expected_by_id'])
+    monkeypatch.setattr(cli, 'H30_SERIAL', changed['imu']['hardware_serial'])
+    after = capture.source_commands(root, root/'run', directory, 'frozen_session',
+                                    'mapping_core', manual_drive=manual_drive)
+    assert after == before
+    for option, field in (('--device', 'device'), ('--expected-by-id', 'expected_by_id'),
+                          ('--hardware-serial', 'hardware_serial'), ('--sensor-id', 'sensor_id')):
+        assert after['imu'][after['imu'].index(option)+1] == original['imu'][field]
+    assert 'CURRENT_B' not in json.dumps(after)
+    assert path.read_bytes() == raw
+    # Losing the archive is an error even when current-machine bindings exist.
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        capture.source_commands(root, root/'run', directory, 'frozen_session',
+                                'mapping_core', manual_drive=manual_drive)
 
 
 def test_manual_runtime_authorization_does_not_fill_unknown_geometry(capture_temp):
@@ -238,6 +288,9 @@ def mock_capture_run(monkeypatch, capture_temp, *, mode='duration_reached', manu
     monkeypatch.setattr(cli,'target',lambda: None)
     monkeypatch.setattr(cli,'environment',lambda: {})
     monkeypatch.setattr(cli,'ros_command',lambda arguments:list(map(str,arguments)))
+    # Match the supervisor's frozen contract identity without real devices.
+    bindings = read_config('device_bindings.json')
+    monkeypatch.setattr(cli, 'DEVICE_BINDINGS', copy.deepcopy(bindings))
     monkeypatch.setattr(capture,'preflight',lambda *args,**kwargs:copy.deepcopy(checks))
     monkeypatch.setattr(capture.shutil,'disk_usage',lambda path:SimpleNamespace(free=10**12))
     monkeypatch.setattr(sensor_viewer,'desktop_environment',lambda:{'DISPLAY':':synthetic'})
@@ -255,6 +308,7 @@ def mock_capture_run(monkeypatch, capture_temp, *, mode='duration_reached', manu
         config.mkdir()
         write_json(config/'hardware_setup.json',read_config('hardware_setup.json'))
         write_json(config/'wheel_feedback.json',read_config('wheel_feedback_current.json'))
+        write_json(config/'device_bindings.json', bindings)
         for side in ('left','right'):
             path=config/'lidar'/(side+'.yaml');path.parent.mkdir(exist_ok=True)
             path.write_text('side: '+side+'\nexpected_serial: synthetic_'+side+

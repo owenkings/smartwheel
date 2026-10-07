@@ -118,13 +118,21 @@ def test_launch_database_is_on_usb_and_existing_database_is_rejected(storage, mo
         launch.build_spec(session_root=session, project_root=storage.code, **kwargs)
 
 
-def test_manual_socket_remains_local_and_ram_capture_unchanged(storage):
+def test_manual_socket_remains_short_and_distinguishes_archive_and_ram(storage, monkeypatch, tmp_path):
     identity = 'usb_manual_session'
-    socket = mapping_control_paths.manual_socket_path(storage.code, storage.archive/'reports/maps/x', identity)
-    key = hashlib.sha256(identity.encode()).hexdigest()[:24]
-    assert socket == storage.code/'.phase1_runtime/control'/key/'manual.sock'
-    assert mapping_control_paths.manual_socket_path(storage.code, Path('/dev/shm/wc_capture')/identity, identity) == \
-        Path('/dev/shm/wc_capture')/identity/'manual.sock'
+    local = tmp_path/'private_socket_root'
+    monkeypatch.setattr(mapping_control_paths, 'socket_root', lambda root: local)
+    archive = storage.archive/'reports/maps/x'
+    ram = Path('/dev/shm/wc_capture')/identity
+    def expected(directory):
+        key = hashlib.sha256((str(directory.absolute()) + '\0' + identity).encode('utf-8')).hexdigest()[:24]
+        return local/key/'manual.sock'
+    assert mapping_control_paths.manual_socket_path(storage.code, archive, identity) == expected(archive)
+    assert mapping_control_paths.manual_socket_path(storage.code, ram, identity) == expected(ram)
+    assert expected(archive) != expected(ram)
+    storage.state['available'] = False
+    with pytest.raises(ValueError, match='DESTINATION_UNAVAILABLE'):
+        mapping_control_paths.manual_socket_path(storage.code, archive, identity)
 
 
 def test_read_only_view_maps_old_project_reference(storage, monkeypatch, capsys):

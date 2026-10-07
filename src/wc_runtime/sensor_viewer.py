@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+from .project_paths import project_root, require_linux_runtime
 import platform
 import re
 import shutil
@@ -20,20 +21,14 @@ import uuid
 from contextlib import redirect_stderr, redirect_stdout
 
 
-ROOT = Path('/home/nvidia/wheelchair')
+ROOT = project_root()
 MODES = {'dual': ('left', 'right'), 'single_left': ('left',), 'single_right': ('right',)}
 
 
 def require_target():
-    if (os.name != 'posix' or platform.machine() != 'aarch64' or
-            socket.gethostname() != 'ubuntu' or getpass.getuser() != 'nvidia'):
-        raise RuntimeError('Requires the verified Orin target ubuntu/nvidia/aarch64')
-    import pwd
-    if pwd.getpwuid(os.getuid()).pw_name != 'nvidia':
-        raise RuntimeError('Current UID is not nvidia')
-    if (not ROOT.is_dir() or ROOT.is_symlink() or Path.cwd().resolve() != ROOT or
-            Path(__file__).resolve().parents[2] != ROOT):
-        raise RuntimeError('Run the installed entry point in /home/nvidia/wheelchair')
+    require_linux_runtime()
+    if not ROOT.is_dir():
+        raise RuntimeError('Project root is missing')
     if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
         raise RuntimeError('Owned-process pidfd support is required')
 

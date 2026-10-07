@@ -92,6 +92,9 @@ def test_raw_configuration_disables_all_flow_and_hangup_flags_without_mutating_i
 def test_lease_uses_readonly_flags_exclusive_ioctl_and_never_transmits(monkeypatch, tmp_path):
     import fcntl
     import termios as t
+    from wc_runtime import project_paths
+    locks = tmp_path/'shared_locks'; locks.mkdir()
+    monkeypatch.setattr(project_paths, 'shared_lock_root', lambda: locks)
     calls = []
     identity = NS(st_mode=stat.S_IFCHR, st_rdev=os.makedev(166, 1), st_ino=123)
     state = {'attrs': [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, t.B9600, t.B9600, [0]*32]}
@@ -121,24 +124,27 @@ def test_lease_uses_readonly_flags_exclusive_ioctl_and_never_transmits(monkeypat
     lease.close()
     assert calls == ['ownership_check', 'readonly_open', ('ioctl', t.TIOCEXCL), 'raw_460800', 'close']
     assert lease.fd is None and lease.lock_file is None
-    metadata = json.loads(next((tmp_path/'locks').iterdir()).read_text())
+    metadata = json.loads(next(locks.iterdir()).read_text())
     assert metadata['access'] == 'O_RDONLY' and metadata['baud'] == 460800
 
 
 def test_existing_os_lock_prevents_any_device_open(monkeypatch, tmp_path):
     import fcntl
+    from wc_runtime import project_paths
     identity = NS(st_mode=stat.S_IFCHR, st_rdev=os.makedev(166, 1), st_ino=123)
     locks = tmp_path/'locks'
     locks.mkdir()
-    owner = (locks/'serial-h30-166-1.lock').open('a+')
+    monkeypatch.setattr(project_paths, 'shared_lock_root', lambda: locks)
+    owner = (locks/'serial-166-1.lock').open('a+')
     try:
         fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         monkeypatch.setattr(os, 'open', lambda *a: pytest.fail('contended lock must prevent device open'))
-        lease = ReadOnlySerialLease('/dev/x', '/dev/serial/by-id/SYN', tmp_path, 'SYN',
-             identity_checker=lambda *a: (Path('/dev/ttyACM1'), identity), occupancy_checker=lambda *a: None)
-        with pytest.raises(BlockingIOError):
-            lease.open()
-        assert lease.fd is None and lease.lock_file is None
+        for clone in ('clone-A', 'clone-B'):
+            lease = ReadOnlySerialLease('/dev/x', '/dev/serial/by-id/SYN', tmp_path/clone, 'SYN',
+                 identity_checker=lambda *a: (Path('/dev/ttyACM1'), identity), occupancy_checker=lambda *a: None)
+            with pytest.raises(BlockingIOError):
+                lease.open()
+            assert lease.fd is None and lease.lock_file is None
     finally:
         owner.close()
 

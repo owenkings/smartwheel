@@ -11,13 +11,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from .project_paths import project_root, require_linux_runtime
 import stat
 import time
 
 from .storage_policy import StoragePolicy
 
 
-PROJECT_ROOT = Path('/home/nvidia/wheelchair')
+PROJECT_ROOT = project_root()
 PROTOCOL = 'UUID_VERIFIED_COOPERATIVE_LOCKED_RENAME'
 
 
@@ -25,7 +26,8 @@ PROTOCOL = 'UUID_VERIFIED_COOPERATIVE_LOCKED_RENAME'
 def publication_lock(storage):
     import fcntl
     key = hashlib.sha256(str(storage.archive_root).encode('utf-8')).hexdigest()[:24]
-    path = storage.resolve(Path('.phase1_runtime/locks')/('archive-publish-'+key+'.lock'))
+    from .project_paths import shared_lock_root
+    path = shared_lock_root()/('archive-publish-'+key+'.lock')
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     with os.fdopen(descriptor, 'a+b') as stream:

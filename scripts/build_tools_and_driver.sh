@@ -1,10 +1,16 @@
+#!/usr/bin/env bash
 set -eo pipefail
-cd /home/nvidia/wheelchair
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export WHEELCHAIR_PROJECT_ROOT="$PROJECT_ROOT"
+export PYTHONDONTWRITEBYTECODE=1
+cd "$PROJECT_ROOT"
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python3 -s -c 'from wc_runtime.project_paths import require_linux_runtime; require_linux_runtime()'
 REPORT_ROOT="$(python3 -s -m wc_runtime.storage_policy reports)"
 mkdir -p "$REPORT_ROOT/builds" .phase1_runtime/locks
 export PYTHONNOUSERSITE=1 CMAKE_BUILD_PARALLEL_LEVEL=2 MAKEFLAGS=-j2
-source /opt/ros/humble/setup.bash
+WC_ROS_SETUP="$(python3 -s -c 'from wc_runtime.project_paths import ros_setup_path; print(ros_setup_path())')"
+source "$WC_ROS_SETUP"
 source install/main/setup.bash
 exec 9>.phase1_runtime/locks/heavy_build.lock
 flock -n 9 || exit 75
