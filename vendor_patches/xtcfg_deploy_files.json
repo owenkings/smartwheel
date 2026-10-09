@@ -1,0 +1,20 @@
+{
+  "source_worktree": "G:\\tiany\\wheelchair\\phase1_preflight\\change_worktrees\\xtcfg",
+  "mode": "PATCHED_SOURCE_AND_NEW_PINNED_FILTER_RUNTIME_ONLY",
+  "files": {
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/baseFilter.cpp": "d41a4c99e903daa0cb5dfaf6ed743ba55531609ff5d523906ff057dc687f4700",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/basefilter.h": "efd247c2f8680f04595226939da07baa27d1c65af4fb36e239fc671df4d7fbce",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/cartesianTransform.cpp": "115915d4f7f1412be4c466573f1fbbb0e7aeefefcda2539093114719c167375c",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/cartesianTransform.h": "4e5c2087e64f843ddcbad44c802a03050cf15ed10c94a475cc2bbcb43e6c79c8",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/frame.h": "58df517f868158c5f1d7ef6258e3b7a4ee7325eefa3cddb38eeab928ff723f05",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/IbaseFilter_lib.h": "8a387a06b97d1dfd836195d81fdcdb8363950467618ed5394373d744606d83c5",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/Iframe.h": "32a0af83382ddf0689a806a3ce2d9a57e97b28ba71101fd1a335f6f1b189bf03",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/xtdaemon.cpp": "fe75f711a8f3c0bdc5c88bcf0c68a4d5dfedebf3ea05483e63a56028092a406e",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/xtsdk.cpp": "82e71496bcec389fe17c7f6395c8f31fc6ee8b43b702648deaab8a3cf8e0d781",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/xtsdk.h": "059f45918d02a46834710b55c54e42ff2e05119e51730e14e09749f21b295f0b",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/xtsdkLibHandler.cpp": "41a5832a5cd3b01b376ff22da127c3af9cb287867b4dcaefd495e6935c43ea5c",
+    "SDKs/xtsdk_ros/xtsdk_cpp/xtsdk/xtsdkLibHandler.h": "222c69ba8794e10d90fd6912315f8086c5383b61a2320d0d109e5e0f5587dfe1",
+    "SDKs/xtsdk_filter_3d3db067/lib/linux/aarch64/libxtsdk_shared.so": "3336a76590b5447efd7c037929e61c287523fcd79e8125589a3adb35eee83411",
+    "SDKs/xtsdk_filter_3d3db067/lib/linux/x86_64/libxtsdk_shared.so": "69d80f0d64f1b7a65c1cf76aa57d7ba84fb0ff34a03014e6d04d52092e683821"
+  }
+}

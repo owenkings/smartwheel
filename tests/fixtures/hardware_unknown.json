@@ -1,0 +1,1072 @@
+{
+  "schema_version": 2,
+  "status": "EXPERIMENT",
+  "profile": "v7_documented_geometry",
+  "coordinate_convention": "FLU",
+  "rotation_convention": "Rz(yaw) Ry(pitch) Rx(roll)",
+  "transform_convention": "T_parent_child maps child coordinates into parent",
+  "_help": {
+    "用途": "V7机械资料/外参/轮参数唯一入口；未知外参不自动填旧值；先采集标定。",
+    "单位": "机械资料mm，运行平移m，旋转矩阵proper SO(3)。",
+    "方向": "T_parent_child将child坐标变到parent；机械包络参考点永不隐式当作data origin。",
+    "门控": "按能力检查；原生预览和采集可用，依赖未知外参的运动融合阻止启动。"
+  },
+  "assembly": {
+    "revision": "V7_20261002",
+    "confirmed": false,
+    "components": {
+      "boxes": "V7.2 (documented)",
+      "bottom_brackets": "V7.3 (documented)",
+      "left_lid": "v1/v2 documented; actual installed revision UNKNOWN"
+    },
+    "note": "来自用户机械设计文档；当前实际装配版本、止挡和滑盖状态尚待确认。"
+  },
+  "source_documents": [
+    {
+      "id": "v7_installation_20261002",
+      "snapshot_path": "config/calibration/sources/sensor_installation_20261002.md",
+      "sha256": "b2b63b7b2c59c8dc0c48755b1cf4f17baee684b14f384961c09d827e136ec46e",
+      "evidence_type": "CAD_AND_MANUAL_MEASUREMENTS",
+      "assembly_revision": "V7_20261002",
+      "original_path": "C:\\Users\\admin\\Desktop\\智能轮椅\\传感器安装位置与距离.md",
+      "document_date": "2026-10-02",
+      "note": "原文逐字节快照；设计标称点、人工机械测量与待核查项，非数据外参标定。"
+    },
+    {
+      "id": "legacy_setup_before_v7",
+      "snapshot_path": "config/calibration/legacy_hardware_setup_before_v7.json",
+      "sha256": "5f3868a6827635933347949d9e7e7c4d1703ecd066eeefb825ae4f8bdc43715c",
+      "evidence_type": "LEGACY_CONFIGURATION",
+      "assembly_revision": "UNKNOWN_LEGACY",
+      "note": "Orin当前源码快照中的旧schema1配置，单独保留且不作为V7默认外参。"
+    }
+  ],
+  "mechanical_reference": {
+    "frame_id": "mounting_M",
+    "unit": "mm",
+    "status": "CAD_NOMINAL",
+    "origin_definition": {
+      "x": "左右铁片两颗M6螺栓孔轴线中点的前后基准；左右前后齐平尚待核查。",
+      "y": "左右支架夹缝中心面的中点；夹缝中心间距设计初值492.2mm。",
+      "z": "M6螺栓孔中心高度；左右孔高度一致尚待核查。"
+    },
+    "assumptions": [
+      "左右铁片前后位置一致、高度一致、相互平行：未核查。",
+      "盒体推到止挡、滑盖完全关闭及内部装配状态：需现场确认。",
+      "+x前/+y左/+z上为M的定义，不等于已测得M到轮轴的安装变换。"
+    ],
+    "cad_to_M": {
+      "left": {
+        "T_M_CAD_mm": [
+          [
+            0,
+            -1,
+            0,
+            50
+          ],
+          [
+            1,
+            0,
+            0,
+            117.7
+          ],
+          [
+            0,
+            0,
+            1,
+            13.5
+          ],
+          [
+            0,
+            0,
+            0,
+            1
+          ]
+        ],
+        "direction": "CAD_to_M",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 59,
+            "line_end": 72
+          }
+        ]
+      },
+      "right": {
+        "T_M_CAD_mm": [
+          [
+            0,
+            -1,
+            0,
+            50
+          ],
+          [
+            1,
+            0,
+            0,
+            -379.5
+          ],
+          [
+            0,
+            0,
+            1,
+            13.5
+          ],
+          [
+            0,
+            0,
+            0,
+            1
+          ]
+        ],
+        "direction": "CAD_to_M",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 59,
+            "line_end": 72
+          }
+        ]
+      }
+    },
+    "reference_points": [
+      {
+        "id": "lidar_left_mechanical_reference",
+        "sensor_frame": "lidar_left",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          217.85,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          38.5,
+          65
+        ],
+        "envelope_center_mm": [
+          29.5,
+          217.85,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 120,
+            "line_end": 120
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "lidar_right_mechanical_reference",
+        "sensor_frame": "lidar_right",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -217.85,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          38.5,
+          65
+        ],
+        "envelope_center_mm": [
+          29.5,
+          -217.85,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 121,
+            "line_end": 121
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "camera_left_front_optical_mechanical_reference",
+        "sensor_frame": "camera_left_front_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          270.6,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          31,
+          41,
+          41
+        ],
+        "envelope_center_mm": [
+          34.5,
+          270.6,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 122,
+            "line_end": 122
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "camera_right_front_optical_mechanical_reference",
+        "sensor_frame": "camera_right_front_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -270.6,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          31,
+          41,
+          41
+        ],
+        "envelope_center_mm": [
+          34.5,
+          -270.6,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 123,
+            "line_end": 123
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "camera_left_side_optical_mechanical_reference",
+        "sensor_frame": "camera_left_side_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          -22.5,
+          298.6,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          31,
+          41
+        ],
+        "envelope_center_mm": [
+          -22.5,
+          283.1,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          0,
+          1,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 124,
+            "line_end": 124
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "camera_right_side_optical_mechanical_reference",
+        "sensor_frame": "camera_right_side_optical",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          -22.5,
+          -298.6,
+          133.3
+        ],
+        "envelope_dimensions_mm": [
+          41,
+          31,
+          41
+        ],
+        "envelope_center_mm": [
+          -22.5,
+          -283.1,
+          133.3
+        ],
+        "nominal_view_direction_M": [
+          0,
+          -1,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 125,
+            "line_end": 125
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      },
+      {
+        "id": "double_hole_left_front_unbound_mechanical_reference",
+        "sensor_frame": "double_hole_left_front_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          248.6,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          18,
+          61.3,
+          45.3
+        ],
+        "envelope_center_mm": [
+          41,
+          248.6,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 126,
+            "line_end": 126
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。双孔模块与FD07/地址的对应关系未知。"
+      },
+      {
+        "id": "double_hole_right_front_unbound_mechanical_reference",
+        "sensor_frame": "double_hole_right_front_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          50,
+          -248.6,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          18,
+          61.3,
+          45.3
+        ],
+        "envelope_center_mm": [
+          41,
+          -248.6,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          1,
+          0,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 127,
+            "line_end": 127
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。双孔模块与FD07/地址的对应关系未知。"
+      },
+      {
+        "id": "double_hole_left_side_unbound_mechanical_reference",
+        "sensor_frame": "double_hole_left_side_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          0,
+          298.6,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          61.3,
+          18,
+          45.3
+        ],
+        "envelope_center_mm": [
+          0,
+          289.6,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          0,
+          1,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 128,
+            "line_end": 128
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。双孔模块与FD07/地址的对应关系未知。"
+      },
+      {
+        "id": "double_hole_right_side_unbound_mechanical_reference",
+        "sensor_frame": "double_hole_right_side_unbound",
+        "point_kind": "CAD_OUTWARD_FACE_CENTER",
+        "position_mm": [
+          0,
+          -298.6,
+          76.15
+        ],
+        "envelope_dimensions_mm": [
+          61.3,
+          18,
+          45.3
+        ],
+        "envelope_center_mm": [
+          0,
+          -289.6,
+          76.15
+        ],
+        "nominal_view_direction_M": [
+          0,
+          -1,
+          0
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 129,
+            "line_end": 129
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。双孔模块与FD07/地址的对应关系未知。"
+      },
+      {
+        "id": "imu_native_mechanical_reference",
+        "sensor_frame": "imu_native",
+        "point_kind": "CAD_BOTTOM_FACE_CENTER",
+        "position_mm": [
+          -2.5,
+          268.6,
+          167.8
+        ],
+        "envelope_dimensions_mm": [
+          46,
+          59.5,
+          11.7
+        ],
+        "envelope_center_mm": [
+          -2.5,
+          268.6,
+          173.65
+        ],
+        "nominal_view_direction_M": [
+          0,
+          0,
+          1
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 130,
+            "line_end": 130
+          }
+        ],
+        "note": "机械包络参考点，非数据原点；名义朝向不认证传感器原生轴向。"
+      }
+    ],
+    "auxiliary_points": [
+      {
+        "id": "imu_chip_package_center",
+        "sensor_frame": "imu_native",
+        "point_kind": "CAD_PACKAGE_CENTER",
+        "position_mm": [
+          -7.77,
+          268.93,
+          175.84
+        ],
+        "status": "CAD_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 133,
+            "line_end": 133
+          }
+        ],
+        "note": "厂商STEP芯片封装中心；不认证芯片内部测量中心，也不认证轴向。"
+      }
+    ],
+    "measurements": [
+      {
+        "id": "clamp_seat_faces",
+        "value_mm": 479,
+        "status": "USER_REPORTED_MEASUREMENT",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 80,
+            "line_end": 80
+          }
+        ],
+        "note": "朝座椅面的卷尺读数。"
+      },
+      {
+        "id": "clamp_plate_faces",
+        "value_mm": 489,
+        "status": "USER_REPORTED_MEASUREMENT",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 81,
+            "line_end": 81
+          }
+        ],
+        "note": "贴铁片面的卷尺读数。"
+      },
+      {
+        "id": "clamp_center_spacing",
+        "value_mm": 492.2,
+        "status": "DERIVED_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 86,
+            "line_end": 86
+          }
+        ],
+        "note": "489+3.2；用于机械初值，不进一步细调。"
+      },
+      {
+        "id": "inner_box_wall_gap",
+        "value_mm": 394,
+        "status": "USER_REPORTED_MEASUREMENT",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 102,
+            "line_end": 102
+          }
+        ],
+        "note": "仅一个读数，前后/上下平行度未知。"
+      },
+      {
+        "id": "lidar_window_spacing",
+        "value_mm": 436,
+        "status": "USER_REPORTED_MEASUREMENT",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 103,
+            "line_end": 103
+          }
+        ],
+        "note": "实测雷达窗中心距，非数据原点间距。"
+      },
+      {
+        "id": "nominal_lidar_face_spacing",
+        "value_mm": 435.7,
+        "status": "DERIVED_NOMINAL",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 183,
+            "line_end": 183
+          }
+        ],
+        "note": "由机械参考点相减。"
+      }
+    ],
+    "limitations": [
+      "435.7mm是左右雷达CAD朝外面/窗中心的横向距离，不是已标定的数据原点基线。",
+      "尺寸两位小数仅用于算术核对，不代表实际精度。",
+      "卷尺约±1mm；将横向误差对称分配为每盒约±0.5mm不是独立位置置信区间。",
+      "单处盒间距接近设计值不能独立证明两个盒子均推到了止挡。",
+      "两处间距变化Δ/L约束两壁相对角变化；不普遍等于转角之和，不能分辨单盒角或共同倾斜。",
+      "左右完全对称仅适用于所列成对机械设计点；IMU只在左侧，实物外参不由对称性保证。"
+    ]
+  },
+  "data_transforms": [
+    {
+      "id": "axle_from_mounting_M",
+      "parent_frame": "axle",
+      "child_frame": "mounting_M",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 41,
+            "line_end": 41
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 41,
+            "line_end": 41
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "M是机械安装系，尚未测得它到轮轴中点坐标系的变换。"
+    },
+    {
+      "id": "mounting_M_from_lidar_left",
+      "parent_frame": "mounting_M",
+      "child_frame": "lidar_left",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_lidar_right",
+      "parent_frame": "mounting_M",
+      "child_frame": "lidar_right",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_camera_left_front_optical",
+      "parent_frame": "mounting_M",
+      "child_frame": "camera_left_front_optical",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_camera_right_front_optical",
+      "parent_frame": "mounting_M",
+      "child_frame": "camera_right_front_optical",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_camera_left_side_optical",
+      "parent_frame": "mounting_M",
+      "child_frame": "camera_left_side_optical",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_camera_right_side_optical",
+      "parent_frame": "mounting_M",
+      "child_frame": "camera_right_side_optical",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_double_hole_left_front_unbound",
+      "parent_frame": "mounting_M",
+      "child_frame": "double_hole_left_front_unbound",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_double_hole_right_front_unbound",
+      "parent_frame": "mounting_M",
+      "child_frame": "double_hole_right_front_unbound",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_double_hole_left_side_unbound",
+      "parent_frame": "mounting_M",
+      "child_frame": "double_hole_left_side_unbound",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_double_hole_right_side_unbound",
+      "parent_frame": "mounting_M",
+      "child_frame": "double_hole_right_side_unbound",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 230,
+            "line_end": 230
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    },
+    {
+      "id": "mounting_M_from_imu_native",
+      "parent_frame": "mounting_M",
+      "child_frame": "imu_native",
+      "direction": "child_to_parent",
+      "unit": "m",
+      "translation": {
+        "value_m": null,
+        "status": "UNKNOWN",
+        "reference_kind": "FRAME_ORIGIN",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 134,
+            "line_end": 134
+          }
+        ],
+        "note": "未知实际坐标原点偏移；不使用CAD面中心或历史值替代。"
+      },
+      "rotation": {
+        "value_matrix": null,
+        "status": "UNKNOWN",
+        "reference_kind": "DATA_AXES",
+        "evidence": [
+          {
+            "source_id": "v7_installation_20261002",
+            "line_start": 134,
+            "line_end": 134
+          }
+        ],
+        "note": "未知安装轴向/姿态；不自动填零角或单位旋转。"
+      },
+      "note": "数据坐标系到M的外参未知；允许先采集和标定，禁止依赖未知关系的运动融合。"
+    }
+  ],
+  "wheel_odometry": {
+    "schema": "wc_wheel_history_preview_v1",
+    "state": "UNVALIDATED",
+    "formal_odometry_eligible": false,
+    "provenance": "历史轮参数候选集中迁移自wheel_history_calibration.json；本工程尚未完成距离、轮径、轮距和转弯比例实测。修改本文件后建图与轮反馈预览统一使用同一会话快照。",
+    "wheel_radius_m": 0.165,
+    "track_width_m": 0.58,
+    "register_to_wheel_rpm": 0.112,
+    "left_sign": -1,
+    "right_sign": 1,
+    "max_gap_s": 0.5,
+    "max_wheel_speed_m_s": 1.0
+  },
+  "legacy_profile": {
+    "path": "config/calibration/legacy_hardware_setup_before_v7.json",
+    "sha256": "5f3868a6827635933347949d9e7e7c4d1703ecd066eeefb825ae4f8bdc43715c",
+    "active": false,
+    "note": "独立保留历史候选；仅用于可追溯比较和旧会话回放，不自动代替V7未知值。"
+  },
+  "manual_controls": {
+    "arm_allowed": true,
+    "interaction_policy": "hybrid_manual",
+    "reason": "用户于2026-10-05明确要求运行时可直接手推及键盘操控，不重复点击允许或转换按钮。会话内使用新鲜前台意图与轮反馈自动交接。",
+    "max_linear_m_s": 0.1,
+    "max_angular_rad_s": 0.2,
+    "command_rpm_to_register_scale": 8.9,
+    "operation_evidence": {
+      "status": "USER_REPORTED_LEGACY_OPERATION",
+      "note": "2026-09-14用户明确授权解除WASD软件禁用并由用户手动操纵；这项授权不是硬件停车验证。用户此前确认旧WASD可行驶、零速保持制动，只确认过WiFi或遥控断开停车，未确认USB/RS485断线停车。固件身份及硬件看门狗时限仍未知。命令比例8.9来自本次只读归档的旧zlac8030_base.yaml，与反馈比例独立记录。"
+    },
+    "note": "混合手动会话：前台窗口的新鲜空键意图和连续零轮反馈允许进入手推；有效WASD自动接管，正常松键先归零、确认停稳后恢复手推。无需每次允许或模式转换。失焦、连接丢失、意图过期和故障不能冒充正常松键触发释放；已释放时不宣称制动保持。所有控制由唯一轮接口执行并留存事务。人工授权不等于物理停车验证；USB/RS485断线、NoMachine远端断线、坡道制动及实际释放仍待现场验收。助手不自主驾驶。"
+  },
+  "visualization": {
+    "wheelchair": {
+      "schematic": true,
+      "seat_width_m": 0.46,
+      "seat_depth_m": 0.45,
+      "seat_height_above_axle_m": 0.35,
+      "back_height_m": 0.45,
+      "wheel_width_m": 0.05
+    },
+    "display_ground_projection": false,
+    "note": "仅为轮椅示意尺寸；V7轮轴外参未知，不启用地面投影，不是碰撞模型。机械M布局由独立标称资料表示。"
+  }
+}

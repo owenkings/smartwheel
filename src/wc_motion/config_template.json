@@ -1,0 +1,26 @@
+{
+  "mode": "raw_only",
+  "protocol": {
+    "model": "ZLAC8030D",
+    "protocol_verified": false,
+    "protocol_evidence": null,
+    "device_id": null,
+    "slave_id": null,
+    "allowed_reads": [],
+    "fields": {}
+  },
+  "geometry": {
+    "left_radius_m": null,
+    "right_radius_m": null,
+    "track_width_m": null,
+    "left_sign": null,
+    "right_sign": null,
+    "left_motor_turns_per_wheel_turn": null,
+    "right_motor_turns_per_wheel_turn": null,
+    "counts_per_motor_turn": null,
+    "max_wheel_speed_m_s": null,
+    "max_gap_s": null,
+    "linear_velocity_variance": null,
+    "angular_velocity_variance": null
+  }
+}

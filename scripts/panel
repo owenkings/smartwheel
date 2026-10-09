@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Resolve symlinks and search this entry point's ancestors, so both scripts/
+# and install/main/wc_bringup/lib/wc_bringup/panel work from any caller directory.
+panel_entry="$(readlink -f -- "${BASH_SOURCE[0]}")"
+panel_root="$(dirname -- "${panel_entry}")"
+if [[ -n "${WHEELCHAIR_PROJECT_ROOT:-}" ]]; then
+  panel_root="${WHEELCHAIR_PROJECT_ROOT}"
+else
+  while [[ "${panel_root}" != / ]] && [[ ! -f "${panel_root}/config/storage.json" || ! -d "${panel_root}/src/wc_panel" ]]; do
+    panel_root="$(dirname -- "${panel_root}")"
+  done
+fi
+if [[ ! -f "${panel_root}/config/storage.json" || ! -f "${panel_root}/src/wc_panel/app.py" ]]; then
+  printf '%s\n' 'Cannot locate wheelchair panel source; set WHEELCHAIR_PROJECT_ROOT to the maintained project.' >&2
+  exit 2
+fi
+panel_root="$(cd -- "${panel_root}" && pwd -P)"
+export PYTHONPATH="${panel_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -s -m wc_panel.app --project-root "${panel_root}" "$@"

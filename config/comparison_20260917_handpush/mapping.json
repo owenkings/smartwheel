@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "status": "EXPERIMENT",
+  "source_mode": "real",
+  "mapping_enabled": false,
+  "cloud_source": "filtered",
+  "continuous_mapping": true,
+  "odometry_source": "wheel_imu",
+  "motion_model": "planar_ekf",
+  "planar_ekf": {
+    "status": "UNVALIDATED_MODEL_WEIGHTS",
+    "wheel_v_variance": 0.0025,
+    "wheel_w_variance": 0.0025,
+    "gyro_w_variance": 0.0004,
+    "linear_acceleration_variance": 0.25,
+    "angular_acceleration_variance": 0.25,
+    "initial_pose_variance": [
+      1e-06,
+      1e-06,
+      1e-06
+    ],
+    "initial_velocity_variance": [
+      0.04,
+      0.04
+    ]
+  },
+  "gyro_bias_config": null,
+  "cloud_filter": {
+    "enabled": true,
+    "range": {
+      "enabled": true,
+      "min_m": 0.3,
+      "max_m": 15.0
+    },
+    "organized_support": {
+      "enabled": true,
+      "min_neighbors": 2,
+      "distance_offset_m": 0.03,
+      "distance_scale": 0.02
+    },
+    "ground_height": {
+      "enabled": true,
+      "min_m": -0.1,
+      "max_m": 2.5
+    }
+  },
+  "map_profile": {
+    "schema_version": 1,
+    "status": "EXPERIMENT",
+    "cell_size_m": 0.05,
+    "range_min_m": 0.3,
+    "range_max_m": 8.0,
+    "min_ground_height_m": -0.1,
+    "max_ground_height_m": 0.15,
+    "max_obstacle_height_m": 1.8,
+    "max_ground_angle_deg": 30.0,
+    "normal_neighbors": 10,
+    "cluster_radius_m": 0.1,
+    "min_cluster_points": 5,
+    "noise_radius_m": 0.1,
+    "noise_min_neighbors": 3,
+    "ray_tracing": "single_sensor_only",
+    "linear_update_m": 0.05,
+    "angular_update_rad": 0.05,
+    "detection_rate_hz": 1.0,
+    "keep_unlinked_nodes": false
+  },
+  "wheel_imu_covariance": {
+    "status": "UNVALIDATED_MODEL_WEIGHTS",
+    "pose_diagonal": [
+      0.25,
+      0.25,
+      1.0,
+      0.09,
+      0.09,
+      0.09
+    ],
+    "twist_diagonal": [
+      0.04,
+      0.25,
+      0.25,
+      0.01,
+      0.01,
+      0.04
+    ]
+  },
+  "measurement_note": "Hardware geometry and wheel-scale candidates are read only from hardware_setup_config at session startup; source bytes/hash and resolved transforms are archived per map.",
+  "hardware_setup_config": "config/comparison_20260917_handpush/hardware_setup.json",
+  "cameras_enabled": false,
+  "rviz_renderer": "software",
+  "camera_config": "config/cameras.json",
+  "imu_sensor_id": "H30-0000000015",
+  "wheel_hardware_config": "config/wheel_feedback_current.json",
+  "input_rate_hz": 5.0,
+  "archive_publication_mode": "queued_realtime",
+  "archive_checkpoint_policy": "on_close",
+  "max_pair_delta_ns": 50000000,
+  "formal_acceptance": false,
+  "navigation_validated": false,
+  "common_measurement_time_validated": false
+}

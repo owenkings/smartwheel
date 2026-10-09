@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "VERIFIED_DEVICE_RELATIVE_TIME",
+  "sensor_id": "H30-0000000015",
+  "hardware_serial": "0000000015",
+  "product_version": "YIS106 -AQMI -V01.02.04;",
+  "device_timestamp_unit": "us",
+  "tick_ns": 1000,
+  "required_fields": [
+    "sample_timestamp_raw",
+    "dataready_timestamp_raw"
+  ],
+  "backward_policy": "guarded_uint32_wrap",
+  "duplicate_policy": "reject",
+  "max_gap_ticks": 2000000,
+  "wrap_host_tolerance_ns": 100000000,
+  "read_mode": "event",
+  "evidence": [
+    {
+      "path": "calibration/imu_timing_20261008/evidence_summary.json",
+      "sha256": "f21f751c5f53fe8f230615aa2cb9589b5eed9a9f76ccd67621791d17cbd41c74"
+    }
+  ],
+  "physical_multisensor_sync_validated": false,
+  "notes": [
+    "Only H30 relative sample timing is verified. The host anchor leaves intersensor physical latency unknown.",
+    "Counter wrap acceptance is a bounded model checked against host elapsed; resets and ambiguous jumps are rejected."
+  ],
+  "startup_quarantine_ns": 250000000
+}

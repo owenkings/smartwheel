@@ -1,65 +1,28 @@
-# ROS2 build artifacts
-build/
-install/
-log/
-.ros/
-.ros/
-
-# Python cache
+/build/
+/install/
+/SDKs/
+/data/
+/maps/
+/.phase1_runtime/
+/.incoming-*
 __pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-*.egg
-
-# pytest
 .pytest_cache/
-pytest-of-*/
-.coverage
-htmlcov/
+*.pyc
+/reports/test_runs/
+/reports/builds/
+/state/source_history.bundle
 
-# rosbag
-bags/
-*.db3
-*.mcap
+/reports/
+/log/
+/logs/
+/tmp/
+/workspaces/
+/handoffs/
+/state/
+/config/*.local.json
+/config/local/
+/config/panel_profiles/
+/config/calibration/panel_extrinsics/
+/config/calibration/panel_live/
 
-# Maps - keep source configs, ignore generated images
-maps
-maps/*.pgm
-maps/*.png
-!maps/.gitkeep
-!maps/map_versions.json
-!maps/map_versions.json
-
-# IDE / AI agents
-# IDE / AI agents
-.vscode/
-.idea/
-.agents/
-.codex/
-.agents/
-.codex/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Secrets / device config overrides
-*.env
-local_config.yaml
-
-# Vendor SDK (too large, install separately)
-xtsdk_py/
-
-# XT-M60 logs
-xtlog/
-
-# doc
-docs/camera_snapshots
-docs/*.png
+/dev_archive/

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "status": "EXPERIMENT",
+  "coordinate_convention": "FLU",
+  "rotation_convention": "Rz(yaw) Ry(pitch) Rx(roll)",
+  "_help": {
+    "用途": "scripts/map 的硬件安装与轮参数唯一编辑入口；停止建图后修改，下次启动生效。运行中的地图使用启动快照。",
+    "位置": "position_m 使用米。雷达位置相对两驱动轮轴中点：X前正、Y左正、Z上正；不是离地高度。",
+    "角度": "rpy_deg 顺序为 Roll、Pitch、Yaw，单位度。前向安装时 +Roll左高右低，+Pitch前低后高，+Yaw向左转；完整旋转为Rz·Ry·Rx。",
+    "实测与车架": "本次雷达角来自静止IMU相对水平面的测量，rotation_reference=calibration_level。calibration_reference记录测量时车架姿态；当前零值只是车架水平假设。若直接测得相对轮轴的安装角，改为axle。",
+    "IMU": "rpy_deg 是IMU原生正轴相对parent_frame的安装角。当前在左盒同轴，不能只把Y反号。position_m=null表示没有精确测量，当前只用于记录。",
+    "移动硬件": "重新测量受影响的安装位置、方向及测量参考姿态；若IMU随雷达一起移动且仍同轴，保留IMU相对安装角。静止IMU无法测相对Yaw。",
+    "边界": "修改正确参数可补偿刚性安装变化，但不能保证视野、遮挡、重叠、噪声、时间同步和建图精度不变；摄像头和旧选点网页不读取本文件。"
+  },
+  "calibration_reference": {
+    "axle_rpy_deg": [0.0, 0.0, 0.0],
+    "status": "ASSUMED_LEVEL_NOT_MEASURED",
+    "note": "2026-09-14 同一轮椅静止姿态的左右顺序测量；轮轴/车架相对水平姿态未独立测得，零仅为试验假设。此姿态用于一次性换算固定安装角，不是每次启动重算。Yaw零以车架前向为约定。"
+  },
+  "lidars": {
+    "left": {
+      "position_m": [0.34, 0.3125, 0.52],
+      "rpy_deg": [-2.962871493851409, 5.053386070879511, 0.0],
+      "rotation_reference": "calibration_level",
+      "note": "卷尺位置候选；方向来自 imu_left_restored_20260914_02 的2000组静止样本。Yaw零依据镜片朝轮椅前方；盒面与光学坐标平行未独立标定。"
+    },
+    "right": {
+      "position_m": [0.34, -0.3125, 0.52],
+      "rpy_deg": [3.275047203719066, 3.496551404509943, 0.0],
+      "rotation_reference": "calibration_level",
+      "note": "卷尺位置候选；方向来自 imu_right_temp_20260914_01 的1999组静止样本。替换旧手机Roll+3/Pitch+5候选，不采用左右完全镜像假设。"
+    }
+  },
+  "imu": {
+    "parent_frame": "lidar_left",
+    "position_m": null,
+    "rpy_deg": [0.0, 0.0, 0.0],
+    "note": "H30已恢复左盒并确认+X前/+Y轮椅左/+Z上，与左雷达同轴固定；相对精确位置未知。当前使用陀螺与静止重力，不做IMU线加速度积分或平移杆臂补偿。"
+  },
+  "wheel_odometry": {
+    "schema": "wc_wheel_history_preview_v1",
+    "state": "UNVALIDATED",
+    "formal_odometry_eligible": false,
+    "provenance": "历史轮参数候选集中迁移自wheel_history_calibration.json；本工程尚未完成距离、轮径、轮距和转弯比例实测。修改本文件后建图与轮反馈预览统一使用同一会话快照。",
+    "wheel_radius_m": 0.165,
+    "track_width_m": 0.58,
+    "register_to_wheel_rpm": 0.112,
+    "left_sign": -1,
+    "right_sign": 1,
+    "max_gap_s": 0.5,
+    "max_wheel_speed_m_s": 1.0
+  },
+  "manual_controls": {
+    "arm_allowed": true,
+    "reason": "用户于2026-09-14明确要求建图期间直接使用WASD并可切换手推；无需界面启用按钮，首次有效方向键才初始化伺服。",
+    "max_linear_m_s": 0.10,
+    "max_angular_rad_s": 0.20,
+    "command_rpm_to_register_scale": 8.9,
+    "operation_evidence": {
+      "status": "USER_REPORTED_LEGACY_OPERATION",
+      "note": "2026-09-14用户明确授权解除WASD软件禁用并由用户手动操纵；这项授权不是硬件停车验证。用户此前确认旧WASD可行驶、零速保持制动，只确认过WiFi或遥控断开停车，未确认USB/RS485断线停车。固件身份及硬件看门狗时限仍未知。命令比例8.9来自本次只读归档的旧zlac8030_base.yaml，与反馈比例独立记录。"
+    },
+    "note": "WASD界面和统一轮反馈适配器的试验设置。RViz应用内直接按WASD，无启用按钮或控制区焦点门；首次非零按键才初始化，持续按键无运动总时限。松键先归零，空闲0.75秒后采用旧驱动的0x200E=7释放分支以便手推，再按键自动初始化。250ms过期意图及500ms界面状态失鲜清空旧键，连接恢复后新键可直接使用，不需重新激活；速度和串口事务限制保留。不允许助手自主驾驶。NoMachine断网后Qt可能保留按键并继续心跳，物理断线停车、伺服释放及控制精度尚未实车验收。"
+  },
+  "visualization": {
+    "wheelchair": {
+      "schematic": true,
+      "seat_width_m": 0.46,
+      "seat_depth_m": 0.45,
+      "seat_height_above_axle_m": 0.35,
+      "back_height_m": 0.45,
+      "wheel_width_m": 0.05
+    },
+    "display_ground_projection": true,
+    "note": "仅示意尺寸，非实测或碰撞模型。座椅后缘在轮轴X=0是显示约定。二维显示地面高度来自初始安装与轮半径候选，不是地面拟合，不改变原生地图或导出。"
+  }
+}

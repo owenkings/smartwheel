@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>双雷达配准工作台 · Wheelchair</title>
+  <link rel="stylesheet" href="/workbench.css">
+  <script src="/amplitude.js" defer></script>
+  <script src="/picker.js" defer></script>
+  <script src="/alignment.js" defer></script>
+  <script src="/workbench.js" defer></script>
+</head>
+<body data-page="workbench">
+  <header class="workbench-header">
+    <div class="header-inner"><a class="brand" href="#input-step"><span class="brand-mark" aria-hidden="true">W</span><span>WHEELCHAIR<span class="brand-sub">传感器标定</span></span></a><span class="environment-tag"><i></i>离线配准工作台</span></div>
+  </header>
+  <main class="workbench-main">
+    <section class="hero" aria-labelledby="page-title">
+      <div><p class="eyebrow">DUAL LIDAR / ALIGNMENT</p><h1 id="page-title">双雷达配准工作台</h1><p class="hero-description">在同一页选点、计算、微调和比较。先看效果，满意后再保存候选。</p></div>
+      <div class="hero-status"><span class="status-label">当前进度</span><p id="workflow-status" role="status">正在载入同一组点云…</p><span class="status-foot">计算不改正式外参</span></div>
+    </section>
+    <nav class="step-nav" aria-label="配准步骤"><a href="#input-step"><span>01</span>确认输入与选点</a><a href="#initial-step"><span>02</span>计算初值</a><a href="#refine-step"><span>03</span>微调与 ICP</a><a href="#review-step"><span>04</span>比较与保存</a></nav>
+    <div id="picker-app">
+      <section id="input-step" class="workflow-step" aria-labelledby="input-heading">
+        <div class="step-heading"><div class="step-number">01</div><div><p class="eyebrow">CORRESPONDENCES</p><h2 id="input-heading">确认输入，选择同一个角点</h2><p>左右各点一次组成一对。建议选择 6～10 对分散在不同高度、深度的角点。</p></div><span class="step-chip">左青 · 右橙</span></div>
+    <div id="source-status" class="source-status" role="status">正在读取点云…</div>
+    <p id="api-version-note" class="result-warning" hidden>当前连接的是旧服务，“只计算”暂不可用。请打开本次提供的新版服务地址；这个页面的未保存选点仍可保留，不必关闭。</p>
+    <div class="level-toolbar"><label for="display-frame">左云显示参考</label><select id="display-frame" disabled><option value="level">水平参考（候选）</option><option value="raw" selected>原始左雷达坐标</option></select><span id="level-status" role="status">等待读取参考。</span></div>
+    <div class="level-toolbar"><label for="view-scale-mode">左右三维视图比例</label><select id="view-scale-mode"><option value="shared" selected>同一米制缩放（联动）</option><option value="independent">各自适应窗口</option></select><span>同尺度便于比较几何尺寸；原生 Z 是相对雷达原点的坐标，不是离地高度。</span></div>
+    <details class="metadata"><summary>来源、坐标与时间说明</summary><pre id="source-details"></pre></details>
+    <div class="toolbar main-toolbar">
+      <div class="mode-switch" role="group" aria-label="交互模式">
+        <button id="mode-browse" type="button" class="active" aria-pressed="true">浏览</button>
+        <button id="mode-pick" type="button" aria-pressed="false">选点</button>
+      </div>
+      <span id="mode-help">拖动旋转 · Shift + 拖动平移 · 滚轮缩放</span>
+      <div class="toolbar-tail"><button id="undo" type="button" disabled>撤销</button><button id="clear" type="button" disabled>清空</button></div>
+    </div>
+    <div class="cloud-grid">
+      <section class="cloud-card" aria-labelledby="left-title">
+        <div class="card-heading"><h2 id="left-title"><span class="dot left-dot"></span>左雷达</h2><span id="left-count"></span></div>
+        <p id="left-image-missing" class="image-missing">这个场景未保存幅度值或逐行布局，可继续使用下方三维选点；不会凭空生成幅度图。</p>
+        <section id="left-image-section" class="image-section" aria-label="左雷达逐像素选点" hidden>
+          <div class="image-toolbar"><label for="left-image-mode" class="image-label">像素图</label><select id="left-image-mode"><option value="amplitude">回波幅度</option><option value="x">前向距离 X（米）</option></select><button id="left-image-minus" type="button" aria-label="缩小左像素图">−</button><button id="left-image-plus" type="button" aria-label="放大左像素图">＋</button><button id="left-image-reset" type="button">完整图像</button></div>
+          <canvas id="left-image" class="organized-image" tabindex="0" aria-label="左雷达像素图，点击有效像素选择原始点"></canvas>
+          <p id="left-image-legend" class="image-legend"></p>
+          <div id="left-image-readout" class="readout">像素保持等比例 · 列按乘坐视角逆序显示 · 原始行列从 0 计数</div>
+        </section>
+        <div class="cloud-subtitle">三维点云 · 与像素图共用选点</div>
+        <div class="view-tools" data-view="left"><button data-preset="oblique" type="button">斜俯视</button><button data-preset="front" type="button">前视</button><button data-preset="top" type="button">顶视</button><button data-preset="side" type="button">侧视</button><button data-preset="fit" type="button">适应视图</button></div>
+        <canvas id="left-canvas" tabindex="0" aria-label="左雷达点云，浏览或选择已有点"></canvas>
+        <div id="left-readout" class="readout">左侧原始坐标 · FLU · 米</div>
+      </section>
+      <section class="cloud-card" aria-labelledby="right-title">
+        <div class="card-heading"><h2 id="right-title"><span class="dot right-dot"></span>右雷达</h2><span id="right-count"></span></div>
+        <p id="right-image-missing" class="image-missing">这个场景未保存幅度值或逐行布局，可继续使用下方三维选点；不会凭空生成幅度图。</p>
+        <section id="right-image-section" class="image-section" aria-label="右雷达逐像素选点" hidden>
+          <div class="image-toolbar"><label for="right-image-mode" class="image-label">像素图</label><select id="right-image-mode"><option value="amplitude">回波幅度</option><option value="x">前向距离 X（米）</option></select><button id="right-image-minus" type="button" aria-label="缩小右像素图">−</button><button id="right-image-plus" type="button" aria-label="放大右像素图">＋</button><button id="right-image-reset" type="button">完整图像</button></div>
+          <canvas id="right-image" class="organized-image" tabindex="0" aria-label="右雷达像素图，点击有效像素选择原始点"></canvas>
+          <p id="right-image-legend" class="image-legend"></p>
+          <div id="right-image-readout" class="readout">像素保持等比例 · 列按乘坐视角逆序显示 · 原始行列从 0 计数</div>
+        </section>
+        <div class="cloud-subtitle">三维点云 · 与像素图共用选点</div>
+        <div class="view-tools" data-view="right"><button data-preset="oblique" type="button">斜俯视</button><button data-preset="front" type="button">前视</button><button data-preset="top" type="button">顶视</button><button data-preset="side" type="button">侧视</button><button data-preset="fit" type="button">适应视图</button></div>
+        <canvas id="right-canvas" tabindex="0" aria-label="右雷达点云，浏览或选择已有点"></canvas>
+        <div id="right-readout" class="readout">右侧原始坐标 · FLU · 米</div>
+      </section>
+    </div>
+<details class="display-explanation"><summary>如何理解幅度、坐标和显示比例</summary>    <p class="view-note">幅度表示回波强弱，不是照片或深度；“前向距离 X”不是到雷达原点的径向距离。百分位仅调整灰度，像素和原始 XYZ 不变。图像等像素比例不代表物体实际宽高比例，量距离请使用三维坐标。图像关联不随水平显示参考变化。</p>
+    <p id="picker-frame-note" class="view-note">前视沿 +X 观察，画面左为 +Y、上为 +Z；顶视和侧视只是浏览视角。两侧各自显示在原始坐标系中。</p>
+</details>
+    <section class="selection-card" aria-labelledby="pairs-title">
+      <div class="card-heading"><h2 id="pairs-title">对应点对</h2><span id="pair-count">0 对</span></div>
+      <p id="selection-hint" class="hint" aria-live="polite">读取完成后，切换到“选点”开始。</p>
+      <div class="table-scroll"><table><thead><tr><th>编号</th><th>左雷达原始点 ID / XYZ（米）</th><th>右雷达原始点 ID / XYZ（米）</th><th>拟合残差（毫米）</th><th>操作</th></tr></thead><tbody id="pair-rows"></tbody></table></div>
+
+    </section>
+        <div class="step-footer"><p>选点模式下，悬停会在同侧像素图与三维点云中显示虚线预览；单击才确认，实线编号表示已选点。左右雷达的对应点由你判断。</p><a class="button quiet" href="#initial-step">下一步：计算初值 <span aria-hidden="true">↓</span></a></div>
+      </section>
+      <section id="initial-step" class="workflow-step" aria-labelledby="initial-heading">
+        <div class="step-heading"><div class="step-number">02</div><div><p class="eyebrow">INITIAL TRANSFORM</p><h2 id="initial-heading">计算初值，检查对应点质量</h2><p>先计算并查看叠加结果。初值可直接带入下面的微调，无需先保存文件。</p></div></div>
+        <div class="primary-action-bar"><button id="calculate" class="primary" type="button" disabled>计算初值 · 不保存</button><button id="use-initial" type="button" disabled>使用此初值，继续微调 ↓</button><span id="request-status" role="status">选满 3 对不共线点后即可计算。</span></div>
+        <p id="error" class="error" role="alert" hidden></p>
+    <section id="result-section" class="result-card" aria-labelledby="result-title" hidden>
+      <div class="card-heading"><h2 id="result-title">初值叠加预览</h2><span id="result-status" class="badge"></span></div>
+      <section id="picker-assessment" class="assessment" aria-label="结果可用性评估" hidden></section>
+      <p class="result-warning">候选初值只用于当前离线检查；正式外参保持原状。</p>
+      <p id="manual-icp-flow" class="inline-note" hidden><a id="manual-icp-link" href="#refine-step" hidden>继续手动调整与 ICP</a></p>
+      <div class="result-grid">
+        <div><div class="overlay-legend"><span><i class="dot left-dot"></i>左雷达</span><span><i class="dot right-dot"></i>右雷达经初值变换</span><button id="overlay-fit" type="button">适应视图</button></div><div class="view-tools" data-view="overlay"><button data-preset="front" type="button">前视</button><button data-preset="top" type="button">顶视</button><button data-preset="side" type="button">侧视</button><button data-preset="oblique" type="button">斜俯视</button></div><canvas id="overlay-canvas" tabindex="0" aria-label="两色点云外参初值叠加预览"></canvas><p id="overlay-frame-note" class="hint">左雷达原始坐标 · 拖动旋转 · Shift + 拖动平移 · 滚轮缩放</p><p class="hint">各投影视图的横纵米制比例相同；屏幕重叠不代表三维重合，需结合三个视角检查。</p></div>
+        <div class="matrix-box"><p id="rmse" class="metric"></p><p>p<sub>left</sub> = R<sub>left←right</sub> p<sub>right</sub> + t<sub>left←right</sub></p><details class="advanced-matrix"><summary>旋转、平移与计算说明</summary><h3>旋转 R（无量纲）</h3><pre id="rotation"></pre><h3>平移 t（米）</h3><pre id="translation"></pre><p id="result-reasons" class="hint"></p><p class="hint">缩放固定为 1；实时使用资格：否。</p></details></div>
+      </div>
+    </section>
+
+        <details class="save-initial"><summary>需要保留这一步？保存初值或导出选点</summary><div class="action-row"><button id="solve" type="button" disabled>计算并保存初值</button><button id="export" type="button" disabled>只导出选点</button></div><div id="saved" class="saved" hidden><span id="saved-label">已保存到 Orin：</span><code id="export-path"></code></div></details>
+      </section>
+    </div>
+    <div id="alignment-app">
+      <section id="refine-step" class="workflow-step" aria-labelledby="refine-heading">
+        <div class="step-heading"><div class="step-number">03</div><div><p class="eyebrow">REFINE & INSPECT</p><h2 id="refine-heading">固定左云，调整右云</h2><p>用前、顶、侧视检查共同结构，必要时微调姿态，再运行 ICP。</p></div><button id="load-saved-candidate" type="button" disabled>载入已有候选</button></div>
+  <p id="a-alignment-source" class="source" role="status">等待使用当前计算的初值；也可明确载入已有候选。</p>
+  <p id="a-api-version-note" class="warning" hidden>当前连接的是旧服务，“只计算 ICP”暂不可用。请打开本次提供的新版服务地址；这个页面的未保存调整仍可保留，不必关闭。</p>
+  <p id="a-alignment-time" class="warning" hidden></p>
+  <div class="level-toolbar"><label for="a-display-frame">显示参考</label><select id="a-display-frame" disabled><option value="level">水平参考（候选）</option><option value="raw" selected>原始左雷达坐标</option></select><span id="a-level-status" role="status">等待读取参考。</span></div>
+  <details><summary>来源、坐标与初值</summary><pre id="a-alignment-provenance"></pre></details>
+  <div id="a-alignment-error" class="error" role="alert" hidden></div>
+
+  <div class="workspace">
+    <section class="viewer" aria-label="两色点云调整视图">
+      <div class="view-toolbar">
+        <div class="modes"><button id="a-view-mode" type="button" class="active" aria-pressed="true">仅调整视角</button><button id="a-adjust-mode" type="button" aria-pressed="false" disabled>拖动右云</button></div>
+        <label><input id="a-show-left" type="checkbox" checked><i class="dot left"></i>左云固定</label>
+        <label><input id="a-show-right" type="checkbox" checked><i class="dot right"></i>右云可调整</label>
+      </div>
+      <div class="view-toolbar presets"><button type="button" data-view="oblique">斜俯视</button><button type="button" data-view="front">前视</button><button type="button" data-view="top">顶视</button><button type="button" data-view="side">侧视</button><button type="button" data-view="fit">适应视图</button><div class="point-size-control"><label for="a-point-radius">点半径</label><select id="a-point-radius"><option value="1">1 px</option><option value="1.8" selected>1.8 px</option><option value="2.6">2.6 px</option></select></div></div>
+      <p id="a-gesture-help" class="hint">左键拖动旋转视角，Shift + 拖动平移视角，滚轮在光标处缩放。</p>
+      <canvas id="a-alignment-canvas" tabindex="0" aria-label="左青右橙的半透明点云叠加"></canvas>
+      <details class="rotation-details"><summary>旋转方向指引</summary><section class="rotation-help" aria-label="旋转方向指示">
+        <div class="guide-visual">
+        <strong id="a-guide-title">Roll ＋ 增大方向</strong>
+        <canvas id="a-rotation-guide" width="300" height="176" role="img" aria-label="随当前点云观察视角更新的旋转方向示意，橙色弧箭头表示所选参数增减方向，白色轴是当前旋转轴"></canvas>
+        </div>
+        <div class="guide-copy">
+        <div class="guide-tabs" aria-label="选择要查看的旋转方向"><button type="button" data-guide-axis="3" aria-pressed="true">Roll 横滚</button><button type="button" data-guide-axis="4" aria-pressed="false">Pitch 俯仰</button><button type="button" data-guide-axis="5" aria-pressed="false">Yaw 偏航</button></div>
+        <p id="a-guide-description" class="hint">方向示意加载中。</p>
+        <button type="button" id="a-guide-face-axis" title="只调整观察视角，让所选旋转轴正对视线，不修改配准参数">看清旋转方向 · 仅切换视角</button>
+        <p id="a-guide-edge-on" class="hint" hidden>当前旋转面接近侧对视线，可点击上方按钮展开观察。</p>
+        <p class="hint">图与主视图同向。移到角度的 ＋／− 按钮，或聚焦按钮，可查看对应方向。正转遵循右手定则；⊙ 朝向你，⊗ 远离你。</p>
+        <details><summary>当前旋转轴与组合角度</summary><p id="a-guide-axis-vector" class="hint"></p><p class="hint">零姿态时 Roll / Pitch / Yaw 分别绕 X / Y / Z。组合角度下，Roll 和 Pitch 的轴会随其他角度变化；以方向图为准。轴经过变换后的右雷达原点。接近 Pitch ±90° 时，Roll 与 Yaw 会耦合。</p></details>
+        </div>
+      </section></details>
+      <p id="a-frame-note" class="hint frame-note">当前参考是左雷达原始坐标；如场景提供水平候选，可切换显示参考。</p>
+      <p class="hint">前视中水平地面会接近一条线，可用斜俯视或顶视检查。</p>
+      <p class="hint">两侧独立绘制再混色，交叠处均保留两种颜色。<strong>屏幕颜色混合只表示投影重叠，不是三维对齐证据。</strong>可切换前／顶／侧视检查深度差。</p>
+    </section>
+    <aside class="controls" aria-label="右云变换参数">
+      <h2 id="a-transform-title">右 → 左变换</h2>
+      <details class="pose-explanation"><summary>坐标与旋转定义</summary><p id="a-pose-formula" class="formula">p_left = R · p_right + t<br>R = Rz(yaw) · Ry(pitch) · Rx(roll)</p>
+      <p id="a-pose-axis-note" class="hint">平移沿左雷达 FLU 轴：X 前、Y 左、Z 上。旋转围绕右雷达原点；不拟合缩放。</p></details>
+      <fieldset id="a-pose-controls" disabled>
+        <legend>平移（米）与旋转（度）</legend>
+        <div class="steps"><label>平移步长<input id="a-translation-step" type="number" value="0.01" min="0.0001" max="10" step="any"></label><label>角度步长<input id="a-rotation-step" type="number" value="1" min="0.001" max="180" step="any"></label></div>
+        <div class="pose-row"><label for="a-pose-x">X / m</label><button type="button" data-nudge="0" data-sign="-1" aria-label="X 减一步">−</button><input id="a-pose-x" type="number" step="any" value="0"><button type="button" data-nudge="0" data-sign="1" aria-label="X 加一步">+</button></div>
+        <div class="pose-row"><label for="a-pose-y">Y / m</label><button type="button" data-nudge="1" data-sign="-1" aria-label="Y 减一步">−</button><input id="a-pose-y" type="number" step="any" value="0"><button type="button" data-nudge="1" data-sign="1" aria-label="Y 加一步">+</button></div>
+        <div class="pose-row"><label for="a-pose-z">Z / m</label><button type="button" data-nudge="2" data-sign="-1" aria-label="Z 减一步">−</button><input id="a-pose-z" type="number" step="any" value="0"><button type="button" data-nudge="2" data-sign="1" aria-label="Z 加一步">+</button></div>
+        <div class="pose-row"><label for="a-pose-roll">Roll 横滚 / °</label><button type="button" data-nudge="3" data-sign="-1" aria-label="Roll 减一步" title="减小横滚；零姿态参考：左降右抬。当前方向见上方箭头。">−</button><input id="a-pose-roll" type="number" step="any" value="0"><button type="button" data-nudge="3" data-sign="1" aria-label="Roll 加一步" title="增大横滚；零姿态参考：左抬右降。当前方向见上方箭头。">+</button></div>
+        <div class="pose-row"><label for="a-pose-pitch">Pitch 俯仰 / °</label><button type="button" data-nudge="4" data-sign="-1" aria-label="Pitch 减一步" title="减小俯仰；零姿态参考：前端抬起。当前方向见上方箭头。">−</button><input id="a-pose-pitch" type="number" step="any" value="0"><button type="button" data-nudge="4" data-sign="1" aria-label="Pitch 加一步" title="增大俯仰；零姿态参考：前端下俯。当前方向见上方箭头。">+</button></div>
+        <div class="pose-row"><label for="a-pose-yaw">Yaw 偏航 / °</label><button type="button" data-nudge="5" data-sign="-1" aria-label="Yaw 减一步" title="减小偏航；零姿态参考：朝右转。当前方向见上方箭头。">−</button><input id="a-pose-yaw" type="number" step="any" value="0"><button type="button" data-nudge="5" data-sign="1" aria-label="Yaw 加一步" title="增大偏航；零姿态参考：朝左转。当前方向见上方箭头。">+</button></div>
+        <button id="a-apply-pose" type="button">应用数值</button>
+      </fieldset>
+      <p id="a-pose-state" class="hint">等待读取初值。</p>
+      <div class="action-grid"><button id="a-reset-initial" type="button" disabled>恢复页面初值</button><button id="a-show-before" type="button" disabled>显示上次 ICP 前</button><button id="a-show-refined" type="button" disabled>显示上次 ICP 后</button></div>
+      <div class="actions"><button id="a-preview-refine" type="button" class="primary" disabled>只计算 ICP</button><a class="button quiet" href="#review-step">查看比较与保存</a></div>
+      <p id="a-alignment-request" role="status" class="hint">保存和计算都不会写入正式配置或 TF。</p>
+      <details><summary>保存使用的原始右 → 左 4×4 矩阵</summary><pre id="a-current-matrix"></pre></details>
+    </aside>
+  </div>
+
+      </section>
+      <section id="review-step" class="workflow-step" aria-labelledby="review-heading">
+        <div class="step-heading"><div class="step-number">04</div><div><p class="eyebrow">REVIEW & SAVE</p><h2 id="review-heading">比较结果，决定是否保存</h2><p>先检查改善和拒绝原因。保存只保留候选，不会启用正式外参。</p></div><a id="workflow-continue" class="text-link" href="#refine-step">返回微调 ↑</a></div>
+        <div id="workflow-summary" class="workflow-summary" aria-live="polite">计算后，这里显示当前结果和保存状态。</div>
+  <section id="a-alignment-assessment" class="assessment" aria-label="结果可用性评估" hidden></section>
+  <p id="a-assessment-stale" class="warning" hidden>当前姿态已变化；上方评估属于上一次计算或载入的姿态，请重新计算后判断。</p>  <section id="a-alignment-result" class="result" hidden>
+    <div class="result-title"><h3>最近一次计算</h3><strong id="a-result-status"></strong></div>
+    <p id="a-result-dirty" class="warning" hidden>当前右云姿态已改变。以下指标属于最近一次结果，尚未评价当前姿态。</p>
+    <p id="a-result-reasons" class="warning"></p><p id="a-saved-path" class="path"></p>
+    <div class="metrics"><div><h3>初始几何指标</h3><pre id="a-initial-metrics"></pre></div><div><h3>最终几何指标</h3><pre id="a-final-metrics"></pre></div><div><h3>变换变化</h3><pre id="a-transform-change"></pre></div></div>
+    <details><summary>计算策略与迭代记录</summary><pre id="a-result-policy"></pre></details>
+    <p class="hint">RMSE／中位数／P95 仅统计门限内右→左最近邻距离，不是测距精度。无内点时显示“无内点”，不当作零误差。弱重叠、退化或拒绝原因必须结合现场结构复核；此页面不会把结果升级为正式标定。</p>
+  </section>
+
+        <div class="save-decision">
+          <div class="save-overview"><h3>保存为新的候选版本</h3><p>选择需要保留的方案，也可以继续调整而不保存。</p><p class="save-boundary">两种保存都不覆盖原始点云，不修改 <code>hardware_setup.json</code>，也不自动应用到实时建图或离线融合。</p></div>
+          <div class="save-actions">
+            <div class="save-option"><p>保留刚才计算的 ICP 变换、最近邻对应、几何指标，以及来源和哈希。直接保存本次结果，不重新运行 ICP。</p><button id="a-refine" type="button" class="primary" disabled>保存本次 ICP 结果</button></div>
+            <details class="manual-save"><summary>保存手动调整方案</summary><p>直接保存当前平移和旋转，不运行 ICP；保存时会评估当前几何误差。</p><button id="a-save-manual" type="button" disabled>保存当前手动姿态</button></details>
+          </div>
+        </div>
+      </section>
+    </div>
+    <footer class="page-footer"><span>Wheelchair · 双雷达离线配准</span><span>原始点云保持不变 · 不启动设备 · 刷新前请保存需要保留的候选</span></footer>
+  </main>
+</body>
+</html>

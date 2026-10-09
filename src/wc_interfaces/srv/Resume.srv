@@ -1,0 +1,10 @@
+string session_id
+string odom_epoch
+string calibration_id
+string left_clock_model_id
+string right_clock_model_id
+bool explicit_request
+bool continuity_verified
+---
+bool accepted
+string[] reasons

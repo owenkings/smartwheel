@@ -1,0 +1,4 @@
+evidence/*.pdf
+evidence/*.txt
+evidence/*.downloaded.md
+.tmp_*/

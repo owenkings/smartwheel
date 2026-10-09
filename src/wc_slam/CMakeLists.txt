@@ -1,0 +1,85 @@
+cmake_minimum_required(VERSION 3.16)
+project(wc_slam)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(wc_interfaces REQUIRED)
+# RTAB-Map 0.23 in the supported Humble/Jammy deployment uses OpenCV 4.5.4.
+# Prefer an explicit matching OpenCV_DIR, then the optional ABI sysroot (needed
+# on JetPack with system OpenCV 4.8), otherwise a matching system installation.
+# Each target architecture uses its own compiler-provided multiarch directory.
+set(WC_OPENCV45_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../SDKs/ubuntu_opencv45/sysroot/usr"
+  CACHE PATH "Optional RTABMap-compatible OpenCV 4.5.4 sysroot")
+get_filename_component(WC_OPENCV45_ROOT "${WC_OPENCV45_ROOT}" ABSOLUTE)
+set(WC_OPENCV45_CONFIG "${WC_OPENCV45_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/opencv4")
+if(NOT OpenCV_DIR AND EXISTS "${WC_OPENCV45_CONFIG}/OpenCVConfig.cmake")
+  set(OpenCV_DIR "${WC_OPENCV45_CONFIG}" CACHE PATH "RTABMap-compatible OpenCV")
+endif()
+find_package(OpenCV 4.5.4 EXACT QUIET CONFIG COMPONENTS core)
+if(NOT OpenCV_FOUND)
+  message(FATAL_ERROR "Matching OpenCV 4.5.4 development files required: set OpenCV_DIR or run scripts/prepare_opencv45.sh; do not replace the system JetPack OpenCV")
+endif()
+find_package(RTABMap 0.23 REQUIRED COMPONENTS core)
+if(NOT OpenCV_VERSION VERSION_EQUAL "4.5.4")
+  message(FATAL_ERROR "RTABMap target ABI requires OpenCV 4.5.4")
+endif()
+get_target_property(WC_RTAB_INCLUDES rtabmap::core INTERFACE_INCLUDE_DIRECTORIES)
+list(REMOVE_ITEM WC_RTAB_INCLUDES "/usr/include/opencv4")
+list(PREPEND WC_RTAB_INCLUDES ${OpenCV_INCLUDE_DIRS})
+list(REMOVE_DUPLICATES WC_RTAB_INCLUDES)
+set_target_properties(rtabmap::core PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${WC_RTAB_INCLUDES}")
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+find_package(Eigen3 REQUIRED)
+
+add_library(wc_slam_engine src/graph_engine.cpp src/io.cpp)
+target_include_directories(wc_slam_engine PUBLIC include ${OpenCV_INCLUDE_DIRS})
+# Verified from the target's RTABMapConfig.cmake, not a guessed target name.
+target_link_libraries(wc_slam_engine PUBLIC rtabmap::core ${OpenCV_LIBRARIES} OpenSSL::Crypto Eigen3::Eigen)
+target_compile_options(wc_slam_engine PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(wc_slam_delivery src/accepted_fingerprint.cpp)
+target_include_directories(wc_slam_delivery PUBLIC include)
+target_link_libraries(wc_slam_delivery OpenSSL::Crypto)
+ament_target_dependencies(wc_slam_delivery rclcpp wc_interfaces)
+target_compile_options(wc_slam_delivery PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(wc_graph_core_node src/graph_node.cpp)
+target_link_libraries(wc_graph_core_node wc_slam_engine wc_slam_delivery)
+ament_target_dependencies(wc_graph_core_node rclcpp tf2_ros sensor_msgs geometry_msgs diagnostic_msgs std_srvs wc_interfaces)
+target_compile_options(wc_graph_core_node PRIVATE -Wall -Wextra -Wpedantic)
+
+install(TARGETS wc_slam_engine wc_slam_delivery wc_graph_core_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/wc_graph_node DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
+
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(wc_slam_core_tests ../../tests/slam/test_graph_engine.cpp)
+  target_link_libraries(wc_slam_core_tests PRIVATE wc_slam_engine)
+  add_test(NAME wc_slam_core COMMAND wc_slam_core_tests)
+  set_tests_properties(wc_slam_core PROPERTIES TIMEOUT 120)
+  add_executable(wc_slam_fingerprint_tests ../../tests/slam/test_accepted_fingerprint.cpp)
+  target_link_libraries(wc_slam_fingerprint_tests wc_slam_delivery)
+  ament_target_dependencies(wc_slam_fingerprint_tests rclcpp wc_interfaces)
+  add_test(NAME wc_slam_fingerprint COMMAND wc_slam_fingerprint_tests)
+  set_tests_properties(wc_slam_fingerprint PROPERTIES TIMEOUT 30)
+
+  find_package(tf2_msgs REQUIRED)
+  add_executable(wc_slam_retry_tests ../../tests/slam/test_graph_retry.cpp)
+  target_link_libraries(wc_slam_retry_tests wc_slam_engine wc_slam_delivery)
+  ament_target_dependencies(wc_slam_retry_tests rclcpp tf2_ros tf2_msgs sensor_msgs
+    geometry_msgs diagnostic_msgs std_srvs wc_interfaces)
+  add_test(NAME wc_slam_retry COMMAND wc_slam_retry_tests)
+  set_tests_properties(wc_slam_retry PROPERTIES TIMEOUT 120)
+endif()
+ament_package()

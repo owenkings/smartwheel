@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>wc_camera_panel</name>
+  <version>0.1.0</version>
+  <description>Fixed four-camera RViz preview with bounded latest frames and explicit stale state.</description>
+  <maintainer email="local@wheelchair.invalid">Wheelchair phase 1 engineering</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rviz_common</depend>
+  <depend>pluginlib</depend>
+  <depend>qtbase5-dev</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

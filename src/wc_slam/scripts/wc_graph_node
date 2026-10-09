@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Load project session JSON and exec the reviewed C++ graph adapter.
+
+Usage: ros2 run wc_slam wc_graph_node --ros-args -p session_config:=/absolute/session.json
+No shell expansion, vendor script, sensor access or control command is used.
+"""
+
+import json
+import os
+from pathlib import Path
+import sys
+
+
+def arguments(argv):
+    if argv in (["--help"], ["-h"]):
+        print(__doc__)
+        return None
+    if len(argv) != 3 or argv[0] != "--ros-args" or argv[1] not in ("-p", "--param") or not argv[2].startswith("session_config:="):
+        raise ValueError("expected --ros-args -p session_config:=/absolute/session.json")
+    path = Path(argv[2].split(":=", 1)[1])
+    if not path.is_absolute():
+        raise ValueError("session configuration path must be absolute")
+    for component in (path, *path.parents):
+        if component.is_symlink():
+            raise ValueError("session configuration symlinks are forbidden")
+    with path.open(encoding="utf-8") as stream:
+        config = json.load(stream, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    required = ("session_root", "run_root", "session_id", "graph_epoch", "source_mode", "time_model_id")
+    parameters = {key: config[key] for key in required}
+    parameters["graph_edge_noise_model"] = config.get("graph_noise_model", "none")
+    parameters["graph_edge_noise_diagonal"] = config.get("graph_noise_diagonal", [])
+    permitted = {"optimizer_strategy", "stm_size", "max_nodes", "max_scan_points", "icp_voxel_size",
+                 "icp_max_correspondence", "icp_correspondence_ratio", "icp_max_translation", "icp_max_rotation",
+                 "proximity_radius", "proximity_angle_degrees", "map_frame", "odom_frame", "rig_frame"}
+    overrides = config.get("graph", {})
+    if set(overrides) - permitted:
+        raise ValueError("unsupported graph setting: " + ", ".join(sorted(set(overrides) - permitted)))
+    parameters.update(overrides)
+    result = [str(Path(__file__).absolute().with_name("wc_graph_core_node")), "--ros-args"]
+    for name, value in parameters.items():
+        # JSON scalar/array syntax is valid ROS YAML parameter syntax. Passing
+        # an argument vector avoids shell interpretation of paths and quotes.
+        if name == "graph_edge_noise_diagonal" and value == []:
+            continue  # Retain the explicitly typed C++ empty double-array default.
+        result.extend(["-p", name + ":=" + json.dumps(value, ensure_ascii=False, allow_nan=False)])
+    return result
+
+
+def main():
+    try:
+        command = arguments(sys.argv[1:])
+        if command is not None:
+            os.execv(command[0], command)
+        return 0
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        print(json.dumps({"status": "ERROR", "error": str(error)}, ensure_ascii=False), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>wc_bringup</name><version>0.1.0</version>
+  <description>Mapping-only runtime, source fusion, map tools and launch resources.</description>
+  <maintainer email="local@wheelchair.invalid">Wheelchair Phase 1</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <depend>rclcpp</depend><depend>rviz_common</depend>
+  <depend>rviz_ogre_vendor</depend><depend>qtbase5-dev</depend>
+  <depend>rviz_rendering</depend><depend>wc_camera_panel</depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>wc_interfaces</exec_depend>
+  <depend>sensor_msgs</depend><depend>nav_msgs</depend>
+  <exec_depend>std_msgs</exec_depend><exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend><exec_depend>rtabmap_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend><exec_depend>std_srvs</exec_depend>
+  <exec_depend>rtabmap_odom</exec_depend><exec_depend>rviz2</exec_depend>
+  <exec_depend>python3-pyqt5</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

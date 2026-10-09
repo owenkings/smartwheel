@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "origin": "https://github.com/XT-Toffuture/xtsdk_cpp",
+  "commit": "3d3db067ae9bdc0528202c3087bc10fd3b706638",
+  "runtime_relative": "SDKs/xtsdk_filter_3d3db067",
+  "files": {
+    "lib/linux/aarch64/libxtsdk_shared.so": "3336a76590b5447efd7c037929e61c287523fcd79e8125589a3adb35eee83411",
+    "lib/linux/x86_64/libxtsdk_shared.so": "69d80f0d64f1b7a65c1cf76aa57d7ba84fb0ff34a03014e6d04d52092e683821"
+  },
+  "backported_source_files": {
+    "IbaseFilter_lib.h": "e8e94f4bfdd5b2809a6d743b73a51b78185a7287cab4748f323883863a680a70",
+    "Iframe.h": "752c207a146d2bb1550c880df67dc384f2853f1ecfa2158afef8962791b6c267",
+    "baseFilter.cpp": "ddd567fdfe00a8de049e96cb06627587d68222abaf9dcd30d7deed8504b674e2",
+    "basefilter.h": "1d44f9c1fbef45a3101f17b2d8f30d55f2844147bbabc6760902ded3e349efd8",
+    "xtsdkLibHandler.h": "f7b17a73803bcd4c5c4c0eefebe549346c8083d021bf3d2c398f2ec1d1be122d",
+    "xtsdkLibHandler.cpp": "600385f06251802dd8c26c387520bd9a225fe164badd2ef7cab9376dd02a6d86"
+  },
+  "review": "IFrame virtual ABI unchanged; IBaseFilter and matching LibHandler/BaseFilter copied together. Closed library internals unavailable; explicit source flags and failure propagation checked."
+}

@@ -1,0 +1,12 @@
+std_msgs/Header header
+string session_id
+string graph_epoch
+string source_mode
+string calibration_id
+string left_clock_model_id
+string right_clock_model_id
+uint64 revision
+wc_interfaces/GraphNode[] nodes
+wc_interfaces/GraphEdge[] edges
+bool raw_index_complete
+string raw_index_hash

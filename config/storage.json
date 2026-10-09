@@ -1,0 +1,6 @@
+{
+  "schema_version": 2,
+  "backend": "directory",
+  "archive_root": "~/wheelchair-data",
+  "fallback_allowed": false
+}

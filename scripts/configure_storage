@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Select this computer's data directory without changing shared defaults."""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / 'src'))
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backend', choices=('directory', 'removable'), required=True)
+    parser.add_argument('--archive-root', required=True)
+    parser.add_argument('--mount-point')
+    parser.add_argument('--required-uuid')
+    args = parser.parse_args(argv)
+    from wc_runtime.storage_policy import _ordinary
+    archive = _ordinary(Path(args.archive_root).expanduser())
+    if not archive.is_absolute() or archive == Path('/'):
+        parser.error('archive-root must be an absolute dedicated directory')
+    if archive.is_relative_to(ROOT) or ROOT.is_relative_to(archive):
+        parser.error('data and code directories must be separate')
+    value = dict(schema_version=2, backend=args.backend, archive_root=str(archive),
+                 fallback_allowed=False)
+    if args.backend == 'removable':
+        if not args.mount_point or not args.required_uuid:
+            parser.error('removable requires --mount-point and --required-uuid')
+        from wc_runtime.capture_destination import CaptureDestination
+        mount = _ordinary(Path(args.mount_point).expanduser())
+        if not mount.is_absolute() or archive == mount or not archive.is_relative_to(mount):
+            parser.error('archive-root must be a strict child of --mount-point')
+        guard = CaptureDestination(archive, args.required_uuid)
+        if guard.mount_root != mount:
+            parser.error('verified mount does not match --mount-point')
+        value.update(mount_point=str(mount), required_uuid=args.required_uuid)
+    else:
+        if args.mount_point or args.required_uuid:
+            parser.error('mount/UUID arguments are for removable storage only')
+        # Directory mode intentionally uses an internal/fixed data directory.
+        # Removable media must use its explicit identity-checked backend.
+        guard = None
+    archive.mkdir(parents=True, exist_ok=True)
+    if guard is None:
+        from wc_runtime.storage_directory import DirectoryDestination
+        guard = DirectoryDestination(archive)
+    guard.check()
+    for name in ('data/experiments', 'data/analysis', 'reports', 'maps'):
+        child = _ordinary(archive / name)
+        guard.check()
+        child.mkdir(parents=True, exist_ok=True)
+        if child.stat().st_dev != guard.mount_root.stat().st_dev:
+            parser.error('data child crosses another mounted filesystem')
+    target = ROOT / 'config/storage.local.json'
+    _ordinary(target)
+    backup = None
+    if target.exists():
+        backup_dir = _ordinary(archive / 'reports/storage_configuration')
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix='before-', suffix='.json', dir=backup_dir)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+        backup = name
+    fd, name = tempfile.mkstemp(prefix='.storage-', suffix='.json', dir=target.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream, indent=2); stream.write('\n')
+            stream.flush(); os.fsync(stream.fileno())
+        guard.check()
+        os.replace(name, target)
+        descriptor = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+    print(json.dumps(dict(status='CONFIGURED_FOR_NEXT_SESSION', configuration=str(target),
+                         archive_root=str(archive), backend=args.backend, backup=backup)))
+    return 0
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,13 @@
+{
+  "schema": "wc_wheel_history_preview_v1",
+  "state": "UNVALIDATED",
+  "formal_odometry_eligible": false,
+  "provenance": "Historical zlac8030_base.yaml in reviewed snapshot 20260912T081542Z; prior manual push calibration notes are input only, not verified in this project. Scale is treated as wheel rpm per raw unit for reproducing that historical calculation, without asserting gearbox/encoder semantics.",
+  "wheel_radius_m": 0.165,
+  "track_width_m": 0.58,
+  "register_to_wheel_rpm": 0.112,
+  "left_sign": -1,
+  "right_sign": 1,
+  "max_gap_s": 0.5,
+  "max_wheel_speed_m_s": 1.0
+}

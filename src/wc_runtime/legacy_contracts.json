@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "purpose": "Exact historical serialized identifiers; archived recordings retain their original bytes.",
+  "offline_mount_models": {
+    "offline_mechanical_initial_v7": "offline_mechanical_initial"
+  }
+}

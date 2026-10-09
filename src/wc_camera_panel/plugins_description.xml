@@ -1,0 +1,5 @@
+<library path="wc_camera_panel">
+  <class name="wc_camera_panel/CameraPanel" type="wc_camera_panel::CameraPanel" base_class_type="rviz_common::Panel">
+    <description>Four fixed image tiles: left front, right front, left side, right side. Physical direction remains unconfirmed.</description>
+  </class>
+</library>
