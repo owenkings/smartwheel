@@ -26,8 +26,11 @@ class OfflineCorrectedPrior(MotionPrior):
     It does not pass a screened candidate off as INDEPENDENTLY_CONFIRMED.
     """
     def __init__(self, config, session_id, *, candidate, candidate_sha256, clock, process_noise=None):
-        if config.get('estimator', 'five_state') != 'five_state' or config.get('motion_model') != 'planar_ekf':
-            raise ValueError('offline correction supports only five_state planar EKF')
+        estimator = config.get('estimator', 'five_state')
+        if estimator not in ('five_state', 'robot_localization') or config.get('motion_model') != 'planar_ekf':
+            raise ValueError('offline correction requires a supported planar EKF')
+        if estimator != 'five_state' and process_noise is not None:
+            raise ValueError('five-state continuous process noise cannot be applied to robot_localization')
         if config.get('offline_experiment') is not True:
             raise ValueError('offline correction is prohibited outside explicit offline replay')
         if config.get('confirmed_gyro_bias') is not None:
@@ -91,9 +94,12 @@ class OfflineCorrectedPrior(MotionPrior):
                         continue
                     z, R = corrected_wheel_observation(row['v'], row['wheel_yaw'], state.config,
                                                       self.offline_scale, self.offline_speed_coefficient)
-                    H = np.zeros((2, 5)); H[0, 3] = H[1, 4] = 1.
-                    updated = state._update(z, H, R, 'wheel')
-                    state.last_sequence['wheel'] = row['sequence']
+                    if self.config['estimator'] == 'robot_localization':
+                        updated = state.wheel_covariance(row['sequence'], z[0], z[1], R)
+                    else:
+                        H = np.zeros((2, 5)); H[0, 3] = H[1, 4] = 1.
+                        updated = state._update(z, H, R, 'wheel')
+                        state.last_sequence['wheel'] = row['sequence']
                     state.last_update['wheel'].update(sequence=row['sequence'], stamp_ns=stamp,
                         stream_epoch=row['epoch'], raw_measurement=[row['v'], row['wheel_yaw']],
                         measurement=z.tolist(), measurement_covariance=R.tolist(), measurement_frame='axle',

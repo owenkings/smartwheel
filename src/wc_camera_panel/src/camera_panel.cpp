@@ -184,7 +184,7 @@ void CameraPanel::resizeEvent(QResizeEvent * event) {
 }
 
 void CameraPanel::fitCompactLayout() {
-  if (!compact_layout_ || fitting_compact_layout_) { return; }
+  if (!compact_layout_ || split_layout_ || fitting_compact_layout_) { return; }
   fitting_compact_layout_ = true;
   layout()->activate();  // Establish current widths, including a hidden loaded panel.
   // Explicit QWidget minimum sizes otherwise hide a larger child layout's
@@ -209,6 +209,29 @@ void CameraPanel::fitCompactLayout() {
   setMinimumHeight(required);
   outer->activate();
   fitting_compact_layout_ = false;
+}
+
+QWidget * CameraPanel::createSideView(const QString & side, QWidget * parent) {
+  if (side != "left" && side != "right") {
+    throw std::invalid_argument("Camera side must be left or right");
+  }
+  applyCompactLayout(true);
+  split_layout_ = true;
+  auto * view = new QWidget(parent);
+  view->setObjectName("cameras_" + side);
+  auto * stack = new QVBoxLayout(view);
+  stack->setContentsMargins(0, 0, 0, 0);
+  stack->setSpacing(4);
+  for (std::size_t index = 0; index < roles.size(); ++index) {
+    if (!QString(roles[index]).startsWith(side + "_")) {continue;}
+    grid_widget_->layout()->removeWidget(boxes_[index]);
+    boxes_[index]->setParent(view);
+    boxes_[index]->setMinimumSize(220, 160);
+    canvases_[index]->setMinimumSize(160, 90);
+    stack->addWidget(boxes_[index], 1);
+    boxes_[index]->show();
+  }
+  return view;
 }
 
 void CameraPanel::applyCompactLayout(bool compact) {

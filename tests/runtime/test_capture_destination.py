@@ -15,7 +15,7 @@ def mounted(tmp_path, monkeypatch):
     output = mount/'wheelchair/experiments'
     source = tmp_path/'sda1'
     uuid_root = tmp_path/'by-uuid'
-    required = uuid_root/'0000-0000'
+    required = uuid_root/'REPLACE-WITH-ACTUAL-UUID'
     row = dict(mount_id='42',device='8:1',root='/',mount_point=str(mount),
         options=['rw','nosuid'],super_options=['rw'],filesystem='fuseblk',source=str(source))
     state = dict(rows=[row],source_device=2049,required_device=2049,root_device=1793)
@@ -26,7 +26,9 @@ def mounted(tmp_path, monkeypatch):
                 st_rdev=state['source_device' if path==source else 'required_device'])
         result = original_stat(path,*args,**kwargs)
         device = state['root_device'] if path==Path('/') else 2049
-        return SimpleNamespace(st_mode=result.st_mode,st_dev=device)
+        fields = {name: getattr(result, name) for name in dir(result) if name.startswith('st_')}
+        fields['st_dev'] = device
+        return SimpleNamespace(**fields)
     monkeypatch.setattr(destination,'UUID_ROOT',uuid_root)
     monkeypatch.setattr(destination,'_mounts',lambda:state['rows'])
     monkeypatch.setattr(Path,'stat',metadata)
@@ -40,31 +42,36 @@ def test_local_default_does_not_require_external_media(tmp_path):
     assert root==tmp_path/'data/experiments' and guard is None
 
 
-@pytest.mark.parametrize('path,uuid', [('relative','0000-0000'),('/media/../tmp','0000-0000'),
+@pytest.mark.parametrize('path,uuid', [('relative','REPLACE-WITH-ACTUAL-UUID'),('/media/../tmp','REPLACE-WITH-ACTUAL-UUID'),
     ('/media/usb','../other'),('/media/usb','')])
 def test_external_destination_rejects_ambiguous_arguments(path,uuid):
     with pytest.raises(ValueError): destination.CaptureDestination(path,uuid)
 
 
-@pytest.mark.parametrize('options', [dict(output_root='/media/usb'),dict(required_uuid='0000-0000')])
-def test_external_arguments_must_be_paired(tmp_path,options):
+def test_uuid_override_requires_an_explicit_output_root(tmp_path):
     with pytest.raises(ValueError,match='supplied together'):
-        destination.capture_destination(tmp_path,**options)
+        destination.capture_destination(tmp_path,required_uuid='REPLACE-WITH-ACTUAL-UUID')
+
+
+def test_selected_directory_without_uuid_must_already_exist(tmp_path):
+    with pytest.raises(ValueError,match='目录不存在'):
+        destination.capture_destination(tmp_path,output_root=tmp_path/'missing')
+    assert not (tmp_path/'missing').exists()
 
 
 def test_missing_future_archive_is_verified_without_creating_it(mounted):
     output,_,row=mounted
-    guard=destination.CaptureDestination(output,'0000-0000')
+    guard=destination.CaptureDestination(output,'REPLACE-WITH-ACTUAL-UUID')
     assert not output.exists()
     assert guard.mount_root==Path(row['mount_point'])
-    assert guard.check()['required_uuid']=='0000-0000'
+    assert guard.check()['required_uuid']=='REPLACE-WITH-ACTUAL-UUID'
     assert guard.metadata['fallback_allowed'] is False
 
 
 @pytest.mark.parametrize('fault', ['missing','wrong_uuid','read_only','super_read_only','root_disk','remounted'])
 def test_each_dynamic_check_rejects_lost_or_replaced_mount(mounted,fault):
     output,state,row=mounted
-    guard=destination.CaptureDestination(output,'0000-0000')
+    guard=destination.CaptureDestination(output,'REPLACE-WITH-ACTUAL-UUID')
     if fault=='missing': state['rows']=[]
     elif fault=='wrong_uuid': state['required_device']=2050
     elif fault=='read_only': row['options']=['ro']
@@ -81,14 +88,14 @@ def test_linked_archive_ancestor_rejected_before_mount_lookup(tmp_path,monkeypat
     monkeypatch.setattr(Path,'lstat',lambda path:SimpleNamespace(st_mode=stat.S_IFLNK)
         if path==output.parent else original(path))
     monkeypatch.setattr(destination,'_mounts',lambda:pytest.fail('linked paths must be rejected first'))
-    with pytest.raises(ValueError,match='symlinks'): destination.CaptureDestination(output,'0000-0000')
+    with pytest.raises(ValueError,match='symlinks'): destination.CaptureDestination(output,'REPLACE-WITH-ACTUAL-UUID')
 
 
 def test_stacked_mount_records_are_rejected(mounted):
     output,state,row=mounted
     state['rows'].append(dict(row,mount_id='43'))
     with pytest.raises(ValueError,match='stacked mounts'):
-        destination.CaptureDestination(output,'0000-0000')
+        destination.CaptureDestination(output,'REPLACE-WITH-ACTUAL-UUID')
 
 
 def test_mountinfo_decodes_spaces_and_retains_separate_rw_flags(tmp_path,monkeypatch):
@@ -109,7 +116,7 @@ def test_invalid_mount_starts_nothing_and_creates_no_archive(mounted,tmp_path,mo
     monkeypatch.setattr(capture,'preflight',lambda *a,**k:pytest.fail('mount must be checked first'))
     monkeypatch.setattr(capture.subprocess,'Popen',lambda *a,**k:pytest.fail('no process allowed'))
     args=SimpleNamespace(profile='mapping_core',session='sample',duration=1,staging='memory',
-        output_root=output,required_output_uuid='0000-0000',dry_run=False,diagnostic=True)
+        output_root=output,required_output_uuid='REPLACE-WITH-ACTUAL-UUID',dry_run=False,diagnostic=True)
     with pytest.raises(ValueError,match='CAPTURE_DESTINATION_UNAVAILABLE'): capture.run_capture(args)
     assert not output.exists() and not (tmp_path/'data').exists()
 
@@ -128,7 +135,7 @@ def test_external_dry_run_uses_usb_capacity_path_and_preserves_memory_default(mo
     monkeypatch.setattr(capture,'preflight',preflight)
     monkeypatch.setattr(capture,'memory_preflight',lambda *a,**k:{'sufficient':True,'status':'AVAILABLE'})
     args=SimpleNamespace(profile='mapping_core',session='sample',duration=1,staging='memory',
-        output_root=output,required_output_uuid='0000-0000',dry_run=True,diagnostic=False)
+        output_root=output,required_output_uuid='REPLACE-WITH-ACTUAL-UUID',dry_run=True,diagnostic=False)
     assert capture.run_capture(args)==0
     assert seen==[Path(row['mount_point'])] and not (output/'sample').exists()
     import json
@@ -144,7 +151,7 @@ def test_missing_external_output_root_starts_nothing_and_creates_no_parents(moun
     monkeypatch.setattr(capture,'preflight',lambda *a,**k:pytest.fail('archive must exist before preflight'))
     monkeypatch.setattr(capture.subprocess,'Popen',lambda *a,**k:pytest.fail('no process allowed'))
     args=SimpleNamespace(profile='mapping_core',session='sample',duration=1,staging='memory',
-        output_root=output,required_output_uuid='0000-0000',dry_run=False,diagnostic=True)
+        output_root=output,required_output_uuid='REPLACE-WITH-ACTUAL-UUID',dry_run=False,diagnostic=True)
     with pytest.raises(ValueError,match='external output-root must already exist'):
         capture.run_capture(args)
     assert not output.exists() and not output.parent.exists()
@@ -169,8 +176,8 @@ def test_exfat_direct_manual_capture_rejected_before_preflight(mounted,tmp_path,
     monkeypatch.setattr(cli,'target',lambda:None)
     monkeypatch.setattr(capture,'preflight',lambda *a,**k:pytest.fail('manual socket unsupported'))
     args=SimpleNamespace(profile='mapping_core',session='sample',duration=1,staging='disk',
-        output_root=output,required_output_uuid='0000-0000',manual_drive=True)
-    with pytest.raises(ValueError,match='requires --staging memory'): capture.run_capture(args)
+        output_root=output,required_output_uuid='REPLACE-WITH-ACTUAL-UUID',manual_drive=True)
+    with pytest.raises(ValueError,match='supports only --staging memory'): capture.run_capture(args)
 
 
 def test_transfer_refuses_unverified_destination_before_writing(tmp_path):

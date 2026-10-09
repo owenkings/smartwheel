@@ -94,7 +94,7 @@ def test_same_stamp_multiple_imu_sequences_are_used_once_each():
     assert np.array_equal(P,state.P) and np.array_equal(x,state.x)
 
 
-@pytest.mark.parametrize('change',[{'offline_experiment':False},{'estimator':'robot_localization'},
+@pytest.mark.parametrize('change',[{'offline_experiment':False},{'estimator':'unsupported'},
     {'motion_model':'se3_gyro'},{'confirmed_gyro_bias':{}},{'offline_motion_correction':{}}])
 def test_incompatible_or_double_application_refused(change):
     c=settings();c.update(change)

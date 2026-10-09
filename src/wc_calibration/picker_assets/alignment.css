@@ -5,3 +5,9 @@
 .rotation-help{border:1px solid #40566c;border-radius:6px;background:#0d1926;padding:10px;margin:14px 0}.guide-tabs{display:flex;gap:4px;margin-bottom:10px}.guide-tabs button{flex:1;padding:6px 3px;font-size:11px;white-space:nowrap}.guide-tabs button[aria-pressed=true]{background:#37688d;border-color:#86b4d6}#guide-title{display:block;font-size:13px;color:#ffc77f}#rotation-guide{height:auto;aspect-ratio:300/176;max-width:300px;margin:6px auto;touch-action:auto}#guide-face-axis{width:100%;font-size:12px}.rotation-help details{font-size:12px}.pose-row{grid-template-columns:92px 30px minmax(0,1fr) 30px}.frame-note{border-left:2px solid #6688a2;padding-left:9px}
 
 .rotation-help{display:grid;grid-template-columns:210px minmax(0,1fr);gap:12px}.guide-tabs{max-width:400px}.guide-visual{align-self:center}.guide-copy .hint{margin:6px 0}#alignment-canvas{height:clamp(360px,50vh,600px)}#guide-face-axis{width:auto}@media(max-width:600px){.rotation-help{grid-template-columns:1fr}.guide-visual{max-width:230px;margin:auto}.pose-row{grid-template-columns:96px 30px minmax(0,1fr) 30px}}
+/* Assessment is separate from saving: neither a low residual nor a file implies acceptance. */
+.assessment { margin: 12px 0; padding: 14px; border: 1px solid #496b84; border-radius: 6px; background: #152b3a; font-size: 13px; line-height: 1.7; }
+.assessment h3 { color: #c5e5ff; font-size: 16px; margin: 0 0 8px; }
+.assessment p:last-child { margin-bottom: 0; }
+.assessment[data-level="REJECTED"] { border-color: #b27650; background: #34291f; }
+.assessment[data-level="REJECTED"] h3 { color: #ffd3a2; }

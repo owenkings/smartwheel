@@ -17,7 +17,7 @@ def configured(tmp_path, monkeypatch):
     state = {'available': True, 'checks': 0, 'created': []}
     class Guard:
         def __init__(self, output_root, required_uuid):
-            assert required_uuid == '0000-0000'
+            assert required_uuid == 'REPLACE-WITH-ACTUAL-UUID'
             self.output_root = Path(output_root)
             self.required_uuid = required_uuid
             self.mount_root = mount
@@ -28,11 +28,11 @@ def configured(tmp_path, monkeypatch):
             if not state['available']:
                 raise ValueError('CAPTURE_DESTINATION_UNAVAILABLE: test USB detached')
             return {'status': 'AVAILABLE', 'filesystem': 'exfat', 'mount_point': str(mount),
-                    'output_root': str(self.output_root), 'required_uuid': '0000-0000',
+                    'output_root': str(self.output_root), 'required_uuid': 'REPLACE-WITH-ACTUAL-UUID',
                     'fallback_allowed': False}
     monkeypatch.setattr(capture_destination, 'CaptureDestination', Guard)
     config = dict(schema_version=1, enabled=True, archive_root=str(archive), mount_point=str(mount),
-                  required_uuid='0000-0000', original_project_root='/home/nvidia/wheelchair', fallback_allowed=False)
+                  required_uuid='REPLACE-WITH-ACTUAL-UUID', original_project_root='/home/nvidia/wheelchair', fallback_allowed=False)
     (project/'config/storage.json').write_text(json.dumps(config), encoding='utf-8')
     return project, archive, state, config
 
@@ -168,7 +168,7 @@ def test_default_capture_and_explicit_override_have_distinct_roots(configured):
     assert output == archive/'data/experiments'
     assert guard.output_root == output
     explicit = archive/'explicit_capture'
-    assert capture_destination.capture_destination(project, explicit, '0000-0000')[0] == explicit
+    assert capture_destination.capture_destination(project, explicit, 'REPLACE-WITH-ACTUAL-UUID')[0] == explicit
 
 
 def test_doctor_scope_accepts_logical_and_usb_paths_and_keeps_subscope(configured, monkeypatch):

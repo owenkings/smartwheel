@@ -178,7 +178,7 @@ def test_scene_index_uses_selected_training_only_and_derives_explicit_metadata(t
 def http_server(tmp_path, observations, monkeypatch):
     session = make_session(tmp_path, observations[0])
     assets = tmp_path/'assets'; assets.mkdir()
-    for name in ('index.html', 'picker.js', 'picker.css'): (assets/name).write_text('SYNTHETIC FIXTURE '+name)
+    for name in ('index.html', 'workbench.html', 'picker.js', 'picker.css'): (assets/name).write_text('SYNTHETIC FIXTURE '+name)
     monkeypatch.setattr(picker, 'ASSET_ROOT', assets)
     server = picker.PickerServer(session, 0)
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
@@ -211,10 +211,10 @@ def test_http_scene_and_solve_contract(http_server):
     assert headers['Cache-Control'] == 'no-store' and 'Access-Control-Allow-Origin' not in headers
     status, _, raw = http_request(server, 'POST', '/api/solve', request_body(server.session), post_headers(server))
     response = json.loads(raw)
-    assert status == 200 and set(response) == {'selection', 'result', 'export_dir'}
+    assert status == 200 and set(response) == {'selection', 'result', 'export_dir', 'saved', 'assessment'}
     assert response['result']['status'] == 'CANDIDATE'
     status, _, raw = http_request(server, 'POST', '/api/export', request_body(server.session, 1), post_headers(server))
-    assert status == 200 and set(json.loads(raw)) == {'selection', 'export_dir'}
+    assert status == 200 and set(json.loads(raw)) == {'selection', 'export_dir', 'saved'}
 
 
 @pytest.mark.parametrize('fault', ['host', 'origin', 'token', 'nonascii_token', 'missing_token', 'cross_site'])

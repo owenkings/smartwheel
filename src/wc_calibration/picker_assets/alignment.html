@@ -12,11 +12,15 @@
 <main id="alignment-app">
   <header><div><p class="eyebrow">WHEELCHAIR / OFFLINE ALIGNMENT</p><h1>固定左云，调整右云</h1></div><span class="badge">探索候选 · 不能用于正式标定</span></header>
   <p class="intro">先用拖动或数值把共同结构靠近，再进行 ICP 最近邻微调。最近邻不是已确认的物理对应点；低残差也不能证明安装外参正确。</p>
+  <p class="hint"><a href="/" target="_blank" rel="noopener">打开幅度图 / 三维对应点选取</a> · 幅度图帮助辨认同一角点；本页继续使用同一组冻结点云。</p>
   <p id="alignment-source" class="source" role="status">正在读取冻结点云…</p>
+  <p id="api-version-note" class="warning" hidden>当前连接的是旧服务，“只计算 ICP”暂不可用。请打开本次提供的新版服务地址；这个页面的未保存调整仍可保留，不必关闭。</p>
   <p id="alignment-time" class="warning" hidden></p>
   <div class="level-toolbar"><label for="display-frame">显示参考</label><select id="display-frame" disabled><option value="level">水平参考（候选）</option><option value="raw" selected>原始左雷达坐标</option></select><span id="level-status" role="status">等待读取参考。</span></div>
   <details><summary>来源、坐标与初值</summary><pre id="alignment-provenance"></pre></details>
   <div id="alignment-error" class="error" role="alert" hidden></div>
+  <section id="alignment-assessment" class="assessment" aria-label="结果可用性评估" hidden></section>
+  <p id="assessment-stale" class="warning" hidden>当前姿态已变化；上方评估属于上一次计算或载入的姿态，请重新计算后判断。</p>
   <div class="workspace">
     <section class="viewer" aria-label="两色点云调整视图">
       <div class="view-toolbar">
@@ -62,7 +66,7 @@
       </fieldset>
       <p id="pose-state" class="hint">等待读取初值。</p>
       <div class="action-grid"><button id="reset-initial" type="button" disabled>恢复页面初值</button><button id="show-before" type="button" disabled>显示上次 ICP 前</button><button id="show-refined" type="button" disabled>显示上次 ICP 后</button></div>
-      <div class="actions"><button id="save-manual" type="button" disabled>保存手动候选</button><button id="refine" type="button" class="primary" disabled>以当前姿态运行 ICP</button></div>
+      <div class="actions"><button id="preview-refine" type="button" class="primary" disabled>只计算 ICP，不保存</button><button id="refine" type="button" disabled>计算 ICP 并保存</button><button id="save-manual" type="button" disabled>保存当前姿态</button></div>
       <p id="alignment-request" role="status" class="hint">保存和计算都不会写入正式配置或 TF。</p>
       <details><summary>保存使用的原始右 → 左 4×4 矩阵</summary><pre id="current-matrix"></pre></details>
     </aside>

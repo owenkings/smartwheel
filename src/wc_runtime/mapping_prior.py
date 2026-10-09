@@ -31,6 +31,7 @@ from .mapping_planar import (PlanarEKF, validate_planar_config, validate_confirm
                              native_covariances, NATIVE_CONSTRAINT_VARIANCE)
 from .mapping_odometry import (AUTHORITY_TOPIC, adapt_prior_odometry,
                                authority_identity_transform, validate_covariance)
+from .live_motion_options import validate_live_options, calibration_report, LiveGeometry
 
 
 class PriorError(ValueError):
@@ -161,6 +162,21 @@ def _rotation(value, name):
 
 def validate_config(config):
     config = copy.deepcopy(config)
+    imu_time_mode = config.get('offline_imu_time_mode', 'arrival')
+    if imu_time_mode not in ('arrival', 'device_relative'):
+        raise PriorError('prior IMU time mode must be resolved before replay')
+    if imu_time_mode == 'device_relative':
+        from .offline_imu_time import validate_model
+        if config.get('offline_experiment') is not True:
+            raise PriorError('device-relative IMU timing is offline only')
+        try:
+            model = validate_model(config.get('offline_imu_time_model'))
+        except ValueError as error:
+            raise PriorError(str(error)) from error
+        if model.get('sensor_id') != config.get('imu_sensor_id'):
+            raise PriorError('offline IMU timing sensor mismatch')
+    elif config.get('offline_imu_time_model') is not None:
+        raise PriorError('arrival prior cannot reuse a device timing model')
     config.setdefault('continuous_mapping', False)
     if type(config['continuous_mapping']) is not bool:
         raise PriorError('continuous_mapping must be boolean')
@@ -173,6 +189,7 @@ def validate_config(config):
     if config['motion_model'] not in ('se3_gyro', 'planar_ekf'):
         raise PriorError('motion_model must be se3_gyro or planar_ekf')
     try:
+        config = validate_live_options(config)
         config['confirmed_gyro_bias'] = validate_confirmed_bias(config.get('confirmed_gyro_bias'),
                                                               expected_sensor_id=config.get('imu_sensor_id'))
         if config['motion_model'] == 'planar_ekf' or 'planar_ekf' in config:
@@ -320,6 +337,7 @@ class MotionPrior:
         self.bias_estimator = (CausalBiasEstimator(confirmed_bias=self.config['confirmed_gyro_bias'])
                                if self.continuous or self.planar or self.config['confirmed_gyro_bias'] else None)
         self.last_bias_candidate = None
+        self.live_geometry = LiveGeometry() if self.config['geometry'] else None
 
     def _observe_bias(self, row):
         estimator = self.bias_estimator
@@ -459,10 +477,22 @@ class MotionPrior:
 
     def add_imu(self, *, stamp_ns, monotonic_ns, acceleration, angular_velocity,
                 sensor_id, session_id, stream_epoch, sequence,
-                coordinate_convention='H30_NATIVE_UNVALIDATED', time_source='arrival_only', common_time_valid=False):
+                coordinate_convention='H30_NATIVE_UNVALIDATED', time_source='arrival_only', common_time_valid=False,
+                measurement_stamp_ns=None, imu_time_model_sha256=None):
         self._check()
         try:
             _integer(stamp_ns, 'IMU stamp'); _integer(monotonic_ns, 'IMU monotonic'); _integer(sequence, 'IMU sequence', 0)
+            arrival_stamp_ns = stamp_ns
+            device_timed = self.config.get('offline_imu_time_mode', 'arrival') == 'device_relative'
+            if device_timed:
+                model = self.config['offline_imu_time_model']
+                _integer(measurement_stamp_ns, 'derived IMU measurement stamp')
+                if imu_time_model_sha256 != model['model_sha256'] or session_id != model['session_id'] or \
+                        stream_epoch != model['stream_epoch'] or measurement_stamp_ns > arrival_stamp_ns:
+                    raise PriorError('derived IMU time/model/session/epoch mismatch')
+                stamp_ns = measurement_stamp_ns
+            elif measurement_stamp_ns is not None or imu_time_model_sha256 is not None:
+                raise PriorError('derived IMU timing requires a frozen offline model')
             if sensor_id != self.config['imu_sensor_id'] or session_id != self.session_id or \
                     coordinate_convention != 'H30_NATIVE_UNVALIDATED' or time_source != 'arrival_only' or \
                     common_time_valid is not False or not isinstance(stream_epoch, str) or not stream_epoch:
@@ -485,8 +515,11 @@ class MotionPrior:
             if old is not None:
                 if old['epoch'] != stream_epoch or sequence <= old['sequence'] or stamp_ns < old['stamp'] or monotonic_ns < old['mono']:
                     raise PriorError('IMU epoch/sequence/time discontinuity')
+                if device_timed and (stamp_ns <= old['stamp'] or arrival_stamp_ns < old['arrival_stamp']):
+                    raise PriorError('derived IMU or host arrival time discontinuity')
                 self.imu_sequence_gaps += sequence - old['sequence'] - 1
-                clock_gap = self._clock_interval(stamp_ns-old['stamp'], monotonic_ns-old['mono'])
+                clock_gap = self._clock_interval(arrival_stamp_ns-old.get('arrival_stamp', old['stamp']),
+                                                 monotonic_ns-old['mono'])
                 gap = clock_gap or (stamp_ns-old['stamp'])*1e-9 > self.policy['max_imu_age_s'] or sequence > old['sequence']+1
                 if self.continuous and gap:
                     self._coverage_gap('imu', old['stamp'], stamp_ns, 'positive source time/sequence gap')
@@ -495,6 +528,8 @@ class MotionPrior:
                         raise PriorError('IMU sample gap exceeds declared bound')
             row = dict(stamp=stamp_ns, mono=monotonic_ns, accel=accel, gyro=gyro, epoch=stream_epoch, sequence=sequence,
                        gap_before=gap)
+            if device_timed:
+                row.update(arrival_stamp=arrival_stamp_ns, imu_time_model_sha256=imu_time_model_sha256)
             self.last_seen['imu'] = row
             if not self._startup_sample_fresh('imu', row, now):
                 return
@@ -685,6 +720,8 @@ class MotionPrior:
             'estimator': 'wheel longitudinal velocity plus bias-subtracted 3-axis gyro, axle lever arm, causal zero-order hold',
         }
         self.checkpoints = [(horizon, np.eye(4))]
+        if self.config.get('offline_imu_time_mode') == 'device_relative':
+            self.initialization['offline_imu_time_model'] = copy.deepcopy(self.config['offline_imu_time_model'])
         return True
 
     def _initialize_from_mount(self):
@@ -699,6 +736,9 @@ class MotionPrior:
         self.L = base_axle[:3, :3].T.copy()
         level = np.eye(4); level[:3, :3] = self.L
         self.R_reference_imu = self.L @ np.asarray(self.config['R_base_imu'])
+        if self.config['motion_correction'] and not np.allclose(self.R_reference_imu,
+                self.config['live_motion_calibration']['R_reference_imu'], atol=1e-9, rtol=0):
+            raise PriorError('Live calibration IMU rotation differs from the current frozen mounting geometry')
         self.T_reference_axle = level @ base_axle
         self.bias = (self.bias_estimator.bias_at(0) if self.bias_estimator is not None else np.zeros(3))
         horizon = max(self.imu[-1]['stamp'], self.wheel[-1]['stamp'])
@@ -726,17 +766,27 @@ class MotionPrior:
         self.checkpoints = [(horizon, np.eye(4))]
         self.initialization.update(motion_model=self.config['motion_model'],
                                    confirmed_gyro_bias=copy.deepcopy(self.config['confirmed_gyro_bias']))
+        if self.config.get('offline_imu_time_mode') == 'device_relative':
+            self.initialization['offline_imu_time_model'] = copy.deepcopy(self.config['offline_imu_time_model'])
         if self.config['confirmed_gyro_bias'] is not None:
             self.initialization['gyro_bias_status'] = 'EXPLICIT_EXTERNAL_CALIBRATION_DECLARATION'
         if self.planar:
             from .estimator_provider import create_estimator
             state = create_estimator(self.config['estimator'], self.config['planar_ekf'],
                                      self.T_reference_axle[:2, 3])
+            if self.config['process_noise'] == 'white_acceleration':
+                from .offline_planar_process import ContinuousPlanarEKF
+                state = ContinuousPlanarEKF.from_state(state,
+                    process_noise=self.config['continuous_process_noise'])
             self._planar_observe(state, horizon, initial=True)
             self.planar_anchor = (horizon, state)
             self.initialization.update(planar_ekf=self.config['planar_ekf'],
                 estimator=self.config['estimator'],
                 definition='Lidar origin reference; configured axle XY plane, constrained z/roll/pitch motion; not measured level.')
+            self.initialization.update(live_motion_correction=calibration_report(self.config),
+                live_process_noise=self.config['process_noise'],
+                continuous_process_noise=copy.deepcopy(self.config.get('continuous_process_noise')),
+                live_geometry_enabled=self.config['geometry'])
         return True
 
     def _invalidate_planar_after(self, stamp):
@@ -757,10 +807,30 @@ class MotionPrior:
                     selected = rows[bisect_left(stamps, stamp):bisect_right(stamps, stamp)]
             for row in selected:
                 if kind == 'wheel':
-                    updated = state.wheel(row['sequence'], row['v'], row['wheel_yaw'])
+                    measurement = [row['v'], row['wheel_yaw']]
+                    covariance = None
+                    if self.config['motion_correction']:
+                        from .offline_motion_adapter import corrected_wheel_observation
+                        calibration = self.config['live_motion_calibration']
+                        measurement, covariance = corrected_wheel_observation(row['v'], row['wheel_yaw'],
+                            state.config, calibration['wheel_yaw_scale'], calibration['wheel_yaw_speed_coefficient'])
+                        if row['sequence'] <= state.last_sequence['wheel']:
+                            continue
+                        if self.config['estimator'] == 'robot_localization':
+                            updated = state.wheel_covariance(row['sequence'], *measurement, covariance)
+                        else:
+                            H = np.zeros((2, 5)); H[0, 3] = H[1, 4] = 1.
+                            updated = state._update(measurement, H, covariance, 'wheel')
+                            state.last_sequence['wheel'] = row['sequence']
+                    else:
+                        updated = state.wheel(row['sequence'], *measurement)
                     if updated is not None:
                         state.last_update['wheel'].update(stamp_ns=stamp,stream_epoch=row['epoch'],
-                            measurement=[row['v'],row['wheel_yaw']],measurement_frame='axle')
+                            measurement=list(measurement),measurement_frame='axle')
+                        if covariance is not None:
+                            state.last_update['wheel'].update(raw_measurement=[row['v'], row['wheel_yaw']],
+                                measurement_covariance=covariance.tolist(),
+                                live_calibration=calibration_report(self.config))
                 else:
                     bias = self.bias if self.bias_estimator is None else self.bias_estimator.bias_at(stamp)
                     prepared = prepare_gyro(row['gyro'], bias, self.R_reference_imu)
@@ -929,7 +999,13 @@ class MotionPrior:
         im = self.imu[bisect_right([r['stamp'] for r in self.imu], stamp_ns)-1]
         wh = self.wheel[bisect_right([r['stamp'] for r in self.wheel], stamp_ns)-1]
         linear, angular = self._twist(im, wh, stamp_ns)
-        details = {'motion_model': self.config['motion_model']}
+        details = {'motion_model': self.config['motion_model'],
+                   'live_motion_correction': calibration_report(self.config),
+                   'live_process_noise': self.config['process_noise']}
+        if self.config.get('offline_imu_time_mode') == 'device_relative':
+            details.update(offline_imu_time_model=copy.deepcopy(self.config['offline_imu_time_model']),
+                           imu_host_arrival_stamp_ns=im['arrival_stamp'],
+                           imu_measurement_stamp_ns=im['stamp'])
         if self.planar:
             state = self._planar_state_at(stamp_ns)
             _, linear, angular, pose_cov, twist_cov = state.output(self.T_reference_axle[:3, 3])
@@ -1021,6 +1097,9 @@ def prepare_cloud(message, prior):
             xyz[selected] = xyz[selected] @ relative[:3, :3].T + relative[:3, 3]
     if not np.isfinite(xyz[finite]).all():
         raise PriorError('transformed coordinates exceed finite numerical bounds')
+    report = prior.sample_report(stamp, pose)
+    if prior.live_geometry is not None:
+        xyz, pose, report = prior.live_geometry.correct(stamp, xyz, offsets, pose, report)
     result = copy.deepcopy(message)
     storage = bytearray(message.data)
     for axis, name in enumerate(('x', 'y', 'z')):
@@ -1033,7 +1112,6 @@ def prepare_cloud(message, prior):
         view[:] = values.reshape(view.shape)
     result.data = array('B', storage)
     result.header.frame_id = prior.config['reference_frame']
-    report = prior.sample_report(stamp, pose)
     report.update(point_count=layout['point_count'], finite_point_count=int(finite.sum()),
                   arrival_motion_compensated=dual, source_offsets_ns=groups.tolist(),
                   compensation_basis='host-arrival approximation; not device synchronization or per-point acquisition timing')

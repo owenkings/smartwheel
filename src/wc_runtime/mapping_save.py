@@ -16,6 +16,7 @@ from .prepare_picker_input import project_path, read_json, write_new, json_bytes
 
 METADATA = ('session.json', 'runtime_config.json', 'hardware_setup.json', 'wheel_candidate.json',
     'confirmed_gyro_bias.json', 'confirmed_gyro_bias.evidence.json',
+    'live_motion_calibration.json', 'live_motion_calibration.evidence.json',
     'cameras_config.json', 'prior_config.json', 'prior/initialization.json', 'prior/status.json',
     'health/status.json', 'wheel_status.json', 'input/status.json', 'input/checkpoint.json', 'input/bootstrap.json',
     'health.json', 'diagnosis_zh.md', 'capability_assessment.json', 'dataset/capture_manifest.json',
@@ -122,7 +123,7 @@ def _copy_durable(source, destination):
     return {'bytes': count, 'sha256': checksum.hexdigest()}
 
 
-def _discard_data(root, directory, runtime, *, profile):
+def _discard_data(root, directory, runtime, *, profile, disposition=None):
     if profile != 'map_only': raise ValueError('raw cleanup requires explicit map_only profile')
     # Keep final diagnostic snapshots before removing the heavy input archive.
     metadata = directory/'retained_metadata'
@@ -157,6 +158,8 @@ def _discard_data(root, directory, runtime, *, profile):
               'diagnostics_retained': True, 'historical_sessions_touched': False,
               'map_quality_evidence': ('retained_metadata/export/map_quality.json'
                 if (metadata/'export/map_quality.json').is_file() else 'NOT_RUN_OR_NOT_AVAILABLE_BEFORE_DISCARD')}
+    if disposition is not None:
+        result.update(disposition)
     _replace_durable(directory/'retention.json', result)
     write_new(runtime/('discard-'+uuid.uuid4().hex+'.json'), json_bytes(result))
     return result
@@ -176,25 +179,37 @@ def assert_archive_not_referenced(root, directory):
                 raise ValueError('存在保存提交意图或已保存引用；核对目标地图后再处理，不删除原始档案')
 
 
-def discard_session(root, handle, *, inspect, user_confirmed=False):
+def discard_session(root, handle, *, inspect, user_confirmed=False, preview_complete=False):
     root = Path(root).absolute()
+    if type(preview_complete) is not bool or (preview_complete and user_confirmed):
+        raise ValueError('预览自动清理与用户确认放弃必须明确区分')
     with stopped_session(root, handle, inspect) as (directory, runtime):
+        if preview_complete:
+            # The caller's flag alone cannot authorize deleting a mapping run.
+            # Verify both the actual session and its frozen runtime snapshot.
+            session = read_json(root, directory/'session.json')
+            config = read_json(root, directory/'runtime_config.json')
+            if (handle.get('mapping_enabled') is not False or session.get('mapping_enabled') is not False
+                    or config.get('mapping_enabled') is not False):
+                raise ValueError('预览自动清理仅允许实际 mapping_enabled=False 的已停止会话')
         profile = retention_profile(directory, handle)
-        if user_confirmed or profile=='map_only':
+        explicit_discard = user_confirmed or preview_complete
+        if explicit_discard or profile=='map_only':
             assert_archive_not_referenced(root,directory)
-        if profile == 'experiment' and not user_confirmed:
+        if profile == 'experiment' and not explicit_discard:
             result = {'status': 'SESSION_DATA_RETAINED', 'raw_retention': 'RETAINED_IN_PLACE',
                       'retention_profile': profile, 'output': str(directory), 'removed': [],
                       'diagnostics_retained': True, 'historical_sessions_touched': False}
             _replace_durable(directory/'retention.json', result)
             write_new(runtime/('retain-'+uuid.uuid4().hex+'.json'), json_bytes(result))
             return result
-        result = _discard_data(root, directory, runtime, profile='map_only' if user_confirmed else profile)
-        if user_confirmed:
-            result.update(disposition_reason='USER_DECLINED_SAVE', original_retention_profile=profile,
-                          replayable=False, user_confirmed_discard=True)
-            _replace_durable(directory/'retention.json', result)
-        return result
+        disposition = None
+        if explicit_discard:
+            disposition = dict(disposition_reason='LIVE_PREVIEW_COMPLETE' if preview_complete else 'USER_DECLINED_SAVE',
+                               original_retention_profile=profile, replayable=False,
+                               user_confirmed_discard=bool(user_confirmed), automatic_preview_cleanup=preview_complete)
+        return _discard_data(root, directory, runtime, profile='map_only' if explicit_discard else profile,
+                             disposition=disposition)
 
 
 def save_session(root, handle, destination, *, inspect, export):
@@ -203,10 +218,12 @@ def save_session(root, handle, destination, *, inspect, export):
     chosen = checked_path(chosen if chosen.is_absolute() else root/chosen)
     from .storage_policy import StoragePolicy
     storage = StoragePolicy(root)
+    destination_guard = None
     if storage.enabled:
-        chosen = storage.resolve(chosen)
-        if not any(chosen.is_relative_to(base) and chosen != base for base in storage.data_roots()):
-            raise ValueError('Saved maps must use a new directory on configured USB storage')
+        if chosen.is_relative_to(root) or chosen.is_relative_to(storage.archive_root):
+            chosen = storage.resolve(chosen)
+        from wc_panel.storage import resolve_user_destination
+        chosen,destination_guard=resolve_user_destination(root,chosen,must_exist=False)
     directory = checked_path(handle['directory'])
     if chosen.exists(): raise ValueError('保存路径已存在，请选择一个新的地图目录')
     if chosen == directory or directory in chosen.parents or chosen in directory.parents:
@@ -228,6 +245,7 @@ def save_session(root, handle, destination, *, inspect, export):
         while not parent.exists(): parent = parent.parent
         if shutil.disk_usage(parent).free < required+64*1024**2:
             raise RuntimeError('保存目标空间不足；临时地图已保留')
+        if destination_guard is not None: destination_guard.check()
         chosen.parent.mkdir(parents=True, exist_ok=True)
         checked_path(chosen.parent)
         # Persist every newly created ancestor before raw data can be removed.
@@ -242,7 +260,10 @@ def save_session(root, handle, destination, *, inspect, export):
         intent_path = None
         intent = None
         try:
-            hashes = {str(relative): _copy_durable(source, stage/relative) for source, relative in files}
+            hashes = {}
+            for source, relative in files:
+                if destination_guard is not None: destination_guard.check()
+                hashes[str(relative)] = _copy_durable(source,stage/relative)
             reference = _raw_reference(directory) if profile == 'experiment' else None
             if reference is not None:
                 write_new(stage/'raw_archive.reference.json', json_bytes(reference))
@@ -268,11 +289,13 @@ def save_session(root, handle, destination, *, inspect, export):
                     'destination':str(chosen),'stage':str(stage),'retention_profile':profile,
                     'raw_archive_reference':result['raw_archive_reference']}
             _replace_durable(intent_path,intent)
+            if destination_guard is not None: destination_guard.check()
             _rename_no_replace(stage, chosen)
             committed = True
             _sync_directory(chosen.parent)
         except BaseException:
             if not committed and stage.exists():
+                if destination_guard is not None: destination_guard.check()
                 # A surviving stage proves this atomic rename did not publish it.
                 # If this marker cannot be synchronized, PREPARED remains and
                 # later discard fails closed until the destination is reviewed.
@@ -282,12 +305,14 @@ def save_session(root, handle, destination, *, inspect, export):
             raise
         result['cleanup_errors'] = []
         try:
+            if destination_guard is not None: destination_guard.check()
             result['cleanup'] = (_discard_data(root, directory, runtime, profile=profile) if profile == 'map_only'
                                  else {'status': 'SESSION_DATA_RETAINED', 'raw_retention': 'RETAINED_REFERENCED', 'removed': []})
         except Exception as error: result['cleanup_errors'].append(str(error))
         result['raw_retention'] = ('DISCARDED' if profile == 'map_only' and not result['cleanup_errors'] else
                                    ('PARTIALLY_RETAINED' if profile == 'map_only' else 'RETAINED_REFERENCED'))
         try:
+            if destination_guard is not None: destination_guard.check()
             _replace_durable(directory/'retention.json', {'retention_profile':profile, 'raw_retention':result['raw_retention'],
                               'saved_map':str(chosen), 'raw_archive_reference':result['raw_archive_reference'],
                               'cleanup_errors':result['cleanup_errors']})

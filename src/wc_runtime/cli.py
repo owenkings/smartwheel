@@ -120,7 +120,7 @@ def begin(session, role, commands, duration, locks=(), allow_component_exit=Fals
     raise RuntimeError('Supervisor startup not confirmed; inspect session manifest before retrying')
 
 
-def device_preflight():
+def device_preflight(sides='all'):
     if shutil.disk_usage(ROOT).free<2*1024**3:
         raise RuntimeError('Less than 2 GiB free; acquisition refused')
     network = require_device_bindings()['network']
@@ -129,7 +129,8 @@ def device_preflight():
     addresses=subprocess.check_output(command,text=True)
     present={item['local'] for interface in json.loads(addresses) for item in interface['addr_info']}
     live=json.loads((ROOT/'config/live_unvalidated.json').read_text())
-    required_addresses={live[side]['receiver_address'] for side in ('lidar_left','lidar_right')}
+    from .capture import selected_lidar_sides
+    required_addresses={live['lidar_'+side]['receiver_address'] for side in selected_lidar_sides(sides)}
     if not required_addresses.issubset(present):
         raise RuntimeError('Expected existing receiver addresses absent; do not reconfigure automatically')
     sockets=subprocess.check_output(['ss','-H','-u','-l','-n'],text=True)

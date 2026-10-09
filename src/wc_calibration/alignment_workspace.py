@@ -10,6 +10,7 @@ import uuid
 import numpy as np
 
 from .core import CalibrationError, _hash, validate_transform
+from .assessment import assess_result
 from .picker import _json_bytes, _json_loads, _no_links
 from .preview_icp import evaluate_preview, refine_preview
 
@@ -23,6 +24,7 @@ class AlignmentWorkspace:
         self.session = session
         self.output_root = session.output_root.parent / 'alignment_candidates'
         self._lock = threading.Lock()
+        self._calculation = None
 
     def _completed(self, root, kind):
         """Only load complete hash-bound records belonging to this frozen scene."""
@@ -73,7 +75,8 @@ class AlignmentWorkspace:
                 validate_transform(result[key])
                 if result.get('live_eligible') is not False:
                     continue
-                return {'result': result, 'export_dir': str(directory)}
+                return {'result': result, 'export_dir': str(directory), 'saved': True,
+                        'assessment': assess_result(result)}
             except (OSError, ValueError, KeyError, TypeError, RecursionError):
                 continue
         return None
@@ -95,9 +98,17 @@ class AlignmentWorkspace:
                       'path': None, 'status': 'UNKNOWN_INSTALLATION'}
         return {'scene': self.session.scene(), 'initial_T_left_right': initial,
                 'initial_source': source,
+                'prepared_initial_T_left_right': copy.deepcopy(self.session._prepared_initial_T_left_right),
+                'initial_assessment': assess_result(manual['result'] if manual else None),
                 'saved_candidate': self._completed(self.output_root, 'offline_alignment_export')}
 
     def export(self, body):
+        return self._run(body, persist=True)
+
+    def calculate(self, body):
+        return self._run(body, persist=False)
+
+    def _run(self, body, *, persist):
         if not isinstance(body, dict) or set(body) != {'input_hash', 'scene_id', 'initial_T_left_right', 'operation'}:
             raise CalibrationError('alignment accepts only source identity, rigid transform and operation')
         if body['input_hash'] != self.session.input_hash or body['scene_id'] != self.session._scene['scene_id']:
@@ -110,6 +121,7 @@ class AlignmentWorkspace:
         if not self._lock.acquire(blocking=False):
             raise AlignmentBusy('another alignment is running; wait for its result')
         try:
+            self._calculation = None
             clouds = self.session._scene['clouds']
             xyz = {s: [p['xyz'] for p in clouds[s]] for s in ('left', 'right')}
             if body['operation'] == 'refine':
@@ -144,23 +156,62 @@ class AlignmentWorkspace:
             correspondence_file = {'schema_version': 1, 'kind': 'unverified_nearest_neighbours',
                 'prepared_input_hash': self.session.input_hash, 'scene_id': self.session._scene['scene_id'],
                 'pairs': mapped, 'live_eligible': False}
-            _no_links(self.output_root)
-            self.output_root.mkdir(parents=True, exist_ok=True)
-            directory = self.output_root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ_')+uuid.uuid4().hex)
-            directory.mkdir()
-            manifest = {'schema_version': 1, 'kind': 'offline_alignment_export',
-                'operation': body['operation'], 'status': 'SAVED_NOT_VALIDATED',
-                'prepared_input_hash': self.session.input_hash, 'scene_id': self.session._scene['scene_id'],
-                'created_utc': datetime.now(timezone.utc).isoformat(),
-                'live_eligible': False, 'independent_validation_performed': False, 'files': {}}
-            for name, value in {'result.json': result, 'correspondences.json': correspondence_file}.items():
-                raw = _json_bytes(value)
-                self._write(directory, name, raw)
-                manifest['files'][name] = {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
-            self._write(directory, 'manifest.json', _json_bytes(manifest))
-            return {'result': result, 'export_dir': str(directory)}
+            assessment = assess_result(result)
+            if not persist:
+                identifier = uuid.uuid4().hex
+                response = {'result': result, 'assessment': assessment, 'export_dir': None,
+                            'saved': False, 'calculation_id': identifier}
+                self._calculation = {'id': identifier, 'response': copy.deepcopy(response),
+                                     'correspondences': copy.deepcopy(correspondence_file),
+                                     'operation': body['operation'], 'saved_response': None}
+                return response
+            return self._persist(result, correspondence_file, assessment, body['operation'])
         finally:
             self._lock.release()
+
+    def save_result(self, body):
+        """Persist the exact most recent calculation, never a client-supplied matrix."""
+        if not isinstance(body, dict) or set(body) != {'input_hash', 'scene_id', 'calculation_id'}:
+            raise CalibrationError('save_result accepts only frozen source identity and calculation_id')
+        if body['input_hash'] != self.session.input_hash or body['scene_id'] != self.session._scene['scene_id']:
+            raise CalibrationError('request does not belong to the frozen source scene')
+        if not isinstance(body['calculation_id'], str) or len(body['calculation_id']) != 32:
+            raise CalibrationError('invalid or expired calculation_id')
+        if not self._lock.acquire(blocking=False):
+            raise AlignmentBusy('another alignment is running; wait for its result')
+        try:
+            entry = self._calculation
+            if entry is None or entry['id'] != body['calculation_id']:
+                raise CalibrationError('unknown or expired calculation_id; calculate again')
+            if entry['saved_response'] is None:
+                response = entry['response']
+                saved = self._persist(response['result'], entry['correspondences'],
+                                      response['assessment'], entry['operation'], entry['id'])
+                saved['calculation_id'] = entry['id']
+                entry['saved_response'] = saved
+            return copy.deepcopy(entry['saved_response'])
+        finally:
+            self._lock.release()
+
+    def _persist(self, result, correspondence_file, assessment, operation, calculation_id=None):
+        _no_links(self.output_root)
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        directory = self.output_root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ_')+uuid.uuid4().hex)
+        directory.mkdir()
+        manifest = {'schema_version': 1, 'kind': 'offline_alignment_export',
+            'operation': operation, 'status': 'SAVED_NOT_VALIDATED',
+            'prepared_input_hash': self.session.input_hash, 'scene_id': self.session._scene['scene_id'],
+            'created_utc': datetime.now(timezone.utc).isoformat(),
+            'live_eligible': False, 'independent_validation_performed': False, 'files': {}}
+        if calculation_id is not None:
+            manifest['calculation_id'] = calculation_id
+        for name, value in {'result.json': result, 'correspondences.json': correspondence_file}.items():
+            raw = _json_bytes(value)
+            self._write(directory, name, raw)
+            manifest['files'][name] = {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
+        self._write(directory, 'manifest.json', _json_bytes(manifest))
+        return {'result': copy.deepcopy(result), 'export_dir': str(directory), 'saved': True,
+                'assessment': copy.deepcopy(assessment)}
 
     @staticmethod
     def _write(directory, name, raw):

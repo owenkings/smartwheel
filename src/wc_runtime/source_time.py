@@ -1,5 +1,6 @@
 """Deterministic original-clock ordering for offline comparisons, no retiming."""
 import math
+import copy
 
 ORDER = {'wheel': 0, 'imu': 1, 'source': 2}
 
@@ -26,9 +27,18 @@ class SourceClock:
         return result
 
     def report(self):
-        return {'mapping':'HOST_MONOTONIC_SINGLE_EPOCH','monotonic_origin_ns':self.monotonic_origin_ns,
+        result = {'mapping':'HOST_MONOTONIC_SINGLE_EPOCH','monotonic_origin_ns':self.monotonic_origin_ns,
                 'ros_origin_ns':self.ros_origin_ns,'physical_measurement_time_validated':False,
                 'original_bag_modified':False,'tie_order':'wheel, imu, source; same stream uses source sequence'}
+        if hasattr(self, 'imu_time_model'):
+            result['imu_time_model'] = copy.deepcopy(self.imu_time_model)
+        return result
+
+    def bind_imu_time_model(self, model):
+        from .offline_imu_time import validate_model
+        if hasattr(self, 'imu_time_model'):
+            raise ValueError('offline IMU timing model already frozen')
+        self.imu_time_model = copy.deepcopy(validate_model(model))
 
 def select_stamps(stamps, input_rate_hz):
     """Rate-limit cloud consumption only. Never synthesize wheel/IMU observations."""

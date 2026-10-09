@@ -143,6 +143,11 @@ class ReadOnlySerialLease:
             raise ImuAcquisitionError('serial EOF/disconnect; automatic reconnect is disabled')
         return data
 
+    def wait_readable(self, timeout_s=.01):
+        if self.fd is None or not 0 <= timeout_s <= .1:
+            raise ImuAcquisitionError('invalid bounded serial event wait')
+        return bool(select.select([self.fd], [], [], timeout_s)[0])
+
     def close(self):
         # HUPCL stays disabled; restoring an original HUPCL bit would request a
         # hangup on close. No modem line toggles are explicitly issued here.
@@ -155,7 +160,7 @@ class ReadOnlySerialLease:
 
 
 def frame_record(frame, *, session_id, sensor_id, stream_epoch, frame_sequence,
-                 host_receive_ns, host_monotonic_ns):
+                 host_receive_ns, host_monotonic_ns, timing=None):
     for value in (frame_sequence, host_receive_ns, host_monotonic_ns):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ImuAcquisitionError('nonnegative integer sequence and host ns required')
@@ -165,7 +170,7 @@ def frame_record(frame, *, session_id, sensor_id, stream_epoch, frame_sequence,
     if imu['orientation_valid']:
         imu['orientation'] = tuple(component / imu['orientation_norm'] for component in imu['orientation'])
     sample, ready = imu['sample_timestamp_raw'], imu['dataready_timestamp_raw']
-    return {'session_id': session_id, 'sensor_id': sensor_id, 'stream_epoch': stream_epoch,
+    result = {'session_id': session_id, 'sensor_id': sensor_id, 'stream_epoch': stream_epoch,
             'frame_sequence': frame_sequence, 'tid': frame.tid, 'raw_packet': frame.raw_packet,
             'packet_sha256': hashlib.sha256(frame.raw_packet).hexdigest(), 'imu': imu,
             'sample_timestamp_valid': sample is not None, 'sample_timestamp_raw': sample,
@@ -176,6 +181,13 @@ def frame_record(frame, *, session_id, sensor_id, stream_epoch, frame_sequence,
             'uncertainty_valid': False, 'uncertainty_ns': None,
             'diagnostic_flags': ['ARRIVAL_ONLY', 'DEVICE_TIME_UNIT_UNRESOLVED', 'IMU_MOUNT_EXTRINSIC_UNVALIDATED',
                                  'NATIVE_ORIENTATION_REFERENCE_UNVALIDATED', 'COVARIANCE_UNKNOWN']}
+    if timing is not None:
+        from .device_time import PROFILE_FLAG, VALID_FLAG
+        result.update(timing)
+        result['diagnostic_flags'].remove('DEVICE_TIME_UNIT_UNRESOLVED')
+        result['diagnostic_flags'].extend([VALID_FLAG, PROFILE_FLAG+timing['timing_profile_sha256'],
+                                           'DEVICE_TIME_CONTINUITY_GUARDED'])
+    return result
 
 
 def assign_ros_frame(record, frame_message, *, frame_id='imu_h30_native'):
@@ -240,6 +252,10 @@ def parser():
                         help='seconds without a valid frame before exit; 0 keeps waiting for data until stopped')
     result.add_argument('--poll-period-ms', type=float, choices=(2.5, 5.0, 10.0), default=10.0,
                         help='explicit host serial poll period; arrival time remains unvalidated measurement time')
+    result.add_argument('--read-mode', choices=('event', 'poll'), default='poll',
+                        help='event waits for a readable serial fd; poll preserves the legacy timer diagnostic')
+    result.add_argument('--timing-profile', type=Path,
+                        help='Frozen verified device-relative timing policy; absent keeps legacy arrival-only acquisition')
     return result
 
 
@@ -266,6 +282,14 @@ def main(argv=None):
             not math.isfinite(arguments.stale_timeout) or arguments.stale_timeout < 0):
         raise ImuAcquisitionError('duration must be 0 (until stopped) or positive up to 12h; stale-timeout must be finite nonnegative')
     poll_seconds = poll_period_seconds(arguments.poll_period_ms)
+    timing_profile = None
+    if arguments.timing_profile is not None:
+        from .device_time import load_timing_profile
+        timing_profile = load_timing_profile(arguments.timing_profile, sensor_id=arguments.sensor_id)
+        if timing_profile['hardware_serial'] != arguments.hardware_serial:
+            raise ImuAcquisitionError('timing profile hardware identity mismatch')
+        if timing_profile['read_mode'] != arguments.read_mode:
+            raise ImuAcquisitionError('timing profile read mode differs from requested mode')
     import rclpy
     from rclpy.duration import Duration
     from rclpy.node import Node
@@ -295,6 +319,13 @@ def main(argv=None):
             self.batch_sequence = 0
             self.journal = None
             self.serial = None
+            self.device_time = None
+            self.quarantine_started_ns = None
+            self.quarantine_frames = 0
+            self.quarantine_complete = False
+            if timing_profile is not None:
+                from .device_time import DeviceTimeValidator
+                self.device_time = DeviceTimeValidator(timing_profile)
             if arguments.journal_dir is not None:
                 from wc_runtime.source_archive import SourceJournal
                 self.journal = SourceJournal(arguments.journal_dir, arguments.sensor_id)
@@ -319,7 +350,8 @@ def main(argv=None):
                     raise ImuAcquisitionError('stopped before serial acquisition')
                 self.serial = ReadOnlySerialLease(arguments.device, arguments.expected_by_id, arguments.run_root,
                                                    arguments.hardware_serial).open()
-                self.create_timer(poll_seconds, self.acquire)
+                if arguments.read_mode == 'poll':
+                    self.create_timer(poll_seconds, self.acquire)
                 self.create_timer(.25, self.diagnostics)
             except BaseException as error:
                 self.error = str(error)
@@ -337,21 +369,52 @@ def main(argv=None):
                 if data:
                     self.bytes_received += len(data)
                     self.batch_sequence += 1
+                    if self.device_time is not None and self.quarantine_started_ns is None:
+                        self.quarantine_started_ns = now
+                    if self.device_time is not None:
+                        if now < self.quarantine_started_ns:
+                            raise ImuAcquisitionError('IMU_STARTUP_HOST_MONOTONIC_BACKWARD')
+                        if now-self.quarantine_started_ns >= timing_profile['startup_quarantine_ns']:
+                            self.quarantine_complete = True
                     if self.journal:
                         self.journal.append({'event': 'byte_batch', 'batch_id': self.batch_sequence,
                             'host_receive_ns': arrival, 'host_monotonic_ns': now,
                             'bytes_hex': data.hex(), 'sha256': hashlib.sha256(data).hexdigest()})
                     for decoded in self.parser.feed(data):
+                        if self.device_time is not None and not self.quarantine_complete:
+                            self.quarantine_frames += 1
+                            if self.journal:
+                                self.journal.append({'event': 'startup_quarantine',
+                                    'sensor_id': arguments.sensor_id, 'stream_epoch': self.stream_epoch,
+                                    'batch_id': self.batch_sequence, 'packet_sha256': hashlib.sha256(decoded.raw_packet).hexdigest(),
+                                    'host_receive_ns': arrival, 'host_monotonic_ns': now, 'tid': decoded.tid,
+                                    'reason': 'BOUNDED_STARTUP_BUFFER_QUARANTINE',
+                                    'quarantine_started_monotonic_ns': self.quarantine_started_ns,
+                                    'startup_quarantine_ns': timing_profile['startup_quarantine_ns'],
+                                    'timing_profile_sha256': timing_profile['_profile_sha256']})
+                            continue
                         self.sequence += 1
+                        timing = None
+                        if self.device_time is not None:
+                            try:
+                                timing = self.device_time.observe(decoded, host_monotonic_ns=now)
+                            except (ValueError, TypeError, KeyError) as failure:
+                                if self.journal:
+                                    self.journal.append({'event': 'device_time_fault', 'sequence': self.sequence,
+                                        'batch_id': self.batch_sequence, 'packet_sha256': hashlib.sha256(decoded.raw_packet).hexdigest(),
+                                        'error': str(failure), 'host_receive_ns': arrival, 'host_monotonic_ns': now,
+                                        'device_time': self.device_time.report()})
+                                raise ImuAcquisitionError(str(failure)) from failure
                         record = frame_record(decoded, session_id=arguments.session_id, sensor_id=arguments.sensor_id,
                             stream_epoch=self.stream_epoch, frame_sequence=self.sequence,
-                            host_receive_ns=arrival, host_monotonic_ns=now)
+                            host_receive_ns=arrival, host_monotonic_ns=now, **({'timing': timing} if timing is not None else {}))
                         output = assign_ros_frame(record, H30Frame())
                         if self.journal:
                             self.journal.append({'event': 'frame', 'sensor_id': arguments.sensor_id,
                                 'stream_epoch': self.stream_epoch, 'sequence': self.sequence,
                                 'batch_id': self.batch_sequence, 'packet_sha256': record['packet_sha256'],
-                                'host_receive_ns': arrival, 'host_monotonic_ns': now})
+                                'host_receive_ns': arrival, 'host_monotonic_ns': now,
+                                **(timing or {})})
                         self.frame_pub.publish(output)
                         self.imu_pub.publish(output.imu)
                         self.latest, self.last_receive = record, now
@@ -373,6 +436,10 @@ def main(argv=None):
                         parser=self.parser.stats, time_source='arrival_only', common_time_valid=False,
                         uncertainty_valid=False, mount_extrinsic_valid=False, error=self.error,
                         requested_poll_period_ms=arguments.poll_period_ms,
+                        read_mode=arguments.read_mode,
+                        startup_quarantine_frames=self.quarantine_frames,
+                        startup_quarantine_started_monotonic_ns=self.quarantine_started_ns,
+                        device_timing=self.device_time.report() if self.device_time is not None else None,
                         stale_timeout_s=arguments.stale_timeout, silence_exit_enabled=arguments.stale_timeout > 0,
                         source_age_s=None if self.last_receive is None else max(0, time.monotonic_ns()-self.last_receive)/1e9,
                         waiting_for_first_frame=self.last_receive is None,
@@ -391,6 +458,8 @@ def main(argv=None):
         def close(self):
             self.parser.reset()
             acquired = self.serial is not None
+            if acquired and self.device_time is not None and not self.device_time.accepted:
+                self.error = self.error or 'IMU_NO_VALID_DEVICE_TIME_FRAME_AFTER_STARTUP_QUARANTINE'
             if acquired:
                 try:
                     self.serial.close()
@@ -408,6 +477,14 @@ def main(argv=None):
                     self.error = '; '.join(filter(None, (self.error, 'IMU_RELIABLE_ACK_FAILED: '+str(error))))
                     self.get_logger().error(self.error)
             if self.journal:
+                if self.device_time is not None:
+                    try:
+                        self.journal.append({'event': 'device_time_summary', **self.device_time.report(),
+                            'startup_quarantine_frames': self.quarantine_frames,
+                            'startup_quarantine_started_monotonic_ns': self.quarantine_started_ns,
+                            'startup_quarantine_ns': timing_profile['startup_quarantine_ns']})
+                    except Exception as error:
+                        self.error = '; '.join(filter(None, (self.error, 'IMU_TIMING_SUMMARY_FAILED: '+str(error))))
                 self.journal.close(source_error=self.error)
 
     node = None
@@ -424,7 +501,14 @@ def main(argv=None):
         initialized = True
         node = H30Node()
         while rclpy.ok() and not node.done and not stopped:
-            rclpy.spin_once(node, timeout_sec=.1)
+            if arguments.read_mode == 'event':
+                node.serial.wait_readable(.01)
+                # Empty reads retain stale/duration checks; every actual byte
+                # batch receives clocks sampled only after os.read completed.
+                node.acquire()
+                rclpy.spin_once(node, timeout_sec=0.)
+            else:
+                rclpy.spin_once(node, timeout_sec=.1)
         if not rclpy.ok():
             node.error = node.error or 'ROS_CONTEXT_SHUTDOWN_BEFORE_SOURCE_CLOSE'
     finally:

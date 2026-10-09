@@ -39,6 +39,18 @@ button.primary:hover:not(:disabled) { background: #b7daff; }
 .right-dot { background: var(--right); }
 .view-tools { display: flex; gap: 6px; padding: 0 16px 10px; }
 .view-tools button { padding: 4px 10px; font-size: 12px; }
+.workflow-links { color: var(--muted); font-size: 12px; line-height: 1.9; }
+.workflow-links a { color: #9bd1ff; }
+.icp-handoff { padding: 0 17px; }
+.image-section { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 13px; }
+.image-toolbar { display: flex; align-items: center; gap: 7px; padding: 10px 13px; flex-wrap: wrap; }
+.image-toolbar label { margin-right: auto; color: var(--muted); font-size: 12px; }
+.image-toolbar button { padding: 4px 9px; }
+.image-toolbar select { font: inherit; color: #dce7f3; background: #16283c; border: 1px solid var(--line); border-radius: 4px; padding: 5px; }
+canvas.organized-image { height: 245px; image-rendering: pixelated; }
+.image-legend { padding: 7px 13px 0; font-size: 11px; line-height: 1.6; color: var(--muted); margin: 0; }
+.image-missing { margin: 4px 16px 15px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.cloud-subtitle { margin: 2px 16px 10px; color: var(--muted); font-size: 12px; }
 canvas { display: block; width: 100%; height: 410px; background: #08111d; touch-action: none; cursor: grab; }
 canvas:active { cursor: grabbing; }
 body.picking .cloud-card canvas { cursor: crosshair; }
@@ -61,6 +73,11 @@ tr.pending { background: #30271c; color: #ffcc88; }
 .saved { margin: 12px 17px 0; padding: 10px; background: #14302b; color: #9fe0cd; font-size: 12px; }
 .saved code { display: block; padding-top: 5px; overflow-wrap: anywhere; user-select: all; }
 .result-card { margin-top: 18px; padding-bottom: 14px; }
+.assessment { margin: 12px 17px; padding: 14px; border: 1px solid #496b84; border-radius: 6px; background: #152b3a; font-size: 13px; line-height: 1.7; }
+.assessment h3 { font-size: 16px; color: #c5e5ff; font-weight: 650; margin: 0 0 8px; }
+.assessment p:last-child { margin-bottom: 0; }
+.assessment[data-level="REJECTED"] { border-color: #b27650; background: #34291f; }
+.assessment[data-level="REJECTED"] h3 { color: #ffd3a2; }
 .result-warning { color: #d7b58a; background: #2b261f; font-size: 12px; line-height: 1.8; padding: 10px 17px; }
 .result-grid { display: grid; grid-template-columns: 1.7fr 1fr; gap: 18px; padding: 0 17px; }
 .overlay-legend { color: var(--muted); font-size: 12px; margin-bottom: 9px; flex-wrap: wrap; }

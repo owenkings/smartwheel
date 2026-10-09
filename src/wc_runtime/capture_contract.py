@@ -11,6 +11,9 @@ import re
 GAP_NS = {'lidar':500_000_000,'imu':100_000_000,'wheel':500_000_000,
           'camera':200_000_000,'ultrasonic':3_000_000_000}
 ROLES = ('left_front','right_front','left_side','right_side')
+# Recorder readiness JSON is published every 250 ms. This allowance covers
+# two metadata ticks only; it never relaxes the original source gap audit.
+READINESS_OBSERVATION_LAG_NS = 500_000_000
 
 
 def _json(path):
@@ -30,17 +33,17 @@ def _ns(value, label, *, positive=False):
 
 
 def build_capture_contract(configuration_dir, profile, session_id, *, imu_sensor_id,
-                           expected_identities=None):
+                           expected_identities=None, sides='all'):
     """Build from frozen configuration; caller supplies the reviewed IMU identity."""
-    from .capture import CAMERA_PROFILES, source_selection
+    from .capture import CAMERA_PROFILES, source_selection, selected_lidar_sides
     configuration_dir = Path(configuration_dir)
-    source_selection(profile)
+    source_selection(profile, sides)
     _identifier(session_id,'session_id')
     sources = {}
     def add(logical,kind,source_id,identity,**fields):
         sources[logical] = dict(kind=kind,source_id=source_id,max_gap_ns=GAP_NS[kind],
                                expected_identity=identity,**fields)
-    for side in ('left','right'):
+    for side in selected_lidar_sides(sides):
         text = (configuration_dir/'lidar'/(side+'.yaml')).read_text(encoding='utf-8')
         values = {}
         for key in ('side','expected_serial','device_ip','receive_ip'):
@@ -116,6 +119,27 @@ def identity_matches(expected, actual):
         return isinstance(actual,dict) and all(key in actual and identity_matches(value,actual[key])
                                              for key,value in expected.items())
     return type(expected) is type(actual) and expected == actual
+
+
+def user_stopped_window(contract, readiness, start_monotonic_ns, stop_monotonic_ns):
+    """Freeze a fresh observed common end, never hide a stalled source tail."""
+    validate_contract(contract)
+    start=_ns(start_monotonic_ns,'window start',positive=True)
+    stop=_ns(stop_monotonic_ns,'user stop',positive=True)
+    if readiness.get('all_ready') is not True or set(readiness.get('sources',{}))!=set(contract['sources']):
+        raise ValueError('SOURCE_NOT_READY_AT_USER_STOP')
+    last={key:_ns(value.get('last_valid_monotonic_ns'),key+' last',positive=True)
+          for key,value in readiness['sources'].items()}
+    lag={key:stop-stamp for key,stamp in last.items()}
+    for key,delta in lag.items():
+        if delta < 0 or delta > contract['sources'][key]['max_gap_ns']+READINESS_OBSERVATION_LAG_NS:
+            raise ValueError('SOURCE_STALE_AT_USER_STOP: '+key)
+    end=min(last.values())
+    if end<=start: raise ValueError('NO_COMMON_CAPTURE_WINDOW_AT_USER_STOP')
+    return dict(start_monotonic_ns=start,end_monotonic_ns=end,requested_duration_ns=end-start,
+                stop_requested_monotonic_ns=stop,policy='UNTIL_USER_STOP_OBSERVED_COMMON_WINDOW',
+                tail_trim_ns=stop-end,source_stop_lag_ns=lag,
+                readiness_observation_lag_allowance_ns=READINESS_OBSERVATION_LAG_NS)
 
 
 def read_source_readiness(dataset_root, contract):

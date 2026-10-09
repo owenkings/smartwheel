@@ -55,6 +55,37 @@ def _expected_sha(value):
     return value
 
 
+def recording_session(source, runtime=None):
+    """Bind to the frozen capture identity, independent of the display folder.
+
+    Old evidence-only callers without archived configuration keep their former
+    folder-name contract; a candidate cannot declare its own new identity.
+    """
+    source = _path(source)
+    manifest_path = source/'capture_manifest.json'
+    def read(path):
+        path = _path(path)
+        _require(path.stat().st_size <= 2*1024*1024, 'oversized recording identity configuration')
+        value = json.loads(path.read_text(encoding='utf-8'))
+        _require(isinstance(value,dict), 'recording identity configuration must be an object')
+        return value
+    manifest = read(manifest_path) if manifest_path.is_file() else None
+    relative = Path(manifest.get('runtime_config_path','runtime_config.json') if manifest else 'runtime_config.json')
+    _require(not relative.is_absolute() and '..' not in relative.parts, 'archived runtime path escapes dataset')
+    frozen_path = _path(source/relative)
+    frozen = read(frozen_path) if frozen_path.is_file() else None
+    session = manifest.get('session_id') if manifest else (frozen.get('session_id',source.name) if frozen else source.name)
+    _require(isinstance(session,str) and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,119}',session),
+             'valid archived capture session identity required')
+    # Capture snapshots historically preserve mapping defaults without an ID;
+    # load_dataset establishes it from the actual recorded SourceFrame stream.
+    if frozen is not None and 'session_id' in frozen:
+        _require(frozen.get('session_id') == session, 'frozen runtime and capture manifest session mismatch')
+    if runtime is not None:
+        _require(runtime.get('session_id') == session, 'runtime session differs from archived recording')
+    return session
+
+
 def selected_message_evidence(source, *, packets=None):
     """Hash original serialized bytes, never retimed/deserialized packet objects."""
     source = _path(source)
@@ -124,6 +155,18 @@ def _runtime_identity(runtime):
     return imu, wheel, conversion, R
 
 
+def motion_sample_time_s(event, clock):
+    """Use the replay's exact IMU model; wheel and legacy IMU keep host time."""
+    if event['category'] == 'imu' and 'imu_measurement_stamp_ns' in event:
+        model = clock.report().get('imu_time_model')
+        _require(model is not None and event.get('imu_time_model_sha256') == model['model_sha256'],
+                 'calibration IMU event differs from frozen timing model')
+        return (event['imu_measurement_stamp_ns']-clock.ros_origin_ns)*1e-9
+    _require(event['category'] != 'imu' or 'imu_time_model' not in clock.report(),
+             'device-relative calibration requires every derived IMU stamp')
+    return (event['monotonic_ns']-clock.monotonic_origin_ns)*1e-9
+
+
 def extract_and_calibrate(source, runtime, packets, output, *, input_hashes=None):
     """Freeze evidence, select disjoint windows, and save candidate or rejection.
 
@@ -137,8 +180,7 @@ def extract_and_calibrate(source, runtime, packets, output, *, input_hashes=None
              'calibration output overlaps original recording')
     output.mkdir(parents=True, exist_ok=False)
     try:
-        session = runtime['session_id']
-        _require(session == source.name, 'runtime session differs from original dataset')
+        session = recording_session(source, runtime)
         imu_id, wheel_id, conversion, R = _runtime_identity(runtime)
         _require(runtime.get('confirmed_gyro_bias') is None and
                  runtime.get('prior_template', {}).get('confirmed_gyro_bias') is None and
@@ -168,7 +210,7 @@ def extract_and_calibrate(source, runtime, packets, output, *, input_hashes=None
                      'motion event time/sequence discontinuity')
             previous[kind] = key
             msg = packets.get(event)  # Checks original CDR hash; only returned copy is retimed.
-            t = (event['monotonic_ns']-origin)*1e-9
+            t = motion_sample_time_s(event, packets.clock)
             if kind == 'imu':
                 epoch = msg.stream_epoch
                 _require(isinstance(epoch, str) and epoch and
@@ -216,13 +258,13 @@ def verify_candidate(candidate, path, source, input_hashes, *, runtime=None, pac
              'candidate object differs from archived candidate file')
     p = candidate.get('provenance', {})
     imu_id, wheel_id = p.get('imu_device_id'), p.get('wheel_device_id')
+    session = recording_session(source, runtime)
     if runtime is not None:
         imu_id, wheel_id, conversion, R = _runtime_identity(runtime)
-        _require(runtime.get('session_id') == source.name, 'runtime/session mismatch')
         _require(p.get('wheel_conversion') == conversion and
                  np.allclose(np.asarray(p.get('R_reference_imu')), R, atol=1e-9),
                  'candidate wheel conversion or IMU axes differ from frozen runtime')
-    validate_for_session(candidate, session_id=source.name, imu_device_id=imu_id, wheel_device_id=wheel_id)
+    validate_for_session(candidate, session_id=session, imu_device_id=imu_id, wheel_device_id=wheel_id)
     if packets is not None:
         _require(p.get('time_mapping') == packets.clock.report(),
                  'candidate time origin differs from recorded packet clock')
@@ -250,5 +292,5 @@ def verify_candidate(candidate, path, source, input_hashes, *, runtime=None, pac
         verified.append({'path': value, 'sha256': actual})
     _require(selected is not None, 'candidate must bind this dataset selected original IMU and wheel messages')
     return {'status': 'VERIFIED', 'candidate_path': str(path), 'candidate_sha256': _digest(path),
-            'session_id': source.name, 'verified_sources': verified,
+            'session_id': session, 'verified_sources': verified,
             'physical_calibration': False, 'original_recording_modified': False}

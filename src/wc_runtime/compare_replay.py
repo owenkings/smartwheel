@@ -23,6 +23,7 @@ from scipy.spatial.transform import Rotation
 
 
 from .source_time import ORDER, event_key, SourceClock
+from .offline_imu_time import resolved_mode, message_metadata, build_model, configure_runtime, prior_arguments
 from .resource_audit import snapshot as resource_snapshot,delta as resource_delta
 
 
@@ -84,6 +85,7 @@ class RecordedPackets:
         from rclpy.serialization import deserialize_message
         from rosidl_runtime_py.utilities import get_message
         self.source, self.decode = source, deserialize_message
+        imu_time_mode = resolved_mode(source, config)
         self.connections, self.types, self.events = {}, {}, []
         self.stack = ExitStack()
         self.paths = sorted(Path(config.get('_offline_bag_path', source / 'bag')).glob('*.db3'))
@@ -92,10 +94,12 @@ class RecordedPackets:
         self.recorded_priors = {}
         self.counts = Counter()
         self.sides = ('left', 'right') if config['mode'] == 'all' else (config['mode'],)
+        clock_sides = config.get('offline_lidar_selection', {}).get('clock_reference_sides', self.sides)
+        require(set(self.sides) <= set(clock_sides) <= {'left', 'right'}, 'Invalid offline clock lidar selection')
         suffix = '' if config.get('cloud_source', 'filtered') == 'raw' else '_filtered'
         topics = {config['prior_template']['wheel_topic']: 'wheel',
                   config['prior_template']['imu_topic']: 'imu'}
-        topics.update({'/wc_mapping/lidar_' + side + '/source_frame' + suffix: 'source' for side in self.sides})
+        topics.update({'/wc_mapping/lidar_' + side + '/source_frame' + suffix: 'source' for side in clock_sides})
         try:
             for path in self.paths:
                 db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
@@ -114,7 +118,8 @@ class RecordedPackets:
                     for message_id, recorded, cdr in db.execute(
                             'SELECT id,timestamp,data FROM messages WHERE topic_id=? ORDER BY timestamp,id', (topic_id,)):
                         message = self.decode(cdr, self.types[kind])
-                        self.counts[topic] += 1
+                        if category != 'source' or message.side in self.sides:
+                            self.counts[topic] += 1
                         if category == 'recorded_prior':
                             key = stamp(message.header.stamp)
                             require(key not in self.recorded_priors, 'Duplicate recorded prior timestamp')
@@ -135,10 +140,17 @@ class RecordedPackets:
                             'category': category, 'side': getattr(message, 'side', ''), 'topic': topic, 'type': kind,
                             'bag': path.name, 'message_id': message_id, 'bag_received_ns': recorded,
                             'cdr_sha256': hashlib.sha256(cdr).hexdigest()})
+                        if category == 'imu' and imu_time_mode == 'device_relative':
+                            self.events[-1]['imu_device_time'] = message_metadata(message)
                         require(len(self.events) <= max_events, 'Diagnostic event-index capacity exceeded; do not silently truncate')
             self.clock = SourceClock(self.events)
-            self.events = [self.clock.canonicalize(row) for row in self.events]
+            # Excluded lidar metadata establishes the unchanged recording epoch only.
+            # Its point clouds never reach the estimator, frontend or map.
+            self.events = [self.clock.canonicalize(row) for row in self.events
+                           if row['category'] != 'source' or row['side'] in self.sides]
             self.events.sort(key=event_key)
+            if imu_time_mode == 'device_relative':
+                self.clock.bind_imu_time_model(build_model(self.events, source, config))
             require(all(any(row['category'] == kind for row in self.events) for kind in ORDER), 'Source/IMU/wheel packets required')
             require({row['side'] for row in self.events if row['category'] == 'source'} == set(self.sides),
                     'All requested lidar sides must be present; no single-side substitution')
@@ -230,6 +242,7 @@ def replay_cell(root, output, runtime, candidate, packets, name, estimator, filt
     stream_dir = directory / 'frontend'
     stream_dir.mkdir()
     config = copy.deepcopy(runtime)
+    configure_runtime(config, packets.clock)
     model = 'planar_ekf'
     config.update(mapping_enabled=True, motion_model=model, wheel_imu_estimator=estimator,
                   offline_experiment=True, input_rate_hz=input_rate_hz)
@@ -291,7 +304,7 @@ def replay_cell(root, output, runtime, candidate, packets, name, estimator, filt
                         acceleration=[a.x, a.y, a.z], angular_velocity=[g.x, g.y, g.z], sensor_id=message.sensor_id,
                         session_id=message.session_id, stream_epoch=message.stream_epoch, sequence=int(message.frame_sequence),
                         coordinate_convention=message.coordinate_convention, time_source=message.time_source,
-                        common_time_valid=message.common_time_valid)
+                        common_time_valid=message.common_time_valid, **prior_arguments(entry))
                 else:
                     source_count += 1
                     owner.receive_source(message, mono, serialize_message, receive_cloud, clock=lambda: mono,
@@ -376,6 +389,8 @@ def replay_cell(root, output, runtime, candidate, packets, name, estimator, filt
             pairs[key] = row
     write_json(directory / 'prior_initialization.json', prior.initialization)
     result = {'status': 'FRONTEND_REPLAY_COMPLETE', 'motion_model': model, 'estimator': estimator,
+        'source_selection':copy.deepcopy(runtime.get('offline_source_selection')),
+        'lidar_selection':copy.deepcopy(runtime.get('offline_lidar_selection')),
         'input_rate_hz': input_rate_hz, 'filter_enabled': filtering,
         'input_rate_policy': ('ALL_VALID_PAIRS_NOT_THROTTLED' if input_rate_hz == 0
                               else 'MINIMUM_SOURCE_AND_PAIR_INTERVAL'),

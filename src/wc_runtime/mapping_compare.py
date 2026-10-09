@@ -78,7 +78,33 @@ def identify_sources(bag):
     identities['session_id']=identities.pop('session_ids').pop()
     return identities
 
-def load_dataset(source,*,allow_partial=False,hardware_setup=None,gyro_bias=None,project_root=None,mechanical_initial=False):
+def select_lidar(recorded_mode, sensor_ids, lidar=None):
+    """Select recorded point clouds; keep the original acquisition untouched."""
+    modes = ('left', 'right', 'all')
+    if recorded_mode not in modes or (lidar is not None and lidar not in modes):
+        raise ValueError('lidar mode must be left, right or all')
+    selected_mode = recorded_mode if lidar is None else lidar
+    selected = ['left', 'right'] if selected_mode == 'all' else [selected_mode]
+    available = [side for side in ('left', 'right') if sensor_ids.get(side)]
+    missing = sorted(set(selected) - set(available))
+    if missing:
+        raise ValueError('requested lidar not present in recording: ' + ', '.join(missing))
+    original = ['left', 'right'] if recorded_mode == 'all' else [recorded_mode]
+    # Use the original recording's epoch even when its earliest lidar is excluded.
+    # This keeps session-bound motion calibration and timestamps comparable.
+    clock_sides = sorted((set(original) | set(selected)) & set(available))
+    return {'recorded_mode': recorded_mode, 'selected_mode': selected_mode,
+            'selected_sides': selected, 'excluded_sides': sorted(set(available) - set(selected)),
+            'clock_reference_sides': clock_sides,
+            'selected_sensor_ids': {side: sensor_ids[side] for side in selected},
+            'selection_basis': 'RECORDED_MODE' if lidar is None else 'EXPLICIT_OFFLINE_LIDAR_SELECTION',
+            'original_recording_modified': False}
+
+
+def load_dataset(source,*,allow_partial=False,hardware_setup=None,gyro_bias=None,project_root=None,mechanical_initial=False,
+                 lidar=None,sides=None,cloud=None):
+    from .recording_sources import resolve_lidar_option,source_inventory,select_sources
+    selection=resolve_lidar_option(lidar,sides)
     source=Path(source).resolve(strict=True)
     manifest_path=source/'capture_manifest.json'
     manifest=_json(manifest_path) if manifest_path.is_file() else None
@@ -101,7 +127,17 @@ def load_dataset(source,*,allow_partial=False,hardware_setup=None,gyro_bias=None
             hashes[str(path)]=expected
     identity=identify_sources(bag)
     runtime.update(identity)
-    runtime['mode']=manifest.get('mode','all') if manifest else runtime.get('mode','all')
+    recorded_mode=manifest.get('mode',runtime.get('mode','all')) if manifest else runtime.get('mode','all')
+    inventory=source_inventory(bag)
+    selected_mode,selected_sides=select_sources(inventory,recorded_mode if selection is None else selection,cloud=cloud)
+    runtime['offline_lidar_selection']=select_lidar(recorded_mode,runtime['sensor_ids'],selection)
+    runtime['mode']=runtime['offline_lidar_selection']['selected_mode']
+    if cloud is not None:runtime['cloud_source']=cloud
+    runtime['offline_source_selection']={'recorded_mode':recorded_mode,'mode':selected_mode,
+        'selected_sides':selected_sides,'available_sides':[side for side in ('left','right') if inventory[side]],
+        'cloud':cloud or runtime.get('cloud_source','filtered'),
+        'clock_reference_sides':runtime['offline_lidar_selection']['clock_reference_sides'],
+        'original_recording_modified':False,'single_lidar_diagnostic':selected_mode!='all'}
     runtime.update(continuous_mapping=True,odometry_source='wheel_imu',motion_model='planar_ekf',offline_experiment=True)
     setup_path=Path(hardware_setup).resolve(strict=True) if hardware_setup else \
         (_inside(source,manifest['hardware_setup_path']) if manifest else source/'hardware_setup.json')
@@ -353,17 +389,59 @@ def validate_native_wall_interval(interval):
         raise ValueError('native wall interval must be finite and in [0.05,10] seconds')
 
 
+def freeze_motion_candidate(path, output, source, input_hashes, runtime, packets):
+    """Freeze original candidate bytes and verify the same-session raw inputs."""
+    from .offline_refinement_inputs import verify_candidate
+    from .offline_motion_adapter import prior_factory
+    path = Path(path).absolute()
+    if '..' in path.parts or any(p.is_symlink() for p in (path,*path.parents)):
+        raise ValueError('motion candidate must be an unlinked file without traversal')
+    if runtime.get('confirmed_gyro_bias') is not None or \
+            runtime.get('prior_template',{}).get('confirmed_gyro_bias') is not None or \
+            runtime.get('offline_motion_correction') is not None:
+        raise ValueError('motion candidate requires uncorrected input; do not subtract bias twice')
+    path = path.resolve(strict=True)
+    if path.stat().st_size > 2*1024*1024:
+        raise ValueError('oversized motion candidate')
+    raw = path.read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+    snapshot = output/'motion_candidate.json'
+    with snapshot.open('xb') as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    candidate = _json(snapshot)
+    proof = verify_candidate(candidate,snapshot,source,input_hashes,runtime=runtime,packets=packets)
+    if digest(snapshot) != sha or digest(path) != sha:
+        raise ValueError('motion candidate changed while freezing evidence')
+    input_hashes[str(path)] = sha
+    proof.update(original_candidate_path=str(path),snapshot_file='motion_candidate.json')
+    write_json(output/'candidate_verification.json',proof)
+    evidence = {'status':'OFFLINE_CANDIDATE_APPLIED','candidate_sha256':sha,
+        'candidate_id':candidate['candidate_id'],'snapshot_file':'motion_candidate.json',
+        'verification_file':'candidate_verification.json','automatic_live_application':False,
+        'process_noise':'UNCHANGED_PER_ESTIMATOR','geometry_feedback':False}
+    return prior_factory(candidate,sha), evidence
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--user-data-paths',action='store_true',help='Explicit user-selected data directories, with per-operation mount guards')
     parser.add_argument('--project-root',type=Path,default=Path(__file__).resolve().parents[2])
     parser.add_argument('--estimators',nargs='+',choices=('five_state','robot_localization'),default=['five_state','robot_localization'])
     parser.add_argument('--input-rate-hz',nargs='+',type=float,default=[5.],help='Offline cloud consumption: 0 = all valid paired frames without throttling; otherwise (0,10] Hz. Every real wheel/IMU event retained')
     parser.add_argument('--filter',nargs='+',choices=('off','on'),default=['on'])
     parser.add_argument('--cloud',choices=('raw','filtered'),default='raw')
+    parser.add_argument('--imu-time-mode',choices=('auto','arrival','device_relative'),default='auto',
+        help='auto uses a frozen verified IMU timing profile when present; legacy bags retain arrival timing')
+    parser.add_argument('--lidar',choices=('left','right','all'),
+        help='Use left, right or both recorded lidars with the original IMU/wheel inputs; omitted = recorded mode; never opens hardware')
+    parser.add_argument('--sides',choices=('all','left','right'),
+        help='Alias of --lidar for panel jobs; conflicting simultaneous values are rejected.')
     parser.add_argument('--hardware-setup',type=Path,help='Explicit newly confirmed geometry override; snapshot/hash retained')
     parser.add_argument('--gyro-bias',type=Path,help='Optional explicit bias file with same-name evidence')
+    parser.add_argument('--motion-candidate',type=Path,
+        help='Verified same-session offline IMU bias and wheel yaw correction, shared by selected EKFs; does not change process noise or live calibration')
     parser.add_argument('--allow-partial',action='store_true')
     parser.add_argument('--mechanical-initial',action='store_true',help='Explicit offline V7 mechanical-face initial geometry; does not change live calibration')
     parser.add_argument('--memory-work',action='store_true',help='Derived scratch output under /dev/shm/wc_compare_<UID>; export results to persistent storage afterwards')
@@ -382,6 +460,9 @@ def main(argv=None):
              'each original-stamp Info acknowledgement is still required. '
              'Does not change recorded timestamps or native sampling rate')
     args=parser.parse_args(argv)
+    from .recording_sources import resolve_lidar_option
+    try:resolve_lidar_option(args.lidar,args.sides)
+    except ValueError as error:parser.error(str(error))
     output=args.output.absolute(); source=args.dataset.absolute(); root=args.project_root.resolve(strict=True)
     # Keep the original syntax checks before aliases are resolved, so a
     # parent-traversal argument can never be normalized into a valid output.
@@ -389,10 +470,16 @@ def main(argv=None):
         raise ValueError('output must be new, unlinked and separate from original dataset')
     from .storage_policy import StoragePolicy
     storage_policy = StoragePolicy(root)
+    if args.user_data_paths:
+        if args.memory_work:
+            raise ValueError('--user-data-paths cannot be combined with volatile --memory-work')
+        from .user_data_paths import UserDataPaths
+        storage_policy = UserDataPaths(root,args.dataset,args.output,
+            [getattr(args,key) for key in ('hardware_setup','gyro_bias','motion_candidate','truth_json','map_quality_policy')])
     if storage_policy.enabled:
         output = args.output.absolute() if args.memory_work else storage_policy.resolve(args.output)
         source = storage_policy.resolve(args.dataset)
-        for field in ('hardware_setup', 'gyro_bias', 'truth_json', 'map_quality_policy'):
+        for field in ('hardware_setup', 'gyro_bias', 'motion_candidate', 'truth_json', 'map_quality_policy'):
             value = getattr(args, field)
             if value is not None: setattr(args, field, storage_policy.resolve(value))
     source=source.resolve(strict=True)
@@ -400,35 +487,40 @@ def main(argv=None):
             output.is_relative_to(source) or source.is_relative_to(output): raise ValueError('output must be new, unlinked and separate from original dataset')
     if args.source_limit<0 or args.native_limit<0:
         raise ValueError('invalid source limits')
+    if args.motion_candidate is not None and args.gyro_bias is not None:
+        raise ValueError('--motion-candidate and --gyro-bias cannot be combined (double bias)')
     validate_comparison_rates(args.input_rate_hz,args.native_rate_hz)
     validate_native_wall_interval(args.native_wall_interval_s)
     if args.truth_min_common_samples<1: raise ValueError('truth minimum common sample count must be positive')
     if any(len(values)!=len(set(values)) for values in (args.estimators,args.input_rate_hz,args.filter)):
         raise ValueError('duplicate experiment factor values')
     if not 1<=args.domain<=232 or args.domain==83: raise ValueError('isolated domain required, never production domain 83')
-    storage_root=comparison_storage_root(root,output,args.memory_work)
+    storage_root=storage_policy.archive_root if args.user_data_paths else comparison_storage_root(root,output,args.memory_work)
     if storage_policy.enabled and not args.memory_work:
         if not output.is_relative_to(storage_policy.archive_root):
             raise ValueError('configured comparison outputs must use USB data/reports/maps storage')
         storage_root=storage_policy.archive_root
     runtime,manifest,input_hashes=load_dataset(source,allow_partial=args.allow_partial,
-        hardware_setup=args.hardware_setup,gyro_bias=args.gyro_bias,project_root=root,mechanical_initial=args.mechanical_initial)
+        hardware_setup=args.hardware_setup,gyro_bias=args.gyro_bias,project_root=root,mechanical_initial=args.mechanical_initial,
+        lidar=args.lidar,sides=args.sides,cloud=args.cloud)
     from .map_quality import validate_map_quality_policy
     quality_policy=validate_map_quality_policy(_json(args.map_quality_policy) if args.map_quality_policy else runtime.get('map_quality_policy'))
     if args.map_quality_policy: input_hashes[str(args.map_quality_policy.resolve(strict=True))]=digest(args.map_quality_policy)
     runtime['map_quality_policy']=quality_policy
     runtime['cloud_source']=args.cloud
+    runtime['offline_imu_time_mode']=args.imu_time_mode
     storage_policy.check()
     output.mkdir(parents=True)
     report={'schema_version':1,'status':'FAILED','dataset':str(source),'hardware_started':False,
         'input_hashes':input_hashes,'recording_complete':manifest.get('recording_complete') if manifest else None,
         'capture_status':manifest.get('status') if manifest else 'LEGACY_COMPLETENESS_UNKNOWN',
         'source_accounting':manifest.get('source_accounting') if manifest else None,
+        'source_selection':runtime.get('offline_source_selection'),
         'input_scope':'same SDK decoded XYZ/raw SourceFrame and original H30/wheel messages; not old SDK/full UDP equivalence',
         'time_policy':'single host-monotonic epoch mapped to controlled ROS time; raw wall/device stamps retained in immutable input evidence',
         'clock_accuracy':'COMMON_MEASUREMENT_TIME_UNVALIDATED',
         'absolute_accuracy':'TRUTH_EVALUATION_NOT_RUN' if args.truth_json else 'NO_INDEPENDENT_TRUTH',
-        'map_quality_policy':quality_policy,
+        'map_quality_policy':quality_policy,'lidar_selection':runtime.get('offline_lidar_selection'),
         'storage':{'root':str(storage_root),'volatile':args.memory_work,'source_project':str(root),
                    'destination':storage_policy.check()},
         'offline_geometry_initialization':runtime.get('offline_geometry_initialization'),
@@ -443,15 +535,18 @@ def main(argv=None):
         (Path(__file__),Path(__file__).with_name('mapping_planar.py'),Path(__file__).with_name('mapping_prior.py'),
          Path(__file__).with_name('mapping_input.py'),Path(__file__).with_name('single_mapping_input.py'),
          Path(__file__).with_name('measurement.py'),Path(__file__).with_name('source_time.py'),
+         Path(__file__).with_name('offline_imu_time.py'),Path(__file__).parents[1]/'wc_imu'/'device_time.py',
          Path(__file__).with_name('robot_localization_provider.py'),Path(__file__).with_name('compare_replay.py'),
          Path(__file__).with_name('compare_native.py'),Path(__file__).with_name('icp_shadow.py'),
           Path(__file__).with_name('resource_audit.py'),Path(__file__).with_name('map_quality.py'),
-          Path(__file__).with_name('compare_geometry.py'))}
+          Path(__file__).with_name('compare_geometry.py'),Path(__file__).with_name('offline_motion_adapter.py'),
+          Path(__file__).with_name('offline_motion_calibration.py'),Path(__file__).with_name('offline_refinement_inputs.py'),
+          Path(__file__).with_name('recording_sources.py'))}
     if args.truth_json:
         report['truth']={'status':'TRUTH_EVALUATION_NOT_RUN','input_path':str(args.truth_json.absolute()),
             'reason':'EXPERIMENT_NOT_REACHED_TRUTH_EVALUATION','formal_accuracy_acceptance':False,
             'coverage_policy':dict(report['truth_coverage_policy'])}
-    packets=None; active_cell=None
+    packets=None; active_cell=None; motion_factory=None
     try:
         # Associate supplied truth before any estimator/replay can fail. This
         # freezes input evidence; it does not validate truth or compute metrics.
@@ -475,11 +570,18 @@ def main(argv=None):
             xml=prefix/'share/robot_localization/package.xml'
             report['actual_rl_library']={'path':str(library),'sha256':digest(library),
                 'version':ET.fromstring(xml.read_text(encoding='utf-8')).findtext('version')}
-        write_json(output/'frozen_runtime_config.json',runtime)
         write_json(output/'map_quality_policy.json',quality_policy)
         if args.hardware_setup:
             write_json(output/'hardware_setup_override.json',_json(args.hardware_setup))
         packets=RecordedPackets(source,runtime)
+        from .offline_imu_time import configure_runtime
+        configure_runtime(runtime,packets.clock)
+        if args.motion_candidate is not None:
+            motion_factory,correction = freeze_motion_candidate(args.motion_candidate,output,source,
+                input_hashes,runtime,packets)
+            runtime['offline_refinement'] = copy.deepcopy(correction)
+            report['offline_motion_correction'] = correction
+        write_json(output/'frozen_runtime_config.json',runtime)
         report['controlled_clock']=packets.clock.report()
         report['recorded_packet_counts']=dict(packets.counts); report['recorded_sequence_accounting']=source_accounting(packets)
         event_hash=hashlib.sha256()
@@ -496,6 +598,7 @@ def main(argv=None):
             active_cell=name
             print(json.dumps({'stage':'REPLAY_CELL','cell':name}),flush=True)
             storage_options={'storage_root':storage_root} if storage_root != root else {}
+            if motion_factory is not None: storage_options['prior_factory'] = motion_factory
             cell=replay_cell(root,output,runtime,runtime,packets,name,estimator,filtering=='on',args.source_limit,rate,**storage_options)
             cell['summary']['trajectory_sha256']=write_trajectory(cell)
             if args.icp_shadow!='off': cell['summary']['icp_shadow']=run_shadow(cell)

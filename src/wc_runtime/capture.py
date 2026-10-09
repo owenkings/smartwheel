@@ -218,14 +218,20 @@ def remove_memory_staging(staged, session):
     shutil.rmtree(expected)
 
 
-def source_selection(profile):
+def selected_lidar_sides(sides='all'):
+    if sides not in ('left', 'right', 'all'):
+        raise ValueError('lidar sides must be left, right or all')
+    return ('left', 'right') if sides == 'all' else (sides,)
+
+
+def source_selection(profile, sides='all'):
     """Explicit requested evidence scope; excluded hardware is never acquired."""
     if profile not in PROFILES:
         raise ValueError('unknown capture profile: '+str(profile))
     from wc_cameras.config import ROLES
     core = ['lidar_left', 'lidar_right', 'imu', 'wheel']
     cameras = ['camera_'+role for role in ROLES]
-    selected = core+(cameras if profile in CAMERA_PROFILES else [])
+    selected = ['lidar_'+side for side in selected_lidar_sides(sides)]+['imu','wheel']+(cameras if profile in CAMERA_PROFILES else [])
     if profile == 'all_sensors': selected.append('ultrasonic')
     excluded = [name for name in core+cameras+['ultrasonic'] if name not in selected]
     return dict(selected_sources=selected, excluded_sources=excluded,
@@ -234,14 +240,14 @@ def source_selection(profile):
                 excluded_source_policy='NOT_PREFLIGHTED_STARTED_SUBSCRIBED_OR_VALIDATED')
 
 
-def capacity(profile, duration, free_bytes, camera_profile=None, *, initialization_budget_s=0):
-    if profile not in PROFILES or type(duration) is not int or not 1 <= duration <= 3600:
-        raise ValueError('explicit profile and duration 1..3600 required')
+def capacity(profile, duration, free_bytes, camera_profile=None, *, initialization_budget_s=0, sides='all'):
+    if profile not in PROFILES or type(duration) is not int or not 0 <= duration <= 3600:
+        raise ValueError('explicit profile and duration 0..3600 required; 0 means until stopped')
     if type(initialization_budget_s) is not int or not 0 <= initialization_budget_s <= 3600:
         raise ValueError('source initialization budget must be an integer 0..3600')
     # Observed historic per-side raw+filtered recording, plus headroom. Cameras
     # store all captured BGR frames, never the 8 Hz preview count.
-    rate = 2*6_600_000 + 500_000
+    rate = len(selected_lidar_sides(sides))*6_600_000 + 500_000
     if profile in CAMERA_PROFILES:
         camera_profile = camera_profile or dict(width=320, height=240, capture_fps=30)
         rate += 4*camera_profile['width']*camera_profile['height']*3*camera_profile['capture_fps']
@@ -256,6 +262,8 @@ def capacity(profile, duration, free_bytes, camera_profile=None, *, initializati
                 forecast_policy='ADVISORY_ONLY',
                 runtime_capacity_checks=True,
                 requested_duration_s=duration, source_initialization_budget_s=initialization_budget_s,
+                user_stopped_duration=duration == 0,
+                estimate_scope='STARTUP_ONLY_UNBOUNDED_CAPTURE' if duration == 0 else 'REQUESTED_WINDOW',
                 estimated_source_window_s=expected_window,
                 sufficient=sufficient,
                 maximum_duration_s=max(0,int((free_bytes-RESERVE_BYTES-SOFTWARE_SNAPSHOT_BUDGET_BYTES)/(rate*1.25))-initialization_budget_s),
@@ -265,15 +273,20 @@ def capacity(profile, duration, free_bytes, camera_profile=None, *, initializati
                 actual_rate_may_differ=True)
 
 
-def source_commands(root, run, directory, session, profile, *, manual_drive=False):
-    source_selection(profile)
+def source_commands(root, run, directory, session, profile, *, manual_drive=False, sides='all', preview_layout='separate'):
+    source_selection(profile, sides)
     from .cli import ros_command
     py = sys.executable
     config = directory/'configuration'
     imu = json.loads((config/'device_bindings.json').read_text())['imu']
+    timing_arguments = ['--read-mode', 'event']
+    if (config/'imu_timing.json').exists():
+        from wc_imu.device_time import load_timing_profile
+        timing = load_timing_profile(config/'imu_timing.json', sensor_id=imu['sensor_id'])
+        timing_arguments = ['--read-mode', timing['read_mode'], '--timing-profile', config/'imu_timing.json']
     commands = {
         'lidar': ros_command(['ros2', 'launch', 'wc_xt_driver', 'dual_sources.launch.py',
-            'source_mode:=dual', 'session_id:='+session, 'run_root:='+str(run), 'allow_hardware:=true',
+            'source_mode:='+('dual' if sides == 'all' else 'single_'+sides), 'session_id:='+session, 'run_root:='+str(run), 'allow_hardware:=true',
             'config_directory:='+str(config/'lidar'),
             'require_recorder:=true',
             'read_only_probe:=false', 'device_config_policy:=preserve_current',
@@ -281,7 +294,7 @@ def source_commands(root, run, directory, session, profile, *, manual_drive=Fals
         'imu': ros_command([py, '-m', 'wc_imu.ros_node', '--device', imu['device'],
             '--expected-by-id', imu['expected_by_id'], '--hardware-serial', imu['hardware_serial'], '--sensor-id', imu['sensor_id'],
             '--session-id', session, '--run-root', run, '--duration', '0', '--stale-timeout', '2',
-            '--require-recorder', '--journal-dir', directory/'sources/imu']),
+            '--require-recorder', '--journal-dir', directory/'sources/imu', *timing_arguments]),
         'wheel': ros_command([py, '-m', 'wc_motion.feedback_transport', '--config', config/'wheel_feedback.json',
             '--output', directory/'sources/wheel_feedback.jsonl', '--run-root', run,
             '--summary-path', directory/'sources/wheel_summary.json',
@@ -301,6 +314,8 @@ def source_commands(root, run, directory, session, profile, *, manual_drive=Fals
         # signal while waiting for a UI child which never received it.
         commands['manual_ui'] = ros_command([root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui',
             '--session-root', directory, '--session-id', session])
+        if preview_layout == 'unified':
+            del commands['manual_ui']  # The unified RViz owns the same reviewed teleop widget.
     if profile in CAMERA_PROFILES:
         from wc_cameras.config import ROLES
         for role in ROLES:
@@ -343,8 +358,8 @@ def manual_runtime_configuration(setup, wheel_hardware, directory, session):
                     'hardware_stop_validated': False})
 
 
-def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None):
-    source_selection(profile)
+def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None, sides='all', preview_layout='separate'):
+    source_selection(profile, sides)
     from .cli import device_preflight, imu_preflight
     from wc_motion.feedback_transport import validate_config, verify_identity, require_unoccupied
     checks = {}
@@ -353,7 +368,7 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
             checks[name] = dict(status='AVAILABLE', evidence=callback())
         except Exception as exc:
             checks[name] = dict(status='BLOCKED', reason=str(exc))
-    check('lidar', device_preflight)
+    check('lidar', device_preflight if sides == 'all' else lambda: device_preflight(sides=sides))
     check('imu', imu_preflight)
     def wheel():
         cfg = validate_config(json.loads((root/'config/wheel_feedback_current.json').read_text()))
@@ -372,7 +387,7 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
         check('manual_drive_configuration', manual_settings)
         def manual_ui():
             from .sensor_viewer import desktop_environment, confirm_display
-            executable = root/'install/main/wc_bringup/lib/wc_bringup/manual_capture_ui'
+            executable = root/'install/main/wc_bringup/lib/wc_bringup'/('unified_capture_rviz' if preview_layout == 'unified' else 'manual_capture_ui')
             if not executable.is_file():
                 raise FileNotFoundError('standalone capture UI not installed: '+str(executable))
             env = desktop_environment()
@@ -403,7 +418,7 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
                                                profile='monitor_320', capture_profile=copy.deepcopy(cameras['profiles']['monitor_320']))
     checks['capacity'] = capacity(profile, duration, shutil.disk_usage(capacity_path or root).free,
                                   cameras['profiles']['monitor_320'] if profile in CAMERA_PROFILES else None,
-                                  initialization_budget_s=ALL_SOURCE_READY_TIMEOUT_S)
+                                  initialization_budget_s=ALL_SOURCE_READY_TIMEOUT_S, sides=sides)
     return checks
 
 
@@ -438,7 +453,7 @@ def stop_capture_children(children, recorder, *, manual_drive=False):
     results = {}
     remaining = dict(children)
     if manual_drive:
-        for name in ('manual_ui', 'wheel'):
+        for name in ('manual_ui', 'preview', 'wheel'):
             if name in remaining:
                 # The wheel wrapper allows 40 s for transport/journal close;
                 # its supervisor must allow that complete budget before TERM.
@@ -466,12 +481,16 @@ def wheel_ready(directory, session):
     return True
 
 
-def final_control_evidence(directory, *, manual_drive=False):
+def final_control_evidence(directory, *, manual_drive=False, session_id=None):
     """Report actual final owner counters; absent evidence is unknown, never zero."""
     path = Path(directory)/'sources/wheel_summary.json'
     result = dict(control_transmissions=None, control_count_status='UNVERIFIED',
                   control_evidence='sources/wheel_summary.json')
     try:
+        if session_id is None:
+            manifest_path=Path(directory)/'capture_manifest.json'
+            session_id=(json.loads(manifest_path.read_text(encoding='utf-8'))['session_id']
+                        if manifest_path.is_file() else Path(directory).name)
         value = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(value, dict):
             raise ValueError('wheel source summary must be an object')
@@ -483,7 +502,7 @@ def final_control_evidence(directory, *, manual_drive=False):
                       control_write_attempts=value.get('control_write_attempts'))
         if not manual_drive and count != 0:
             raise ValueError('read-only capture reported control transmissions')
-        if manual_drive and (value.get('session_id') != Path(directory).name
+        if manual_drive and (value.get('session_id') != session_id
                              or value.get('ready_observed') is not True
                              or value.get('recorder_discovered') is not True):
             raise ValueError('manual wheel source session/readiness evidence incomplete')
@@ -517,7 +536,7 @@ def validate_capture_audit(value):
 
 
 def capture_summary(manifest):
-    selection = source_selection(manifest['profile'])
+    selection = source_selection(manifest['profile'], manifest.get('lidar_sides','all'))
     summary = ['# V7 采集结果', '', '状态：'+manifest['status'],
                '配置：'+manifest['profile'],
                '本次请求来源：'+ '、'.join(selection['selected_sources']),
@@ -546,7 +565,7 @@ def finalize_capture(directory, run, manifest, hashes, results, failures, stop_r
     def issue(code, evidence, error):
         issues.append(dict(code=code, evidence=str(evidence), detail=type(error).__name__+': '+str(error)))
     try:
-        controls = final_control_evidence(directory, manual_drive=manifest['manual_drive'])
+        controls = final_control_evidence(directory, manual_drive=manifest['manual_drive'], session_id=manifest['session_id'])
     except Exception as error:
         controls = dict(control_transmissions=None, control_count_status='UNVERIFIED',
                         control_evidence='sources/wheel_summary.json', error=str(error))
@@ -592,7 +611,7 @@ def finalize_capture(directory, run, manifest, hashes, results, failures, stop_r
     except Exception as error:
         issue('CAPTURE_SOURCE_COPY_FAILED', 'sources/lidar', error)
     else:
-        for side in ('left', 'right'):
+        for side in selected_lidar_sides(manifest.get('lidar_sides','all')):
             try:
                 if destination_guard is not None: destination_guard.check()
                 source = run/'sessions'/manifest['session_id']/side
@@ -736,8 +755,8 @@ def finalize_capture(directory, run, manifest, hashes, results, failures, stop_r
     return 0 if committed and prospective['recording_complete'] else 2
 
 
-def snapshot(root, directory, *, profile='all_sensors', storage_policy=None):
-    selection = source_selection(profile)
+def snapshot(root, directory, *, profile='all_sensors', storage_policy=None, sides='all'):
+    selection = source_selection(profile, sides)
     cfg = directory/'configuration'
     cfg.mkdir()
     paths = {'runtime_config.json': 'config/mapping_live.json', 'hardware_setup.json': 'config/hardware_setup.json',
@@ -767,6 +786,23 @@ def snapshot(root, directory, *, profile='all_sensors', storage_policy=None):
     hashes['configuration/runtime_config.json'] = digest(cfg/'runtime_config.json')
     # Preserve referenced calibration evidence and source code identities.
     shutil.copytree(root/'config/calibration', cfg/'calibration')
+    timing_source = root/'config/imu_timing.json'
+    if timing_source.exists() or timing_source.is_symlink():
+        from wc_imu.device_time import load_timing_profile
+        timing = load_timing_profile(timing_source, sensor_id=device_bindings['imu']['sensor_id'])
+        shutil.copyfile(timing_source, cfg/'imu_timing.json')
+        hashes['configuration/imu_timing.json'] = digest(cfg/'imu_timing.json')
+        for evidence in timing['evidence']:
+            destination = cfg/evidence['path']
+            if not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(timing_source.parent/evidence['path'], destination)
+            if digest(destination) != evidence['sha256']:
+                raise ValueError('IMU timing evidence changed while snapshotting')
+            hashes[str(destination.relative_to(directory))] = digest(destination)
+        frozen = load_timing_profile(cfg/'imu_timing.json', sensor_id=device_bindings['imu']['sensor_id'])
+        if frozen['_profile_sha256'] != timing['_profile_sha256']:
+            raise ValueError('IMU timing profile changed while snapshotting')
     shutil.copytree(root/'install/main/wc_xt_driver/share/wc_xt_driver/config', cfg/'lidar')
     for path in (cfg/'lidar').rglob('*'):
         if path.is_file():
@@ -799,6 +835,13 @@ def run_capture(args):
     device_bindings = require_device_bindings()
     manual_drive = bool(getattr(args, 'manual_drive', False))
     preview = bool(getattr(args, 'preview', False))
+    sides = getattr(args, 'sides', 'all')
+    selected_lidar_sides(sides)
+    preview_layout = getattr(args, 'preview_layout', 'separate')
+    if preview_layout not in ('separate','unified'):
+        raise ValueError('unknown preview layout')
+    if preview_layout == 'unified' and not preview:
+        raise ValueError('unified capture requires --preview')
     staging = getattr(args, 'staging', 'disk') # Existing library callers keep their disk contract.
     if staging not in ('memory','disk'): raise ValueError('staging must be memory or disk')
     from .capture_destination import capture_destination
@@ -811,6 +854,7 @@ def run_capture(args):
     if destination_guard is not None and not output_root.is_dir():
         raise ValueError('CAPTURE_DESTINATION_UNAVAILABLE: external output-root must already exist')
     checks = preflight(ROOT, args.profile, args.duration, manual_drive=manual_drive,
+                       **({'sides':sides,'preview_layout':preview_layout} if sides != 'all' or preview_layout != 'separate' else {}),
                        **({'capacity_path':destination_guard.mount_root} if destination_guard is not None else {}))
     if destination_guard is not None: checks['destination']=destination_guard.check()
     if preview:
@@ -822,16 +866,23 @@ def run_capture(args):
                                      display=preview_environment.get('DISPLAY'))
         except Exception as error:
             checks['preview'] = dict(status='BLOCKED',reason=str(error))
-    final_directory = output_root/args.session
+    from .capture_names import validate_folder_name
+    requested_folder = getattr(args,'folder_name',None)
+    folder_name = validate_folder_name(args.session if requested_folder is None else requested_folder)
+    if manual_drive and staging == 'disk' and folder_name != args.session:
+        raise ValueError('custom folder names with manual-drive require --staging memory to preserve the authenticated session identity')
+    final_directory = output_root/folder_name
     directory = checked_staging_path(args.session) if staging=='memory' else final_directory
     if staging=='memory':
         try: checks['memory_capacity']=memory_preflight(checks,recorder_queue_size,args.profile)
         except Exception as error: checks['memory_capacity']=dict(status='BLOCKED',sufficient=False,reason=str(error))
-    result = dict(profile=args.profile, duration_s=args.duration, output=str(final_directory), preflight=checks,
+    result = dict(profile=args.profile, duration_s=args.duration, output=str(final_directory), folder_name=folder_name, preflight=checks,
                   startup_policy='DIRECT_CAPTURE_WITH_RUNTIME_STORAGE_GUARD',
                   storage_staging=dict(mode=staging,live_directory=str(directory),final_directory=str(final_directory),
                       durable_archive=False,cleanup='NOT_ATTEMPTED'),
-                  **source_selection(args.profile),
+                  **source_selection(args.profile, sides),
+                  lidar_sides=sides, preview_layout=preview_layout,
+                  sensor_scope='DUAL_LIDAR' if sides == 'all' else 'SINGLE_LIDAR_DIAGNOSTIC',
                   recorder_queue_size=recorder_queue_size,
                   manual_drive=manual_drive, preview=preview, control_transmissions=0 if args.dry_run else None,
                   control_count_status='NO_PROCESSES_STARTED' if args.dry_run else 'AWAITING_SOURCE_OWNER',
@@ -883,10 +934,10 @@ def run_capture(args):
         from .capture_support import progress
         progress(directory,'PREPARING')
         hashes = snapshot(ROOT, directory, profile=args.profile,
-                          storage_policy=getattr(destination_guard, 'storage_policy', None))
+                          storage_policy=getattr(destination_guard, 'storage_policy', None), sides=sides)
         from .capture_contract import build_capture_contract, read_source_readiness
         contract = build_capture_contract(directory/'configuration',args.profile,args.session,
-                                           imu_sensor_id=device_bindings['imu']['sensor_id'])
+                                           imu_sensor_id=device_bindings['imu']['sensor_id'], sides=sides)
         atomic_json(directory/'configuration/capture_contract.json',contract)
         hashes['configuration/capture_contract.json'] = digest(directory/'configuration/capture_contract.json')
         if manual_drive:
@@ -896,15 +947,17 @@ def run_capture(args):
                 directory, args.session)
             atomic_json(directory/'configuration/manual_runtime.json', runtime)
             hashes['configuration/manual_runtime.json'] = digest(directory/'configuration/manual_runtime.json')
-        commands = source_commands(ROOT, RUN, directory, args.session, args.profile, manual_drive=manual_drive)
+        commands = source_commands(ROOT, RUN, directory, args.session, args.profile, manual_drive=manual_drive,
+                                   sides=sides, preview_layout=preview_layout)
         if preview:
             commands['preview'] = ros_command([sys.executable,'-m','wc_runtime.capture_preview',
-                '--session-root',directory,'--session-id',args.session,'--preview-hz','3','--cloud-source','raw'])
+                '--session-root',directory,'--session-id',args.session,'--preview-hz','3','--cloud-source','raw',
+                '--layout',preview_layout])
         recorder_command = ros_command([sys.executable, '-m', 'wc_runtime.source_recorder',
                                        '--output', directory, '--profile', args.profile,
-                                       '--queue-size', str(recorder_queue_size)])
+                                       '--queue-size', str(recorder_queue_size),'--sides',sides])
         manifest = dict(result, schema_version=2, session_id=args.session, status='RECORDING', recording_complete=False,
-                        diagnostic_capture=args.diagnostic, bag_path='bag', mode='all',
+                        diagnostic_capture=args.diagnostic, bag_path='bag', mode=sides,
                         runtime_config_path='configuration/runtime_config.json',
                         hardware_setup_path='configuration/hardware_setup.json', imu_sensor_id=device_bindings['imu']['sensor_id'],
                         project_root=str(ROOT), manual_socket_directory=str(manual_socket_path(ROOT,directory,args.session).parent) if manual_drive else None,
@@ -912,6 +965,8 @@ def run_capture(args):
                         capture_contract_required=True,capture_contract_path='configuration/capture_contract.json',
                         time_policy='RECORDER_RECEIPT_WALL_TIME_WITH_ORIGINAL_SOURCE_MONOTONIC_AND_SEQUENCE_RETAINED',
                         coverage_time_policy='ORIGINAL_SOURCE_HOST_MONOTONIC_NS',
+                        imu_timing_profile_path='configuration/imu_timing.json' if 'configuration/imu_timing.json' in hashes else None,
+                        imu_device_time_scope='DEVICE_RELATIVE_ONLY_HOST_ARRIVAL_UNCHANGED',
                         bag_storage_time_policy='RECORDER_CALLBACK_WALL_TIME_NS',
                         recording_transport={'reliability': 'RELIABLE', 'durability': 'VOLATILE',
                                              'subscriber_history': {'imu': 2048, 'other_topics': 128},
@@ -972,7 +1027,7 @@ def run_capture(args):
                 time.sleep(.05)
             progress(directory,'STARTING_SOURCES',selected_sources=result['selected_sources'])
             for name, command in commands.items():
-                if name == 'manual_ui':
+                if name == 'manual_ui' or name == 'preview' and manual_drive and preview_layout == 'unified':
                     continue
                 children[name] = start(name, command)
             ready_deadline = time.monotonic()+ALL_SOURCE_READY_TIMEOUT_S
@@ -993,11 +1048,16 @@ def run_capture(args):
                             detail['log_read_error']=str(error)
                         raise RuntimeError('MANUAL_WHEEL_NOT_READY; UI not started; '+json.dumps(detail,ensure_ascii=False))
                     time.sleep(.05)
-                children['manual_ui'] = start('manual_ui', commands['manual_ui'])
+                if preview_layout == 'unified':
+                    children['preview'] = start('preview', commands['preview'])
+                else:
+                    children['manual_ui'] = start('manual_ui', commands['manual_ui'])
             progress(directory,'WAITING_FOR_ALL_SOURCES',required_sources=list(contract['sources']))
             readiness = None
             while not stopped[0]:
                 check_storage()
+                if preview and preview_layout == 'unified' and children['preview'].poll() is not None:
+                    raise RuntimeError('UNIFIED_CAPTURE_WINDOW_CLOSED_DURING_PREPARATION')
                 readiness = read_source_readiness(directory,contract)
                 if readiness['all_ready']:
                     break
@@ -1015,24 +1075,29 @@ def run_capture(args):
             if stopped[0]:
                 raise RuntimeError('USER_STOPPED_DURING_PREPARATION')
             start_ns = time.monotonic_ns()
-            end_ns = start_ns+int(args.duration*1e9)
+            end_ns = start_ns+int(args.duration*1e9) if args.duration else None
             manifest['acquisition_window'] = dict(start_monotonic_ns=start_ns,end_monotonic_ns=end_ns,
                 requested_duration_ns=int(args.duration*1e9),policy='ALL_SOURCES_READY_THEN_COMMON_WINDOW',
                 observed_common_ready_ns=readiness['observed_common_ready_ns'])
             atomic_json(directory/'capture_manifest.json',manifest)
             progress(directory,'RECORDING',window=manifest['acquisition_window'])
-            deadline = end_ns/1e9
+            deadline = end_ns/1e9 if end_ns is not None else float('inf')
             preview_reported = False
             while time.monotonic() < deadline and not stopped[0]:
                 check_storage()
                 if recorder.poll() is not None:
                     raise RuntimeError('RECORDER_EXITED')
-                if manual_drive and children['manual_ui'].poll() is not None:
+                if manual_drive and 'manual_ui' in children and children['manual_ui'].poll() is not None:
                     if children['manual_ui'].poll() != 0:
                         raise RuntimeError('MANUAL_UI_FAILED: '+str(children['manual_ui'].poll()))
                     stop_reason = 'MANUAL_UI_WINDOW_CLOSED'
                     break
                 if preview and children['preview'].poll() is not None and not preview_reported:
+                    if preview_layout == 'unified':
+                        if children['preview'].poll() != 0:
+                            raise RuntimeError('UNIFIED_CAPTURE_WINDOW_FAILED')
+                        stop_reason = 'UNIFIED_CAPTURE_WINDOW_CLOSED'
+                        break
                     progress(directory,'PREVIEW_EXITED',exit_code=children['preview'].poll(),recording_continues=True)
                     preview_reported = True
                 exited = [name for name, process in children.items() if name!='preview' and process.poll() is not None]
@@ -1041,8 +1106,16 @@ def run_capture(args):
                 time.sleep(.1)
             if stopped[0]:
                 stop_reason = 'USER_STOP_REQUEST'
-                failures.append('USER_INTERRUPTED_BEFORE_REQUESTED_DURATION')
-            if stop_reason == 'REQUESTED_DURATION_REACHED':
+                if args.duration:
+                    failures.append('USER_INTERRUPTED_BEFORE_REQUESTED_DURATION')
+            if args.duration == 0:
+                stop_ns = time.monotonic_ns()
+                latest = read_source_readiness(directory, contract)
+                from .capture_contract import user_stopped_window
+                manifest['acquisition_window'].update(user_stopped_window(contract,latest,start_ns,stop_ns))
+                end_ns = manifest['acquisition_window']['end_monotonic_ns']
+                atomic_json(directory/'capture_manifest.json',manifest)
+            if args.duration and stop_reason == 'REQUESTED_DURATION_REACHED':
                 # Retain the first sample at/after the target end for each
                 # source, so sparse polling is not mistaken for a short window.
                 tail_deadline = time.monotonic()+max(s['max_gap_ns'] for s in contract['sources'].values())/1e9+1.
@@ -1112,6 +1185,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', choices=PROFILES, required=True)
     parser.add_argument('--session', type=name, required=True)
+    parser.add_argument('--folder-name', help='Display folder name under output-root; runtime session identity stays separate')
     parser.add_argument('--duration', type=int, required=True)
     parser.add_argument('--staging',choices=('memory','disk'),default='memory',
                         help='memory: tmpfs capture, then stopped-source durable transfer and audit (default); disk: direct archive')
@@ -1123,14 +1197,16 @@ def main(argv=None):
                         help='bounded recorder writer queue items, 1..8192 (default: 256)')
     parser.add_argument('--dry-run', action='store_true', help='optional identity diagnostics and advisory capacity estimate; no device opened')
     parser.add_argument('--preview',action='store_true',help='Independent subscribed native lidar and camera views; never another device reader')
+    parser.add_argument('--sides',choices=('left','right','all'),default='all',help='Record only selected lidar sources; single lidar is diagnostic')
+    parser.add_argument('--preview-layout',choices=('separate','unified'),default='separate')
     parser.add_argument('--diagnostic', action='store_true', help='explicit incomplete diagnostic capture; missing sources remain errors')
     parser.add_argument('--manual-drive', action='store_true',
                         help='authorize this session user WASD/hybrid hand-push; one wheel owner; no EKF/SLAM')
     args = parser.parse_args(argv)
-    if (args.output_root is None)!=(args.required_output_uuid is None):
+    if args.output_root is None and args.required_output_uuid is not None:
         parser.error('--output-root and --required-output-uuid must be supplied together')
-    if not 1 <= args.duration <= 3600:
-        parser.error('--duration must be 1..3600 seconds')
+    if not 0 <= args.duration <= 3600:
+        parser.error('--duration must be 0..3600 seconds; 0 records until normal user stop')
     if not 1 <= args.recorder_queue_size <= 8192:
         parser.error('--recorder-queue-size must be 1..8192')
     return run_capture(args)

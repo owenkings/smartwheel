@@ -41,6 +41,12 @@ int main() {
     try {
       std::istringstream in(line); std::string op; in >> op;
       if (op == "quit") { std::cout << "OK\n" << std::flush; break; }
+      if (op == "capabilities") {
+        std::string trailing;
+        if (in >> trailing) throw std::runtime_error("unexpected capabilities argument");
+        std::cout << "CAPABILITIES 2 wheel_cov_v1\n" << std::flush;
+        continue;
+      }
       int id = integer(in);
       if (op == "new") {
         if (states.count(id)) throw std::runtime_error("state already exists");
@@ -75,19 +81,29 @@ int main() {
         auto &s=states.at(id); auto p=s.filter.getEstimateErrorCovariance();
         for(int i=0;i<6;++i) for(int j=6;j<N;++j) p(i,j)=p(j,i)=0.;
         s.filter.setEstimateErrorCovariance(p); std::cout << "OK\n";
-      } else if (op == "wheel" || op == "gyro") {
+      } else if (op == "wheel" || op == "wheel_cov_v1" || op == "gyro") {
         auto &s=states.at(id);
+        const bool wheel = op != "gyro";
         const double sigma=number(in);
         robot_localization::Measurement m;
-        m.time_=rclcpp::Time(s.ns,RCL_ROS_TIME); m.topic_name_=op;
+        m.time_=rclcpp::Time(s.ns,RCL_ROS_TIME); m.topic_name_=wheel ? "wheel" : "gyro";
         m.mahalanobis_thresh_=sigma;
         m.measurement_=Eigen::VectorXd::Zero(N); m.covariance_=Eigen::MatrixXd::Zero(N,N);
         m.update_vector_=std::vector<bool>(N,false);
         m.latest_control_=Eigen::VectorXd::Zero(6);
         m.latest_control_time_=rclcpp::Time(s.ns,RCL_ROS_TIME);
-        const std::vector<int> indices=op=="wheel" ? std::vector<int>{6,11} : std::vector<int>{11};
+        const std::vector<int> indices=wheel ? std::vector<int>{6,11} : std::vector<int>{11};
         for (int index:indices) {m.measurement_[index]=number(in); m.update_vector_[index]=true;}
-        for (int index:indices) {m.covariance_(index,index)=number(in); if(m.covariance_(index,index)<=0) throw std::runtime_error("positive measurement variance required");}
+        if (op == "wheel_cov_v1") {
+          const double vv=number(in), vw=number(in), ww=number(in);
+          if (!(vv>0. && ww>0. && std::abs(vw)/std::sqrt(vv)/std::sqrt(ww)<1.))
+            throw std::runtime_error("positive definite full wheel covariance required");
+          m.covariance_(6,6)=vv; m.covariance_(11,11)=ww;
+          m.covariance_(6,11)=m.covariance_(11,6)=vw;
+        } else {
+          // Legacy protocol preserves the original diagonal-only behavior.
+          for (int index:indices) {m.covariance_(index,index)=number(in); if(m.covariance_(index,index)<=0) throw std::runtime_error("positive measurement variance required");}
+        }
         // RosFilter::forceTwoD's seven synthetic zero dimensions. This belongs
         // to the ROS wrapper, not to Ekf; keep it visible and regression tested.
         for (int index:constrained) {m.measurement_[index]=0.; m.covariance_(index,index)=1e-6; m.update_vector_[index]=true;}

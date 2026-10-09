@@ -222,7 +222,7 @@ def test_each_native_node_exit_closes_chain_within_owner_timeout(module, session
         stub.__dict__.update(values)
         monkeypatch.setitem(sys.modules, name, stub)
 
-    actions = module.configure({'session_root': str(directory), 'odometry_source': source})
+    actions = module.configure({'project_root': str(root), 'session_root': str(directory), 'odometry_source': source})
     handlers, nodes = actions[:node_count], actions[node_count:]
     assert len(handlers) == len(nodes) == node_count
     assert all(isinstance(node, Node) for node in nodes)

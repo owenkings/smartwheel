@@ -110,6 +110,12 @@ def parse_request(argv=None, *, project_root):
     parser.add_argument('--config', type=Path, help='工程内建图配置，默认 config/mapping_live.json')
     parser.add_argument('--check-config', action='store_true', help='只检查安装与轮参数，不打开RViz或任何传感器')
     parser.add_argument('--duration', type=int, default=0, help='兼容旧参数；建图已取消总时长限制，此值不再触发计时结束')
+    parser.add_argument('--estimator', choices=('five_state','robot_localization'))
+    parser.add_argument('--motion-correction', choices=('on','off'))
+    parser.add_argument('--process-noise', choices=('legacy','white_acceleration'))
+    parser.add_argument('--geometry', choices=('on','off'))
+    parser.add_argument('--panel-layout', choices=('classic','unified'), default='classic')
+    parser.add_argument('--save-dialog', action='store_true', help='Use the normal close-time map save dialog')
     args = parser.parse_args(argv)
     if args.mode and args.positional_mode and args.mode != args.positional_mode:
         parser.error('位置参数和 --mode 指定了不同模式')
@@ -120,6 +126,15 @@ def parse_request(argv=None, *, project_root):
                               duration_s=args.duration, mapping_enabled=args.mapping == 'true', cloud_source=args.cloud,
                               retention_profile=args.retention_profile)
     request['check_config_only'] = args.check_config
+    request['panel_layout'] = args.panel_layout
+    for key in ('estimator','process_noise'):
+        if getattr(args,key) is not None:
+            request[key] = getattr(args,key)
+    for key in ('motion_correction','geometry'):
+        if getattr(args,key) is not None:
+            request[key] = getattr(args,key) == 'on'
+    if request.get('geometry') and request.get('estimator') == 'robot_localization':
+        parser.error('官方 EKF 几何反馈尚未实现；该选项不可启用')
     return request
 
 
@@ -455,7 +470,7 @@ def run_session(request, backend, *, stop_requested=lambda: False, emit=lambda v
                 ('临时数据清理未完成；详情见 cleanup_errors。' if cleanup_errors else
                  '实验原始数据已保留，位置与哈希见保存清单。' if isinstance(saved, dict) and saved.get('raw_retention') == 'RETAINED_REFERENCED'
                  else '本次工作目录中的临时大数据已清理。'),
-                'DISCARDED': '已丢弃本次地图与原始记录，保留轻量会话日志。',
+                'DISCARDED': '已丢弃本次临时地图及临时原始录包，保留轻量日志。独立录制的数据未受影响。',
                 'PREVIEW_COMPLETE': '实时预览已结束，设备已停止，本次临时数据已清理。',
                 'SAVE_PENDING': '设备已停止，保存选择尚未完成；本次数据保留在工作目录，未导出或删除。',
                 'FAILED': '未完成所请求的收尾操作；请检查会话日志与现存数据，不代表地图保存成功。'}

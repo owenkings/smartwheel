@@ -17,7 +17,7 @@ def synthetic_candidate():
     """Structural validation fixture, never evidence of a real calibration."""
     return {'schema': cal.SCHEMA, 'status': cal.VALIDATED,
         'validation': {'passed': True, 'reasons': []},
-        'provenance': {'session_id': 'synthetic_refine_session',
+        'provenance': {'session_id': 'v7_core_20261006_194136',
             'imu_device_id': 'H30-test', 'wheel_device_id': 'wheel-test',
             'R_reference_imu': [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
             'wheel_conversion': {'fixture': 'synthetic'}},
@@ -31,7 +31,7 @@ def synthetic_candidate():
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
-        self.source = self.root/'synthetic_refine_session'
+        self.source = self.root/'v7_core_20261006_194136'
         (self.source/'bag').mkdir(parents=True)
         self.bag = self.source/'bag/bag_0.db3'
         with sqlite3.connect(self.bag) as db:

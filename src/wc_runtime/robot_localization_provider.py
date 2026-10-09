@@ -139,12 +139,12 @@ class RobotLocalizationEKF:
 
     def decorrelate_gap(self): self.worker.command('decorrelate',self.handle)
 
-    def _update(self,kind,sequence,values,variances):
+    def _update(self,kind,sequence,values,variances,*,command_kind=None):
         stream = 'imu' if kind == 'gyro' else kind
         if sequence <= self.last_sequence[stream]: return None
         if not np.isfinite(values).all(): raise ValueError('finite native measurements required')
         sigma = self.config['innovation_gate_sigma']
-        result = self.worker.command(kind,self.handle,sigma,*values,*variances)
+        result = self.worker.command(command_kind or kind,self.handle,sigma,*values,*variances)
         if result[0] != 'UPDATE': raise RuntimeError('invalid native update response')
         accepted = bool(int(result[1])); nis=float(result[2])
         initial_measurement=sum(self.counts.values())==0 and sum(self.rejected_counts.values())==0
@@ -161,6 +161,26 @@ class RobotLocalizationEKF:
     def wheel(self,sequence,velocity,yaw_rate):
         return self._update('wheel',sequence,[velocity,yaw_rate],
                             [self.config['wheel_v_variance'],self.config['wheel_w_variance']])
+
+    def wheel_covariance(self,sequence,velocity,yaw_rate,covariance):
+        """Versioned full 2x2 wheel covariance; legacy wheel() is unchanged."""
+        R = np.asarray(covariance,dtype=float)
+        if R.shape != (2,2) or not np.isfinite(R).all() or not np.array_equal(R,R.T) or \
+                np.linalg.eigvalsh(R).min() <= 0:
+            raise ValueError('finite symmetric positive definite 2x2 wheel covariance required')
+        if sequence <= self.last_sequence['wheel']: return None
+        if not getattr(self.worker,'wheel_covariance_v1',False):
+            capabilities = self.worker.command('capabilities')
+            if capabilities != ['CAPABILITIES','2','wheel_cov_v1']:
+                raise RuntimeError('installed worker lacks full wheel covariance protocol v1; rebuild wc_estimation')
+            self.worker.wheel_covariance_v1 = True
+        result = self._update('wheel',sequence,[velocity,yaw_rate],
+                              [R[0,0],R[0,1],R[1,1]],command_kind='wheel_cov_v1')
+        if result is not None:
+            self.last_update['wheel'].update(measurement_covariance=R.tolist(),
+                covariance_protocol='wheel_cov_v1',measurement=[float(velocity),float(yaw_rate)])
+        return result
+
     def gyro(self,sequence,yaw_rate):
         return self._update('gyro',sequence,[yaw_rate],[self.config['gyro_w_variance']])
 

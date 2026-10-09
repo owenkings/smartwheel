@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import uuid
@@ -81,6 +82,63 @@ def test_explicit_user_no_overrides_experiment_retention_only_for_current_sessio
     assert not (directory/'bag').exists() and not (directory/'slam').exists()
     assert (directory/'session.json').is_file()
     assert (root/'reports/maps/OLD/keep.db').read_bytes()==b'KEEP HISTORICAL MAP'
+    assert result['disposition_reason']=='USER_DECLINED_SAVE' and not result['automatic_preview_cleanup']
+    assert json.loads(next(runtime.glob('discard-*.json')).read_text(encoding='utf-8'))==result
+
+
+@pytest.mark.skipif(os.name=='nt',reason='real stopped-session flock requires POSIX')
+def test_preview_auto_cleanup_receipts_do_not_claim_user_declined_save(session):
+    root,directory,runtime,handle=session
+    handle['mapping_enabled']=False
+    handle.pop('retention_profile')
+    metadata=json.loads((directory/'session.json').read_text())
+    metadata['mapping_enabled']=False
+    (directory/'session.json').write_text(json.dumps(metadata))
+    (directory/'runtime_config.json').write_text('{"mapping_enabled":false}')
+    independent=root/'data/experiments/independent';independent.mkdir(parents=True)
+    (independent/'recording.db3').write_bytes(b'KEEP INDEPENDENT RECORDING')
+    result=saving.discard_session(root,handle,inspect=closed,preview_complete=True)
+    assert result['status']=='SESSION_DATA_DISCARDED'
+    assert result['disposition_reason']=='LIVE_PREVIEW_COMPLETE'
+    assert result['user_confirmed_discard'] is False and result['automatic_preview_cleanup'] is True
+    assert result['original_retention_profile']=='experiment'
+    assert json.loads((directory/'retention.json').read_text(encoding='utf-8'))==result
+    assert json.loads(next(runtime.glob('discard-*.json')).read_text(encoding='utf-8'))==result
+    assert not (directory/'bag').exists() and not (directory/'slam').exists()
+    assert (independent/'recording.db3').read_bytes()==b'KEEP INDEPENDENT RECORDING'
+    assert (root/'reports/maps/OLD/keep.db').read_bytes()==b'KEEP HISTORICAL MAP'
+
+
+@pytest.mark.skipif(os.name=='nt',reason='real stopped-session flock requires POSIX')
+@pytest.mark.parametrize('spoof',['flag_only','handle_only','session_and_handle_only'])
+def test_preview_cleanup_cannot_disguise_mapping_session(session,spoof):
+    root,directory,runtime,handle=session
+    if spoof!='flag_only':handle['mapping_enabled']=False
+    if spoof=='session_and_handle_only':
+        metadata=json.loads((directory/'session.json').read_text())
+        metadata['mapping_enabled']=False
+        (directory/'session.json').write_text(json.dumps(metadata))
+    with pytest.raises(ValueError):
+        saving.discard_session(root,handle,inspect=closed,preview_complete=True)
+    assert (directory/'bag/recording.db3').is_file() and (directory/'slam/rtabmap.db').is_file()
+    assert not (directory/'retention.json').exists() and not list(runtime.glob('discard-*.json'))
+
+
+@pytest.mark.skipif(os.name=='nt',reason='controller supervisor imports POSIX fcntl')
+@pytest.mark.parametrize('enabled',[False,True])
+def test_controller_discard_dispatch_distinguishes_preview_and_user_choice(monkeypatch,enabled):
+    from wc_runtime import mapping_controller as controller
+    received=[]
+    def discard(root,handle,**options):received.append(options);return {'status':'fixture'}
+    monkeypatch.setattr(saving,'discard_session',discard)
+    assert controller.discard({'mapping_enabled':enabled})=={'status':'fixture'}
+    assert received[0]['user_confirmed'] is enabled
+    assert received[0]['preview_complete'] is (not enabled)
+
+
+def test_preview_cleanup_rejects_contradictory_confirmation_before_touching_files(tmp_path):
+    with pytest.raises(ValueError,match='明确区分'):
+        saving.discard_session(tmp_path,{},inspect=lambda _:None,user_confirmed=True,preview_complete=True)
 
 
 def test_explicit_discard_cannot_break_archive_referenced_by_saved_map(session,tmp_path):

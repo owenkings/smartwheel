@@ -17,11 +17,14 @@
 #include <QMainWindow>
 #include <QObject>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScreen>
 #include <QTimer>
 #include <QWidget>
 #include <QWindow>
 #include <QVBoxLayout>
+#include <QSplitter>
+#include <QScrollArea>
 #include <OgreCamera.h>
 #include <OgreRenderTarget.h>
 #include <OgreRenderSystem.h>
@@ -38,9 +41,112 @@
 #include "wc_bringup/mapping_render_diagnostics.hpp"
 #include "wc_bringup/mapping_teleop.hpp"
 #include "wc_bringup/mapping_health.hpp"
+#include "wc_bringup/unified_rviz.hpp"
+#include "wc_bringup/grid_view_fit.hpp"
+#include "wc_camera_panel/camera_panel.hpp"
 
 namespace
 {
+
+void arrange_unified(rviz_common::VisualizationFrame & frame, QDockWidget & teleop,
+  const QStringList & arguments)
+{
+  auto * cameras = frame.findChild<wc_camera_panel::CameraPanel *>();
+  if (!cameras) {
+    cameras = new wc_camera_panel::CameraPanel(&frame);
+    cameras->onInitialize();  // Subscription-only: never starts a camera driver.
+  }
+  for (auto * dock : frame.findChildren<QDockWidget *>()) {
+    if (dock != &teleop) {dock->hide();}
+  }
+  cameras->hide();
+  auto * native_center = frame.takeCentralWidget();
+  auto * splitter = new QSplitter(Qt::Horizontal, &frame);
+  splitter->setObjectName("mapping_three_columns");
+  auto * left = new QWidget(splitter); left->setObjectName("mapping_left_column");
+  auto * left_layout = new QVBoxLayout(left); left_layout->setContentsMargins(3, 3, 3, 3);
+  left_layout->addWidget(cameras->createSideView("left", left), 2);
+
+  QString map_topic = "/wc_mapping/app/grid_map";
+  auto * group = frame.getManager()->getRootDisplayGroup();
+  bool has_map = false;
+  for (int index = 0; index < group->numDisplays(); ++index) {
+    auto * display = group->getDisplayAt(index);
+    if (display->getClassId() == "rviz_default_plugins/Map") {
+      map_topic = display->subProp("Topic")->getValue().toString();
+      display->setEnabled(false); has_map = true;
+    }
+  }
+  auto * map_label = new QLabel(has_map ? QStringLiteral("2D 栅格地图 · 拖动平移 / 滚轮缩放") :
+    QStringLiteral("2D 栅格地图 · 预览模式不生成地图"), left);
+  map_label->setWordWrap(true); left_layout->addWidget(map_label);
+  auto * fit_map = new QPushButton(QStringLiteral("适配地图"), left);
+  fit_map->setObjectName("mapping_fit_grid_button");
+  fit_map->setToolTip(QStringLiteral("按最新地图范围重新居中、缩放并复位朝向；自动适配只在第一帧执行。"));
+  left_layout->addWidget(fit_map, 0, Qt::AlignRight);
+  const QString map_yaml = QStringLiteral(
+    "Global Options:\n  Fixed Frame: %1\n  Background Color: 24; 29; 36\n  Frame Rate: 10\n"
+    "Displays:\n  - Class: rviz_default_plugins/Map\n    Name: 2D grid\n    Enabled: %2\n"
+    "    Alpha: 1\n    Use Timestamp: false\n    Topic:\n      Value: %3\n      Reliability Policy: Reliable\n"
+    "      Durability Policy: Transient Local\n      Depth: 1\n"
+    "Tools:\n  - Class: rviz_default_plugins/MoveCamera\n"
+    "Views:\n  Current:\n    Class: rviz_default_plugins/TopDownOrtho\n    Scale: 35\n"
+    "    Angle: 0\n    X: 0\n    Y: 0\n").arg(frame.getManager()->getFixedFrame(),
+      has_map ? "true" : "false", map_topic);
+  rviz_common::YamlConfigReader reader; rviz_common::Config map_config;
+  reader.readString(map_config, map_yaml);
+  if (reader.error()) {throw std::runtime_error(reader.errorMessage().toStdString());}
+  auto * grid_view = new wc_bringup::RvizViewport("mapping_grid_view", map_config, true, left);
+  left_layout->addWidget(grid_view, 1);
+
+  auto * center = new QWidget(splitter); center->setObjectName("mapping_center_column");
+  auto * center_layout = new QVBoxLayout(center); center_layout->setContentsMargins(0, 0, 0, 0);
+  center_layout->addWidget(wc_bringup::display_switches(frame.getManager(), center));
+  center_layout->addWidget(native_center, 1);
+  auto * right = new QWidget(splitter); right->setObjectName("mapping_right_column");
+  auto * right_layout = new QVBoxLayout(right); right_layout->setContentsMargins(3, 3, 3, 3);
+  right_layout->addWidget(cameras->createSideView("right", right), 2);
+  auto * parameter_scroll = new QScrollArea(right);
+  parameter_scroll->setWidgetResizable(true); parameter_scroll->setMinimumHeight(130);
+  auto * parameters = new QWidget(parameter_scroll); parameters->setObjectName("mapping_parameters");
+  auto * parameter_layout = new QVBoxLayout(parameters);
+  QString view;
+  for (int index = 1; index < arguments.size(); ++index) {
+    if ((arguments[index] == "-d" || arguments[index] == "--display-config") && index + 1 < arguments.size()) {
+      view = arguments[++index];
+    }
+  }
+  const auto config = wc_bringup::panel_read_json(QFileInfo(view).dir().filePath("runtime_config.json"));
+  if (auto * native_frame = wc_bringup::native_preview_frame_selector(frame.getManager(), config, center)) {
+    center_layout->insertWidget(0, native_frame);
+  }
+  const auto estimator = config.value("wheel_imu_estimator").toString(config.value("estimator").toString("five_state"));
+  auto * settings = new QLabel(QStringLiteral("当前任务参数\n模式：%1\n雷达：%2\n点云：%3\nEKF：%4\n运动修正：%5\n过程噪声：%6\n几何轨迹纠偏：%7\n参数修改对下一次任务生效。")
+    .arg(config.value("mapping_enabled").toBool() ? "实时建图" : "预览",
+      config.value("mode").toString("未知"), config.value("cloud_source").toString("参见本次配置"),
+      estimator == "robot_localization" ? "官方 robot_localization" : "五状态",
+      config.value("motion_correction").toBool() ? "已启用设备校正声明" : "关闭",
+      config.value("process_noise").toString("legacy") == "white_acceleration" ? "连续白噪声 PSD" : "原模型",
+      config.value("geometry").toBool() ? "启用（输出轨迹纠偏）" : "关闭"), parameters);
+  settings->setTextFormat(Qt::PlainText); settings->setWordWrap(true); parameter_layout->addWidget(settings);
+  if (auto * health = teleop.findChild<QWidget *>("mapping_health_panel")) {
+    parameter_layout->addWidget(health);
+  }
+  parameter_scroll->setWidget(parameters); right_layout->addWidget(parameter_scroll, 1);
+  splitter->addWidget(left); splitter->addWidget(center); splitter->addWidget(right);
+  splitter->setStretchFactor(0, 0); splitter->setStretchFactor(1, 1); splitter->setStretchFactor(2, 0);
+  splitter->setSizes({320, 980, 320});
+  frame.setCentralWidget(splitter);
+  frame.setWindowTitle(QStringLiteral("实时融合 — 3D / 2D / 四路相机"));
+  frame.addDockWidget(Qt::BottomDockWidgetArea, &teleop); teleop.show();
+  frame.resizeDocks({&teleop}, {170}, Qt::Vertical);
+  // Install and show the final widget hierarchy before creating the auxiliary
+  // Ogre drawable. Constructing it under Qt's temporary container parent can
+  // leave a black GLX child even though ROS subscriptions report success.
+  frame.show(); splitter->show();
+  grid_view->initializeShown();
+  new wc_bringup::GridViewportFit(grid_view, map_topic, fit_map, has_map);
+}
 
 // This filter belongs to this process and this one native frame. It does not
 // dismiss arbitrary dialogs, write display files, or change another RViz window.
@@ -477,13 +583,41 @@ int main(int argc, char ** argv)
       wc_bringup::teleop_session_from_arguments(original_qt_arguments), frame, bottom));
     teleop_dock->setWidget(bottom);
     frame->addDockWidget(Qt::BottomDockWidgetArea, teleop_dock);
-    arrange_initial_docks(*frame, *teleop_dock);
+    if (qEnvironmentVariable("WC_PANEL_LAYOUT") == "unified") {
+      arrange_unified(*frame, *teleop_dock, original_qt_arguments);
+    } else {arrange_initial_docks(*frame, *teleop_dock);}
     // Let native dock/tab and font-metric layout requests settle, then perform
     // two bounded startup fits. There is no persistent resize policy that can
     // fight a user's later window size or panel changes.
     QTimer::singleShot(0, frame, [frame, logger]() {fit_initial_window(*frame, logger);});
     QTimer::singleShot(250, frame, [frame, logger]() {fit_initial_window(*frame, logger);});
     maybe_start_render_diagnostics(*frame, original_qt_arguments, logger);
+    wc_bringup::install_panel_diagnostics(frame, "mapping", [frame]() {
+      QJsonArray labels;
+      for (auto * label : frame->findChildren<QLabel *>()) {
+        if (label->objectName().startsWith("status_")) {
+          labels.append(QJsonObject{{"name", label->objectName()}, {"text", label->text()}});
+        }
+      }
+      QJsonArray grids;
+      // RvizViewport intentionally has no Q_OBJECT. Inspect named widgets by
+      // dynamic_cast instead of Qt's inherited metaobject cast.
+      for (auto * widget : frame->findChildren<QWidget *>()) {
+        if (auto * viewport = dynamic_cast<wc_bringup::RvizViewport *>(widget)) {
+          grids.append(QJsonObject{{"name", viewport->objectName()},
+            {"frames", static_cast<double>(viewport->manager()->getFrameCount())},
+            {"independent_view", viewport->manager()->getSceneManager() != frame->getManager()->getSceneManager()
+              && viewport->manager()->getRenderPanel() != frame->getManager()->getRenderPanel()
+              && viewport->manager()->getViewManager() != frame->getManager()->getViewManager()},
+            {"color_materials_retained", viewport->property("rviz_default_colors_retained").toInt()},
+            {"native_window", viewport->nativeObservation()},
+            {"grid_fit", viewport->property("grid_fit").toJsonObject()},
+            {"displays", wc_bringup::display_observation(viewport->manager())}});
+        }
+      }
+      return QJsonObject{{"camera_states", labels}, {"displays", wc_bringup::display_observation(frame->getManager())},
+        {"frames", static_cast<double>(frame->getManager()->getFrameCount())}, {"secondary_views", grids}};
+    });
     RCLCPP_INFO(logger, "Native RViz ready; closing discards temporary view edits. "
       "The mapping application owns map saving.");
     return application.exec();

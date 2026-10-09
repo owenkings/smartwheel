@@ -242,6 +242,7 @@ def confirmed(value=(0., 0., .001)):
 
 def test_explicit_confirmed_native_bias_is_usable_at_moving_start_without_static_wait():
     cfg = config(); cfg.update(continuous_mapping=True, motion_model='planar_ekf', confirmed_gyro_bias=confirmed())
+    cfg['confirmed_gyro_bias']['sensor_id'] = cfg['imu_sensor_id']
     p = MotionPrior(cfg, 'synthetic'); p.enable_startup_recovery(0.)
     feed(p, raw=100, gyro=(0., 0., .001))
     pose = p.pose_at(2_000_000_000)

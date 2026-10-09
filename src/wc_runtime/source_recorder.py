@@ -22,10 +22,11 @@ TOPICS = {
 }
 
 
-def topics_for_profile(profile):
+def topics_for_profile(profile, sides='all'):
     from .capture import source_selection
-    source_selection(profile)
-    topics = dict(TOPICS)
+    selected = source_selection(profile, sides)['selected_sources']
+    topics = {topic:kind for topic,kind in TOPICS.items()
+              if '/lidar_' not in topic or any('/'+s+'/' in topic for s in selected if s.startswith('lidar_'))}
     if profile == 'all_sensors':
         topics['/wc_mapping/ultrasonic/feedback_raw'] = 'std_msgs/msg/String'
     return topics
@@ -47,6 +48,8 @@ def message_index(topic, message):
                       sequence=message.frame_sequence, representation='packet',
                       payload_sha256=hashlib.sha256(bytes(message.raw_packet)).hexdigest(),
                       host_monotonic_ns=message.host_monotonic_ns)
+        from wc_imu.device_time import message_timing_metadata
+        result.update(message_timing_metadata(message))
     else:
         value = json.loads(message.data)
         response_sha256 = hashlib.sha256(bytes.fromhex(value['response_hex'])).hexdigest()
@@ -65,6 +68,11 @@ class SourceReadiness:
     def __init__(self, directory, contract):
         self.directory, self.contract = Path(directory), contract
         self.values, self.lidar_representations, self.epochs = {}, {}, {}
+        self.imu_timing = None
+        timing_path = self.directory/'configuration/imu_timing.json'
+        if timing_path.exists():
+            from wc_imu.device_time import load_timing_profile
+            self.imu_timing = load_timing_profile(timing_path, sensor_id=contract['sources']['imu']['source_id'])
         (self.directory/'ready').mkdir(exist_ok=True)
 
     def observe(self, row):
@@ -77,6 +85,12 @@ class SourceReadiness:
             logicals = ['lidar_right']
         elif '/imu/' in topic:
             logicals = ['imu']
+            if self.imu_timing is not None:
+                if (row.get('device_time_status') != 'VALID_DEVICE_RELATIVE_TIME'
+                        or row.get('timing_profile_sha256') != self.imu_timing['_profile_sha256']
+                        or row.get('device_timestamp_unit') != self.imu_timing['device_timestamp_unit']
+                        or any(row.get(field.replace('_raw','_valid')) is not True for field in self.imu_timing['required_fields'])):
+                    raise ValueError('IMU device timing differs from frozen capture policy')
         elif '/wheel/' in topic and row.get('status') == 'RESPONSE_VALID':
             if len(row.get('register_words_u16', [])) != 2:
                 raise ValueError('wheel feedback needs both raw registers')
@@ -141,6 +155,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--profile', choices=PROFILES, required=True)
+    parser.add_argument('--sides', choices=('left','right','all'), default='all')
     parser.add_argument('--queue-size', type=int, default=256)
     args = parser.parse_args(argv)
     if not 1 <= args.queue_size <= 8192:
@@ -152,7 +167,7 @@ def main(argv=None):
     from rosidl_runtime_py.utilities import get_message
     import rosbag2_py
     args.output.mkdir(parents=True, exist_ok=True)
-    topics = topics_for_profile(args.profile)
+    topics = topics_for_profile(args.profile, args.sides)
     work = queue.Queue(maxsize=args.queue_size)
     closing = threading.Event()
     ready = threading.Event()
@@ -262,7 +277,7 @@ def main(argv=None):
             counters['error'] = 'RECORDER_DRAIN_TIMEOUT'
         if rclpy.ok():
             rclpy.shutdown()
-        result = dict(counters, profile=args.profile, **source_selection(args.profile), closed_normally=not counters['error'],
+        result = dict(counters, profile=args.profile, **source_selection(args.profile, args.sides), closed_normally=not counters['error'],
                       synchronized=not counters['error'] and counters['received'] == counters['persisted'],
                       queue_remaining=work.qsize())
         if (args.output/'records.jsonl').is_file() and not thread.is_alive():

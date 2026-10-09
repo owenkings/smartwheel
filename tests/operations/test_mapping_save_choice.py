@@ -164,11 +164,11 @@ def test_terminal_eof_at_either_question_keeps_data_pending(tmp_path, answer):
     assert result['decision'] == 'pending'
 
 
-def test_terminal_yes_uses_default_home_maps_directory(tmp_path, monkeypatch):
+def test_terminal_yes_uses_project_storage_maps_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(app.Path, 'home', lambda: tmp_path/'user_home')
     value = request(tmp_path)
     result = app.terminal_save_choice(value, {}, input_stream=Terminal('Y\n\n'), output_stream=io.StringIO())
-    assert result == {'decision': 'save', 'destination': str(tmp_path/'user_home'/'maps'/value['session_id'])}
+    assert result == {'decision': 'save', 'destination': str(tmp_path/'maps'/value['session_id'])}
     assert not (tmp_path/'user_home').exists()
 
 

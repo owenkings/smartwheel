@@ -6,6 +6,7 @@ SmartWheel 是面向轮椅传感器研究的 ROS 2 工程：采集双 XT-M60 雷
 
 ## 导航
 
+- [软件面板](#软件面板)
 - [运行环境](#运行环境)
 - [首次部署](#首次部署)
 - [配置与目录](#配置与目录)
@@ -16,6 +17,18 @@ SmartWheel 是面向轮椅传感器研究的 ROS 2 工程：采集双 XT-M60 雷
 - [完整部署指南](docs/deployment.md)
 - [全部算法选项与结果](docs/algorithm_selection.md)
 - [外参配置与修改](docs/calibration_configuration.md)
+
+## 软件面板
+
+完成构建后，在本机图形桌面运行工程内 `scripts/panel`。面板提供实时融合、数据录制、离线融合、结果对比、设备参数、数据与存储和日志七个入口；原有命令行仍可使用。
+
+当前 Orin 工程的启动命令为：
+
+```bash
+/home/nvidia/wheelchair/scripts/panel
+```
+
+路径和设备条件由当前配置读取。缺少标定时，界面说明受影响的能力；原生预览和独立录制不依赖完整建图外参。使用方式见 [面板操作手册](docs/panel_user_guide.md)，实际验证范围见 [面板实现与验收记录](docs/panel_implementation_status.md)。
 
 ## 功能
 

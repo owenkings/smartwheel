@@ -103,12 +103,15 @@ class CaptureDestination:
 
 def capture_destination(project_root, output_root=None, required_uuid=None):
     """Use configured storage by default; explicit external paths require UUID."""
-    if (output_root is None) != (required_uuid is None):
+    if output_root is None and required_uuid is not None:
         raise ValueError('--output-root and --required-output-uuid must be supplied together')
     if output_root is None:
         from .storage_policy import StoragePolicy
         policy = StoragePolicy(project_root)
         output = policy.resolve('data/experiments')
         return output, policy.destination_guard(output)
+    if required_uuid is None:
+        from wc_panel.storage import resolve_user_destination
+        return resolve_user_destination(project_root, output_root)
     guard = CaptureDestination(output_root, required_uuid)
     return guard.output_root, guard

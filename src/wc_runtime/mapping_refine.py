@@ -67,7 +67,11 @@ def run(args):
     from .offline_planar_process import validate_process_noise
     from .offline_refinement_inputs import verify_candidate,extract_and_calibrate
     from .offline_geometry_replay import geometry_cell
-    root=args.project_root.resolve(strict=True);storage=StoragePolicy(root);storage.check()
+    root=args.project_root.resolve(strict=True);storage=StoragePolicy(root)
+    if getattr(args,'user_data_paths',False):
+        from .user_data_paths import UserDataPaths
+        storage=UserDataPaths(root,args.dataset,args.output,[args.motion_candidate])
+    storage.check()
     source=storage.resolve(args.dataset).resolve(strict=True);output=storage.resolve(args.output)
     if any(p.is_symlink() for p in (output,*output.parents)) or '..' in output.parts:
         raise ValueError('output must not be linked or contain parent traversal')
@@ -94,23 +98,30 @@ def run(args):
             'angular_acceleration_psd_rad2_s3':.25 if args.angular_acceleration_psd is None else args.angular_acceleration_psd,
             'status':'EXPERIMENTAL_NOT_CALIBRATED'})
     runtime,manifest,hashes=load_dataset(source,allow_partial=args.allow_partial,
-        project_root=root,mechanical_initial=args.mechanical_initial)
+        project_root=root,mechanical_initial=args.mechanical_initial,lidar=getattr(args,'lidar',None),
+        sides=getattr(args,'sides',None),cloud=args.cloud)
     runtime['cloud_source']=args.cloud;runtime['prior_template']['offline_experiment']=True
+    runtime['offline_imu_time_mode']=getattr(args,'imu_time_mode','auto')
     storage.check();output.mkdir(parents=True,exist_ok=args.resume)
     args._effective_output=output
     report={'status':'RUNNING','dataset':str(source),'input_hashes':hashes,
         'capture_status':manifest.get('status') if manifest else 'UNKNOWN',
+        'source_selection':runtime.get('offline_source_selection'),
         'recording_complete':manifest.get('recording_complete') if manifest else None,
         'absolute_accuracy':'NO_INDEPENDENT_TRUTH','hardware_started':False,
         'control_topics_published':False,'input_rate_hz':args.input_rate_hz,'cloud':args.cloud,
+        'lidar_selection':runtime.get('offline_lidar_selection'),
         'geometric_constraints':args.geometry,'process_noise':process_noise,'scope':'SESSION_OFFLINE_REFINEMENT',
         'default_live_estimator_modified':False,'cells':{},'native_map':{'status':'NOT_RUN'}}
     software=output/'refinement_software';software.mkdir(exist_ok=args.resume)
     module_names=('mapping_refine','offline_motion_calibration','offline_motion_adapter',
-        'offline_refinement_inputs','offline_geometry_replay','offline_planar_registration','offline_planar_process','compare_replay')
+        'offline_refinement_inputs','offline_geometry_replay','offline_planar_registration','offline_planar_process','compare_replay',
+        'mapping_compare','recording_sources','source_time','offline_imu_time','mapping_prior')
     identities={}
-    for name in module_names:
-        original=Path(__file__).with_name(name+'.py');target=software/original.name
+    modules={name:Path(__file__).with_name(name+'.py') for name in module_names}
+    modules['imu_device_time']=Path(__file__).parents[1]/'wc_imu'/'device_time.py'
+    for name,original in modules.items():
+        target=software/(name+'.py')
         if target.exists() and digest(target)!=digest(original):
             raise ValueError('resume implementation changed: '+name+'; use new output')
         if not target.exists():target.write_bytes(original.read_bytes())
@@ -118,6 +129,8 @@ def run(args):
     report['software_sha256']=identities
     packets=RecordedPackets(source,runtime)
     try:
+        from .offline_imu_time import configure_runtime
+        configure_runtime(runtime,packets.clock)
         if args.resume:
             cp=output/'motion_candidate.json';candidate=read(cp)
             if args.motion_candidate and digest(storage.resolve(args.motion_candidate))!=digest(cp):
@@ -216,12 +229,19 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--user-data-paths',action='store_true',help='Use explicit user-selected data directories with mount guards')
     parser.add_argument('--project-root',type=Path,default=Path(__file__).resolve().parents[2])
     parser.add_argument('--motion-candidate',type=Path,help='Validated session-specific candidate; omitted = estimate with disjoint holdout')
     parser.add_argument('--allow-partial',action='store_true')
     parser.add_argument('--mechanical-initial',action='store_true')
     parser.add_argument('--resume',action='store_true',help='Continue only completed, hash-matched stages; partial stages are never silently reused')
     parser.add_argument('--cloud',choices=('raw','filtered'),default='raw')
+    parser.add_argument('--imu-time-mode',choices=('auto','arrival','device_relative'),default='auto',
+        help='auto uses a frozen verified IMU timing profile when present; legacy bags retain arrival timing')
+    parser.add_argument('--lidar',choices=('left','right','all'),
+        help='Select recorded lidar sides; retain original IMU/wheel and clock; omitted = recorded mode')
+    parser.add_argument('--sides',choices=('all','left','right'),
+        help='Alias of --lidar for panel jobs; conflicting simultaneous values are rejected.')
     parser.add_argument('--input-rate-hz',type=float,default=5.)
     parser.add_argument('--process-noise',choices=('legacy','white_acceleration'),default='legacy',
         help='Explicit offline process model comparison; existing live/default noise semantics are preserved')
@@ -233,6 +253,9 @@ def main(argv=None):
     parser.add_argument('--domain',type=int,default=89)
     parser.add_argument('--native-wall-interval-s',type=float,default=.2)
     args=parser.parse_args(argv)
+    from .recording_sources import resolve_lidar_option
+    try:resolve_lidar_option(args.lidar,args.sides)
+    except ValueError as error:parser.error(str(error))
     try:return run(args)
     except Exception as e:
         if hasattr(args,'_effective_output'):

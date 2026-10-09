@@ -131,8 +131,8 @@ def preview_plan(session_root, session_id, *, preview_hz=3., cloud_source='raw')
         raise ValueError('preview requires the matching active capture manifest')
     selection = _json(root/'configuration/source_selection.json')
     selected = selection.get('selected_sources')
-    if not isinstance(selected, list) or not {'lidar_left', 'lidar_right'} <= set(selected):
-        raise ValueError('dual native preview requires both selected lidar sources')
+    if not isinstance(selected, list) or not {'lidar_left', 'lidar_right'} & set(selected):
+        raise ValueError('native preview requires at least one explicitly selected lidar source')
     started_wall = manifest.get('started_wall_ns')
     started_mono = manifest.get('started_monotonic_ns')
     if type(started_wall) is not int or type(started_mono) is not int or min(started_wall, started_mono) <= 0:
@@ -147,6 +147,8 @@ def preview_plan(session_root, session_id, *, preview_hz=3., cloud_source='raw')
     sources = {}
     suffix = '_filtered' if cloud_source == 'filtered' else ''
     for side in SIDES:
+        if 'lidar_'+side not in selected:
+            continue
         path = root/'configuration/lidar'/(side+'.yaml')
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
             raise ValueError('missing frozen lidar identity YAML: '+side)
@@ -340,10 +342,14 @@ def main(argv=None):
     parser.add_argument('--session-id', required=True)
     parser.add_argument('--preview-hz', type=float, default=3.)
     parser.add_argument('--cloud-source', choices=('raw', 'filtered'), default='raw')
+    parser.add_argument('--layout', choices=('separate','unified'), default='separate')
     parser.add_argument('--renderer', choices=('software', 'system'), default='software',
                         help='Owned RViz only: Mesa software avoids the observed native GL context failure')
     args = parser.parse_args(argv)
     plan = preview_plan(args.session_root, args.session_id, preview_hz=args.preview_hz, cloud_source=args.cloud_source)
+    plan['layout'] = args.layout
+    plan['recording_affected_by_preview_exit'] = args.layout == 'unified'
+    plan['controls_enabled'] = args.layout == 'unified' and _json(args.session_root/'capture_manifest.json').get('manual_drive') is True
     if sys.platform != 'linux':
         raise RuntimeError('live subscription preview requires the target Linux ROS desktop')
     from .sensor_viewer import OwnedRviz, desktop_environment, confirm_display, write_report
@@ -365,7 +371,8 @@ def main(argv=None):
     windows, node, timer, ros_started = [], None, None, False
     cache = PreviewCache(plan)
     reported_states = {}
-    render_monitors = {side: RenderLogMonitor(output/(side+'.log')) for side in SIDES}
+    render_monitors = {side: RenderLogMonitor(output/(side+'.log'))
+                       for side in (('unified',) if args.layout == 'unified' else plan['lidars'])}
     reported_render_states = {}
     def update_source_status(now_ns):
         sources = cache.source_status(now_ns)
@@ -429,13 +436,25 @@ def main(argv=None):
                 status['stale_clear_counts'][name] = status['stale_clear_counts'].get(name, 0)+1
             update_source_status(now_ns)
         timer = node.create_timer(1/plan['preview_hz'], publish_latest)
-        for side in SIDES:
+        for side in plan['lidars']:
             config = output/(side+'.rviz')
             # JSON is valid YAML; RViz reads it without adding a YAML dependency.
             write_report(config, rviz_configuration(plan, side))
-            command = ['rviz2', '-d', str(config), '--ros-args',
-                       '-r', '__node:=capture_preview_'+side+'_'+epoch]
-            window = OwnedRviz(side, command, env, root, output/(side+'.log'))
+            if args.layout == 'separate':
+                command = ['rviz2', '-d', str(config), '--ros-args',
+                           '-r', '__node:=capture_preview_'+side+'_'+epoch]
+                window = OwnedRviz(side, command, env, root, output/(side+'.log'))
+                windows.append(window); window.start()
+        if args.layout == 'unified':
+            from .project_paths import project_root
+            executable = project_root()/'install/main/wc_bringup/lib/wc_bringup/unified_capture_rviz'
+            if not executable.is_file():
+                raise RuntimeError('unified capture RViz executable is not installed')
+            selected = 'both' if len(plan['lidars']) == 2 else next(iter(plan['lidars']))
+            command = [str(executable),'--lidars',selected,'--session-root',str(root),'--session-id',args.session_id]
+            for side in plan['lidars']:
+                command += ['--'+side+'-config',str(output/(side+'.rviz'))]
+            window = OwnedRviz('unified',command,env,root,output/'unified.log')
             windows.append(window); window.start()
         # Subscriptions and a launched RViz do not certify a rendered window.
         # In particular OpenGL version output can precede a context failure.
@@ -444,7 +463,7 @@ def main(argv=None):
         write_status()
         write_report(root/'capture_preview_ready.json', dict(session_id=args.session_id, preview_epoch=epoch,
             ready=True, ready_scope='SUBSCRIPTION_BRIDGE', rendering_verified=False,
-            selected_backend=args.renderer, subscriptions_only=True, hardware_started=False, controls_enabled=False))
+            selected_backend=args.renderer, subscriptions_only=True, hardware_started=False, controls_enabled=plan['controls_enabled']))
         next_status = 0.
         while not stopped[0]:
             rclpy.spin_once(node, timeout_sec=.05)

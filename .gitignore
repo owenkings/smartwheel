@@ -40,3 +40,8 @@ __pycache__/
 /reports/builds/
 /state/source_history.bundle
 /logs/
+
+# Private development and machine state
+/dev_archive/
+/.codex/
+/.agents/

@@ -28,6 +28,9 @@ public:
   void load(const rviz_common::Config & config) override;
   void save(rviz_common::Config config) const override;
   QSize sizeHint() const override;
+  // Reparent the two physical-side cards into the host's unified layout.
+  // This preserves one subscription/decoder and the immutable binding per camera.
+  QWidget * createSideView(const QString & side, QWidget * parent);
 protected:
   void resizeEvent(QResizeEvent * event) override;
 private:
@@ -56,6 +59,7 @@ private:
   bool compact_layout_{false};
   bool fitting_compact_layout_{false};
   bool initialized_{false};
+  bool split_layout_{false};
   rclcpp::Node::SharedPtr node_;
   std::array<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr, 4> subscriptions_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;

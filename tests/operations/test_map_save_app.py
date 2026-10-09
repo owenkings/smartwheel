@@ -263,6 +263,7 @@ def test_recovery_launcher_uses_project_entry_and_disables_user_site():
     source = Path(__file__).absolute().parents[2]/'scripts/save_map'
     text = source.read_text(encoding='utf-8')
     compile(text, str(source), 'exec')
-    assert "PROJECT = Path('/home/nvidia/wheelchair')" in text
+    assert "PROJECT = project_root(start=__file__)" in text
+    assert "Path(__file__).resolve().parents" in text
     assert 'from wc_runtime.map_save_app import main' in text
     assert "[sys.executable, '-s', __file__, *sys.argv[1:]]" in text

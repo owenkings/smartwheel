@@ -1,5 +1,5 @@
 """Reconcile independent source evidence against index AND immutable bag bytes."""
-from collections import Counter
+from collections import Counter, deque
 from contextlib import closing
 import hashlib
 import json
@@ -17,6 +17,86 @@ def rows(path):
 
 def key(row):
     return (str(row['source_id']), str(row['stream_epoch']), int(row['sequence']), str(row['representation']))
+
+
+def audit_imu_device_timing(root, manifest):
+    """Reparse authoritative serial bytes, never trust duplicated metadata alone."""
+    from wc_imu.device_time import DeviceTimeValidator, load_timing_profile, TIMING_KEYS
+    from wc_sensors.h30 import H30Parser
+    root = Path(root)
+    path = root/'configuration/imu_timing.json'
+    expected_hash = manifest.get('input_hashes', {}).get('configuration/imu_timing.json')
+    required = bool(expected_hash or manifest.get('imu_timing_profile_path'))
+    if not path.exists():
+        if required:
+            raise ValueError('IMU_TIMING_FROZEN_PROFILE_MISSING')
+        return {}, None
+    policy = load_timing_profile(path, sensor_id=manifest.get('imu_sensor_id'))
+    if expected_hash != policy['_profile_sha256']:
+        raise ValueError('IMU_TIMING_FROZEN_PROFILE_HASH_MISMATCH')
+    validator, parser, pending = DeviceTimeValidator(policy), H30Parser(), deque()
+    expected, epochs, previous_batch = {}, set(), 0
+    first_byte_mono = None
+    last_byte_mono = None
+    quarantined = 0
+    for row in rows(root/'sources/imu/events.jsonl'):
+        if row['event'] == 'device_time_fault':
+            raise ValueError('IMU_TIMING_SOURCE_FAULT: '+str(row.get('error')))
+        if row['event'] == 'byte_batch':
+            payload = bytes.fromhex(row['bytes_hex'])
+            if (not payload or hashlib.sha256(payload).hexdigest() != row['sha256'] or row['batch_id'] <= previous_batch
+                    or type(row['host_monotonic_ns']) is not int
+                    or last_byte_mono is not None and row['host_monotonic_ns'] < last_byte_mono):
+                raise ValueError('IMU_TIMING_SOURCE_BATCH_INVALID')
+            previous_batch = row['batch_id']
+            last_byte_mono = row['host_monotonic_ns']
+            if first_byte_mono is None:
+                first_byte_mono = row['host_monotonic_ns']
+            for frame in parser.feed(payload):
+                pending.append((frame, row))
+        elif row['event'] in ('frame', 'startup_quarantine'):
+            if not pending:
+                raise ValueError('IMU_TIMING_FRAME_WITHOUT_RAW_PACKET')
+            frame, batch = pending.popleft()
+            if (hashlib.sha256(frame.raw_packet).hexdigest() != row['packet_sha256']
+                    or row['batch_id'] != batch['batch_id']
+                    or row['host_receive_ns'] != batch['host_receive_ns']
+                    or row['host_monotonic_ns'] != batch['host_monotonic_ns']
+                    or row['sensor_id'] != policy['sensor_id']):
+                raise ValueError('IMU_TIMING_RAW_FRAME_ASSOCIATION_MISMATCH')
+            epochs.add(row['stream_epoch'])
+            if len(epochs) != 1:
+                raise ValueError('IMU_TIMING_STREAM_EPOCH_CHANGED')
+            elapsed = row['host_monotonic_ns']-first_byte_mono
+            if row['event'] == 'startup_quarantine':
+                if (expected or not 0 <= elapsed < policy['startup_quarantine_ns']
+                        or row.get('quarantine_started_monotonic_ns') != first_byte_mono
+                        or row.get('startup_quarantine_ns') != policy['startup_quarantine_ns']
+                        or row.get('reason') != 'BOUNDED_STARTUP_BUFFER_QUARANTINE'
+                        or row.get('tid') != frame.tid
+                        or row.get('timing_profile_sha256') != policy['_profile_sha256']):
+                    raise ValueError('IMU_TIMING_ILLEGAL_STARTUP_QUARANTINE')
+                quarantined += 1
+                continue
+            if elapsed < policy['startup_quarantine_ns']:
+                raise ValueError('IMU_TIMING_PUBLISHED_DURING_STARTUP_QUARANTINE')
+            if row.get('sequence') != validator.accepted+1:
+                raise ValueError('IMU_TIMING_PUBLISHED_SEQUENCE_MISMATCH')
+            timing = validator.observe(frame, host_monotonic_ns=row['host_monotonic_ns'])
+            if any(row.get(field) != timing[field] for field in TIMING_KEYS):
+                raise ValueError('IMU_TIMING_JOURNAL_METADATA_MISMATCH')
+            identity = (row['sensor_id'], row['stream_epoch'], row['sequence'], 'packet')
+            if identity in expected:
+                raise ValueError('IMU_TIMING_DUPLICATE_FRAME_IDENTITY')
+            expected[identity] = dict(timing, host_receive_ns=row['host_receive_ns'],
+                                      host_monotonic_ns=row['host_monotonic_ns'])
+    if pending or not expected:
+        raise ValueError('IMU_TIMING_SOURCE_FRAME_TAIL_MISSING')
+    return expected, dict(validator.report(), scope='DEVICE_RELATIVE_NOT_SENSOR_SYNCHRONIZATION',
+                         startup_quarantine_frames=quarantined,
+                         startup_quarantine_ns=policy['startup_quarantine_ns'],
+                         startup_quarantine_started_monotonic_ns=first_byte_mono,
+                         undecoded_tail_bytes=parser.buffered_bytes, parser=parser.stats)
 
 
 def audit_wheel_control(root, events, summary):
@@ -50,18 +130,20 @@ def audit_wheel_control(root, events, summary):
 
 
 def audit_capture(root, profile, process_results, *, durability_complete=None):
-    from .capture import CAMERA_PROFILES, source_selection
-    selection = source_selection(profile)
+    from .capture import CAMERA_PROFILES, source_selection, selected_lidar_sides
     root = Path(root)
     issues, accounting = [], {}
     expected, actual = {}, {}
     manifest_path = root/'capture_manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {}
+    sides = manifest.get('lidar_sides','all')
+    selection = source_selection(profile, sides)
     contract_path = root/'configuration/capture_contract.json'
     contract = None
     contract_invalid = False
     component_ids, source_stamps = {}, {}
     index_storage, retained_identities = {}, set()
+    imu_timing_expected = {}
     def issue(code, evidence, detail):
         issues.append(dict(code=code, evidence=str(evidence), detail=str(detail)))
     if contract_path.exists():
@@ -148,7 +230,7 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
         if name not in selected_processes: continue
         if rc != 0:
             issue('PROCESS_INCOMPLETE', 'logs/'+name+'.log', rc)
-    for side in ('left', 'right'):
+    for side in selected_lidar_sides(sides):
         try:
             dirs = list((root/'sources/lidar'/side).glob('*'))
             dirs = [p for p in dirs if p.is_dir()]
@@ -182,6 +264,7 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
             issue('LIDAR_EVIDENCE_MISSING', 'sources/lidar/'+side, exc)
     try:
         directory = root/'sources/imu'
+        imu_timing_expected, imu_timing_report = audit_imu_device_timing(root, manifest)
         summary = checked_summary(directory/'summary.json')
         if digest(directory/'events.jsonl') != summary['events_sha256']:
             raise ValueError('source journal hash differs')
@@ -202,6 +285,8 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
         if not count or count != summary['event_counts'].get('frame'):
             raise ValueError('missing IMU frame/tail evidence')
         accounting['imu'] = dict(successfully_received=count, published=count, byte_batches=len(batches))
+        if imu_timing_report is not None:
+            accounting['imu']['device_timing'] = imu_timing_report
     except (OSError, ValueError, KeyError) as exc:
         issue('IMU_EVIDENCE_INVALID', 'sources/imu', exc)
     try:
@@ -357,11 +442,35 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
             actual[identity] = row['payload_sha256']
             index_storage[identity] = (row['topic'], row['storage_stamp_ns'], row['cdr_sha256'])
             index_cdr[(row['topic'], row['storage_stamp_ns'], row['cdr_sha256'])] += 1
+            if identity in imu_timing_expected:
+                from wc_imu.device_time import TIMING_KEYS
+                expected_timing = imu_timing_expected[identity]
+                if (any(row.get(field) != expected_timing[field] for field in TIMING_KEYS)
+                        or row['host_monotonic_ns'] != expected_timing['host_monotonic_ns']):
+                    raise ValueError('IMU_TIMING_RECORDER_INDEX_MISMATCH')
         bag_cdr = Counter()
+        if imu_timing_expected:
+            from rclpy.serialization import deserialize_message
+            from rosidl_runtime_py.utilities import get_message
+            from wc_imu.device_time import message_timing_metadata
+            imu_message_type = get_message('wc_interfaces/msg/H30Frame')
         for database in (root/'bag').glob('*.db3'):
             with closing(sqlite3.connect(database.resolve().as_uri()+'?mode=ro', uri=True)) as conn:
                 for topic, stamp, data in conn.execute('SELECT topics.name,messages.timestamp,messages.data FROM messages JOIN topics ON topics.id=messages.topic_id'):
                     bag_cdr[(topic, stamp, hashlib.sha256(data).hexdigest())] += 1
+                    if imu_timing_expected and topic == '/wc_mapping/imu/source_frame':
+                        message = deserialize_message(data, imu_message_type)
+                        identity = (message.sensor_id, message.stream_epoch, message.frame_sequence, 'packet')
+                        timing = message_timing_metadata(message)
+                        source_timing = imu_timing_expected.get(identity)
+                        if source_timing is None or any(timing[field] != source_timing[field] for field in TIMING_KEYS):
+                            raise ValueError('IMU_TIMING_BAG_METADATA_MISMATCH')
+                        stamps = [value.sec*10**9+value.nanosec for value in
+                                  (message.header.stamp, message.imu.header.stamp, message.host_receive_time)]
+                        if (stamps != [source_timing['host_receive_ns']]*3
+                                or message.host_monotonic_ns != source_timing['host_monotonic_ns']
+                                or message.common_time_valid or message.time_source != 'arrival_only'):
+                            raise ValueError('IMU_TIMING_ORIGINAL_ARRIVAL_FIELDS_CHANGED')
         retained_identities = {identity for identity, record in index_storage.items() if bag_cdr[record] > 0}
         if not (root/'bag/metadata.yaml').is_file() or not bag_cdr or bag_cdr != index_cdr:
             issue('BAG_INDEX_MISMATCH', 'bag', 'stored CDR differs or bag closing metadata missing')
@@ -428,7 +537,21 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
                 if acquisition['requested_duration_ns']!=acquisition['end_monotonic_ns']-acquisition['start_monotonic_ns']:
                     raise ValueError('requested window duration differs from frozen endpoints')
                 requested_seconds = manifest.get('requested_source_duration_s')
-                if requested_seconds is not None and (type(requested_seconds) is not int
+                until_stop = (requested_seconds == 0 and
+                              acquisition.get('policy') == 'UNTIL_USER_STOP_OBSERVED_COMMON_WINDOW')
+                if until_stop:
+                    stop_ns = acquisition.get('stop_requested_monotonic_ns')
+                    if type(stop_ns) is not int or not acquisition['start_monotonic_ns'] < acquisition['end_monotonic_ns'] <= stop_ns:
+                        raise ValueError('invalid user-stopped common capture window')
+                    from .capture_contract import READINESS_OBSERVATION_LAG_NS
+                    lags=acquisition.get('source_stop_lag_ns')
+                    if (acquisition.get('readiness_observation_lag_allowance_ns')!=READINESS_OBSERVATION_LAG_NS
+                            or not isinstance(lags,dict) or set(lags)!=set(contract['sources'])
+                            or any(type(lag) is not int or not 0<=lag<=contract['sources'][key]['max_gap_ns']+READINESS_OBSERVATION_LAG_NS for key,lag in lags.items())
+                            or acquisition.get('tail_trim_ns')!=stop_ns-acquisition['end_monotonic_ns']
+                            or max(lags.values())!=acquisition.get('tail_trim_ns')):
+                        raise ValueError('user-stopped freshness evidence is missing or stale')
+                if not until_stop and requested_seconds is not None and (type(requested_seconds) is not int
                         or acquisition['requested_duration_ns']!=requested_seconds*1_000_000_000):
                     raise ValueError('acquisition window differs from original requested duration')
                 evidence = collect_source_evidence(root,contract)

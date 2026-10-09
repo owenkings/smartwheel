@@ -115,6 +115,15 @@ def configuration(request):
     # This entry is user-operated continuous mapping. Strict diagnostic tools
     # keep their own defaults; old mapping configuration cannot restore timers.
     config['continuous_mapping']=True
+    config['panel_layout']=request.get('panel_layout','classic')
+    if config['panel_layout'] not in ('classic','unified'):
+        raise ValueError('unknown RViz panel layout')
+    if request.get('estimator') is not None:
+        config['wheel_imu_estimator']=request['estimator']
+        config['motion_model']='planar_ekf'
+    for key in ('motion_correction','process_noise','geometry'):
+        if key in request:
+            config[key]=request[key]
     motion_model=config.get('motion_model','se3_gyro')
     if motion_model not in ('planar_ekf','se3_gyro'):
         raise ValueError('motion_model 只支持 planar_ekf 或 se3_gyro')
@@ -257,7 +266,17 @@ def configuration(request):
     else:
         config['confirmed_gyro_bias']=None
         config['gyro_bias_provenance']=None
+    from .live_calibration_files import load_live_calibration_files
+    config=load_live_calibration_files(ROOT,config)
     config['prior_template']['confirmed_gyro_bias']=config['confirmed_gyro_bias']
+    for key in ('motion_correction','process_noise','geometry','live_motion_calibration','continuous_process_noise'):
+        if key in config:
+            config['prior_template'][key]=config[key]
+    from .live_motion_options import validate_live_options
+    config['prior_template']=validate_live_options(config['prior_template'])
+    for key in ('motion_correction','process_noise','geometry','continuous_process_noise'):
+        if key in config['prior_template']:
+            config[key]=config['prior_template'][key]
     if odometry_source=='wheel_imu':
         config['prior_template']['wheel_imu_covariance']=config['wheel_imu_covariance']
     config['shutdown_persistence'] = persistence_policy()
@@ -462,6 +481,14 @@ def archive_configuration(directory,config):
         if hashlib.sha256(evidence_bytes).hexdigest()!=config['gyro_bias_provenance']['evidence_sha256']:
             raise ValueError('陀螺零偏依据快照哈希不一致')
         write_new(directory/'confirmed_gyro_bias.evidence.json',evidence_bytes)
+    if config.get('_live_motion_raw_text') is not None:
+        for field, snapshot, digest_key in (
+            ('_live_motion_raw_text','live_motion_calibration.json','sha256'),
+            ('_live_motion_evidence_raw_text','live_motion_calibration.evidence.json','evidence_sha256')):
+            raw=config.pop(field).encode('utf-8')
+            if hashlib.sha256(raw).hexdigest()!=config['live_motion_provenance'][digest_key]:
+                raise ValueError('设备运动修正声明快照哈希不一致')
+            write_new(directory/snapshot,raw)
     write_new(directory/'runtime_config.json',json_bytes(config))
     if config.get('geometry_report'):
         write_new(directory/'capability_assessment.json', json_bytes(config['geometry_report']))
@@ -591,6 +618,8 @@ def start(request):
 def rviz_environment(handle):
     env=desktop_environment();env.update(environment())
     config=read_json(ROOT,project_path(ROOT,Path(handle['directory'])/'runtime_config.json'))
+    if config.get('panel_layout') == 'unified':
+        env['WC_PANEL_LAYOUT']='unified'
     renderer=config.get('rviz_renderer','system')
     if renderer not in ('system','software'):
         raise ValueError('会话 rviz_renderer 配置无效')
@@ -956,7 +985,10 @@ def save(handle,destination):
 
 def discard(handle):
     from .mapping_save import discard_session
-    return discard_session(ROOT,handle,inspect=inspect,user_confirmed=True)
+    enabled = handle.get('mapping_enabled')
+    if type(enabled) is not bool:
+        raise ValueError('清理会话必须明确 mapping_enabled 模式')
+    return discard_session(ROOT,handle,inspect=inspect,user_confirmed=enabled,preview_complete=not enabled)
 
 
 def watch(runtime):

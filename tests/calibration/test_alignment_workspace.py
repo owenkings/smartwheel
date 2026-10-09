@@ -120,7 +120,7 @@ def test_bootstrap_identity_is_explicitly_unvalidated_and_has_only_browser_token
     session = make_session(tmp_path)
     workspace = alignment.AlignmentWorkspace(session)
     shown = workspace.bootstrap()
-    assert set(shown) == {'scene', 'initial_T_left_right', 'initial_source', 'saved_candidate'}
+    assert set(shown) == {'scene', 'initial_T_left_right', 'initial_source', 'prepared_initial_T_left_right', 'initial_assessment', 'saved_candidate'}
     assert shown['scene'] == session.scene()
     assert shown['scene']['token'] == session.token
     assert shown['initial_source'] == {'kind': 'identity_for_manual_adjustment_only',
@@ -491,7 +491,7 @@ def test_http_alignment_bootstrap_refine_and_reload_contract(server):
     assert shown['saved_candidate'] is None
     status, _, exported = http_request(server, 'POST', '/api/alignment',
                                       request(server.session, 'refine'))
-    assert status == 200 and set(exported) == {'result', 'export_dir'}
+    assert status == 200 and set(exported) == {'result', 'export_dir', 'saved', 'assessment'}
     assert_complete(exported, server.session)
     status, _, shown = http_request(server, 'GET', '/api/alignment-bootstrap')
     assert status == 200 and shown['saved_candidate'] == exported

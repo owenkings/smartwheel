@@ -16,18 +16,23 @@ import uuid
 import webbrowser
 
 from .alignment import manual_initial
+from .assessment import assess_result
 from .core import CalibrationError, _hash, validate_transform
+from .organized_input import MAX_ORGANIZED_POINTS, validate_organized
 
 MAX_INPUT_BYTES = 128_000_000
 MAX_POINTS = 20_000
 MAX_PAIRS = 10_000
 MAX_BODY_BYTES = 1_048_576
 ASSET_ROOT = Path(__file__).parent / 'picker_assets'
-ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
-          '/index.html': ('index.html', 'text/html; charset=utf-8'),
+ASSETS = {'/': ('workbench.html', 'text/html; charset=utf-8'),
+          '/index.html': ('workbench.html', 'text/html; charset=utf-8'),
+          '/workbench.js': ('workbench.js', 'text/javascript; charset=utf-8'),
+          '/workbench.css': ('workbench.css', 'text/css; charset=utf-8'),
           '/picker.js': ('picker.js', 'text/javascript; charset=utf-8'),
           '/picker.css': ('picker.css', 'text/css; charset=utf-8'),
-          '/alignment': ('alignment.html', 'text/html; charset=utf-8'),
+          '/amplitude.js': ('amplitude.js', 'text/javascript; charset=utf-8'),
+          '/alignment': ('workbench.html', 'text/html; charset=utf-8'),
           '/alignment.js': ('alignment.js', 'text/javascript; charset=utf-8'),
           '/alignment.css': ('alignment.css', 'text/css; charset=utf-8')}
 
@@ -110,12 +115,15 @@ class PickerSession:
             'time_quality': scene.get('time_quality', 'UNVALIDATED'),
             'pair_dt_ns': scene.get('pair_dt_ns'), 'static_suggestion': copy.deepcopy(scene.get('static_suggestion'))}
         self._points = {}
+        organized = validate_organized(scene.get('organized'), scene)
         clouds, excluded = {}, {}
         for side in ('left', 'right'):
             rows = scene.get(side)
-            if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_POINTS:
-                raise CalibrationError('each original cloud must contain 1..20000 rows; no implicit decimation')
+            budget = MAX_ORGANIZED_POINTS if organized is not None else MAX_POINTS
+            if not isinstance(rows, list) or not 1 <= len(rows) <= budget:
+                raise CalibrationError('each original cloud must contain 1..%d rows; no implicit decimation' % budget)
             finite = {}
+            excluded_origin = 0
             for index, row in enumerate(rows):
                 if not isinstance(row, list) or len(row) != 3 or any(v is not None and type(v) not in (int, float) for v in row):
                     raise CalibrationError('XYZ rows must contain exactly three numeric or null coordinates')
@@ -125,17 +133,26 @@ class PickerSession:
                     raise CalibrationError('coordinate exceeds the finite numeric representation') from error
                 if not finite_row:
                     continue
+                if organized is not None and all(v == 0 for v in row):
+                    excluded_origin += 1
+                    continue  # SDK zero-origin invalid sample, not a measured return.
                 finite[index] = tuple(float(v) for v in row)
             if not finite:
                 raise CalibrationError('each side needs finite selectable observations')
             self._points[side] = finite
             clouds[side] = [{'id': index, 'xyz': list(xyz)} for index, xyz in finite.items()]
             excluded[side] = {'original_rows': len(rows), 'selectable_rows': len(finite),
-                              'excluded_nonfinite_rows': len(rows)-len(finite)}
+                              'excluded_nonfinite_rows': len(rows)-len(finite)-excluded_origin,
+                              'excluded_zero_origin_rows': excluded_origin}
         self._scene = {'input_hash': self.input_hash, 'scene_id': scene['id'],
             'source_mode': data['source_mode'], 'sensor_ids': copy.deepcopy(ids), 'units': 'm',
             'coordinate_conventions': dict(conventions), 'time_quality': self._provenance['time_quality'],
             'clouds': clouds, 'point_counts': excluded, 'live_eligible': False}
+        if organized is not None:
+            self._scene['organized'] = organized
+            self._provenance['organized_layout'] = {side: {
+                key: value for key, value in item.items() if key != 'amplitude'}
+                for side, item in organized.items()}
         if 'level_reference' in scene:
             from .level_reference import validate_level_reference
             reference = validate_level_reference(scene['level_reference'], scene['id'], metadata)
@@ -157,7 +174,8 @@ class PickerSession:
             return self._alignment
 
     def scene(self):
-        return dict(copy.deepcopy(self._scene), token=self.token)
+        return dict(copy.deepcopy(self._scene), token=self.token,
+                    capabilities={'calculate': True, 'alignment_preview': True, 'assessment': True, 'unified_workbench': True, 'alignment_save_result': True})
 
     def selection(self, body, *, solve=False):
         if not isinstance(body, dict) or set(body) != {'input_hash', 'scene_id', 'pairs'}:
@@ -185,6 +203,12 @@ class PickerSession:
             'units': 'm', 'coordinate_conventions': dict(self._scene['coordinate_conventions']),
             **selected, 'pairs': copy.deepcopy(pairs), 'provenance': copy.deepcopy(self._provenance),
             'live_eligible': False, 'independent_validation_performed': False}
+
+    def calculate(self, body):
+        selection = self.selection(body, solve=True)
+        result = manual_initial(selection)
+        return {'selection': selection, 'result': result, 'assessment': assess_result(result),
+                'saved': False, 'export_dir': None}
 
     def export(self, body, *, solve=False):
         selection = self.selection(body, solve=solve)
@@ -220,9 +244,10 @@ class PickerSession:
             with temporary.open('xb') as stream:
                 stream.write(_json_bytes(manifest)); stream.flush(); os.fsync(stream.fileno())
             os.replace(temporary, target / 'manifest.json')
-        response = {'selection': selection, 'export_dir': str(target)}
+        response = {'selection': selection, 'export_dir': str(target), 'saved': True}
         if result is not None:
             response['result'] = result
+            response['assessment'] = assess_result(result)
         return response
 
 
@@ -235,7 +260,8 @@ class PickerServer(ThreadingHTTPServer):
         if type(port) is not int or not 0 <= port <= 65535:
             raise CalibrationError('port must be an integer in 0..65535')
         self.session = session
-        self._slots = threading.BoundedSemaphore(4)
+        # Workbench loads five independent assets; allow a browser connection burst.
+        self._slots = threading.BoundedSemaphore(8)
         super().__init__(('127.0.0.1', port), PickerHandler)
         self.timeout = .2
         self.origin = 'http://127.0.0.1:' + str(self.server_port)
@@ -263,7 +289,7 @@ class PickerServer(ThreadingHTTPServer):
 
 
 class PickerHandler(BaseHTTPRequestHandler):
-    # HTTP/1.0 closes each connection. At most four daemon workers keep the CLI
+    # HTTP/1.0 closes each connection. At most eight daemon workers keep the CLI
     # duration bounded even when a local client trickles an incomplete request.
     server_version = 'WheelchairOfflinePicker'
     sys_version = ''
@@ -327,7 +353,7 @@ class PickerHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorized(post=True):
             return
-        if self.path not in ('/api/solve', '/api/export', '/api/alignment'):
+        if self.path not in ('/api/solve', '/api/export', '/api/calculate', '/api/alignment', '/api/alignment-preview', '/api/alignment-save-result'):
             self._reply(404, {'error': 'route not found'})
             return
         lengths = self.headers.get_all('Content-Length', [])
@@ -350,13 +376,17 @@ class PickerHandler(BaseHTTPRequestHandler):
             self._reply(400, {'error': 'invalid, incomplete or timed-out JSON body'})
             return
         try:
-            if self.path == '/api/alignment':
+            if self.path in ('/api/alignment', '/api/alignment-preview', '/api/alignment-save-result'):
                 from .alignment_workspace import AlignmentBusy
                 try:
-                    response = self.server.session.alignment_workspace().export(body)
+                    workspace = self.server.session.alignment_workspace()
+                    response = (workspace.calculate(body) if self.path == '/api/alignment-preview' else
+                                workspace.save_result(body) if self.path == '/api/alignment-save-result' else workspace.export(body))
                 except AlignmentBusy as error:
                     self._reply(409, {'error': str(error)})
                     return
+            elif self.path == '/api/calculate':
+                response = self.server.session.calculate(body)
             else:
                 response = self.server.session.export(body, solve=self.path == '/api/solve')
         except (CalibrationError, ValueError, TypeError, OverflowError) as error:
