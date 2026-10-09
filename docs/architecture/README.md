@@ -5,6 +5,7 @@
 ## 内容与入口
 
 - [algorithm_selection.md](algorithm_selection.md)
+- [navigation-and-obstacles.md](navigation-and-obstacles.md)：定位、地图朝向、超声波与激光雷达的职责及后续导航接入条件。
 
 ## 添加与验证
 

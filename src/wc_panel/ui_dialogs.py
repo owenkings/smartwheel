@@ -34,7 +34,7 @@ class LiveDialog(PanelDialog):
         body.setSpacing(14)
         self.form_scroll.setWidget(content)
         self.layout.addWidget(self.form_scroll, 1)
-        body.addWidget(hint("确认后打开统一 RViz 窗口。实时建图结束时，再选择是否保存和保存位置。"))
+        body.addWidget(hint("确认后打开统一 RViz 窗口并先显示当前帧。实时建图模式在窗口内点击“开始建图”；再次点击“停止并保存”后恢复预览，再选择保存位置。切换设备时会短暂显示“正在切换”。"))
         form = QtWidgets.QGridLayout()
         form.setVerticalSpacing(14)
         form.setHorizontalSpacing(12)

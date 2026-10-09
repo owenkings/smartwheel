@@ -329,10 +329,15 @@ class PanelBackend:
                     row=capability[key]['by_sides'][sides]
                     if not row['enabled']:raise ValueError(row['reason'])
         session=self._identity('live')
-        command=self._ros_command([sys.executable,'-s',self.project_root/'scripts/map',sides,
+        arguments=[sys.executable,'-s',self.project_root/'scripts/map',sides,
             '--mapping','true' if mode=='mapping' else 'false','--name',session,'--cloud',cloud,
             '--estimator',estimator,'--motion-correction','on' if motion else 'off','--process-noise',noise,
-            '--geometry','on' if geometry else 'off','--panel-layout','unified','--save-dialog'])
+            '--geometry','on' if geometry else 'off','--panel-layout','unified','--save-dialog']
+        if mode == 'mapping':
+            # Legacy CLI still starts immediately; the panel opens a reusable
+            # preview window with explicit per-map start/stop controls.
+            arguments.append('--interactive')
+        command=self._ros_command(arguments)
         self.policy.check()
         task=dict(id=session,label='实时建图' if mode=='mapping' else '实时预览',commands=[command],output=None,accepted_exit_codes=[0,3])
         return self._manager.submit('live',task['label'],[task],guards=[self.policy],snapshot=self.device_parameters())

@@ -504,6 +504,9 @@ python3 scripts/map all --mapping true --check-config
 
 # 配置能力满足后，双雷达累计建图
 python3 scripts/map all --mapping true --cloud raw
+
+# 与面板一致：先预览，在同一 RViz 窗口点击开始／停止并保存
+python3 scripts/map all --mapping true --cloud raw --interactive
 ```
 
 单雷达试验相应使用 `left` / `right`，也须满足该侧运动融合条件。仅希望现在用已有资料出结果时，使用第 8 章离线 `--mechanical-initial`，不用为了打开预览重新测量全部外参。
@@ -515,6 +518,7 @@ python3 scripts/map all --mapping true --cloud raw
 | 位置参数 `left/right/all` | 应明确选择 | 使用左、右或双雷达 |
 | `--mode left/right/all` | 位置参数的另一种写法 | 二者同时给时必须一致 |
 | `--mapping true/false` | `false` | `true` 才累计建图 |
+| `--interactive` | 关闭；需 `--mapping true` | 持久窗口先预览；每次点击开始创建新地图，停止关库后恢复当前帧预览并保存旧地图 |
 | `--cloud raw/filtered` | 默认配置值 `filtered` | 改变预览/建图所用点云分支 |
 | `--name NAME` | 自动唯一名称 | 会话名称 |
 | `--output PATH` | 默认 `reports/maps/<session>` | 临时工作会话；不是最终保存目录；支持映射到 数据根的工作路径 |
@@ -533,7 +537,7 @@ python3 scripts/map all --mapping true --cloud raw
 
 ### 7.4 地图保存与恢复待决定会话
 
-结束实时建图后，先停止设备，再询问保存。选择保存时填写 **数据根内新的目标目录**，例如：
+不带 `--interactive` 时，结束实时建图后先停止设备，再询问保存。交互模式点击“停止并保存”会关闭旧地图会话、启动新的当前帧预览，再询问旧地图保存；切换设备期间短暂无数据，界面明确显示“正在切换”。每次开始使用新目录及数据库，参数选择保持不变；预览阶段不累计地图。关闭整个交互窗口会停止设备并取消未完成保存，保留待处理数据；多个待保存会话在最终 `pending_sessions` 中分别列出，退出码为 3，真实收尾失败为 2。选择保存时填写 **数据根内新的目标目录**，例如：
 
 ```text
 $WC_DATA/maps/新的地图名称

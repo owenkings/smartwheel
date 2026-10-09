@@ -448,6 +448,32 @@ private slots:
     QTest::keyRelease(text_, Qt::Key_W); QTest::keyPress(text_, Qt::Key_W);
     QTRY_COMPARE(latest("keys")["arm_generation"].toInt(), 1);
   }
+  void replacing_session_releases_old_keys_without_transferring_intent()
+  {
+    allow_keys(); QTest::keyPress(text_, Qt::Key_W); finish_initialization();
+    delete panel_; panel_ = nullptr;
+    QTRY_COMPARE(messages("disarm").size(), 1);
+    QCOMPARE(latest("disarm")["session_id"].toString(), QString("synthetic_teleop"));
+    status_["session_id"] = "synthetic_next"; status_["state"] = "READY";
+    wc_bringup::TeleopSession next;
+    next.directory = directory_.path(); next.session_id = "synthetic_next";
+    panel_ = new wc_bringup::MappingTeleopPanel(next, window_, window_);
+    window_->layout()->addWidget(panel_); panel_->show(); text_->setFocus();
+    QTRY_COMPARE(messages("hello").size(), 2); ready_after_stop();
+    QCOMPARE(latest("hello")["session_id"].toString(), QString("synthetic_next"));
+    const int previous_keys = messages("keys").size();
+    QKeyEvent repeat(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier, "w", true, 1);
+    QApplication::sendEvent(text_, &repeat); QTest::qWait(150);
+    QCOMPARE(messages("keys").size(), previous_keys);
+    QTest::keyRelease(text_, Qt::Key_W); QTest::qWait(50);
+    QCOMPARE(messages("keys").size(), previous_keys);
+    QTest::keyPress(text_, Qt::Key_D);
+    QTRY_VERIFY(messages("keys").size() > previous_keys);
+    QCOMPARE(latest("keys")["session_id"].toString(), QString("synthetic_next"));
+    QCOMPARE(latest("keys")["keys"].toArray(), QJsonArray({"d"}));
+    QCOMPARE(messages("disarm").size(), 1);
+    QTest::keyRelease(text_, Qt::Key_D);
+  }
   void mismatched_status_identity_disconnects_without_retry()
   {
     status_["session_id"] = "different_session"; status();

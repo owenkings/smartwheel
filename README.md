@@ -214,7 +214,7 @@ Windows 的 `source_backup` 用于阅读和备份。普通 SSH 会话通常没�
 
 | 面板按钮 | 用法 | 完成时应确认 |
 |---|---|---|
-| 实时建图 | 选择预览或建图、左/右/双雷达、点云类型及 EKF，再打开 RViz。 | 预览正常结束即可；建图正常关闭 RViz 后选择是否保存，确认最终保存结果。 |
+| 实时建图 | 选择模式及参数后打开 RViz；建图模式先显示当前帧，再点击“开始建图”。 | 点击“停止并保存”，正常关闭本次地图后恢复实时预览并询问保存；可在同窗再次开始新地图。 |
 | 数据录制 | 设置名称前缀、时间后缀、保存根目录和雷达，然后确认录制。 | 在 RViz 点击“结束录制”或正常关闭窗口，等待收尾和完整性检查，再确认“录制已完成”及数据目录。 |
 | 离线融合 | 选择已有录包、输出目录及有效方案，确认任务列表后开始。 | 在队列中查看每项实际终态和结果位置；失败原因见日志。 |
 | 结果对比 | 选择一组或多组已有结果，打开后切换地图、路线和三维点云。 | 缺失文件会明确提示；三维视角联动只同步视角，不代表结果已配准。 |
@@ -335,11 +335,14 @@ python3 scripts/wc_phase1 refine \
 python3 scripts/map all --check-config
 python3 scripts/map left                     # 左雷达实时预览
 python3 scripts/map all --mapping true        # 双雷达实时建图
+python3 scripts/map all --mapping true --interactive  # 同窗预览、开始、停止并保存
 ```
 
 可选 `right`，以及 `--cloud raw|filtered`、`--estimator five_state|robot_localization`。预览默认不累计地图。正式双雷达建图要求相应外参与证据，不能将各自传感器坐标中的显示当作已对齐。实时人工操作、停止和保存请按[面板说明](docs/operations/panel_user_guide.md)进行。
 
-正常关闭 RViz 后，建图会话先停止设备，再询问保存；只有返回 `SAVED` 才表示地图保存成功。`SAVE_PENDING` 表示原数据保留、等待选择；失败时检查日志并保留工作目录。对已停止且尚未完成保存的工作会话：
+面板建图与 `--interactive` 使用同窗按钮：初始和停止后只显示当前帧，建图期间显示本次累计三维云；每次开始都是新会话、新地图。切换时短暂停止并重新打开所属设备，界面显示“正在切换”。停止建图正常关库后先恢复真实预览，再询问旧地图是否保存。关闭整个交互窗口会停止设备、取消尚未完成的保存操作并保留待处理数据。只有单次保存返回 `SAVED` 才表示保存成功；存在待保存地图时窗口任务以 `SAVE_PENDING` 结束。
+
+不带 `--interactive` 的旧命令仍在正常关闭 RViz 后停止设备并询问保存。`SAVE_PENDING` 表示原数据保留、等待选择；失败时检查日志并保留工作目录。对已停止且尚未完成保存的工作会话：
 
 ```bash
 python3 scripts/save_map /实际会话工作目录 /新的地图保存目录
@@ -367,6 +370,7 @@ bash scripts/align_lidar_clouds.sh --input /实际路径/prepared.json
 | 静态配准录制与准备 | `bash scripts/record_lidar_points.sh --help`；实际录制参数见[命令手册](docs/operations/command_reference.md)。 |
 | 幅度图辅助选点 | [幅度图操作](docs/operations/amplitude_alignment.md)。 |
 | 轮反馈只读诊断、消息回放、地图包、目标点注释 | [完整命令手册](docs/operations/command_reference.md)；目标点注释不会执行导航。 |
+| 定位、车头朝向与后续避障接入 | [定位与障碍感知](docs/architecture/navigation-and-obstacles.md)；说明超声波与激光雷达分工、地图位姿和 IMU 航向边界，当前未启用自动导航。 |
 | 暂存、掉盘和输出路径 | [存储说明](docs/reference/storage.md)。 |
 
 ## 常见问题与恢复

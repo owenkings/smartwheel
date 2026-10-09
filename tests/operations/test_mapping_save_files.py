@@ -167,6 +167,33 @@ def test_saved_reference_survives_source_retention_metadata_failure(session,tmp_
     assert (directory/'bag/recording.db3').is_file()
 
 
+@pytest.mark.parametrize('profile', ['experiment', 'map_only'])
+def test_committed_map_remains_saved_when_runtime_journal_write_fails(session, tmp_path, monkeypatch, profile):
+    root, directory, runtime, handle = session
+    handle['retention_profile'] = profile
+    destination = tmp_path/'committed_map'
+    database_hash = saving._file_digest(directory/'slam/rtabmap.db')
+    write = saving.write_new
+
+    def fail_final_journal(path, data):
+        if path.parent == runtime and path.name.startswith('save-'):
+            raise OSError('SYNTHETIC runtime journal storage full')
+        return write(path, data)
+
+    monkeypatch.setattr(saving, 'write_new', fail_final_journal)
+    saved = saving.save_session(root, handle, destination, inspect=closed, export=fake_export)
+    assert saved['status'] == 'SAVED_EXPERIMENTAL_MAP'
+    assert saved['cleanup_errors'] == ['SAVE_JOURNAL_WRITE_FAILED: SYNTHETIC runtime journal storage full']
+    assert saving._file_digest(destination/'slam/rtabmap.db') == database_hash
+    assert json.loads((destination/'saved_map.json').read_text())['status'] == 'SAVED_EXPERIMENTAL_MAP'
+    assert json.loads((directory/'retention.json').read_text())['saved_map'] == str(destination)
+    assert all(json.loads(p.read_text())['status'] == 'COMMITTED'
+               for p in (directory/'save_commit_intents').iterdir())
+    assert saved['raw_retention'] == ('RETAINED_REFERENCED' if profile == 'experiment' else 'DISCARDED')
+    assert (directory/'bag/recording.db3').exists() is (profile == 'experiment')
+    assert not list(runtime.glob('save-*.json'))
+
+
 def test_discard_retains_existing_map_quality_report(session):
     root,directory,runtime,handle=session
     (directory/'export').mkdir()

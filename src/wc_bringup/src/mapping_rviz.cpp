@@ -43,6 +43,7 @@
 #include "wc_bringup/mapping_health.hpp"
 #include "wc_bringup/unified_rviz.hpp"
 #include "wc_bringup/grid_view_fit.hpp"
+#include "wc_bringup/mapping_session_view.hpp"
 #include "wc_camera_panel/camera_panel.hpp"
 
 namespace
@@ -79,6 +80,7 @@ void arrange_unified(rviz_common::VisualizationFrame & frame, QDockWidget & tele
   }
   auto * map_label = new QLabel(has_map ? QStringLiteral("2D 栅格地图 · 拖动平移 / 滚轮缩放") :
     QStringLiteral("2D 栅格地图 · 预览模式不生成地图"), left);
+  map_label->setObjectName("mapping_grid_label");
   map_label->setWordWrap(true); left_layout->addWidget(map_label);
   auto * fit_map = new QPushButton(QStringLiteral("适配地图"), left);
   fit_map->setObjectName("mapping_fit_grid_button");
@@ -101,7 +103,8 @@ void arrange_unified(rviz_common::VisualizationFrame & frame, QDockWidget & tele
 
   auto * center = new QWidget(splitter); center->setObjectName("mapping_center_column");
   auto * center_layout = new QVBoxLayout(center); center_layout->setContentsMargins(0, 0, 0, 0);
-  center_layout->addWidget(wc_bringup::display_switches(frame.getManager(), center));
+  auto * switches = wc_bringup::display_switches(frame.getManager(), center);
+  switches->setObjectName("mapping_display_switches"); center_layout->addWidget(switches);
   center_layout->addWidget(native_center, 1);
   auto * right = new QWidget(splitter); right->setObjectName("mapping_right_column");
   auto * right_layout = new QVBoxLayout(right); right_layout->setContentsMargins(3, 3, 3, 3);
@@ -129,6 +132,7 @@ void arrange_unified(rviz_common::VisualizationFrame & frame, QDockWidget & tele
       config.value("process_noise").toString("legacy") == "white_acceleration" ? "连续白噪声 PSD" : "原模型",
       config.value("geometry").toBool() ? "启用（输出轨迹纠偏）" : "关闭"), parameters);
   settings->setTextFormat(Qt::PlainText); settings->setWordWrap(true); parameter_layout->addWidget(settings);
+  settings->setObjectName("mapping_settings");
   if (auto * health = teleop.findChild<QWidget *>("mapping_health_panel")) {
     parameter_layout->addWidget(health);
   }
@@ -583,9 +587,17 @@ int main(int argc, char ** argv)
       wc_bringup::teleop_session_from_arguments(original_qt_arguments), frame, bottom));
     teleop_dock->setWidget(bottom);
     frame->addDockWidget(Qt::BottomDockWidgetArea, teleop_dock);
-    if (qEnvironmentVariable("WC_PANEL_LAYOUT") == "unified") {
+    const QString interactive_directory = qEnvironmentVariable("WC_MAPPING_CONTROL_DIR");
+    if (qEnvironmentVariable("WC_PANEL_LAYOUT") == "unified" || !interactive_directory.isEmpty()) {
       arrange_unified(*frame, *teleop_dock, original_qt_arguments);
     } else {arrange_initial_docks(*frame, *teleop_dock);}
+    if (!interactive_directory.isEmpty()) {
+      auto * binding = new wc_bringup::MappingSessionView(*frame, *teleop_dock);
+      auto * controls = new wc_bringup::mapping_control::Panel(interactive_directory, frame,
+        [binding](const QJsonObject & status) {binding->bind(status);},
+        [binding]() {binding->clear();}, bottom);
+      bottom_layout->insertWidget(0, controls);
+    }
     // Let native dock/tab and font-metric layout requests settle, then perform
     // two bounded startup fits. There is no persistent resize policy that can
     // fight a user's later window size or panel changes.
@@ -615,7 +627,18 @@ int main(int argc, char ** argv)
             {"displays", wc_bringup::display_observation(viewport->manager())}});
         }
       }
-      return QJsonObject{{"camera_states", labels}, {"displays", wc_bringup::display_observation(frame->getManager())},
+      QJsonObject interactive{{"session", frame->property("mapping_bound_session").toString()},
+        {"view_generation", frame->property("mapping_bound_view_generation").toDouble()},
+        {"bind_count", frame->property("mapping_bind_count").toInt()},
+        {"clear_count", frame->property("mapping_clear_count").toInt()},
+        {"tf_instance_replaced", frame->property("mapping_tf_instance_replaced").toBool()}};
+      if (auto * controls = frame->findChild<QWidget *>("mapping_interactive_controls")) {
+        interactive["state"] = controls->property("mapping_state").toString();
+        interactive["pending"] = controls->property("command_pending").toBool();
+        interactive["failure"] = controls->property("protocol_failure").toString();
+      }
+      return QJsonObject{{"camera_states", labels}, {"interactive", interactive},
+        {"displays", wc_bringup::display_observation(frame->getManager())},
         {"frames", static_cast<double>(frame->getManager()->getFrameCount())}, {"secondary_views", grids}};
     });
     RCLCPP_INFO(logger, "Native RViz ready; closing discards temporary view edits. "

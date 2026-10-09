@@ -116,6 +116,8 @@ def parse_request(argv=None, *, project_root):
     parser.add_argument('--geometry', choices=('on','off'))
     parser.add_argument('--panel-layout', choices=('classic','unified'), default='classic')
     parser.add_argument('--save-dialog', action='store_true', help='Use the normal close-time map save dialog')
+    parser.add_argument('--interactive', action='store_true',
+                        help='保持 RViz 窗口：先预览，按钮开始新地图，停止后恢复预览并保存')
     args = parser.parse_args(argv)
     if args.mode and args.positional_mode and args.mode != args.positional_mode:
         parser.error('位置参数和 --mode 指定了不同模式')
@@ -127,6 +129,10 @@ def parse_request(argv=None, *, project_root):
                               retention_profile=args.retention_profile)
     request['check_config_only'] = args.check_config
     request['panel_layout'] = args.panel_layout
+    if args.interactive:
+        if args.mapping != 'true':
+            parser.error('--interactive 需要明确 --mapping true')
+        request['interactive'] = True
     for key in ('estimator','process_noise'):
         if getattr(args,key) is not None:
             request[key] = getattr(args,key)
@@ -509,7 +515,11 @@ def main(argv=None, *, project_root=None, backend=None):
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, request_stop)
         emit = lambda value: print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
-        result, code = run_session(request, backend, stop_requested=lambda: requested['stop'], emit=emit)
+        if request.get('interactive'):
+            from .mapping_interactive import run_interactive
+            result, code = run_interactive(request, backend, stop_requested=lambda: requested['stop'], emit=emit)
+        else:
+            result, code = run_session(request, backend, stop_requested=lambda: requested['stop'], emit=emit)
         emit(result)
         return code
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:

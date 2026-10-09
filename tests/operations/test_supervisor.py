@@ -314,3 +314,226 @@ def test_invalid_supervisor_duration_is_rejected_without_starting_components(har
         result = harness.manifest()
         assert result['state'] == 'FAILED' and result['exit_code'] != 0
     assert not harness.records(), 'invalid duration reached component launch'
+
+
+@pytest.mark.parametrize('stop_before_first_component', [True, False])
+def test_stop_during_startup_skips_remaining_components_and_cleans_started_children(
+        tmp_path, monkeypatch, stop_before_first_component):
+    from wc_runtime import supervisor
+    project = tmp_path/'project'
+    runtime = project/'.phase1_runtime/sessions/startup/operations'
+    runtime.mkdir(parents=True)
+    plan = {'session_id': 'startup', 'role': 'operations', 'duration_s': 0,
+            'commands': [['synthetic-first'], ['synthetic-second'], ['synthetic-third']],
+            'locks': ['synthetic-startup.lock'], 'environment': {}}
+    plan_path = runtime/'plan.json'
+    plan_path.write_text(json.dumps(plan))
+    handlers, children, observed_states = {}, [], []
+    resource = (runtime/'synthetic-startup.lock').open('a+')
+    write_manifest = supervisor.write_json
+
+    def acquire(_):
+        if stop_before_first_component:
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return resource
+
+    class Child:
+        pid = 400001
+
+        def __init__(self):
+            self.returncode = None
+            self.signals = []
+            self.reaped = False
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, signum):
+            self.signals.append(signum)
+            self.returncode = 0
+
+        def wait(self, timeout):
+            assert self.returncode == 0, 'started child was not stopped before reap'
+            self.reaped = True
+            return self.returncode
+
+    def spawn(argv, **kwargs):
+        assert argv[-1] == 'synthetic-first', 'component started after stop request'
+        child = Child()
+        children.append(child)
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return child
+
+    def record(path, value):
+        observed_states.append(value['state'])
+        return write_manifest(path, value)
+
+    monkeypatch.setattr(supervisor.signal, 'signal', lambda signum, handler: handlers.__setitem__(signum, handler))
+    monkeypatch.setattr(supervisor, 'acquire_resource_lock', acquire)
+    monkeypatch.setattr(supervisor, 'ticks', lambda _: 'synthetic-start-ticks')
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(supervisor, 'write_json', record)
+    try:
+        assert supervisor.main(['--plan', str(plan_path)], project_root=project) == 0
+        assert resource.closed, 'startup cancellation did not release its resource lock'
+    finally:
+        if not resource.closed:
+            resource.close()
+    assert len(children) == (0 if stop_before_first_component else 1)
+    assert all(child.signals == [signal.SIGINT] and child.reaped for child in children)
+    assert observed_states == ['RUNNING', 'STOPPED']
+    final = json.loads((runtime/'manifest.json').read_text())
+    assert final['stop_reason'] == 'startup_stop_request' and final['exit_code'] == 0
+    assert len(final['children']) == len(children)
+
+
+def launch_mapping_owner(harness, *, startup_gate):
+    """An actual parent starts the supervisor before any controller owner-watch."""
+    plan = {'session_id': harness.token, 'role': 'mapping_app',
+            'commands': [harness.command()] * (2 if startup_gate else 1),
+            'environment': {'PYTHONNOUSERSITE': '1'}, 'duration_s': 0, 'locks': [],
+            'data_source': 'SYNTHETIC_PROCESS_TEST_NO_ROS_NO_HARDWARE'}
+    # Hold the first real Popen return so owner death between components is
+    # deterministic, without inserting a delay into production startup.
+    bootstrap = harness.root/'gated-supervisor.py'
+    bootstrap.write_text('''from pathlib import Path
+import subprocess,sys,time
+from wc_runtime import supervisor
+root = Path(sys.argv[1]).parent
+original = subprocess.Popen
+count = 0
+def spawn(*args, **kwargs):
+    global count
+    child = original(*args, **kwargs)
+    count += 1
+    if count == 1:
+        (root/'first-component-created').write_text('ready')
+        while not (root/'continue-startup').exists():
+            time.sleep(.01)
+    return child
+supervisor.subprocess.Popen = spawn
+raise SystemExit(supervisor.main(['--plan', sys.argv[1]]))
+''', encoding='utf-8')
+    plan_path = harness.root/'plan.json'
+    command = ([sys.executable, str(bootstrap), str(plan_path)] if startup_gate else
+               [sys.executable, '-m', 'wc_runtime.supervisor', '--plan', str(plan_path)])
+    owner_code = '''import json,os,subprocess,sys,time
+from pathlib import Path
+from wc_runtime.supervisor import ticks
+root = Path(sys.argv[1])
+plan = json.loads(sys.argv[2])
+plan.update(owner_pid=os.getpid(), owner_start_ticks=ticks(os.getpid()))
+(root/'plan.json').write_text(json.dumps(plan))
+with (root/'supervisor.log').open('w') as log:
+    child = subprocess.Popen(json.loads(sys.argv[3]), stdin=subprocess.DEVNULL,
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+(root/'supervisor-identity.json').write_text(json.dumps({'pid':child.pid,'start_ticks':ticks(child.pid)}))
+while True: time.sleep(1)
+'''
+    with (harness.root/'owner.log').open('w') as log:
+        owner = subprocess.Popen([sys.executable, '-c', owner_code, str(harness.root),
+                                  json.dumps(plan), json.dumps(command)], cwd=PROJECT,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    record = {'pid': owner.pid, 'start_ticks': ticks(owner.pid)}
+    harness.others.append((owner, record))
+    identity_path = harness.root/'supervisor-identity.json'
+    wait_for(identity_path.exists, message='synthetic owner did not launch supervisor')
+    harness.supervisor_record = json.loads(identity_path.read_text())
+    if startup_gate:
+        wait_for(lambda: (harness.root/'first-component-created').exists())
+    else:
+        wait_for(lambda: (harness.root/'manifest.json').exists())
+    wait_for(lambda: len(harness.records()) >= 1)
+    return owner, record
+
+
+@pytest.mark.parametrize('phase', ['running_zombie', 'running_reaped', 'startup_reaped'])
+def test_mapping_owner_death_stops_without_owner_watch(harness, phase):
+    startup_gate = phase == 'startup_reaped'
+    owner, record = launch_mapping_owner(harness, startup_gate=startup_gate)
+    assert not (harness.root/'owner-watch.log').exists()
+    kill_verified(record)
+    if phase == 'running_zombie':
+        wait_for(lambda: (identity(record['pid']) or ('', ''))[1] == 'Z')
+    else:
+        owner.wait(timeout=5)
+    if startup_gate:
+        (harness.root/'continue-startup').write_text('resume', encoding='utf-8')
+    wait_for(lambda: (harness.root/'manifest.json').exists() and
+             harness.manifest().get('state') == 'STOPPED', timeout=8,
+             message='owner died before owner-watch existed; supervisor did not stop itself')
+    result = harness.manifest()
+    assert result['exit_code'] == 0 and not result.get('cleanup_errors')
+    assert result['stop_reason'] == ('owner_process_dead:Z' if phase == 'running_zombie' else 'owner_process_missing')
+    assert len(result['children']) == 1, 'owner death allowed a later component to start'
+    assert len(harness.records()) == 1
+    assert_no_owned_live_processes(harness)
+
+
+@pytest.mark.parametrize('fields', [
+    {'owner_pid': 123}, {'owner_start_ticks': '123'},
+    {'owner_pid': True, 'owner_start_ticks': '123'},
+    {'owner_pid': 0, 'owner_start_ticks': '123'},
+    {'owner_pid': -1, 'owner_start_ticks': '123'},
+    {'owner_pid': '123', 'owner_start_ticks': '123'},
+    {'owner_pid': 123, 'owner_start_ticks': 123},
+    {'owner_pid': 123, 'owner_start_ticks': ''},
+    {'owner_pid': 123, 'owner_start_ticks': '../stat'},
+])
+def test_invalid_mapping_owner_is_rejected_before_locks_or_components(tmp_path, monkeypatch, fields):
+    from wc_runtime import supervisor
+    root = tmp_path/'.phase1_runtime/mapping-owner-invalid'
+    root.mkdir(parents=True)
+    plan = dict(session_id='invalid-owner', role='mapping_app', commands=[['must-not-start']],
+                duration_s=0, locks=['must-not-lock'], environment={}, **fields)
+    path = root/'plan.json'
+    path.write_text(json.dumps(plan))
+    def forbidden(*args, **kwargs):
+        pytest.fail('Invalid owner reached a resource or process operation')
+    monkeypatch.setattr(supervisor, 'acquire_resource_lock', forbidden)
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', forbidden)
+    with pytest.raises(ValueError, match='mapping_app owner'):
+        supervisor.main(['--plan', str(path)], project_root=tmp_path)
+    assert not (root/'manifest.json').exists()
+
+
+@pytest.mark.parametrize('observation, reason', [
+    (None, 'owner_process_missing'),
+    (('124', 'S'), 'owner_pid_reused'),
+    (('123', 'Z'), 'owner_process_dead:Z'),
+    (('123', 'X'), 'owner_process_dead:X'),
+    (PermissionError(), 'owner_identity_unavailable:PermissionError'),
+])
+def test_mapping_owner_lost_before_lock_never_starts_components(tmp_path, monkeypatch, observation, reason):
+    from types import SimpleNamespace
+    from wc_runtime import supervisor
+    root = tmp_path/'.phase1_runtime/mapping-owner-lost'
+    root.mkdir(parents=True)
+    plan = dict(session_id='lost-owner', role='mapping_app', owner_pid=123, owner_start_ticks='123',
+                commands=[['must-not-start']], duration_s=0, locks=['must-not-lock'], environment={})
+    path = root/'plan.json'
+    path.write_text(json.dumps(plan))
+    def inspect_owner(pid):
+        assert pid == 123
+        if isinstance(observation, Exception):
+            raise observation
+        return None if observation is None else SimpleNamespace(start_ticks=observation[0], state=observation[1])
+    def forbidden(*args, **kwargs):
+        pytest.fail('Lost owner reached a resource or process operation')
+    monkeypatch.setattr(supervisor, 'process_identity', inspect_owner)
+    monkeypatch.setattr(supervisor, 'acquire_resource_lock', forbidden)
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(supervisor.signal, 'signal', lambda *args: None)
+    assert supervisor.main(['--plan', str(path)], project_root=tmp_path) == 0
+    result = json.loads((root/'manifest.json').read_text())
+    assert result['state'] == 'STOPPED' and result['exit_code'] == 0
+    assert result['stop_reason'] == reason and result['children'] == []
+
+
+@pytest.mark.parametrize('plan', [
+    {'role': 'mapping_app'}, {'role': 'operations', 'owner_pid': True, 'owner_start_ticks': None},
+    {'role': 'record', 'owner_pid': -1},
+])
+def test_owner_guard_does_not_change_unbound_or_other_roles(plan):
+    from wc_runtime.supervisor import mapping_owner
+    assert mapping_owner(plan) is None

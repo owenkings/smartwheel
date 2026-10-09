@@ -11,6 +11,7 @@ import sys
 import time
 
 from .component import DEFAULT_SIGINT_GRACE_S, RECORD_SIGINT_GRACE_S, TERM_GRACE_S, KILL_GRACE_S, validate_sigint_grace
+from .component import process as process_identity
 from .runtime_locks import acquire_resource_lock
 
 
@@ -74,6 +75,31 @@ def ticks(pid):
     return stat[stat.rindex(')')+2:].split()[19]
 
 
+def mapping_owner(plan):
+    """Only explicitly owner-bound mapping plans opt into this lifetime guard."""
+    if plan.get('role') != 'mapping_app' or not ({'owner_pid', 'owner_start_ticks'} & plan.keys()):
+        return None
+    pid, started = plan.get('owner_pid'), plan.get('owner_start_ticks')
+    if (type(pid) is not int or pid <= 0 or not isinstance(started, str) or
+            not started or any(character not in '0123456789' for character in started)):
+        raise ValueError('mapping_app owner requires a positive integer PID and decimal start ticks')
+    return pid, started
+
+
+def owner_stop_reason(owner):
+    try:
+        observed = process_identity(owner[0])
+    except (OSError, ValueError, IndexError) as error:
+        return 'owner_identity_unavailable:'+type(error).__name__
+    if observed is None:
+        return 'owner_process_missing'
+    if observed.start_ticks != owner[1]:
+        return 'owner_pid_reused'
+    if observed.state in {'Z', 'X'}:
+        return 'owner_process_dead:'+observed.state
+    return None
+
+
 def write_json(path, data):
     temporary = path.with_name(path.name+'.tmp')
     with temporary.open('w', encoding='utf-8') as stream:
@@ -121,6 +147,7 @@ def main(argv=None, *, project_root=None):
         raise ValueError('duration must be finite and nonnegative')
     if not plan.get('commands') or any(not isinstance(c,list) or not c or any(not isinstance(v,str) for v in c) for c in plan['commands']):
         raise ValueError('plan requires nonempty argv command lists')
+    owner = mapping_owner(plan)
     shutdown = shutdown_policy(plan)
     root = plan_path.parent
     lock_streams = []
@@ -133,16 +160,28 @@ def main(argv=None, *, project_root=None):
     def signal_stop(signum, frame):
         nonlocal stopping
         stopping = True
+    def owner_lost():
+        nonlocal stopping
+        if owner is not None:
+            reason = owner_stop_reason(owner)
+            if reason is not None:
+                manifest['stop_reason'] = reason
+                stopping = True
+        return stopping
     signal.signal(signal.SIGTERM, signal_stop)
     signal.signal(signal.SIGINT, signal_stop)
     result = 0
     try:
         for name in plan['locks']:
+            if owner is not None and owner_lost():
+                break
             stream = acquire_resource_lock(name)
             lock_streams.append(stream)
         environment = os.environ.copy()
         environment.update(plan['environment'])
         for index, command in enumerate(plan['commands']):
+            if owner_lost():
+                break
             log_path = root/f'process-{index}.log'
             log = log_path.open('ab', buffering=0)
             wrapped = [sys.executable,'-m','wc_runtime.component','--parent',str(os.getpid()),
@@ -154,10 +193,14 @@ def main(argv=None, *, project_root=None):
             children.append((child, log))
             manifest['children'].append(dict(pid=child.pid,start_ticks=ticks(child.pid),
                                             argv=command,log=str(log_path)))
+        if stopping:
+            manifest.setdefault('stop_reason', 'startup_stop_request')
         manifest['state'] = 'RUNNING'
         write_json(root/'manifest.json',manifest)
         end = time.monotonic()+plan['duration_s'] if plan.get('duration_s') else None
         while not stopping:
+            if owner_lost():
+                break
             for child, log in children:
                 rc = child.poll()
                 if rc is not None:

@@ -322,5 +322,10 @@ def save_session(root, handle, destination, *, inspect, export):
             # The map was already durably committed; report the late metadata
             # error without falsely treating a completed save as an absent map.
             result['cleanup_errors'].append('RETENTION_METADATA_UPDATE_FAILED: '+str(error))
-        write_new(runtime/('save-'+uuid.uuid4().hex+'.json'), json_bytes(result))
+        try:
+            write_new(runtime/('save-'+uuid.uuid4().hex+'.json'), json_bytes(result))
+        except OSError as error:
+            # The destination is committed and retention is already settled.
+            # A diagnostic journal failure must not report that map as unsaved.
+            result['cleanup_errors'].append('SAVE_JOURNAL_WRITE_FAILED: '+str(error))
         return result
