@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Offline calibration from completed static board recordings only.
+set -eo pipefail
+BOARDPLANE_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$BOARDPLANE_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$BOARDPLANE_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$BOARDPLANE_PROJECT"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+exec python3 -B -s -m wc_calibration.small_board_calibration --project-root "$BOARDPLANE_PROJECT" "$@"

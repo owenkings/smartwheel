@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Offline, completed recordings only. Does not start acquisition or install TF.
+set -eo pipefail
+ENVPLANE_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$ENVPLANE_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$ENVPLANE_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$ENVPLANE_PROJECT"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+exec python3 -B -s -m wc_calibration.environment_calibration --project-root "$ENVPLANE_PROJECT" "$@"

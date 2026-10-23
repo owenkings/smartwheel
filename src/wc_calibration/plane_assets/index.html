@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>双雷达 · 多姿态平面标定</title>
+  <link rel="stylesheet" href="/plane.css">
+  <script src="/plane.js" defer></script>
+</head>
+<body>
+  <main id="app" aria-busy="true">
+    <header class="masthead">
+      <div><p class="eyebrow">DUAL LIDAR CALIBRATION</p><h1>框选平面，多姿态标定</h1>
+        <p class="subtitle">先检查每个平面，再计算右雷达到左雷达的外参，最后独立验证与 ICP 检查。</p></div>
+      <span class="badge offline">离线工作台</span>
+    </header>
+    <div class="scope-note"><strong>本页不启动设备。</strong>导入的是已经完成的 20 秒静止录制；所有计算只生成离线候选，不启用正式外参。</div>
+    <div id="synthetic-banner" class="alert warning" hidden><strong>合成数据演示</strong> 当前会话包含合成数据，结果不能作为实机标定。</div>
+    <div id="error" class="alert error" role="alert" hidden></div>
+    <div id="notice" class="alert success" role="status" hidden></div>
+    <nav class="steps" aria-label="标定步骤">
+      <a href="#import-section"><span>01</span> 导入各姿态</a><a href="#roi-section"><span>02</span> 框选与拟合</a>
+      <a href="#result-section"><span>03</span> 标定与验证</a><a href="#icp-section"><span>04</span> ICP 与保存</a>
+    </nav>
+    <section class="panel" id="import-section">
+      <div class="section-head"><div><p class="eyebrow">01 · INPUT</p><h2>导入静止录制</h2></div><span id="pose-count" class="muted">0 个姿态</span></div>
+      <form id="import-form" class="import-form">
+        <label class="path-label">已完成录制目录<input id="dataset" type="text" required autocomplete="off" spellcheck="false" placeholder="/media/nvidia/…/data/experiments/…"></label>
+        <label>姿态标签<input id="label" type="text" maxlength="80" required placeholder="例如：正对板面"></label>
+        <label>用途<select id="import-role"><option value="train">参与标定</option><option value="holdout">独立验证</option></select></label>
+        <button type="submit" class="primary" data-mutates>导入录制</button>
+      </form>
+      <p class="help">每个目录对应一个保持不动的板面姿态。训练姿态的法向需要覆盖三个独立方向；独立验证姿态不参与求解。</p>
+      <div class="session-meta"><span>会话：<code id="session-id">连接中…</code></span><span>报告目录：<code id="output-root">—</code></span></div>
+    </section>
+    <div class="workspace" id="roi-section">
+      <aside class="panel pose-panel">
+        <div class="section-head"><div><p class="eyebrow">02 · PLANES</p><h2>姿态列表</h2></div></div>
+        <div id="pose-list" class="pose-list" aria-label="已导入姿态"></div>
+        <p id="empty-list" class="empty-small">导入第一个姿态后，在左右图像中分别框选同一块板面。</p>
+      </aside>
+      <section class="panel selection-panel">
+        <div class="section-head"><div><h2 id="active-title">等待导入录制</h2><p id="active-meta" class="muted">选择平面内部，避开轮廓、反光和背景。</p></div><span id="source-badge" class="badge" hidden></span></div>
+        <div id="selection-tools" class="selection-tools" hidden>
+          <label>本姿态用途<select id="active-role"><option value="train">参与标定</option><option value="holdout">独立验证</option></select></label>
+          <button id="fit-button" class="primary" data-mutates>拟合左右平面</button><button id="remove-button" class="danger subtle" data-mutates>移除此姿态</button>
+        </div>
+        <label class="confirm-face" id="confirm-face-label" hidden><input type="checkbox" id="same-face-confirmed"> 我已确认：左右框内是同一块板的同一面</label>
+        <p class="draw-help"><strong>框选方法：</strong>在左右回波幅度图上分别按住并拖动，框住板面内部一大片区域。两侧框不必大小相同，但必须落在同一物理平面。松开后自动保留区域。</p>
+        <div class="image-pair">
+          <article class="sensor-card left"><div class="sensor-head"><h3><span class="dot"></span>左雷达</h3><button id="clear-left" class="small" data-mutates>清除框选</button></div>
+            <div class="canvas-wrap"><canvas id="amplitude-left" width="160" height="60" aria-label="左雷达回波幅度，拖动框选板面内部"></canvas><div class="canvas-empty" id="empty-left">尚未导入</div></div>
+            <p id="roi-left" class="roi-meta">尚未框选</p><div id="fit-left" class="fit-stats"></div></article>
+          <article class="sensor-card right"><div class="sensor-head"><h3><span class="dot"></span>右雷达</h3><button id="clear-right" class="small" data-mutates>清除框选</button></div>
+            <div class="canvas-wrap"><canvas id="amplitude-right" width="160" height="60" aria-label="右雷达回波幅度，拖动框选板面内部"></canvas><div class="canvas-empty" id="empty-right">尚未导入</div></div>
+            <p id="roi-right" class="roi-meta">尚未框选</p><div id="fit-right" class="fit-stats"></div></article>
+        </div>
+        <p class="help">图像按雷达视角镜像显示；保存的区域使用原始行列索引（从 0 开始，包含端点）。黑白显示仅作定位，平面拟合使用录制中的三维点。</p>
+      </section>
+    </div>
+    <section class="panel" id="result-section">
+      <div class="section-head"><div><p class="eyebrow">03 · CALIBRATION</p><h2>计算外参，检查独立姿态</h2></div><button id="solve-button" class="primary" data-mutates>计算多姿态标定</button></div>
+      <p class="help">至少 3 个通过平面质量检查、法向线性独立的训练姿态。完整独立验证另外需要至少 3 个法向独立的录制，且不能复用训练录制。只改变距离或只向同一方向转动通常不够。</p>
+      <p class="help">页面门限用于筛选离线候选，不能证明实测精度。各姿态的框选、平面拟合与用途会自动保存；“保存会话与报告”另存一份计算结果。</p>
+      <div id="result-empty" class="empty-result">计算前请完成左右框选与平面拟合。</div>
+      <div id="result-content" hidden>
+        <div id="result-assessment" class="assessment"></div>
+        <div class="result-grid"><div><h3>右雷达 → 左雷达</h3><p class="formula">p<sub>left</sub> = R<sub>left←right</sub> p<sub>right</sub> + t<sub>left←right</sub></p>
+          <div class="transform"><div><span class="muted">旋转矩阵 R</span><pre id="rotation">—</pre></div><div><span class="muted">平移 t（米）</span><pre id="translation">—</pre></div></div></div>
+          <div><h3>几何约束与验证</h3><dl id="solve-stats" class="metrics"></dl></div></div>
+        <div class="table-scroll"><table><caption>逐姿态残差 · 独立验证数据不参与求解</caption><thead><tr><th>姿态</th><th>用途</th><th>法向夹角</th><th>平面偏移残差</th><th>评估</th></tr></thead><tbody id="residual-rows"></tbody></table></div>
+      </div>
+      <div class="preview-section"><div class="section-head compact"><div><h3>当前姿态 · 点云叠加检查</h3><p id="preview-caption" class="help">计算外参后显示右侧变换到左侧的叠加结果。</p></div>
+        <div class="segmented" role="group" aria-label="点云投影视图"><button data-view="XY" aria-pressed="true">XY 顶视</button><button data-view="XZ" aria-pressed="false">XZ 侧视</button><button data-view="YZ" aria-pressed="false">YZ 前视</button></div></div>
+        <div class="legend"><span><i class="dot left-dot"></i> 左雷达</span><span><i class="dot right-dot"></i> 右雷达经候选变换</span></div>
+        <div id="preview-transform-tools" class="segmented transform-switch" hidden><button id="preview-initial" aria-pressed="true">平面标定初值</button><button id="preview-refined" aria-pressed="false">ICP 微调结果</button></div>
+        <canvas id="cloud-preview" width="1000" height="420" aria-label="当前姿态点云的等比例二维投影"></canvas>
+        <p class="help">横纵轴采用相同米制比例；屏幕投影重叠不能代替三维验证。显示的是导入点云，不根据幅度图重新计算射线。</p>
+      </div>
+    </section>
+    <section class="panel" id="icp-section">
+      <div class="section-head"><div><p class="eyebrow">04 · REFINE & SAVE</p><h2>离线 ICP 与保存</h2></div><div class="actions"><button id="icp-button" data-mutates>运行离线 ICP 检查</button><button id="save-button" class="primary" data-mutates>保存会话与报告</button></div></div>
+      <p id="icp-eligibility" class="help">先获得通过检查的标定候选，服务端允许后才可运行 ICP。</p>
+      <div id="icp-result" hidden></div>
+      <p class="scope-note small-note">保存的候选供离线复核使用。本页没有正式外参启用入口，也不会修改实时融合配置。</p>
+      <div id="save-path" class="saved-path" hidden></div>
+    </section>
+    <footer><span id="connection-state">正在连接工作台…</span><span id="revision-state"></span></footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Offline single-sensor diagnostics. Does not acquire data or estimate extrinsics.
+set -eo pipefail
+BOARDDIAG_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$BOARDDIAG_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$BOARDDIAG_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$BOARDDIAG_PROJECT"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+exec python3 -B -s -m wc_calibration.small_board_capture --project-root "$BOARDDIAG_PROJECT" "$@"

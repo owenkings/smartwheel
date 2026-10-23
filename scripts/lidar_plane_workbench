@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Independent offline calibration server. No hardware or mapping job is started.
+set -eo pipefail
+PLANE_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$PLANE_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$PLANE_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$PLANE_PROJECT"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+exec python3 -B -s -m wc_calibration.plane_workbench --project-root "$PLANE_PROJECT" "$@"
