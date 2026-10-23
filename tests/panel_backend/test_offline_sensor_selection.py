@@ -74,6 +74,7 @@ def test_all_algorithm_paths_receive_the_real_selected_source_and_leave_input_un
     assert plan['selected_sides'] == (['left', 'right'] if side == 'all' else [side])
     operations = set()
     for task in plan['tasks']:
+        if task.get('stage')=='compaction':continue
         command = task['commands'][0]
         assert command[command.index('--sides')+1] == side
         operations.update(value for value in command if value in ('compare', 'refine', 'wc_panel.offline_worker'))
@@ -113,13 +114,14 @@ def test_mixed_cloud_motion_candidates_are_separate_and_matched_to_each_algorith
     candidates = {}
     estimators = {'raw': set(), 'filtered': set()}
     for task in plan['tasks']:
+        if task.get('stage')=='compaction':continue
         command = task['commands'][0]
         cloud = command[command.index('--cloud')+1]
         if task['variant'] is None:
             candidates[cloud] = str(Path(task['output'])/'motion_candidate.json')
             assert task['id'] == 'motion_candidate_'+cloud
     assert set(candidates) == {'raw', 'filtered'}
-    assert len(set(candidates.values())) == 2 and plan['task_count'] == 24
+    assert len(set(candidates.values())) == 2 and plan['task_count'] == 46
     for task in plan['tasks']:
         variant = task['variant']
         if variant is None or not variant['motion_correction']: continue
@@ -134,11 +136,11 @@ def test_single_motion_cloud_uses_its_stream_even_when_first_variant_is_other_cl
     raw = next(v['id'] for v in catalog.variants() if v['enabled'] and v['cloud'] == 'raw' and not v['motion_correction'])
     filtered = next(v['id'] for v in catalog.variants() if v['enabled'] and v['cloud'] == 'filtered' and v['motion_correction'])
     plan = backend.plan_offline(source, output, {'variants': [raw, filtered]})
-    task, = [task for task in plan['tasks'] if task['variant'] is None]
+    task, = [task for task in plan['tasks'] if task['variant'] is None and task.get('stage')!='compaction']
     command = task['commands'][0]
     assert command[command.index('--cloud')+1] == 'filtered'
     assert task['id'] == 'motion_candidate' and Path(task['output']).name == '_motion_candidate'
-    assert plan['task_count'] == 3
+    assert plan['task_count'] == 5
 
 
 def test_broken_source_inventory_is_reported_and_cannot_be_planned(case):
@@ -171,7 +173,7 @@ def test_motion_window_policy_reaches_both_candidate_streams(case, minimum):
     backend, source, output = fill(case)
     options = {"all": True, "min_turn_windows": minimum}
     plan = backend.plan_offline(source, output, options)
-    candidates = [task for task in plan["tasks"] if task["variant"] is None]
+    candidates = [task for task in plan["tasks"] if task["variant"] is None and task.get('stage')!='compaction']
     assert len(candidates) == 2
     assert plan["options"]["min_turn_windows"] == minimum
     assert options == {"all": True, "min_turn_windows": minimum}

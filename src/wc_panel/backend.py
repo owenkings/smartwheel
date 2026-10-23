@@ -101,9 +101,11 @@ class PanelBackend:
         if self.settings_file.exists():
             value=catalog.read_json(self.settings_file)
             if value.get('schema_version')!=1: raise ValueError('面板路径配置版本错误')
-            return {key:value[key] for key in ('recording_root','results_root')}
+            compact=value.get('auto_compact',True)
+            if type(compact) is not bool: raise ValueError('自动压缩设置必须为布尔值')
+            return dict(recording_root=value['recording_root'],results_root=value['results_root'],auto_compact=compact)
         return dict(recording_root=str(self.policy.resolve('data/experiments')),
-                    results_root=str(self.policy.resolve('data/analysis')))
+                    results_root=str(self.policy.resolve('data/analysis')),auto_compact=True)
 
     def update_settings(self,recording_root,results_root):
         roots=[]
@@ -112,7 +114,8 @@ class PanelBackend:
             guard.check();roots.append(root)
         if roots[0]==roots[1] or roots[0].is_relative_to(roots[1]) or roots[1].is_relative_to(roots[0]):
             raise ValueError('录制和结果根目录必须相互独立')
-        value=dict(schema_version=1,recording_root=str(roots[0]),results_root=str(roots[1]),updated_at=time.time())
+        value=dict(schema_version=1,recording_root=str(roots[0]),results_root=str(roots[1]),
+                   auto_compact=self.settings()['auto_compact'],updated_at=time.time())
         atomic_json(self.settings_file,value)
         return self.settings()
 
@@ -121,14 +124,15 @@ class PanelBackend:
         from wc_runtime.project_config import selected_config_path
         mapping=catalog.read_json(selected_config_path(self.project_root, 'mapping_live.json'))
         return dict(estimators=[dict(value='robot_localization',label='官方 EKF'),dict(value='five_state',label='五状态 EKF')],
-            live_defaults=dict(estimator=mapping.get('wheel_imu_estimator','five_state'),cloud=mapping.get('cloud_source','filtered'),
-                               process_noise=mapping.get('process_noise','legacy')),
+            live_defaults=dict(live_scheme='validated',estimator=mapping.get('wheel_imu_estimator','five_state'),cloud=mapping.get('cloud_source','filtered'),
+                               process_noise=mapping.get('process_noise','legacy'),
+                               cloud_filter_enabled=mapping.get('cloud_filter',{}).get('enabled',False)),
             clouds=['raw','filtered'],sides=['all','left','right'],offline_variants=catalog.variants(),
             official_geometry=dict(enabled=False,reason='官方 EKF 的几何反馈尚未实现'),
             process_noise=['legacy','white_acceleration'],
             conditions=['运动修正候选必须来自同一次录制并通过校验',
                         'PSD/几何离线方案当前需要五状态、运动修正及点云筛选',
-                        '未知外参仍会被运行时阻止；机械初值仅在显式选择后用于离线实验'],
+                        '当前校验方案仍阻止未知外参；实时实验方案须显式选择并校验机械初值、离线候选和当前设备绑定'],
             **live_capabilities(self.project_root))
 
     def list_recordings(self,root=None):
@@ -176,6 +180,10 @@ class PanelBackend:
         info=catalog.recording(source)
         if not info['complete'] and not options.get('allow_partial'):
             raise ValueError(info['reason'])
+        compact=options.get('auto_compact',self.settings()['auto_compact'] if info['complete'] else False)
+        if type(compact) is not bool: raise ValueError('自动压缩选项必须为布尔值')
+        if compact and not info['complete']:raise ValueError('不完整录制的诊断结果需要保留缓存，请取消自动压缩与精简')
+        options['auto_compact']=compact
         destination,destination_guard=resolve_user_destination(self.project_root,output_root or self.settings()['results_root'])
         if source==destination or destination.is_relative_to(source) or source.is_relative_to(destination):
             raise ValueError('融合输出目录不能与原始录制目录重叠')
@@ -232,6 +240,13 @@ class PanelBackend:
                 command=self._cli('compare',*args)
             tasks.append(dict(id=variant['id'],label=variant['label'],variant=variant,output=str(target),commands=[command],
                               native_rate_hz=rate,native_wall_interval_s=0.2))
+            if compact:
+                preflight=[sys.executable,'-s','-m','wc_runtime.offline_compaction','preflight',
+                           '--project-root',str(self.project_root),'--dataset',str(source),
+                           '--output-root',str(destination),'--input-rate-hz',str(rate)]
+                if variant['geometry']:preflight.append('--geometry')
+                tasks[-1]['preflight']=preflight
+                tasks.append(self._compaction_task(source,output,target,variant['id']))
         plan=dict(id=identifier,dataset=str(source),output_root=str(destination),output=str(output),tasks=tasks,
                   task_count=len(tasks),comparison_count=len(selected),options=options,created_at=time.time(),
                   sides=sides,selected_sides=selected_sides,available_sides=info['available_sides'])
@@ -253,6 +268,11 @@ class PanelBackend:
             if output.parent!=destination or output.exists(): raise ValueError('结果目录已存在，请重新生成计划')
             snapshot=self.device_parameters()
             sg.check();dg.check();self.policy.check()
+            if 'auto_compact' in plan.get('options',{}):
+                current=self.settings()
+                remembered=dict(schema_version=1,**current)
+                remembered.update(auto_compact=plan['options']['auto_compact'],updated_at=time.time())
+                atomic_json(self.settings_file,remembered)
             output.mkdir()
             atomic_json(output/'panel_result.json',dict(schema_version=1,status='QUEUED',dataset=str(source),plan=plan))
             try:
@@ -267,6 +287,45 @@ class PanelBackend:
                 except (OSError,ValueError):pass
                 raise
             self._plans.pop(plan['id'])
+            return row
+
+    def _compaction_task(self,source,batch,target,identifier):
+        return dict(id='compact__'+identifier,label='压缩与精简：'+target.name,variant=None,
+                    stage='compaction',output=str(target),commands=[[sys.executable,'-s','-m',
+                    'wc_runtime.offline_compaction','compact','--project-root',str(self.project_root),
+                    '--dataset',str(source),'--batch',str(batch),'--run',str(target)]])
+
+    def retry_offline_compaction(self,identifier):
+        """Only retry post-processing of existing maps; never replay a saved command."""
+        with self._lock:
+            old=self._manager.get(identifier)
+            if old['kind']!='offline' or old['status'] not in ('FAILED','CANCELLED','INTERRUPTED'):
+                raise ValueError('请选择已停止且压缩未完成的离线队列')
+            batch,dg=resolve_user_destination(self.project_root,old['output'])
+            if self._store.active(batch):raise ValueError('此批次仍有任务占用，请等待结束')
+            metadata=catalog.read_json(batch/'panel_result.json')
+            if metadata.get('job_id')!=identifier:raise ValueError('请选择该批次最新的队列记录')
+            plan=metadata['plan']
+            if not plan.get('options',{}).get('auto_compact'):raise ValueError('此队列未启用自动压缩')
+            source,sg=resolve_user_destination(self.project_root,plan['dataset'])
+            if self._recorded_configuration(source)!=plan['recorded_configuration']:
+                raise ValueError('原录包配置改变，拒绝继续精简')
+            tasks=[]
+            for state in old['task_states']:
+                if not state['id'].startswith('compact__') or state['status']=='COMPLETE':continue
+                target=ordinary(state['output'])
+                if target.parent!=batch:raise ValueError('精简目标越出融合批次')
+                report=target/('refinement_result.json' if (target/'refinement_result.json').exists() else 'result.json')
+                # Large numerical reports are checked in the worker, never in a UI poll.
+                if not report.is_file():continue
+                task=self._compaction_task(source,batch,target,state['id'][9:])
+                task['input_configuration_hashes']=plan['recorded_configuration']['files'];tasks.append(task)
+            if not tasks:raise ValueError('没有已生成且等待精简的地图')
+            sg.check();dg.check();self.policy.check()
+            archive=batch/'_compaction';archive.mkdir(exist_ok=True)
+            atomic_json(archive/(identifier+'_panel_result.json'),metadata)
+            row=self._manager.submit('offline','继续压缩与精简 '+source.name,tasks,output=batch,
+                    protected_paths=[source,batch],guards=[sg,dg],snapshot={'original_job_id':identifier})
             return row
 
     def start_capture(self,output_root=None,sides='all',*,manual_drive=True,name_options=None):
@@ -310,20 +369,29 @@ class PanelBackend:
         estimator={'official':'robot_localization'}.get(options.get('estimator'),options.get('estimator',mapping.get('wheel_imu_estimator','five_state')))
         noise={'discrete':'legacy','continuous_psd':'white_acceleration'}.get(options.get('process_noise'),options.get('process_noise','legacy'))
         geometry=options.get('geometry',False);motion=options.get('motion_correction',False)
+        scheme=options.get('live_scheme','validated')
+        filtering=options.get('cloud_filter_enabled',mapping.get('cloud_filter',{}).get('enabled',False))
         if mode not in ('preview','mapping') or sides not in ('all','left','right') or cloud not in ('raw','filtered'):
             raise ValueError('实时模式、雷达或点云来源参数错误')
         if estimator not in ('robot_localization','five_state') or noise not in ('legacy','white_acceleration'):
             raise ValueError('未知估计器或过程噪声')
+        if scheme not in ('validated','experiment'):raise ValueError('未知实时参数方案')
         if type(geometry) is not bool or type(motion) is not bool: raise ValueError('修正开关必须为布尔值')
+        if type(filtering) is not bool: raise ValueError('点云筛选开关必须为布尔值')
         if estimator=='robot_localization' and geometry: raise ValueError('官方 EKF 的几何反馈尚未实现')
         if estimator=='robot_localization' and noise!='legacy': raise ValueError('连续噪声 PSD 当前仅适用于五状态 EKF')
         if mode=='preview' and (motion or geometry or noise!='legacy'):
             raise ValueError('预览模式不执行运动修正、连续噪声或几何纠偏，请选择实时建图')
-        if mode=='mapping':
-            mapping_capability=self.capabilities()['live_mapping']['by_sides'][sides]
+        capability=self.capabilities() if mode=='mapping' or scheme=='experiment' else {}
+        if scheme=='experiment':
+            capability=capability.get('live_schemes',{}).get('experiment',{})
+            if not capability:raise ValueError('实时实验方案尚未通过参数与来源校验')
+        elif 'live_schemes' in capability:
+            capability=capability['live_schemes']['validated']
+        if mode=='mapping' or scheme=='experiment':
+            mapping_capability=capability['live_mapping']['by_sides'][sides]
             if not mapping_capability['enabled']:raise ValueError(mapping_capability['reason'])
         if motion or geometry:
-            capability=self.capabilities()
             for enabled,key in ((motion,'live_motion_correction'),(geometry,'live_geometry')):
                 if enabled:
                     row=capability[key]['by_sides'][sides]
@@ -331,7 +399,9 @@ class PanelBackend:
         session=self._identity('live')
         arguments=[sys.executable,'-s',self.project_root/'scripts/map',sides,
             '--mapping','true' if mode=='mapping' else 'false','--name',session,'--cloud',cloud,
+            '--scheme',scheme,
             '--estimator',estimator,'--motion-correction','on' if motion else 'off','--process-noise',noise,
+            '--cloud-filter','on' if filtering else 'off',
             '--geometry','on' if geometry else 'off','--panel-layout','unified','--save-dialog']
         if mode == 'mapping':
             # Legacy CLI still starts immediately; the panel opens a reusable
@@ -339,7 +409,9 @@ class PanelBackend:
             arguments.append('--interactive')
         command=self._ros_command(arguments)
         self.policy.check()
-        task=dict(id=session,label='实时建图' if mode=='mapping' else '实时预览',commands=[command],output=None,accepted_exit_codes=[0,3])
+        label='实时建图' if mode=='mapping' else '实时预览'
+        if scheme=='experiment':label+='（未标定实验）'
+        task=dict(id=session,label=label,commands=[command],output=None,accepted_exit_codes=[0,3])
         return self._manager.submit('live',task['label'],[task],guards=[self.policy],snapshot=self.device_parameters())
 
     def jobs(self): return self._manager.jobs()

@@ -4,6 +4,8 @@
 
 ## 内容与入口
 
+- [test_offline_compaction.py](test_offline_compaction.py)：普通、PSD、几何结果的字节保留、查看兼容、中断恢复与拒绝损坏、链接、活动文件、空间不足。
+
 - [save_choice_driver.cpp](save_choice_driver.cpp)
 - [test_explicit_paths.py](test_explicit_paths.py)
 - [test_live_calibration_files.py](test_live_calibration_files.py)

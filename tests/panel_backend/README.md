@@ -4,7 +4,11 @@
 
 ## 内容与入口
 
+- [test_auto_compaction.py](test_auto_compaction.py)：逐图保存阶段、默认与记忆开关、容量预检、仅恢复精简及历史记录保护。
+
 - [test_backend.py](test_backend.py)
+- [test_live_filter_backend.py](test_live_filter_backend.py)：实时点云筛选默认值、启动参数与配置保留。
+- [test_live_experiment_backend.py](test_live_experiment_backend.py)：显式实时实验方案、独立能力校验、候选来源失效阻塞和当前校验方案保留。
 - [test_calibration_tools.py](test_calibration_tools.py)
 - [test_capture_naming.py](test_capture_naming.py)
 - [test_config_profiles.py](test_config_profiles.py)

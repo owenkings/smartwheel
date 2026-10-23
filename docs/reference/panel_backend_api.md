@@ -5,12 +5,15 @@ All results are JSON-shaped dictionaries/lists. Exceptions are user-displayable
 `ValueError`, `RuntimeError`, or `OSError`. Discovery, plans and storage scans run
 on UI workers. No method starts hardware before explicit `start_capture/live`.
 
-- `settings()` returns `recording_root`, `results_root`; `update_settings(recording_root, results_root)` validates both pre-existing, independent absolute directories and atomically persists `config/panel.local.json`.
+- `settings()` returns `recording_root`, `results_root`, `auto_compact` (boolean, defaults to true). `update_settings(recording_root, results_root)` validates both pre-existing, independent absolute directories and atomically persists `config/panel.local.json`; path updates preserve the last compaction choice. A successful offline submission remembers its choice.
 - `capabilities()` returns `estimators[{value,label}]`, `clouds`, `sides`, `process_noise`, `conditions`, `offline_variants` and disabled `official_geometry`. Estimator values: `robot_localization|five_state`; noise: `legacy|white_acceleration`.
 - `list_recordings(root=None)` returns `{id,name,path,status,complete,bytes,sides,reason}`. A valid listing requires runtime configuration and SQLite bag parts. Incomplete data are labeled and never treated as complete.
 - `list_results(root=None)` returns `{id,name,path,status,bytes,images,clouds,trajectories,dataset,group_id,run,cell,image_roles}`. One row represents one experimental cell, including nested comparisons and the numbered 01–12 summary/gallery layout. Indexes of the same archived run/cell merge without duplicating results. `group_id` is the displayed summary ID when available; `id` remains its unique relative cell path. `image_roles` maps indexed `top`, `grid`, `3d`, and `trajectory` figures to their absolute paths. Other images remain in `images`. Clouds include PLY/PCD and `.ply.xz`/`.pcd.xz`, which viewers must stream without silently extracting to storage. Archived `retained_trajectory` identifies relocated supplement cells; stale `/dev/shm` paths are never followed. A missing cloud remains an empty list rather than borrowing another cell's same-named file.
 - `plan_offline(dataset,output_root=None,options=None)` returns `{id,dataset,output_root,output,tasks,task_count,comparison_count,options,created_at}`. `options.variants` selects capability IDs; `all:true` chooses 22 supported variants. Otherwise accept `estimator,cloud,filtering,motion_correction,process_noise,geometry`. Optional `input_rate_hz`, explicit `allow_partial`, and explicit `mechanical_initial`. `min_turn_windows` is a positive integer (default 30), forwarded to each motion-candidate worker as `--min-turn-windows` and frozen in the plan and candidate policy. It changes only the minimum number of valid 0.1 s bins for each turn direction in training, retained training and holdout; all other acceptance checks remain unchanged. A lower value is an explicit offline experiment, not a formal calibration. The GUI continues to use the default unless its caller supplies this API option. Plans do not create results or start processes. Each selected corrected cloud stream gets a verified same-session candidate; both EKFs using that stream share it. Candidate workers select auto IMU timing and freeze the same recorded timing model as compare/refine. Unsupported official geometry stays visible and disabled. PSD/geometry combinations use the actual refine capabilities, with no fabricated Cartesian product.
 - `start_offline(plan)` only accepts the unmodified plan issued by this backend. Generates a unique session output, records plan/configuration, and queues actual compare/refine processes.
+- `options.auto_compact` defaults to the remembered setting for complete recordings; diagnostic incomplete recordings default to false and reject explicit true. When enabled, each comparison has a capacity `preflight` command followed by its unchanged mapping commands, then a separate `stage:compaction` task. Candidate stages are unchanged. Compression is byte-lossless for full PLY; only manifest-listed derived CDR caches are omitted. Original bags, candidates, both native DBs, maps, trajectories and reports remain. `task_count` includes compaction; `comparison_count` counts mapping selections. No hard-coded dataset, matrix or mounted-device UUID is used.
+- `retry_offline_compaction(job_id)` accepts an inactive FAILED/CANCELLED/INTERRUPTED auto-compaction job matching its batch's latest saved job ID. It constructs whitelisted commands only for unfinished compaction stages whose maps already exist, verifies frozen input configuration, preserves old metadata and submits a new job against the same batch. It never reruns mapping or evaluates saved arbitrary commands; later skipped fusion tasks require a new plan. The worker rechecks actual map completion, artifacts, source hashes, storage identity and its durable plan before pruning. Corrupt published archives fail with originals retained.
+- `list_results` rows for retained runs also expose `storage_status:COMPACTED|COMPACTION_PENDING|COMPACTION_METADATA_INVALID` and `direct_resume_supported:false`. Generation-time manifests remain unchanged; `compaction_receipt.json` and `compaction_manifest.json.xz` describe retained bytes and omitted caches. The per-batch `RESULT_SUMMARY.json` stays small. Refine `--resume` rejects a run with a compaction receipt and explains regeneration from original input in a new directory.
 - `start_capture(output_root=None,sides='all',manual_drive=True)` starts a unique date/time child folder, mapping-core capture, user-stopped duration, memory staging and unified preview. The panel preserves the established user-operated WASD/hand-push workflow with `--manual-drive`; this does not authorize an assistant to drive. A hardware read-only acceptance run must explicitly call `manual_drive=False`, or use the capture CLI without `--manual-drive`. Its preview has no control widget. RAM/tmpfs reserve limits still apply; duration 0 is not an unlimited-capacity guarantee. `start_live(options)` accepts `mode:preview|mapping`, sides, cloud, estimator, noise and boolean correction/geometry. Uses the project's normal mapping supervisor and close/save dialog.
 - `jobs()` returns `{id,kind,label,status,progress,step,total_steps,log_path,error,output,started_at,ended_at,task_states}`. `progress` is 0..1 completed-stage fraction, not guessed frame progress. Each task state has id/label/status/error/output and an `exit_code` once available. `cancel(job_id)` requests SIGINT of the owned supervisor and returns its current state; STOPPING remains active until finalization. Offline cancellation is CANCELLED; orderly live/capture stop is COMPLETE. `read_log(job_id,offset=0)` returns `{text,offset,status}` with byte offsets.
 - `device_parameters()` returns `{revision,identity,groups}`. Groups have `id,label,value,warning_required,effective,path,conditions`. IDs: `extrinsics,wheels,display,algorithms`; device identities are read-only. UI shows the warning **before enabling parameter edits**. After user confirmation call `request_parameter_edit(group)` to get `{token,message,revision}`. `save_parameters(group,value,warning_token=None,expected_revision=None)` requires the read revision and warning token for extrinsics/wheels. Returns `{revision,backup,effective}`. Existing runtime validators remain authoritative; unknown transforms remain unknown. Original bytes and before/after revisions are kept in configured reports/panel/parameter_revisions. Existing sessions keep their frozen configuration; changes apply to next task.
@@ -24,13 +27,43 @@ ordinary internal directories use a session-bound directory guard. No fallback.
 
 ## Evidence-backed live capabilities and calibration
 
+`start_live(options)` additionally accepts boolean `cloud_filter_enabled`.
+When omitted it inherits the current configuration; an explicit switch changes
+only this task's `cloud_filter.enabled`, preserving thresholds and source files.
+`capabilities().live_defaults.cloud_filter_enabled` supplies the UI default.
+The `--cloud-filter on|off` CLI option carries it through the interactive
+preview/map lifecycle. Pure preview never applies mapping filters.
+
 `capabilities()` also returns `live_mapping`, `live_motion_correction`, and
 `live_geometry`. Each has `enabled`, `reason`, and
 `by_sides: {all:{enabled,reason},left:{enabled,reason},right:{enabled,reason}}`.
-These are software/configuration capability checks, not a successful hardware
-startup claim. Mapping remains unavailable for a side without its measured
+These legacy keys continue to describe the validated scheme. They are
+software/configuration capability checks, not a successful hardware startup
+claim. Validated mapping remains unavailable for a side without its measured
 `T_axle_lidar`; native preview remains available. Correction/PSD/geometry cannot
 be selected in preview. Official geometry stays visible and disabled.
+
+`start_live(options)` accepts `live_scheme:validated|experiment`, defaulting to
+`validated`; the backend passes this explicit choice as `scripts/map --scheme`.
+`capabilities().live_defaults.live_scheme` is always `validated`.
+`capabilities().live_schemes` contains `validated` and `experiment`; each provides
+the same three capability keys with side-specific rows. The experimental entry
+also provides `note`, `parameter_status:UNCALIBRATED_EXPERIMENT`, and `provenance`.
+Its availability comes from the runtime's read-only experimental profile
+validation, including current devices, assembly, hardware configuration and
+candidate SHA-256. The backend checks the selected scheme's rows again before
+submission. Experimental preview also requires valid experimental evidence;
+preview still performs no mapping correction. Official geometry stays
+unsupported under both schemes. Experimental task labels include 未标定实验.
+
+The experimental profile defaults to
+`config/calibration/live_experiment_profile.json`. It explicitly authorizes
+mechanical initial geometry and reuse of one offline candidate without changing
+their original calibration status. The UI displays the uncalibrated state and
+candidate source session. Runtime sessions freeze the profile, candidate and
+their provenance. This path does not save or synthesize a device calibration,
+independent gyro confirmation, or measured lidar origin, and does not alter the
+validated scheme's configuration or capability checks.
 
 The `live_motion` parameter group requires the warning token and revision. Its
 value is `{calibration, gyro_bias_config, calibration_evidence_path}`. Unknown

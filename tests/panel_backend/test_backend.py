@@ -252,7 +252,7 @@ class PlanTests(Fixture):
         original=(self.dataset/'capture_manifest.json').read_bytes()
         with patch('wc_panel.backend.resolve_user_destination',fake_resolve):
             plan=backend.plan_offline(self.dataset,self.results,{'all':True})
-        self.assertEqual(plan['comparison_count'],22);self.assertEqual(plan['task_count'],24)
+        self.assertEqual(plan['comparison_count'],22);self.assertEqual(plan['task_count'],46)
         candidates=[]
         for task in plan['tasks'][1:]:
             command=task['commands'][0]

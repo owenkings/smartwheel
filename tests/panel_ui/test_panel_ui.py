@@ -227,15 +227,117 @@ class PanelUITests(unittest.TestCase):
         self.assertFalse(dialog.geometry.isEnabled())
         dialog.mode.setCurrentIndex(1)
         dialog.estimator.setCurrentIndex(1)
-        dialog.geometry.setChecked(True)
+        dialog.geometry.setCurrentIndex(dialog.geometry.findData(True))
         self.assertTrue(dialog.geometry.isEnabled())
         dialog.estimator.setCurrentIndex(0)
         self.assertFalse(dialog.geometry.isEnabled())
-        self.assertFalse(dialog.geometry.isChecked())
+        self.assertIs(dialog.geometry.currentData(), False)
         dialog.start()
         drain(self.app)
         self.assertEqual(self.backend.calls[-1][0], "live")
         self.assertFalse(self.backend.calls[-1][1]["geometry"])
+
+    def test_live_choices_use_compact_two_column_grid(self):
+        dialog = self.make(LiveDialog)
+        controls = (dialog.scheme, dialog.mode, dialog.sides, dialog.cloud, dialog.estimator,
+                    dialog.filtering, dialog.motion, dialog.noise, dialog.geometry)
+        for index, control in enumerate(controls):
+            self.assertIsInstance(control, QtWidgets.QComboBox)
+            self.assertIs(dialog.options_grid.itemAtPosition(index // 2, (index % 2) * 3 + 1).widget(), control)
+            self.assertLessEqual(control.width(), 250)
+            self.assertTrue(dialog.form_scroll.viewport().rect().contains(
+                QtCore.QRect(control.mapTo(dialog.form_scroll.viewport(), QtCore.QPoint()), control.size())))
+        for left, right in zip(controls[::2], controls[1::2]):
+            self.assertEqual(left.y(), right.y())
+            self.assertLess(left.geometry().right(), right.geometry().left())
+
+    def test_live_dropdown_choices_reach_submitted_mapping_task(self):
+        self.backend.capability_overrides["live_motion_correction"] = dict(enabled=True, reason="合成设备声明")
+        dialog = self.make(LiveDialog)
+        for control, value in ((dialog.mode, "mapping"), (dialog.sides, "left"),
+                               (dialog.cloud, "raw"), (dialog.filtering, True),
+                               (dialog.motion, True), (dialog.noise, "white_acceleration"),
+                               (dialog.geometry, True)):
+            control.setCurrentIndex(control.findData(value))
+        dialog.start()
+        drain(self.app)
+        self.assertEqual(self.backend.calls[-1], ("live", dict(
+            live_scheme="validated", mode="mapping", sides="left", cloud="raw", estimator="five_state",
+            cloud_filter_enabled=True, motion_correction=True,
+            process_noise="white_acceleration", geometry=True)))
+
+    def test_experiment_requires_explicit_selection_and_keeps_source_visible(self):
+        blocked = dict(enabled=False, reason="严格方案缺少实测外参")
+        enabled = dict(enabled=True, reason="未标定实验参数已校验")
+        self.backend.capability_overrides["live_schemes"] = dict(
+            validated={key:copy.deepcopy(blocked) for key in ("live_mapping", "live_motion_correction", "live_geometry")},
+            experiment={**{key:copy.deepcopy(enabled) for key in ("live_mapping", "live_motion_correction", "live_geometry")},
+                        "note":"未标定实验：机械初值与离线候选", "provenance":{"source_session_id":"RoomAB合成来源"}})
+        dialog = self.make(LiveDialog)
+        self.assertEqual(dialog.scheme.currentData(), "validated")
+        dialog.mode.setCurrentIndex(dialog.mode.findData("mapping"))
+        self.assertFalse(dialog.start_button.isEnabled())
+        dialog.scheme.setCurrentIndex(dialog.scheme.findData("experiment"))
+        self.assertTrue(dialog.start_button.isEnabled())
+        self.assertTrue(dialog.motion.isEnabled())
+        self.assertTrue(dialog.geometry.isEnabled())
+        self.assertIn("未标定", dialog.scheme_reason.text())
+        self.assertIn("RoomAB合成来源", dialog.scheme_reason.text())
+        dialog.motion.setCurrentIndex(dialog.motion.findData(True))
+        dialog.geometry.setCurrentIndex(dialog.geometry.findData(True))
+        dialog.estimator.setCurrentIndex(dialog.estimator.findData("robot_localization"))
+        self.assertFalse(dialog.geometry.isEnabled())
+        self.assertFalse(dialog.geometry.currentData())
+        dialog.scheme.setCurrentIndex(dialog.scheme.findData("validated"))
+        self.assertFalse(dialog.motion.currentData())
+        dialog.scheme.setCurrentIndex(dialog.scheme.findData("experiment"))
+        dialog.motion.setCurrentIndex(dialog.motion.findData(True))
+        dialog.start()
+        drain(self.app)
+        self.assertEqual(self.backend.calls[-1][1]["live_scheme"], "experiment")
+        self.assertTrue(self.backend.calls[-1][1]["motion_correction"])
+
+    def test_experiment_with_invalid_profile_blocks_even_preview(self):
+        self.backend.capability_overrides["live_schemes"] = {
+            "experiment":{"live_mapping":{"enabled":False,"reason":"候选 SHA-256 不一致"}}}
+        dialog = self.make(LiveDialog)
+        self.assertTrue(dialog.start_button.isEnabled())
+        dialog.scheme.setCurrentIndex(dialog.scheme.findData("experiment"))
+        self.assertFalse(dialog.start_button.isEnabled())
+        self.assertIn("SHA-256", dialog.availability.text())
+        dialog.start()
+        self.assertEqual(self.backend.calls, [])
+
+    def test_live_filter_default_and_session_choice_are_preserved(self):
+        self.backend.capability_overrides["live_defaults"] = dict(cloud_filter_enabled=True)
+        main = self.make(MainWindow)
+        dialog = main.open_dialog(LiveDialog)
+        drain(self.app)
+        self.assertIs(dialog.filtering.currentData(), True)
+        self.assertFalse(dialog.filtering.isEnabled())
+        dialog.mode.setCurrentIndex(dialog.mode.findData("mapping"))
+        self.assertTrue(dialog.filtering.isEnabled())
+        dialog.filtering.setCurrentIndex(dialog.filtering.findData(False))
+        dialog.close()
+        self.app.processEvents()
+        reopened = main.open_dialog(LiveDialog)
+        drain(self.app)
+        self.assertIs(reopened.filtering.currentData(), False)
+        self.assertEqual(reopened.mode.currentData(), "mapping")
+        reopened.close()
+
+    def test_live_unavailable_motion_and_official_psd_remain_disabled(self):
+        dialog = self.make(LiveDialog)
+        dialog.mode.setCurrentIndex(dialog.mode.findData("mapping"))
+        self.assertFalse(dialog.motion.isEnabled())
+        self.assertFalse(dialog.motion.model().item(1).isEnabled())
+        self.assertIn("设备声明", dialog.motion.toolTip())
+        dialog.noise.setCurrentIndex(dialog.noise.findData("white_acceleration"))
+        dialog.estimator.setCurrentIndex(dialog.estimator.findData("robot_localization"))
+        self.assertEqual(dialog.noise.currentData(), "legacy")
+        self.assertFalse(dialog.noise.isEnabled())
+        self.assertFalse(dialog.geometry.model().item(1).isEnabled())
+        self.assertIn("尚未实现", dialog.geometry.toolTip())
 
     def test_capture_one_time_path_does_not_change_defaults(self):
         dialog = self.make(CaptureDialog)

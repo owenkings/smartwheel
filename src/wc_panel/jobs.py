@@ -282,7 +282,8 @@ class JobManager:
                     row['step'] = index+1
                     self._save(row)
                     log.write(('\n=== '+task['label']+' ===\n').encode('utf-8'))
-                    for command in task['commands']:
+                    commands=([task['preflight']] if task.get('preflight') else [])+task['commands']
+                    for command in commands:
                         if identifier in self._cancel: break
                         log.write((json.dumps(command, ensure_ascii=False)+'\n').encode('utf-8'))
                         with self._lock:
@@ -317,7 +318,7 @@ class JobManager:
                         if manifest.get('status')!='COMPLETE' or manifest.get('recording_complete') is not True:
                             raise RuntimeError('录制已停止，但完整性审计未通过；已保留原数据，请查看日志')
                     cancelled=(identifier in self._cancel and
-                               (row['kind']=='offline' or completed_commands<len(task['commands'])))
+                               (row['kind']=='offline' or completed_commands<len(commands)))
                     state['status'] = 'PENDING' if pending else 'CANCELLED' if cancelled else 'COMPLETE'
                     row['progress'] = (index+1 if state['status']=='COMPLETE' else index)/len(tasks)
                     self._save(row)

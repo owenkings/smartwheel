@@ -26,7 +26,7 @@ def _mark_action_row(layout):
 
 class LiveDialog(PanelDialog):
     def __init__(self, backend, parent=None):
-        super().__init__(backend, "实时融合", parent, (800, 690))
+        super().__init__(backend, "实时建图", parent, (800, 730))
         self.form_scroll = PanelScrollArea()
         content = QtWidgets.QWidget()
         body = QtWidgets.QVBoxLayout(content)
@@ -34,39 +34,58 @@ class LiveDialog(PanelDialog):
         body.setSpacing(14)
         self.form_scroll.setWidget(content)
         self.layout.addWidget(self.form_scroll, 1)
-        body.addWidget(hint("确认后打开统一 RViz 窗口并先显示当前帧。实时建图模式在窗口内点击“开始建图”；再次点击“停止并保存”后恢复预览，再选择保存位置。切换设备时会短暂显示“正在切换”。"))
-        form = QtWidgets.QGridLayout()
-        form.setVerticalSpacing(14)
-        form.setHorizontalSpacing(12)
+        body.addWidget(hint("选择本次建图方案后打开 RViz。窗口先显示实时预览，点击“开始建图”累计地图；点击“停止并保存”后选择保存位置。"))
+        self.options_grid = form = QtWidgets.QGridLayout()
+        form.setVerticalSpacing(12)
+        form.setHorizontalSpacing(10)
+        form.setColumnMinimumWidth(2, 22)
         form.setColumnStretch(1, 1)
+        form.setColumnStretch(4, 1)
+        self.scheme = combo([("当前校验方案", "validated"), ("实时实验方案（未标定）", "experiment")])
         self.mode = combo([("预览实时数据", "preview"), ("实时建图", "mapping")])
         self.sides = sides_combo()
-        self.cloud = combo([("raw 原始点云", "raw"), ("filtered 过滤点云", "filtered")])
+        self.cloud = combo([("raw（滤前）", "raw"), ("filtered（滤后）", "filtered")])
         self.estimator = combo([("官方 EKF", "robot_localization"), ("五状态 EKF", "five_state")])
         self.estimator.setCurrentIndex(self.estimator.findData("five_state"))
-        self.motion = QtWidgets.QCheckBox("启用运动修正")
+        self.filtering = combo([("关闭", False), ("开启", True)])
+        self.motion = combo([("关闭", False), ("开启", True)])
         self.motion_reason = hint("正在核实在线修正条件…")
-        self.noise = combo([("当前离散噪声模型", "legacy"), ("连续白加速度 PSD", "white_acceleration")])
-        self.geometry = QtWidgets.QCheckBox("启用几何反馈")
+        self.noise = combo([("当前离散噪声", "legacy"), ("连续白加速度 PSD", "white_acceleration")])
+        self.geometry = combo([("关闭", False), ("开启", True)])
         self.geometry.setObjectName("live_geometry")
         self.geometry_reason = hint("")
+        self.scheme_reason = hint("")
+        self.scheme_reason.setObjectName("live_scheme_reason")
         self.availability = hint("")
-        for label, widget in (("运行模式", self.mode), ("雷达", self.sides), ("点云输入", self.cloud),
-                              ("状态估计", self.estimator), ("运动修正", self.motion),
-                              ("过程噪声", self.noise), ("几何反馈", self.geometry)):
-            row_index = form.rowCount()
-            form.addWidget(QtWidgets.QLabel(label), row_index, 0)
-            form.addWidget(widget, row_index, 1)
-            if widget is self.motion:
-                form.addWidget(self.motion_reason, row_index + 1, 1)
-        form.addWidget(self.geometry_reason, form.rowCount(), 1)
+        for index, (key, label, widget) in enumerate((
+                ("scheme", "参数方案", self.scheme), ("mode", "运行模式", self.mode),
+                ("sides", "雷达来源", self.sides), ("cloud", "点云输入", self.cloud),
+                ("estimator", "状态估计", self.estimator), ("filtering", "点云筛选", self.filtering),
+                ("motion", "运动修正", self.motion), ("noise", "过程噪声", self.noise),
+                ("geometry", "几何反馈", self.geometry))):
+            row_index, column = index // 2, (index % 2) * 3
+            label_widget = QtWidgets.QLabel(label)
+            label_widget.setBuddy(widget)
+            widget.setObjectName("live_" + key)
+            widget.setAccessibleName(label)
+            widget.setMinimumWidth(220)
+            widget.setMaximumWidth(250)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            form.addWidget(label_widget, row_index, column)
+            form.addWidget(widget, row_index, column + 1)
+        self.filtering.setToolTip("在 raw / filtered 输入之外应用距离、邻域和高度筛选；阈值沿用当前设备配置，仅建图时生效。")
+        self.cloud.setToolTip("raw 为 SDK 主机滤波前 XYZ；filtered 为主机滤波后 XYZ。点云筛选是独立的后续处理。")
+        self.scheme.setToolTip("当前校验方案检查已测量/标定外参与独立设备声明；实时实验方案显式复用机械初值和绑定的离线候选，参数仍为未标定。")
+        body.addLayout(form)
+        body.addWidget(self.scheme_reason)
+        body.addWidget(self.motion_reason)
+        body.addWidget(self.geometry_reason)
         calibration_row = QtWidgets.QHBoxLayout()
         calibration_row.addWidget(button("在线校正设置…", self.open_calibration))
         calibration_row.addWidget(button("刷新生效条件", self.refresh_capabilities))
         calibration_row.addWidget(button("恢复未完成地图…", self.open_recovery))
         calibration_row.addStretch()
-        form.addLayout(calibration_row, form.rowCount(), 1)
-        body.addLayout(form)
+        body.addLayout(calibration_row)
         body.addWidget(self.availability)
         body.addStretch()
         row = QtWidgets.QHBoxLayout()
@@ -77,8 +96,14 @@ class LiveDialog(PanelDialog):
         _mark_action_row(row)
         self.layout.addLayout(row)
         self.estimator.currentIndexChanged.connect(self.refresh_options)
+        self.scheme.currentIndexChanged.connect(self.refresh_options)
         self.mode.currentIndexChanged.connect(self.refresh_options)
         self.sides.currentIndexChanged.connect(self.refresh_options)
+        self.cloud.currentIndexChanged.connect(self.refresh_options)
+        self.filtering.currentIndexChanged.connect(self.refresh_options)
+        self.motion.currentIndexChanged.connect(self.refresh_options)
+        self.noise.currentIndexChanged.connect(self.refresh_options)
+        self.geometry.currentIndexChanged.connect(self.refresh_options)
         self.capabilities = {}
         self.defaults_loaded = False
         self.starting = False
@@ -109,12 +134,13 @@ class LiveDialog(PanelDialog):
         defaults.update(self.saved_options)
         # Restore selections only inside this panel session. Runtime conditions
         # below still clear unavailable combinations before a task is submitted.
-        for key, control in (("mode", self.mode), ("sides", self.sides), ("cloud", self.cloud),
-                             ("estimator", self.estimator), ("process_noise", self.noise)):
+        for key, control in (("live_scheme", self.scheme), ("mode", self.mode), ("sides", self.sides), ("cloud", self.cloud),
+                             ("estimator", self.estimator), ("process_noise", self.noise),
+                             ("cloud_filter_enabled", self.filtering)):
             if key in defaults and control.findData(defaults[key]) >= 0:
                 control.setCurrentIndex(control.findData(defaults[key]))
-        self.motion.setChecked(bool(defaults.get("motion_correction", False)))
-        self.geometry.setChecked(bool(defaults.get("geometry", False)))
+        self.motion.setCurrentIndex(self.motion.findData(bool(defaults.get("motion_correction", False))))
+        self.geometry.setCurrentIndex(self.geometry.findData(bool(defaults.get("geometry", False))))
         self.refresh_options()
 
     def open_calibration(self):
@@ -132,19 +158,40 @@ class LiveDialog(PanelDialog):
     def refresh_options(self):
         official = self.estimator.currentData() == "robot_localization"
         mapping = self.mode.currentData() == "mapping"
+        experimental = self.scheme.currentData() == "experiment"
+        schemes = self.capabilities.get("live_schemes", {})
+        selected = schemes.get(self.scheme.currentData(), {} if experimental else self.capabilities)
+        if experimental:
+            scheme_note = selected.get("note", "未标定实验：机械初值和离线运动候选尚未通过当前设备与来源校验。")
+            source = (selected.get("provenance") or {}).get("source_session_id")
+            if source:
+                scheme_note += "\n运动参数来源录制：" + str(source)
+        else:
+            scheme_note = "当前校验方案：需要已测量/标定外参；运动修正还需独立设备声明与零偏依据。"
+        self.scheme_reason.setText(scheme_note)
+        provenance = selected.get("provenance") or {}
+        self.scheme_reason.setToolTip("\n".join(label + str(provenance[key]) for key, label in (
+            ("profile_source_path", "实验配置："), ("candidate_source_path", "离线候选："),
+            ("assembly_revision", "装配版本：")) if provenance.get(key)) or scheme_note)
+        self.scheme_reason.setStyleSheet("color: #914900; background: #fff1d8; border-radius: 6px; padding: 6px;" if experimental else "")
         if official or not mapping:
-            self.geometry.setChecked(False)
+            self.geometry.setCurrentIndex(0)
             if self.noise.currentData() == "white_acceleration":
                 self.noise.setCurrentIndex(0)
         psd_item = self.noise.model().item(self.noise.findData("white_acceleration"))
         psd_item.setEnabled(not official and mapping)
         psd_item.setToolTip("连续白加速度 PSD 当前仅支持五状态 EKF 实时建图。")
-        geometry_capability = self.capabilities.get("live_geometry", {})
+        self.noise.setItemText(0, "官方 EKF 模型" if official else "当前离散噪声")
+        self.noise.setEnabled(mapping and not official)
+        self.noise.setToolTip("连续白加速度 PSD 仅支持五状态建图；官方 EKF 沿用其自身模型。")
+        self.filtering.setEnabled(mapping)
+        geometry_capability = selected.get("live_geometry", {})
         geometry_side = geometry_capability.get("by_sides", {}).get(self.sides.currentData(), geometry_capability)
         geometry_enabled = bool(geometry_side.get("enabled", False))
         self.geometry.setEnabled(not official and mapping and geometry_enabled)
+        self.geometry.model().item(1).setEnabled(self.geometry.isEnabled())
         if not self.geometry.isEnabled():
-            self.geometry.setChecked(False)
+            self.geometry.setCurrentIndex(0)
         reason = "官方 EKF 的几何反馈尚未实现；连续 PSD 当前仅支持五状态 EKF。" if official else "五状态几何纠偏修正发布位姿；实时建图模式生效。"
         if not mapping:
             reason += " 预览模式不启用建图修正。"
@@ -152,31 +199,35 @@ class LiveDialog(PanelDialog):
             reason += " " + str(geometry_side.get("reason", "当前雷达缺少可用外参条件。"))
         self.geometry.setToolTip(reason)
         self.geometry_reason.setText(reason)
-        live_motion = self.capabilities.get("live_motion_correction", {})
+        live_motion = selected.get("live_motion_correction", {})
         motion_side = live_motion.get("by_sides", {}).get(self.sides.currentData(), live_motion)
         motion_available = bool(motion_side.get("enabled", False)) and mapping
         self.motion.setEnabled(motion_available)
+        self.motion.model().item(1).setEnabled(motion_available)
         if not motion_available:
-            self.motion.setChecked(False)
-        self.motion_reason.setText(str(motion_side.get("reason", "在线修正需要匹配当前设备的有效校正参数。")) if mapping else "预览模式不启用运动修正；切换实时建图后核实设备校正参数。")
+            self.motion.setCurrentIndex(0)
+        motion_reason = str(motion_side.get("reason", "在线修正需要匹配当前设备的有效校正参数。")) if mapping else "预览模式不执行点云筛选、运动修正、PSD 或几何反馈。"
+        self.motion.setToolTip(motion_reason)
+        self.motion_reason.setText("运动修正：" + motion_reason if mapping else motion_reason)
         live = self.capabilities.get("live", {})
-        mapping_capability = self.capabilities.get("live_mapping", {})
+        mapping_capability = selected.get("live_mapping", {})
         mapping_side = mapping_capability.get("by_sides", {}).get(self.sides.currentData(), mapping_capability)
         mapping_available = bool(mapping_side.get("enabled", False))
         if not self.defaults_loaded:
             self.availability.setText("正在读取当前算法默认值与设备生效条件…")
-        elif mapping and not mapping_available:
+        elif (mapping or experimental) and not mapping_available:
             self.availability.setText("当前不能启动实时建图：" + str(mapping_side.get("reason", "正在核实当前设备外参与建图条件…")))
         else:
             self.availability.setText(str(live.get("note", "预览不生成累计地图；建图显示累计 3D 点云与 2D 栅格地图。")))
-        self.start_button.setEnabled(self.defaults_loaded and not self.starting and (not mapping or mapping_available))
-        self.start_button.setToolTip("" if self.defaults_loaded and (not mapping or mapping_available) else self.availability.text())
+        self.start_button.setEnabled(self.defaults_loaded and not self.starting and (not (mapping or experimental) or mapping_available))
+        self.start_button.setToolTip("" if self.defaults_loaded and (not (mapping or experimental) or mapping_available) else self.availability.text())
 
     def options(self):
-        return {"mode": self.mode.currentData(), "sides": self.sides.currentData(),
+        return {"live_scheme": self.scheme.currentData(), "mode": self.mode.currentData(), "sides": self.sides.currentData(),
                 "cloud": self.cloud.currentData(), "estimator": self.estimator.currentData(),
-                "motion_correction": self.motion.isChecked(), "process_noise": self.noise.currentData(),
-                "geometry": self.geometry.isChecked()}
+                "cloud_filter_enabled": self.filtering.currentData(),
+                "motion_correction": self.motion.currentData(), "process_noise": self.noise.currentData(),
+                "geometry": self.geometry.currentData()}
 
     def start(self):
         if not self.start_button.isEnabled():
@@ -569,6 +620,12 @@ class OfflineDialog(PanelDialog):
         diagnostic.addWidget(self.allow_partial)
         diagnostic.addStretch()
         setup.addLayout(diagnostic)
+        self.auto_compact = QtWidgets.QCheckBox("完成后自动压缩与精简（推荐）")
+        self.auto_compact.setObjectName("offline_auto_compact")
+        self.auto_compact.setChecked(True)
+        self.auto_compact.setToolTip("逐图无损压缩完整点云、清理可重建缓存；保留原录包、地图数据库、二维地图和轨迹。关闭可保留全部中间文件。")
+        setup.addWidget(self.auto_compact)
+        setup.addWidget(hint("每张图保存并校验后立即精简，再计算下一张。以后重算会从原录包重新生成缓存。"))
         select_row = QtWidgets.QHBoxLayout()
         select_row.addWidget(QtWidgets.QLabel("选择对照方案"))
         select_row.addStretch()
@@ -638,8 +695,11 @@ class OfflineDialog(PanelDialog):
         self.cancel_button = button("取消剩余任务", self.cancel, danger=True)
         self.new_button = button("新建融合任务", self.new_task)
         self.new_button.setEnabled(False)
+        self.retry_compact_button = button("继续压缩与精简", self.retry_compaction)
+        self.retry_compact_button.setEnabled(False)
         controls.addWidget(self.cancel_button)
         controls.addWidget(self.new_button)
+        controls.addWidget(self.retry_compact_button)
         controls.addStretch()
         controls.addWidget(button("关闭窗口", self.close))
         _mark_action_row(controls)
@@ -655,6 +715,7 @@ class OfflineDialog(PanelDialog):
     def loaded(self, values):
         settings, capabilities, jobs = values
         self.default_settings = dict(settings)
+        self.auto_compact.setChecked(settings.get("auto_compact", True))
         self.recording_root.set_path(settings["recording_root"])
         self.output_root.set_path(settings["results_root"])
         self.variants = capabilities.get("offline_variants", [])
@@ -872,7 +933,8 @@ class OfflineDialog(PanelDialog):
             return
         self.start_button.setEnabled(False)
         options = {"variants": variants, "mechanical_initial": self.mechanical_initial.isChecked(),
-                   "allow_partial": self.allow_partial.isChecked(), "sides": self.sides.currentData()}
+                   "allow_partial": self.allow_partial.isChecked(), "sides": self.sides.currentData(),
+                   "auto_compact": self.auto_compact.isChecked()}
         self.async_call(lambda: self.backend.plan_offline(dataset, output, options),
                         self.confirm_plan, finished=self.update_count)
 
@@ -883,6 +945,8 @@ class OfflineDialog(PanelDialog):
         lines = ["录制：{}".format(plan["dataset"]), "输出：{}".format(plan["output_root"]),
                  "点云来源：{}".format({"all": "双雷达", "left": "仅左雷达", "right": "仅右雷达"}.get(plan.get("sides"), self.sides.currentText())),
                  "共 {} 个任务。".format(plan.get("task_count", len(plan.get("tasks", [])))), note or self.recorded_note.text(), ""]
+        lines.insert(3,"保存方式：" + ("逐图无损压缩与精简，保留原录包和地图数据库" if
+                     plan.get("options",{}).get("auto_compact",self.auto_compact.isChecked()) else "保留全部中间文件"))
         lines.extend("• " + task.get("label", task.get("id", "")) for task in plan.get("tasks", []))
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "确认离线融合方案", "\n".join(lines[:12]),
                                     QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel, self)
@@ -946,6 +1010,9 @@ class OfflineDialog(PanelDialog):
                 self.queue_table.setItem(row, col, QtWidgets.QTableWidgetItem(str(text)))
         self.cancel_button.setEnabled(status not in TERMINAL and status != "STOPPING")
         self.new_button.setEnabled(status in TERMINAL)
+        self.retry_compact_button.setEnabled(status in ("FAILED", "CANCELLED", "INTERRUPTED") and
+            any(t.get("id", "").startswith("compact__") and t.get("status") in
+                ("FAILED", "CANCELLED", "INTERRUPTED") for t in rows))
         if status in TERMINAL:
             self.timer.stop()
 
@@ -963,6 +1030,12 @@ class OfflineDialog(PanelDialog):
         self.stack.setCurrentWidget(self.setup_page)
         self.scan()
         self.async_call(self.backend.jobs, self.refresh_history)
+
+    def retry_compaction(self):
+        if self.job_id:
+            self.retry_compact_button.setEnabled(False)
+            self.async_call(lambda: self.backend.retry_offline_compaction(self.job_id), self.started,
+                            lambda error: (self.show_error(error), self.poll()))
 
 
 def job_time(value):

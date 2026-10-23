@@ -4,6 +4,8 @@
 
 ## 内容与入口
 
+- [test_auto_compaction_ui.py](test_auto_compaction_ui.py)：自动精简选项与失败后恢复入口。
+
 - [render_screenshots.py](render_screenshots.py)
 - [test_capture_naming_ui.py](test_capture_naming_ui.py)
 - [test_device_flow.py](test_device_flow.py)
@@ -12,7 +14,7 @@
 - [test_offline_sources_ui.py](test_offline_sources_ui.py)
 - [test_pairing_capture_ui.py](test_pairing_capture_ui.py)
 - [test_pairing_name_options.py](test_pairing_name_options.py)
-- [test_panel_ui.py](test_panel_ui.py)
+- [test_panel_ui.py](test_panel_ui.py)：包含实时建图两列下拉选择、显式未标定实验方案、来源提示、条件禁用与提交参数检查。
 - [test_pcd_lzf.py](test_pcd_lzf.py)
 - [test_popup_controls.py](test_popup_controls.py)
 - [test_profiles_ui.py](test_profiles_ui.py)

@@ -183,7 +183,7 @@ class ScrollControlsTests(unittest.TestCase):
         self.windows.append(dialog)
         dialog.show()
         drain(self.app, lambda: dialog.defaults_loaded)
-        dialog.resize(800, 520)
+        dialog.resize(800, 380)
         QtTest.QTest.qWait(20)
         bar = dialog.form_scroll.verticalScrollBar()
         button_position = dialog.start_button.mapTo(dialog, QtCore.QPoint())
