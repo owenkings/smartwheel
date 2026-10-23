@@ -232,7 +232,9 @@ def extract_and_calibrate(source, runtime, packets, output, *, input_hashes=None
                             'session_id': session})
             else:
                 row = json.loads(msg.data)
-                _require(row['device_id'] == wheel_id and row['session_id'] == session and
+                # Historical wheel payloads omit session_id; bind derived samples
+                # to the verified recording, but reject an explicit different ID.
+                _require(row['device_id'] == wheel_id and row.get('session_id', session) == session and
                          row['receive_monotonic_ns'] == key[0] and row['sequence'] == key[1],
                          'original wheel identity/time mismatch')
                 sample = hp.update(row)

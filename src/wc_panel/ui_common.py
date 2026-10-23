@@ -130,6 +130,14 @@ def result_label(result):
     if identifier:
         marker = " / {} · ".format(identifier)
         title = result.get("title") or (name.split(marker, 1)[1] if marker in name else result.get("cell") or name)
+        dataset = result.get("dataset")
+        if isinstance(dataset, str) and dataset:
+            if len(str(identifier)) == 1 and str(identifier).isalpha():
+                return "{} · {} · {}".format(identifier, Path(dataset).name, title)
+            # Machine variant IDs hide the recording and Chinese method in
+            # narrow tables. Keep numbered gallery IDs and full IDs in data.
+            prefix = "{} · ".format(identifier) if str(identifier).isdigit() else ""
+            return "{} · {}{}".format(Path(dataset).name, prefix, title)
         return "{} · {}".format(identifier, title)
     return name
 

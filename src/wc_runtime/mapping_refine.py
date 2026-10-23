@@ -68,10 +68,12 @@ def run(args):
     from .offline_refinement_inputs import verify_candidate,extract_and_calibrate
     from .offline_geometry_replay import geometry_cell
     root=args.project_root.resolve(strict=True);storage=StoragePolicy(root)
+    hardware_setup=getattr(args,'hardware_setup',None)
     if getattr(args,'user_data_paths',False):
         from .user_data_paths import UserDataPaths
-        storage=UserDataPaths(root,args.dataset,args.output,[args.motion_candidate])
+        storage=UserDataPaths(root,args.dataset,args.output,[args.motion_candidate,hardware_setup])
     storage.check()
+    if hardware_setup is not None:hardware_setup=storage.resolve(hardware_setup)
     source=storage.resolve(args.dataset).resolve(strict=True);output=storage.resolve(args.output)
     if any(p.is_symlink() for p in (output,*output.parents)) or '..' in output.parts:
         raise ValueError('output must not be linked or contain parent traversal')
@@ -80,6 +82,8 @@ def run(args):
     if storage.enabled and not output.is_relative_to(storage.archive_root):raise ValueError('output must be under configured data root')
     if output.exists() and not args.resume:raise ValueError('output exists; use new name or explicit --resume')
     if args.resume and not output.is_dir():raise ValueError('resume output does not exist')
+    if args.resume and (output/'compaction_receipt.json').exists():
+        raise ValueError('此结果已进入存储精简；请从原录包创建新融合任务重建缓存，精简中断请使用继续压缩与精简')
     if not 0<args.input_rate_hz<=10:raise ValueError('input rate must be in (0,10] Hz')
     if not 1<=args.domain<=232 or args.domain==83:raise ValueError('isolated nonproduction ROS domain required')
     if not math.isfinite(args.native_wall_interval_s) or not .02<=args.native_wall_interval_s<=60:
@@ -99,7 +103,7 @@ def run(args):
             'status':'EXPERIMENTAL_NOT_CALIBRATED'})
     runtime,manifest,hashes=load_dataset(source,allow_partial=args.allow_partial,
         project_root=root,mechanical_initial=args.mechanical_initial,lidar=getattr(args,'lidar',None),
-        sides=getattr(args,'sides',None),cloud=args.cloud)
+        sides=getattr(args,'sides',None),cloud=args.cloud,hardware_setup=hardware_setup)
     runtime['cloud_source']=args.cloud;runtime['prior_template']['offline_experiment']=True
     runtime['offline_imu_time_mode']=getattr(args,'imu_time_mode','auto')
     storage.check();output.mkdir(parents=True,exist_ok=args.resume)
@@ -232,6 +236,7 @@ def main(argv=None):
     parser.add_argument('--user-data-paths',action='store_true',help='Use explicit user-selected data directories with mount guards')
     parser.add_argument('--project-root',type=Path,default=Path(__file__).resolve().parents[2])
     parser.add_argument('--motion-candidate',type=Path,help='Validated session-specific candidate; omitted = estimate with disjoint holdout')
+    parser.add_argument('--hardware-setup',type=Path,help='Explicit offline hardware setup override; guarded and included in input hashes')
     parser.add_argument('--allow-partial',action='store_true')
     parser.add_argument('--mechanical-initial',action='store_true')
     parser.add_argument('--resume',action='store_true',help='Continue only completed, hash-matched stages; partial stages are never silently reused')

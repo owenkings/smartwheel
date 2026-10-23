@@ -122,12 +122,21 @@ def results(root):
             key = str(front)
             if key not in grouped:
                 grouped[key] = dict(path=front if front.is_dir() else native,
-                                    media_roots=(front, native), status=metadata.get('status', 'AVAILABLE'),
+                                    media_roots=(front, native),
+                                    status=(group or {}).get('status', metadata.get('status', 'AVAILABLE')),
                                     dataset=metadata.get('dataset') or metadata.get('session'),
                                     source_selection=metadata.get('source_selection'),
                                     group_id=None, run=run_root.name, cell=cell_name,
                                     title=None, image_roles={})
             row = grouped[key]
+            receipt=run_root/'compaction_receipt.json'
+            if receipt.is_file() and not linked(receipt):
+                try:
+                    storage=read_json(receipt)
+                    row['storage_status']='COMPACTED' if storage.get('status')=='COMPLETE' else 'COMPACTION_PENDING'
+                    row['direct_resume_supported']=False
+                except (OSError,ValueError):
+                    row['storage_status']='COMPACTION_METADATA_INVALID'
             if metadata.get('source_selection'):
                 row['source_selection'] = metadata['source_selection']
             if not group: return
@@ -180,6 +189,19 @@ def results(root):
             if isinstance(cells, dict):
                 for cell in cells: add_cell(path.parent, cell, metadata)
 
+        # A refinement run may retain an unexported motion trajectory beside
+        # its explicitly indexed geometric map. That intermediate cell is not
+        # another map; preserve standalone or explicitly indexed trajectories.
+        indexed_native_runs = set()
+        for row in grouped.values():
+            if not row['group_id']: continue
+            native = row['media_roots'][1]
+            for file in files_under(native/'export'):
+                if (file.suffix.lower() in ('.png', '.jpg', '.jpeg', '.pgm', '.ply', '.pcd')
+                        or file.name.lower().endswith(('.ply.xz', '.pcd.xz'))):
+                    indexed_native_runs.add(native.parent.parent)
+                    break
+
         def emit(path, media_roots, metadata):
             files = set()
             for directory in media_roots: files.update(files_under(directory))
@@ -192,7 +214,14 @@ def results(root):
                 elif suffix in ('.ply', '.pcd') or name.endswith(('.ply.xz', '.pcd.xz')): clouds.append(str(file))
                 elif suffix in ('.csv', '.jsonl') and any(n in name for n in ('trajectory', 'pose', 'route')):
                     trajectories.append(str(file))
-            if not (images or clouds or trajectories or metadata.get('status')): return
+            # Queue metadata is not a saved map. Failed attempts can contain
+            # diagnostic figures/routes, but must not masquerade as results.
+            if metadata.get('status') in ('FAILED', 'CANCELLED', 'INTERRUPTED', 'SKIPPED'):
+                return
+            if not (images or clouds or trajectories): return
+            if (not metadata.get('group_id') and trajectories and not images and not clouds
+                    and len(media_roots) == 2 and media_roots[1].parent.parent in indexed_native_runs):
+                return
             relative = str(path.relative_to(root))
             group_id = metadata.get('group_id')
             title = metadata.get('title')
@@ -206,6 +235,8 @@ def results(root):
                              bytes=sum(file.stat().st_size for file in files),
                              images=images, clouds=clouds, trajectories=trajectories,
                              group_id=group_id, run=metadata.get('run'), cell=metadata.get('cell'), image_roles=roles,
+                             storage_status=metadata.get('storage_status'),
+                             direct_resume_supported=metadata.get('direct_resume_supported'),
                              source_selection=source_selection))
 
         if grouped:
