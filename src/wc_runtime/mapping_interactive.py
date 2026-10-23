@@ -108,7 +108,8 @@ class InteractiveCoordinator:
                                  config=requested['config_path'], mapping_enabled=mapping,
                                  cloud_source=requested.get('cloud_source'),
                                  retention_profile=requested.get('retention_profile', 'experiment'))
-        for key in ('panel_layout', 'estimator', 'motion_correction', 'process_noise', 'geometry'):
+        for key in ('panel_layout', 'estimator', 'live_scheme', 'motion_correction', 'process_noise', 'geometry',
+                    'cloud_filter_enabled'):
             if key in requested:
                 result[key] = requested[key]
         if not mapping:

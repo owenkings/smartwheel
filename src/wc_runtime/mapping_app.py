@@ -111,9 +111,13 @@ def parse_request(argv=None, *, project_root):
     parser.add_argument('--check-config', action='store_true', help='只检查安装与轮参数，不打开RViz或任何传感器')
     parser.add_argument('--duration', type=int, default=0, help='兼容旧参数；建图已取消总时长限制，此值不再触发计时结束')
     parser.add_argument('--estimator', choices=('five_state','robot_localization'))
+    parser.add_argument('--scheme', choices=('validated','experiment'),
+                        help='validated 沿用当前外参与独立声明校验；experiment 显式复用未标定机械初值与运动候选')
     parser.add_argument('--motion-correction', choices=('on','off'))
     parser.add_argument('--process-noise', choices=('legacy','white_acceleration'))
     parser.add_argument('--geometry', choices=('on','off'))
+    parser.add_argument('--cloud-filter', choices=('on','off'),
+                        help='单独开关建图点云筛选，阈值沿用配置；预览不应用筛选')
     parser.add_argument('--panel-layout', choices=('classic','unified'), default='classic')
     parser.add_argument('--save-dialog', action='store_true', help='Use the normal close-time map save dialog')
     parser.add_argument('--interactive', action='store_true',
@@ -129,6 +133,8 @@ def parse_request(argv=None, *, project_root):
                               retention_profile=args.retention_profile)
     request['check_config_only'] = args.check_config
     request['panel_layout'] = args.panel_layout
+    if args.scheme is not None:
+        request['live_scheme'] = args.scheme
     if args.interactive:
         if args.mapping != 'true':
             parser.error('--interactive 需要明确 --mapping true')
@@ -139,6 +145,8 @@ def parse_request(argv=None, *, project_root):
     for key in ('motion_correction','geometry'):
         if getattr(args,key) is not None:
             request[key] = getattr(args,key) == 'on'
+    if args.cloud_filter is not None:
+        request['cloud_filter_enabled'] = args.cloud_filter == 'on'
     if request.get('geometry') and request.get('estimator') == 'robot_localization':
         parser.error('官方 EKF 几何反馈尚未实现；该选项不可启用')
     return request
@@ -340,7 +348,9 @@ def run_session(request, backend, *, stop_requested=lambda: False, emit=lambda v
               'message': ((('本次使用平面 EKF，融合轮速、轮差转向与 IMU 转向角速度。' if handle.get('motion_model')=='planar_ekf' else '本次使用轮速 + IMU 里程计，ICP 里程计未启动。')
                   if isinstance(handle,dict) and handle.get('odometry_source')=='wheel_imu' else '')+
                   '无需启动静止等待；采用配置安装坐标作为初始参考。' +
-                  ('已加载用户确认的陀螺零偏文件。' if isinstance(handle,dict) and handle.get('confirmed_gyro_bias_applied') else '未加载已确认零偏；后台候选不会自动应用。')+
+                  ('本次显式应用未标定的离线运动候选，候选偏置固定使用且未独立确认；来源随会话保存。'
+                   if isinstance(handle,dict) and handle.get('experimental_motion_correction_applied') else
+                   ('已加载用户确认的陀螺零偏文件。' if isinstance(handle,dict) and handle.get('confirmed_gyro_bias_applied') else '未加载已确认零偏；后台候选不会自动应用。'))+
                   '无总时长和归档帧数上限；数据间断时等待恢复，不因数据年龄退出。关闭 RViz 或按 Ctrl+C 后先停止设备，再询问是否保存及保存路径。'
                   if mapping_enabled else '当前仅实时预览，不建图、不录包；关闭 RViz 或按 Ctrl+C 后停止设备并清理本次临时数据。') +
                   manual_control_notice(handle)})

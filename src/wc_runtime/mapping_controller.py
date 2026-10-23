@@ -1,7 +1,8 @@
 """One-command experimental mapping backend; actual hardware and native maps.
 
 RViz is owned by mapping_app. This backend owns a bounded supervisor and an
-owner-loss watcher, and requires measured mounting candidates before startup.
+owner-loss watcher. The default requires sourced data extrinsics; an explicitly
+selected real-time experiment may reuse uncalibrated candidates with provenance.
 """
 import argparse
 import hashlib
@@ -113,6 +114,16 @@ def configuration(request):
     config_path=_current_configuration_path(request['config_path'])
     current_configuration=_is_current_configuration(config_path)
     config=read_json(ROOT,config_path)
+    config['live_scheme']=request.get('live_scheme',config.get('live_scheme','validated'))
+    if config['live_scheme'] not in ('validated','experiment'):
+        raise ValueError('live_scheme 只支持 validated 或 experiment')
+    if config['live_scheme']=='experiment' and config.get('offline_experiment',False):
+        raise ValueError('实时实验方案不能使用 offline_experiment 或离线时间模型')
+    if config['live_scheme']=='experiment' and (config.get('offline_imu_time_mode','arrival')!='arrival' or
+            config.get('offline_imu_time_model') is not None or config.get('offline_motion_correction') is not None):
+        raise ValueError('实时实验只允许 arrival 时间和当前固定参数，不能携带离线模型/校正')
+    if any(config.get(key) is not None for key in ('live_experiment_motion','live_experiment_initialization')):
+        raise ValueError('实时实验参数只能读取独立 profile 和原始候选文件')
     if not config.get('offline_experiment', False):
         config['device_bindings'] = json.loads(json.dumps(require_device_bindings()))
         config['imu_sensor_id'] = config['device_bindings']['imu']['sensor_id']
@@ -130,6 +141,11 @@ def configuration(request):
     # An explicit CLI selection overrides the file; old files keep filtered.
     selected_cloud_source(config)
     config['cloud_source']=selected_cloud_source(request if 'cloud_source' in request else config)
+    if 'cloud_filter_enabled' in request:
+        if type(request['cloud_filter_enabled']) is not bool:
+            raise ValueError('点云筛选开关必须为布尔值')
+        config['cloud_filter'] = dict(config.get('cloud_filter') or {},
+                                    enabled=request['cloud_filter_enabled'])
     # This entry is user-operated continuous mapping. Strict diagnostic tools
     # keep their own defaults; old mapping configuration cannot restore timers.
     config['continuous_mapping']=True
@@ -189,6 +205,18 @@ def configuration(request):
         config['geometry_report']['source_verification']=source_verification
         if source_verification['status']!='PASS':
             raise ValueError('外参原始资料快照缺失、越界或SHA-256不一致；不能用原路径或历史值替代')
+    if config['live_scheme']=='experiment':
+        from .live_experiment import prepare_experiment, DEFAULT_PROFILE
+        experiment_hardware=read_json(ROOT,_current_configuration_path(
+            config['wheel_hardware_config'],select_local=current_configuration))
+        prepared=prepare_experiment(ROOT,setup,config,imu_sensor_id=config['imu_sensor_id'],
+            wheel_device_id=experiment_hardware['device_id'],
+            profile_path=config.get('live_experiment_profile_config',DEFAULT_PROFILE))
+        config.update(prepared['resolved_geometry'])
+        config.update(live_experiment_motion=prepared['motion_parameters'],
+            live_experiment_provenance=prepared['provenance'],
+            _live_experiment_profile_raw_text=prepared['profile_raw_text'],
+            _live_experiment_candidate_raw_text=prepared['candidate_raw_text'])
     capability=(motion_capability(request['mode']) if mapping_enabled else 'native_preview')
     if offline and setup['schema_version']==1:
         capability='legacy_replay'
@@ -257,6 +285,13 @@ def configuration(request):
     config['prior_template']['motion_model']=motion_model
     config['prior_template']['estimator']=estimator
     config['prior_template']['offline_experiment']=offline
+    config['prior_template']['live_scheme']=config['live_scheme']
+    if config['live_scheme']=='experiment':
+        if config.get('gyro_bias_config') is not None or config.get('confirmed_gyro_bias') is not None:
+            raise ValueError('实时实验固定候选零偏不能叠加独立零偏配置')
+        if config.get('live_motion_calibration_config') is not None or config.get('live_motion_calibration') is not None:
+            raise ValueError('实时实验方案不能叠加设备运动校正声明')
+        config['prior_template']['live_experiment_motion']=config['live_experiment_motion']
     if motion_model=='planar_ekf':
         from .mapping_planar import validate_planar_config
         config['planar_ekf']=validate_planar_config(config.get('planar_ekf'))
@@ -289,7 +324,8 @@ def configuration(request):
         config['confirmed_gyro_bias']=None
         config['gyro_bias_provenance']=None
     from .live_calibration_files import load_live_calibration_files
-    config=load_live_calibration_files(ROOT,config)
+    if config['live_scheme']=='validated':
+        config=load_live_calibration_files(ROOT,config)
     config['prior_template']['confirmed_gyro_bias']=config['confirmed_gyro_bias']
     for key in ('motion_correction','process_noise','geometry','live_motion_calibration','continuous_process_noise'):
         if key in config:
@@ -323,6 +359,8 @@ def check_configuration(request):
         'motion_model':config['motion_model'],
         'wheel_imu_estimator':config['wheel_imu_estimator'],
         'offline_experiment':config['offline_experiment'],
+        'live_scheme':config['live_scheme'],
+        'live_experiment_provenance':config.get('live_experiment_provenance'),
         'input_rate_hz':config['input_rate_hz'],
         'geometry_capabilities':config['geometry_capabilities'],
         'geometry_report':config['geometry_report'],
@@ -513,6 +551,15 @@ def archive_configuration(directory,config):
             if hashlib.sha256(raw).hexdigest()!=config['live_motion_provenance'][digest_key]:
                 raise ValueError('设备运动修正声明快照哈希不一致')
             write_new(directory/snapshot,raw)
+    if config.get('_live_experiment_profile_raw_text') is not None:
+        for field, snapshot, digest_key in (
+            ('_live_experiment_profile_raw_text','live_experiment_profile.json','profile_sha256'),
+            ('_live_experiment_candidate_raw_text','live_experiment_motion_candidate.json','candidate_sha256')):
+            raw=config.pop(field).encode('utf-8')
+            if hashlib.sha256(raw).hexdigest()!=config['live_experiment_provenance'][digest_key]:
+                raise ValueError('实时实验来源快照 SHA-256 不一致')
+            write_new(directory/snapshot,raw)
+        write_new(directory/'live_experiment_provenance.json',json_bytes(config['live_experiment_provenance']))
     write_new(directory/'runtime_config.json',json_bytes(config))
     if config.get('geometry_report'):
         write_new(directory/'capability_assessment.json', json_bytes(config['geometry_report']))
@@ -577,6 +624,9 @@ def start(request):
     runtime=project_path(ROOT,RUN/'sessions'/request['session_id']/'mapping_app')
     handle={'session_id':request['session_id'],'mode':request['mode'],'directory':str(directory),'runtime':str(runtime),
             'odometry_source':config['odometry_source'],'mapping_enabled':config['mapping_enabled'],
+            'live_scheme':config['live_scheme'],
+            'live_experiment_provenance':config.get('live_experiment_provenance'),
+            'experimental_motion_correction_applied':config['live_scheme']=='experiment' and config['motion_correction'],
             'motion_model':config['motion_model'],
             'manual_controls':config.get('manual_controls'),
             'confirmed_gyro_bias_applied':config['confirmed_gyro_bias'] is not None,
@@ -598,6 +648,9 @@ def start(request):
         'cloud_source':config['cloud_source'],'cloud_description':cloud_description(config['cloud_source']),
         'odometry_source':config['odometry_source'],'icp_odometry_required':config['mapping_enabled'] and config['odometry_source']=='icp',
         'motion_model':config['motion_model'],'native_mapping_profile':config['native_mapping_profile'],
+        'live_scheme':config['live_scheme'],'live_experiment_provenance':config.get('live_experiment_provenance'),
+        'motion_correction':config['motion_correction'],
+        'experimental_motion_correction_applied':config['live_scheme']=='experiment' and config['motion_correction'],
         'gyro_bias_provenance':config['gyro_bias_provenance'],
         'source_mode':'real','time_source':'arrival_only','wheel_scale_validated':False,'mounting_validated':False,
         'navigation_validated':False,'formal_acceptance':False,'raw_data_preserved':None if config['mapping_enabled'] else False,
@@ -615,6 +668,8 @@ def start(request):
              'src/wc_bringup/include/wc_bringup/mapping_session_view.hpp',
              'src/wc_runtime/mapping_cloud.py',
              'src/wc_runtime/mapping_bias.py',
+             'src/wc_runtime/live_experiment.py','src/wc_runtime/live_motion_options.py',
+             'src/wc_runtime/compare_geometry.py','src/wc_runtime/offline_motion_adapter.py',
              'src/wc_runtime/mapping_planar.py','src/wc_runtime/mapping_filter.py',
              'src/wc_runtime/mapping_profile.py','src/wc_runtime/mapping_bias_confirm.py',
             'src/wc_runtime/supervisor.py','src/wc_runtime/component.py','src/wc_motion/feedback_transport.py')}}))

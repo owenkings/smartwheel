@@ -97,7 +97,8 @@ def validate_config(config):
     _require(mode in ('left', 'right', 'all'), 'EXPLICIT_MAPPING_MODE_REQUIRED')
     sides = ('left', 'right') if mode == 'all' else (mode,)
     from .compare_geometry import is_offline_mechanical_initial
-    explicit_initial = is_offline_mechanical_initial(config)
+    from .live_experiment import is_experiment_geometry
+    explicit_initial = is_offline_mechanical_initial(config) or is_experiment_geometry(config)
     _require(config.get('mount_model') in ('fixed_hardware_setup_v1','fixed_hardware_setup_v2') or explicit_initial,
              'FIXED_HARDWARE_SETUP_REQUIRED')
     mapping_enabled = config.get('mapping_enabled', True)

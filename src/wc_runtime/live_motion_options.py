@@ -32,6 +32,21 @@ def validate_live_options(config):
     the offline refinement default; legacy acceleration variance is never read.
     """
     result = copy.deepcopy(config)
+    result.setdefault('live_scheme', 'validated')
+    if result['live_scheme'] not in ('validated', 'experiment'):
+        raise ValueError('live_scheme must be validated or experiment')
+    experiment = result['live_scheme'] == 'experiment'
+    if experiment:
+        from .live_experiment import validate_motion_parameters
+        if (result.get('offline_experiment') or result.get('offline_motion_correction') is not None or
+                result.get('confirmed_gyro_bias') is not None or result.get('live_motion_calibration') is not None):
+            raise ValueError('实时实验候选不能叠加离线执行、独立零偏或设备校正声明')
+        if (result.get('offline_imu_time_mode', 'arrival') != 'arrival' or
+                result.get('offline_imu_time_model') is not None):
+            raise ValueError('实时实验只使用 arrival 时间，不能复用离线未来锚点')
+        result['live_experiment_motion'] = validate_motion_parameters(result.get('live_experiment_motion'), result)
+    elif result.get('live_experiment_motion') is not None:
+        raise ValueError('实验候选必须显式选择实时实验方案，不能用于原严格方案')
     result.setdefault('motion_correction', False)
     result.setdefault('process_noise', 'legacy')
     result.setdefault('geometry', False)
@@ -44,7 +59,7 @@ def validate_live_options(config):
     if estimator not in ('five_state', 'robot_localization'):
         raise ValueError('Unknown live EKF provider')
     enabled = result['motion_correction'] or result['geometry'] or result['process_noise'] != 'legacy'
-    if enabled and (result.get('motion_model') != 'planar_ekf' or not result.get('continuous_mapping')):
+    if (enabled or experiment) and (result.get('motion_model') != 'planar_ekf' or not result.get('continuous_mapping')):
         raise ValueError('Live correction options require continuous planar EKF mapping')
     if estimator != 'five_state' and result['geometry']:
         raise ValueError('官方 EKF 几何反馈尚未实现；此选项不可选择')
@@ -55,7 +70,7 @@ def validate_live_options(config):
             result.get('continuous_process_noise', DEFAULT_CONTINUOUS_PROCESS_NOISE))
         if result['continuous_process_noise'] is None:
             raise ValueError('Continuous process noise requires explicit non-null PSD values')
-    if result['motion_correction']:
+    if result['motion_correction'] and not experiment:
         if result.get('offline_experiment') or result.get('offline_motion_correction') is not None:
             raise ValueError('Live device calibration and session-only offline candidates cannot be combined')
         calibration = validate_live_calibration(result.get('live_motion_calibration'), result)
@@ -66,6 +81,12 @@ def validate_live_options(config):
             raise ValueError('Live calibration conflicts with separately configured gyro bias; refusing double correction')
         result['confirmed_gyro_bias'] = copy.deepcopy(calibration['confirmed_gyro_bias'])
     return result
+
+
+def correction_parameters(config):
+    """Return fixed coefficients without confusing candidate and calibration."""
+    return (config['live_experiment_motion'] if config.get('live_scheme') == 'experiment'
+            else config['live_motion_calibration'])
 
 
 def validate_live_calibration(value, config):
@@ -104,7 +125,21 @@ def validate_live_calibration(value, config):
 def calibration_report(config):
     if not config.get('motion_correction'):
         return {'enabled': False, 'status': 'DISABLED'}
-    calibration = config['live_motion_calibration']
+    calibration = correction_parameters(config)
+    if config.get('live_scheme') == 'experiment':
+        return {'enabled': True, 'status': 'EXPERIMENTAL_REUSED_OFFLINE_CANDIDATE_APPLIED',
+            'source_session_id': calibration['source_session_id'],
+            'candidate_id': calibration['candidate_id'],
+            'candidate_sha256': calibration['candidate_sha256'],
+            'profile_sha256': calibration['profile_sha256'],
+            'wheel_yaw_scale': calibration['wheel_yaw_scale'],
+            'wheel_yaw_speed_coefficient': calibration['wheel_yaw_speed_coefficient'],
+            'bias_native_rad_s': copy.deepcopy(calibration['bias_native_rad_s']),
+            'physical_accuracy_validated': False, 'gyro_bias_independently_confirmed': False,
+            'stationarity_automatically_inferred': False,
+            'source_time_policy': calibration['source_time_policy'],
+            'wheel_covariance_policy': 'original R propagated with full J R J^T; no retuning',
+            'gyro_bias_policy': 'fixed experimental native-axis subtraction exactly once; background monitor cannot update'}
     digest = hashlib.sha256(json.dumps(calibration, sort_keys=True, separators=(',', ':'),
                                       allow_nan=False).encode()).hexdigest()
     return {'enabled': True, 'status': 'EXPLICIT_DEVICE_CALIBRATION_APPLIED',

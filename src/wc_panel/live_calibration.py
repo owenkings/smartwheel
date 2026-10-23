@@ -149,6 +149,31 @@ def capabilities(project):
             by_sides={s:dict(enabled=False,reason=str(error)) for s in by_sides}
             geometry['by_sides']=copy.deepcopy(by_sides)
             geometry['reason']=str(error)
-    return dict(live_motion_correction=motion,live_geometry=geometry,
+    validated=dict(live_motion_correction=motion,live_geometry=geometry,
                 live_mapping=dict(enabled=any(row['enabled'] for row in by_sides.values()),
                     reason=by_sides['all']['reason'],by_sides=copy.deepcopy(by_sides)))
+    # Experimental parameters are validated independently. A screened offline
+    # candidate remains an uncalibrated experiment; it never satisfies the
+    # device-declaration or independently-confirmed-bias path above.
+    try:
+        context=device_context(project);mapping=context['mapping']
+        from wc_runtime.hardware_setup import resolve_hardware_setup
+        from wc_runtime.live_experiment import DEFAULT_PROFILE, experiment_capability
+        _,setup=read_document(config_path(project,mapping.get('hardware_setup_config','config/hardware_setup.json')))
+        resolved=resolve_hardware_setup(setup)
+        experiment=experiment_capability(project,setup,resolved,
+            imu_sensor_id=context['imu_sensor_id'],wheel_device_id=context['wheel_device_id'],
+            profile_path=mapping.get('live_experiment_profile_config',DEFAULT_PROFILE))
+        base_reason='' if mapping.get('continuous_mapping') is True and mapping.get('motion_model')=='planar_ekf' else '需要连续 planar_ekf 建图配置'
+        reason=base_reason or ('' if experiment['available'] else experiment['reason'])
+        available=not reason
+        provenance=experiment.get('provenance')
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        available=False;reason=str(error);provenance=None
+    note='未标定实验：使用机械面中心初值与离线运动修正候选；保留原始状态与来源，不作为已标定设备参数。'
+    rows={side:dict(enabled=available,reason=reason or note) for side in ('all','left','right')}
+    experimental={key:dict(enabled=available,reason=reason or note,by_sides=copy.deepcopy(rows))
+                  for key in ('live_mapping','live_motion_correction','live_geometry')}
+    experimental['live_geometry']['estimator']='five_state'
+    experimental.update(note=note,parameter_status='UNCALIBRATED_EXPERIMENT',provenance=provenance)
+    return dict(**validated,live_schemes=dict(validated=copy.deepcopy(validated),experiment=experimental))

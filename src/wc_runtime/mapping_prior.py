@@ -31,7 +31,7 @@ from .mapping_planar import (PlanarEKF, validate_planar_config, validate_confirm
                              native_covariances, NATIVE_CONSTRAINT_VARIANCE)
 from .mapping_odometry import (AUTHORITY_TOPIC, adapt_prior_odometry,
                                authority_identity_transform, validate_covariance)
-from .live_motion_options import validate_live_options, calibration_report, LiveGeometry
+from .live_motion_options import validate_live_options, calibration_report, correction_parameters, LiveGeometry
 
 
 class PriorError(ValueError):
@@ -358,11 +358,33 @@ class MotionPrior:
             self.last_bias_candidate = candidate
 
     def bias_report(self):
+        if self.config.get('live_scheme') == 'experiment' and self.config['motion_correction']:
+            return {'status': 'EXPERIMENTAL_REUSED_OFFLINE_CANDIDATE_APPLIED',
+                'bias_estimated': True, 'formal_calibration': False,
+                'gyro_bias_independently_confirmed': False, 'automatic_confirmation_enabled': False,
+                'fixed_for_session': True, 'applied': calibration_report(self.config),
+                'background_monitor_enabled': self.bias_estimator is not None,
+                'background_monitor_only': self.bias_estimator.status() if self.bias_estimator is not None else None,
+                'latest_candidate': copy.deepcopy(self.last_bias_candidate)}
         if self.bias_estimator is None:
             return {'mode': 'legacy_startup_estimate', 'background_monitor_enabled': False}
         return {**self.bias_estimator.status(), 'background_monitor_enabled': True,
                 'automatic_confirmation_enabled': False,
                 'latest_candidate': copy.deepcopy(self.last_bias_candidate)}
+
+    def _applied_bias(self, stamp_ns):
+        if self.config.get('live_scheme') == 'experiment' and self.config['motion_correction']:
+            return np.asarray(self.config['live_experiment_motion']['bias_native_rad_s'], dtype=float).copy()
+        return self.bias if self.bias_estimator is None else self.bias_estimator.bias_at(stamp_ns)
+
+    def _applied_bias_metadata(self, stamp_ns):
+        if self.config.get('live_scheme') == 'experiment' and self.config['motion_correction']:
+            return {'calibration_status': 'EXPERIMENTAL_REUSED_OFFLINE_CANDIDATE_APPLIED',
+                'physical_accuracy_validated': False, 'gyro_bias_independently_confirmed': False,
+                'candidate_sha256': self.config['live_experiment_motion']['candidate_sha256'],
+                'profile_sha256': self.config['live_experiment_motion']['profile_sha256'],
+                'fixed_for_session': True}
+        return self.bias_estimator.bias_metadata_at(stamp_ns) if self.bias_estimator is not None else None
 
     def confirm_bias_stationarity(self, start, end, observed, *, evidence_id, source, independent):
         """Explicit evidence API; no live topic or startup path confirms candidates.
@@ -373,6 +395,8 @@ class MotionPrior:
         """
         if self.bias_estimator is None:
             raise PriorError('background bias is available only in continuous mapping')
+        if self.config.get('live_scheme') == 'experiment':
+            raise PriorError('实时实验候选保持固定且未独立确认；不能升级或叠加后台零偏')
         _integer(observed, 'bias confirmation observation stamp')
         frontier = max([observed, self.last_forwarded_stamp or 0] +
                        [row['stamp'] for row in self.last_seen.values() if row is not None] +
@@ -737,10 +761,10 @@ class MotionPrior:
         level = np.eye(4); level[:3, :3] = self.L
         self.R_reference_imu = self.L @ np.asarray(self.config['R_base_imu'])
         if self.config['motion_correction'] and not np.allclose(self.R_reference_imu,
-                self.config['live_motion_calibration']['R_reference_imu'], atol=1e-9, rtol=0):
+                correction_parameters(self.config)['R_reference_imu'], atol=1e-9, rtol=0):
             raise PriorError('Live calibration IMU rotation differs from the current frozen mounting geometry')
         self.T_reference_axle = level @ base_axle
-        self.bias = (self.bias_estimator.bias_at(0) if self.bias_estimator is not None else np.zeros(3))
+        self.bias = (self._applied_bias(0) if self.bias_estimator is not None else np.zeros(3))
         horizon = max(self.imu[-1]['stamp'], self.wheel[-1]['stamp'])
         self.initialization = {
             'schema_version': 1, 'status': 'EXPERIMENT', 'source_mode': 'real',
@@ -770,6 +794,11 @@ class MotionPrior:
             self.initialization['offline_imu_time_model'] = copy.deepcopy(self.config['offline_imu_time_model'])
         if self.config['confirmed_gyro_bias'] is not None:
             self.initialization['gyro_bias_status'] = 'EXPLICIT_EXTERNAL_CALIBRATION_DECLARATION'
+        if self.config.get('live_scheme') == 'experiment':
+            self.initialization.update(live_scheme='experiment',
+                live_experiment_motion=copy.deepcopy(self.config['live_experiment_motion']))
+            if self.config['motion_correction']:
+                self.initialization['gyro_bias_status'] = 'EXPERIMENTAL_REUSED_OFFLINE_CANDIDATE_APPLIED'
         if self.planar:
             from .estimator_provider import create_estimator
             state = create_estimator(self.config['estimator'], self.config['planar_ekf'],
@@ -811,7 +840,7 @@ class MotionPrior:
                     covariance = None
                     if self.config['motion_correction']:
                         from .offline_motion_adapter import corrected_wheel_observation
-                        calibration = self.config['live_motion_calibration']
+                        calibration = correction_parameters(self.config)
                         measurement, covariance = corrected_wheel_observation(row['v'], row['wheel_yaw'],
                             state.config, calibration['wheel_yaw_scale'], calibration['wheel_yaw_speed_coefficient'])
                         if row['sequence'] <= state.last_sequence['wheel']:
@@ -832,10 +861,10 @@ class MotionPrior:
                                 measurement_covariance=covariance.tolist(),
                                 live_calibration=calibration_report(self.config))
                 else:
-                    bias = self.bias if self.bias_estimator is None else self.bias_estimator.bias_at(stamp)
+                    bias = self._applied_bias(stamp)
                     prepared = prepare_gyro(row['gyro'], bias, self.R_reference_imu)
                     if self.bias_estimator is not None:
-                        prepared['bias_provenance']=self.bias_estimator.bias_metadata_at(stamp)
+                        prepared['bias_provenance']=self._applied_bias_metadata(stamp)
                         prepared['bias_status']=prepared['bias_provenance']['calibration_status']
                     updated = state.gyro(row['sequence'], prepared['target_rad_s'][2])
                     if updated is not None:
@@ -913,7 +942,9 @@ class MotionPrior:
                     self.bias_estimator.prune_before(retired)
 
     def _twist(self, imu, wheel, stamp_ns=None):
-        if self.bias_estimator is None:
+        if self.config.get('live_scheme') == 'experiment' and self.config['motion_correction']:
+            bias = self._applied_bias(imu['stamp'] if stamp_ns is None else stamp_ns)
+        elif self.bias_estimator is None:
             bias = self.bias
         else:
             query = imu.get('stamp') if stamp_ns is None else stamp_ns
@@ -1020,8 +1051,7 @@ class MotionPrior:
                 'angular_velocity_reference_rad_s': angular.tolist(), 'imu_sequence': im['sequence'],
                 'wheel_sequence': wh['sequence'], 'imu_stamp_ns': im['stamp'], 'wheel_stamp_ns': wh['stamp'],
                 'wheel_yaw_rate_diagnostic_rad_s': wh['wheel_yaw'], 'imu_sequence_gaps': self.imu_sequence_gaps,
-                'gyro_bias_applied_native_rad_s': (self.bias if self.bias_estimator is None else
-                    self.bias_estimator.bias_at(stamp_ns)).tolist(),
+                'gyro_bias_applied_native_rad_s': self._applied_bias(stamp_ns).tolist(),
                 **self.coverage_report(), **details}
 
 

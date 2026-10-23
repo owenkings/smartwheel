@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "EXPERIMENTAL_REUSE_NOT_CALIBRATED",
+  "scope": "EXPLICIT_REALTIME_EXPERIMENT",
+  "assembly_revision": "V7_20261002",
+  "hardware_setup_content_sha256": "d7dfc98b98a3d71290f1ab4d326483b81e92016fe86927bf5c2130debccb2422",
+  "imu_sensor_id": "H30-5B8E666933",
+  "wheel_device_id": "ZLAC8030D-5C66036979",
+  "motion_candidate": {
+    "source_path": "data/analysis/RoomABcapture_2026_1009_164535_fusion_20261009_175200_498aa9/_motion_candidate_filtered/motion_candidate.json",
+    "sha256": "de075e771b5acfe321adf0814e0223e1839e9731a01c171e3de57fbdbe97689e"
+  },
+  "limitations": [
+    "机械外侧面中心代替雷达数据原点，仅为实验初值；真实原点偏移与安装旋转未标定。",
+    "显式复用 RoomAB 同会话 wheel/gyro 一致性候选；不代表独立零偏确认或轮参数绝对标定。",
+    "候选原件的离线状态与来源保持；新会话仅因用户选择实时实验方案而使用其数值。",
+    "新会话使用实时到达顺序；不复用离线未来时间锚点，不认证传感器测量同步或地图精度。"
+  ]
+}
