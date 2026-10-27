@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# 离线联合求解现场外参候选（只读录包，只写候选文件，不改正式配置）。
+set -eo pipefail
+FIELD_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$FIELD_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$FIELD_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$FIELD_PROJECT"
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+exec python3 -B -s -m wc_calibration.field.solve --project-root "$FIELD_PROJECT" "$@"

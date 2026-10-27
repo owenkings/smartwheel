@@ -13,6 +13,8 @@
 - [configure_storage](configure_storage)
 - [confirm_gyro_bias](confirm_gyro_bias)
 - [dev_archive](dev_archive)
+- [lidar_field_check](lidar_field_check)：现场外参检查，录一项后当场判定合格与否（只读采集）。
+- [lidar_field_solve](lidar_field_solve)：离线联合求解现场外参候选，并用独立录包验证。
 - [discover_remote.sh](discover_remote.sh)
 - [map](map)
 - [map_single_lidar.sh](map_single_lidar.sh)

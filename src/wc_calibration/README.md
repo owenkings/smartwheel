@@ -5,6 +5,7 @@
 ## 内容与入口
 
 - [picker_assets](picker_assets/README.md)：下一级职责说明。
+- [field](field/README.md)：现场双雷达外参与轮速标定（墙面竖直、平面手眼、多处停顿联合配准、推向墙）。
 - [__init__.py](__init__.py)
 - [__main__.py](__main__.py)
 - [alignment.py](alignment.py)

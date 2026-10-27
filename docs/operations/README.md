@@ -7,6 +7,8 @@
 - [amplitude_alignment.md](amplitude_alignment.md)
 - [capture.md](capture.md)
 - [command_reference.md](command_reference.md)
+- [field_extrinsics.md](field_extrinsics.md)：现场双雷达外参与轮速标定（当前方法）
+- [lidar_plane_workbench.md](lidar_plane_workbench.md)
 - [hardware_setup_zh.md](hardware_setup_zh.md)
 - [mapping_app_zh.md](mapping_app_zh.md)
 - [offline_cloud_alignment.md](offline_cloud_alignment.md)

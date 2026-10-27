@@ -6,6 +6,8 @@
 - [标定配置](../reference/calibration_configuration.md)：配置字段、有效状态和来源证据。
 - [点云配准](../operations/offline_cloud_alignment.md)：输入准备、选点和配准操作。
 - [反射强度配准](../operations/amplitude_alignment.md)：对应输入与配准入口。
+- [现场双雷达外参与轮速标定](../operations/field_extrinsics.md)：当前采用的方法，用墙面、停顿和推向墙标定，不需要标定板和卷尺。
+- [环境平面与木板标定](../environment_plane_calibration.md)：已暂停的旧方案，保留记录。
 - [标定实现](../../src/wc_calibration/README.md)与[标定测试](../../tests/calibration/README.md)。
 
 新增标定接口说明放入 reference，用户步骤放入 operations，并更新此处的主题导航；可复用实现放入 wc_calibration。测量原件保留在配置来源容器或数据根，任务过程资料进入开发归档，不在此复制原始录包或阶段报告。

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 现场外参检查：录一项、马上分析、当场显示合格/不合格（只读采集，不驱动电机）。
+set -eo pipefail
+FIELD_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source /opt/ros/humble/setup.bash
+source "$FIELD_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$FIELD_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+export WHEELCHAIR_PROJECT_ROOT="$FIELD_PROJECT"
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+cd "$FIELD_PROJECT"
+exec python3 -B -s -m wc_calibration.field.check_cli --project-root "$FIELD_PROJECT" "$@"

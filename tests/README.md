@@ -9,6 +9,8 @@
 - [camera_panel](camera_panel/README.md)：下一级职责说明。
 - [cameras](cameras/README.md)：下一级职责说明。
 - [diagnostics](diagnostics/README.md)：下一级职责说明。
+- [environment_planes](environment_planes/README.md)：环境平面与木板标定（已暂停）。
+- [field_calibration](field_calibration/README.md)：现场外参与轮速标定。
 - [fixtures](fixtures/README.md)：下一级职责说明。
 - [fusion](fusion/README.md)：下一级职责说明。
 - [imu](imu/README.md)：下一级职责说明。
@@ -25,6 +27,7 @@
 - [panel_runtime](panel_runtime/README.md)：下一级职责说明。
 - [panel_rviz](panel_rviz/README.md)：下一级职责说明。
 - [panel_ui](panel_ui/README.md)：下一级职责说明。
+- [plane_calibration](plane_calibration/README.md)：框选平面工作台。
 - [portability](portability/README.md)：下一级职责说明。
 - [runtime](runtime/README.md)：下一级职责说明。
 - [sensors](sensors/README.md)：下一级职责说明。
