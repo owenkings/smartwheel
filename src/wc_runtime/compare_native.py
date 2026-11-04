@@ -119,7 +119,31 @@ def verify_native_detection_rate_readback(report, detection_hz):
             +str(detection_hz)+' vs '+str(provenance['requested_hz']))
 
 
-def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, storage_root=None):
+def with_offline_grid_overrides(spec, overrides=None):
+    """Apply explicit allowlisted grid booleans to one new offline instance.
+
+    No global configuration or scan geometry is changed. The caller freezes
+    height settings in the cell runtime config; actual values are read back.
+    """
+    allowed = ('Grid/NormalsSegmentation', 'Grid/3D', 'Grid/RayTracing')
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict) or set(overrides) - set(allowed):
+        raise ValueError('Only explicit offline grid segmentation/ray booleans are allowed')
+    if any(type(v) is not str or v not in ('true', 'false') for v in overrides.values()):
+        raise ValueError('Offline grid overrides require string true/false values')
+    result = copy.deepcopy(spec)
+    parameters = result['nodes'][0]['parameters'][0]
+    provenance = {'scope': 'NEW_OFFLINE_NATIVE_INSTANCE_ONLY',
+                  'requested': dict(overrides),
+                  'previous': {k: parameters.get(k) for k in overrides},
+                  'readback': {}, 'physical_navigation_validated': False}
+    parameters.update(overrides)
+    return result, provenance
+
+
+def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, storage_root=None,
+             native_parameter_overrides=None):
     resources_before=resource_snapshot()
     import yaml
     from ament_index_python.packages import get_package_prefix
@@ -143,6 +167,9 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
     write(directory/'runtime_config.json', config)
     spec = load_spec(root, directory, config, storage_root=storage_root)
     spec, detection_rate = with_native_detection_rate(spec, args.input_hz)
+    if native_parameter_overrides and native_parameter_overrides.get('Grid/RayTracing') == 'true':
+        require(config.get('mode') in ('left', 'right'), 'Offline ray tracing needs an explicit single sensor')
+    spec, grid_overrides = with_offline_grid_overrides(spec, native_parameter_overrides)
     write(directory/'native_spec.json', spec)
     native = spec['nodes'][0]
     parameters = directory/'native_params.yaml'
@@ -163,6 +190,7 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
               'offline_override': {'use_sim_time': True,
                                    'Rtabmap/DetectionRate': detection_rate['applied_value']},
               'native_detection_rate': detection_rate,
+              'grid_parameter_overrides': grid_overrides,
               'comparison_scope': 'Same recorded source inputs; estimator/filter/input-rate factors are frozen in each cell config.',
               'limitation': 'Common source-time subsample, not full frontend frame replay or accuracy acceptance.'}
     node = rclpy.create_node('route1_native_replay_'+name)
@@ -215,15 +243,33 @@ def run_cell(root, frontend, output, name, rows, selected, args, rclpy, *, stora
         # instance; never infer that writing the YAML made the setting effective.
         client = node.create_client(GetParameters, '/wc_mapping/app/rtabmap/get_parameters')
         spin_until(client.service_is_ready, 10., 'Native parameter service unavailable')
-        request = GetParameters.Request(names=['Rtabmap/DetectionRate'])
+        requested_grid = dict(grid_overrides['requested'])
+        if requested_grid:
+            effective = spec['nodes'][0]['parameters'][0]
+            for key in ('Grid/MinGroundHeight', 'Grid/MaxGroundHeight', 'Grid/MaxObstacleHeight', 'Grid/MapFrameProjection'):
+                require(key in effective, 'Explicit ground-relative grid parameter missing: '+key)
+                requested_grid[key] = effective[key]
+        grid_overrides['effective_requested'] = requested_grid
+        grid_keys = sorted(requested_grid)
+        request = GetParameters.Request(names=['Rtabmap/DetectionRate', *grid_keys])
         future = client.call_async(request)
         spin_until(future.done, 10., 'Native DetectionRate query timed out')
         response = future.result()
-        require(response is not None and len(response.values) == 1, 'Native DetectionRate missing')
+        require(response is not None and len(response.values) == 1 + len(grid_keys), 'Native parameter readback missing')
         value = response.values[0]
         require(value.type in (2, 3, 4), 'Native DetectionRate parameter is undeclared or has unexpected type')
         detection_hz = float(value.string_value if value.type == 4 else value.double_value if value.type == 3 else value.integer_value)
         verify_native_detection_rate_readback(report, detection_hz)
+        for key, value in zip(grid_keys, response.values[1:]):
+            actual = (value.string_value if value.type == 4 else str(value.bool_value).lower() if value.type == 1 else str(value.double_value) if value.type == 3 else str(value.integer_value) if value.type == 2 else None)
+            grid_overrides['readback'][key] = actual
+            expected = requested_grid[key]
+            if key in ('Grid/MinGroundHeight', 'Grid/MaxGroundHeight', 'Grid/MaxObstacleHeight'):
+                matches = actual is not None and math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9)
+            else:
+                matches = actual == expected
+            require(matches, 'Offline grid parameter readback mismatch: '+key)
+        grid_overrides['readback_matches_request'] = True
         last_wall = None
         for key in selected:
             row = rows[key]

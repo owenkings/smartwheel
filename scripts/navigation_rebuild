@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Immutable single-lidar frontend replay and candidate grid reconstruction.
+set -eo pipefail
+NAV_REBUILD_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$NAV_REBUILD_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$NAV_REBUILD_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+exec /usr/bin/python3 -B -s -m wc_navigation.rebuild_cli --project-root "$NAV_REBUILD_PROJECT" "$@"

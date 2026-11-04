@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Actual frozen recording diagnostics only; no control interface or ROS nodes.
+set -eo pipefail
+SHADOW_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+set -u
+export PYTHONPATH="$SHADOW_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+exec /usr/bin/python3 -B -s -m wc_navigation.recorded_cli --project-root "$SHADOW_PROJECT" "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Read-only report renderer; no ROS, devices, or vehicle control.
+set -euo pipefail
+DASHBOARD_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$DASHBOARD_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -B -s -m wc_navigation.dashboard --project-root "$DASHBOARD_PROJECT" "$@"

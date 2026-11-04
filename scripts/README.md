@@ -28,3 +28,20 @@
 修改后运行[对应功能测试](../tests/README.md)；涉及入口、配置、资源或路径时同时检查安装后的调用与旧数据读取。
 
 依赖与构建方法见[项目入口](../README.md)；返回[上级目录](../README.md)。
+
+- [navigation_offline](navigation_offline)：隔离的 Nav2 路径规划和数值跟踪。
+
+- [navigation_rebuild](navigation_rebuild)：冻结单左前端的原生地图重建。
+- [navigation_replay](navigation_replay)：训练/留出时段分开的单雷达回放定位。
+
+- [navigation_amcl_replay](navigation_amcl_replay)：重建地图上的 AMCL 单雷达功能回放。
+
+- [navigation_dynamic_sim](navigation_dynamic_sim)：读取已归档成功的离线 Nav2 结果，在原地图和原包络上运行纯数值动态停车场景，见[使用说明](../docs/operations/navigation_dynamic.md)。
+
+- [navigation_replan_sim](navigation_replan_sim)：在冻结保护地图上向当前观测障碍加占据，停稳后调用隔离 Nav2，数值验证绕行或无路等待；见[说明](../docs/operations/navigation_replanning.md)。
+
+- [navigation_recorded_shadow](navigation_recorded_shadow)：对已校验单左前端做不发命令的停车影子评估及延迟/断流注入，见[说明](../docs/operations/navigation_recorded_shadow.md)。
+
+- [navigation_localization_trust](navigation_localization_trust)：原始时间戳精确对齐的离线定位证据核查，见[说明](../docs/operations/navigation_localization_trust.md)。
+
+- [navigation_dashboard](navigation_dashboard)：生成可直接浏览的离线导航进度快照，见[说明](../docs/operations/navigation_dashboard.md)。

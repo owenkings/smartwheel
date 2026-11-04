@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Frozen single-lidar records only; numerical matching without a ROS node.
+set -eo pipefail
+REPLAY_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+set -u
+export PYTHONPATH="$REPLAY_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+export ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+exec /usr/bin/python3 -B -s -m wc_navigation.replay_cli --project-root "$REPLAY_PROJECT" "$@"

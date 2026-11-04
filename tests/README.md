@@ -47,3 +47,5 @@
 在受支持的 Linux 环境通过 `scripts/run_software_tests.py` 选择本目录的软件测试；需要原生组件的测试先完成对应构建。测试不得隐式启动真实设备。
 
 依赖与构建方法见[项目入口](../README.md)；返回[上级目录](../README.md)。
+
+- [navigation](navigation/README.md)：离线导航几何、碰撞与输入契约。

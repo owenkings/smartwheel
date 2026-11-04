@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Frozen saved diagnostics only; no ROS nodes, hardware, or control interface.
+set -euo pipefail
+TRUST_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$TRUST_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -B -s -m wc_navigation.localization_trust_cli --project-root "$TRUST_PROJECT" "$@"

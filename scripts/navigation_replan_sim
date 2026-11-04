@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Isolated map/planner servers plus pure numerical execution; no vehicle driver.
+set -eo pipefail
+REPLAN_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+set -u
+export PYTHONPATH="$REPLAN_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+export ROS_DOMAIN_ID=93 ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+exec /usr/bin/python3 -B -s -m wc_navigation.replan_cli --project-root "$REPLAN_PROJECT" "$@"

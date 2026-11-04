@@ -27,3 +27,5 @@
 修改后运行[对应功能测试](../tests/README.md)；涉及入口、配置、资源或路径时同时检查安装后的调用与旧数据读取。
 
 依赖与构建方法见[项目入口](../README.md)；返回[上级目录](../README.md)。
+
+- [wc_navigation](wc_navigation/README.md)：保存地图规划与数值跟踪。

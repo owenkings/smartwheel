@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Saved-map planner and numerical simulation; no physical control process.
+set -eo pipefail
+NAV_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+set -u
+export PYTHONPATH="$NAV_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export ROS_DOMAIN_ID=93
+export ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+exec /usr/bin/python3 -B -s -m wc_navigation.cli --project-root "$NAV_PROJECT" "$@"
