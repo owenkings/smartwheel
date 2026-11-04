@@ -33,11 +33,11 @@ def _ns(value, label, *, positive=False):
 
 
 def build_capture_contract(configuration_dir, profile, session_id, *, imu_sensor_id,
-                           expected_identities=None, sides='all'):
+                           expected_identities=None, sides='all', cameras=None):
     """Build from frozen configuration; caller supplies the reviewed IMU identity."""
-    from .capture import CAMERA_PROFILES, source_selection, selected_lidar_sides
+    from .capture import CAMERA_PROFILES, source_selection, selected_lidar_sides, selected_camera_roles
     configuration_dir = Path(configuration_dir)
-    source_selection(profile, sides)
+    source_selection(profile, sides, cameras)
     _identifier(session_id,'session_id')
     sources = {}
     def add(logical,kind,source_id,identity,**fields):
@@ -63,8 +63,9 @@ def build_capture_contract(configuration_dir, profile, session_id, *, imu_sensor
             physical_role_status='LEGACY_MAPPING_UNVALIDATED',units_status='UNVALIDATED')
     if profile in CAMERA_PROFILES:
         from wc_cameras.config import camera_device, camera_id_path
+        roles = selected_camera_roles(profile, cameras)
         cameras = _json(configuration_dir/'cameras.json')
-        for camera in cameras['cameras']:
+        for camera in [row for row in cameras['cameras'] if row['role'] in roles]:
             role = camera['role']
             port = camera['port']
             identity = dict(device=str(camera_device(camera)),

@@ -109,7 +109,7 @@ def collect_session_health(session_root, capability_assessment=None, *, capture_
     selection = {}
     if capture and profile in ('mapping_core', 'mapping_cameras', 'all_sensors'):
         from .capture import source_selection
-        selection = source_selection(profile)
+        selection = source_selection(profile, capture.get('lidar_sides', 'all'), capture.get('camera_roles'))
     excluded_sources = set(selection.get('excluded_sources', []))
     recording_capability = {'mapping_cameras': 'mapping_cameras_recording',
                             'mapping_core': 'mapping_core_recording'}.get(profile, 'all_sensors_recording')

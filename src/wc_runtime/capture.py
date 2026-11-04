@@ -225,14 +225,33 @@ def selected_lidar_sides(sides='all'):
     return ('left', 'right') if sides == 'all' else (sides,)
 
 
-def source_selection(profile, sides='all'):
+def selected_camera_roles(profile, cameras=None):
+    """Camera roles acquired by this profile. None means every configured role."""
+    from wc_cameras.config import ROLES
+    if profile not in CAMERA_PROFILES:
+        if cameras is not None:
+            raise ValueError('--cameras requires a camera capture profile')
+        return []
+    if cameras is None:
+        return list(ROLES)
+    if isinstance(cameras, str):
+        cameras = [part.strip() for part in cameras.split(',') if part.strip()]
+    cameras = list(cameras)
+    if not cameras or len(set(cameras)) != len(cameras) or any(role not in ROLES for role in cameras):
+        raise ValueError('cameras must be a nonempty unique subset of: '+','.join(ROLES))
+    return [role for role in ROLES if role in cameras]  # 统一按配置顺序
+
+
+def source_selection(profile, sides='all', cameras=None):
     """Explicit requested evidence scope; excluded hardware is never acquired."""
     if profile not in PROFILES:
         raise ValueError('unknown capture profile: '+str(profile))
     from wc_cameras.config import ROLES
     core = ['lidar_left', 'lidar_right', 'imu', 'wheel']
-    cameras = ['camera_'+role for role in ROLES]
-    selected = ['lidar_'+side for side in selected_lidar_sides(sides)]+['imu','wheel']+(cameras if profile in CAMERA_PROFILES else [])
+    cameras_all = ['camera_'+role for role in ROLES]
+    selected = (['lidar_'+side for side in selected_lidar_sides(sides)]+['imu','wheel']
+                +['camera_'+role for role in selected_camera_roles(profile, cameras)])
+    cameras = cameras_all
     if profile == 'all_sensors': selected.append('ultrasonic')
     excluded = [name for name in core+cameras+['ultrasonic'] if name not in selected]
     return dict(selected_sources=selected, excluded_sources=excluded,
@@ -241,7 +260,8 @@ def source_selection(profile, sides='all'):
                 excluded_source_policy='NOT_PREFLIGHTED_STARTED_SUBSCRIBED_OR_VALIDATED')
 
 
-def capacity(profile, duration, free_bytes, camera_profile=None, *, initialization_budget_s=0, sides='all'):
+def capacity(profile, duration, free_bytes, camera_profile=None, *, initialization_budget_s=0, sides='all',
+             cameras=None):
     if profile not in PROFILES or type(duration) is not int or not 0 <= duration <= 3600:
         raise ValueError('explicit profile and duration 0..3600 required; 0 means until stopped')
     if type(initialization_budget_s) is not int or not 0 <= initialization_budget_s <= 3600:
@@ -251,7 +271,8 @@ def capacity(profile, duration, free_bytes, camera_profile=None, *, initializati
     rate = len(selected_lidar_sides(sides))*6_600_000 + 500_000
     if profile in CAMERA_PROFILES:
         camera_profile = camera_profile or dict(width=320, height=240, capture_fps=30)
-        rate += 4*camera_profile['width']*camera_profile['height']*3*camera_profile['capture_fps']
+        rate += (len(selected_camera_roles(profile, cameras))
+                 *camera_profile['width']*camera_profile['height']*3*camera_profile['capture_fps'])
     expected_window = duration+initialization_budget_s
     expected = int(rate*expected_window*1.25) + SOFTWARE_SNAPSHOT_BUDGET_BYTES
     sufficient = free_bytes >= expected+RESERVE_BYTES
@@ -274,8 +295,12 @@ def capacity(profile, duration, free_bytes, camera_profile=None, *, initializati
                 actual_rate_may_differ=True)
 
 
-def source_commands(root, run, directory, session, profile, *, manual_drive=False, sides='all', preview_layout='separate'):
-    source_selection(profile, sides)
+DEFAULT_CAMERA_PROFILE = 'monitor_320'
+
+
+def source_commands(root, run, directory, session, profile, *, manual_drive=False, sides='all', preview_layout='separate',
+                    camera_profile=DEFAULT_CAMERA_PROFILE, cameras=None):
+    source_selection(profile, sides, cameras)
     from .cli import ros_command
     py = sys.executable
     config = directory/'configuration'
@@ -318,10 +343,9 @@ def source_commands(root, run, directory, session, profile, *, manual_drive=Fals
         if preview_layout == 'unified':
             del commands['manual_ui']  # The unified RViz owns the same reviewed teleop widget.
     if profile in CAMERA_PROFILES:
-        from wc_cameras.config import ROLES
-        for role in ROLES:
+        for role in selected_camera_roles(profile, cameras):
             commands['camera_'+role] = ros_command([py, '-m', 'wc_cameras.node', '--config', config/'cameras.json',
-                '--role', role, '--profile', 'monitor_320', '--session-id', session, '--run-root', run,
+                '--role', role, '--profile', camera_profile, '--session-id', session, '--run-root', run,
                 '--duration', '0', '--archive-dir', directory/'sources/cameras'/role])
     if profile == 'all_sensors':
         commands['ultrasonic'] = ros_command([py, '-m', 'wc_runtime.ultrasonic_capture',
@@ -359,8 +383,10 @@ def manual_runtime_configuration(setup, wheel_hardware, directory, session):
                     'hardware_stop_validated': False})
 
 
-def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None, sides='all', preview_layout='separate'):
-    source_selection(profile, sides)
+def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None, sides='all', preview_layout='separate',
+              camera_profile=DEFAULT_CAMERA_PROFILE, cameras=None):
+    source_selection(profile, sides, cameras)
+    camera_roles = cameras  # 下面的 cameras 变量是相机配置文件内容
     from .cli import device_preflight, imu_preflight
     from wc_motion.feedback_transport import validate_config, verify_identity, require_unoccupied
     checks = {}
@@ -400,7 +426,8 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
         from wc_cameras.config import load_config
         from wc_cameras.capture import verify_device, require_unoccupied as camera_free
         cameras, camera_config_hash = load_config(selected_config_path(root, 'cameras.json'))
-        for camera in cameras['cameras']:
+        roles = selected_camera_roles(profile, camera_roles)
+        for camera in [row for row in cameras['cameras'] if row['role'] in roles]:
             def verify(camera=camera):
                 info = verify_device(camera)
                 camera_free(info['resolved_node'])
@@ -415,11 +442,16 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
             return {'path': str(path), 'probe_response': 'NOT_QUERIED', 'physical_roles': 'UNVERIFIED'}
         check('ultrasonic', ultrasound)
     if profile in CAMERA_PROFILES:
+        if camera_profile not in cameras['profiles']:
+            raise ValueError('unknown camera profile: '+str(camera_profile))
         checks['camera_configuration'] = dict(status='CONFIG_VALID', sha256=camera_config_hash,
-                                               profile='monitor_320', capture_profile=copy.deepcopy(cameras['profiles']['monitor_320']))
+                                               profile=camera_profile, capture_profile=copy.deepcopy(cameras['profiles'][camera_profile]))
+    elif camera_profile != DEFAULT_CAMERA_PROFILE:
+        raise ValueError('--camera-profile requires a camera capture profile')
     checks['capacity'] = capacity(profile, duration, shutil.disk_usage(capacity_path or root).free,
-                                  cameras['profiles']['monitor_320'] if profile in CAMERA_PROFILES else None,
-                                  initialization_budget_s=ALL_SOURCE_READY_TIMEOUT_S, sides=sides)
+                                  cameras['profiles'][camera_profile] if profile in CAMERA_PROFILES else None,
+                                  initialization_budget_s=ALL_SOURCE_READY_TIMEOUT_S, sides=sides,
+                                  **({'cameras':camera_roles} if camera_roles is not None else {}))
     return checks
 
 
@@ -537,7 +569,7 @@ def validate_capture_audit(value):
 
 
 def capture_summary(manifest):
-    selection = source_selection(manifest['profile'], manifest.get('lidar_sides','all'))
+    selection = source_selection(manifest['profile'], manifest.get('lidar_sides','all'), manifest.get('camera_roles'))
     summary = ['# 采集结果', '', '状态：'+manifest['status'],
                '配置：'+manifest['profile'],
                '本次请求来源：'+ '、'.join(selection['selected_sources']),
@@ -756,8 +788,8 @@ def finalize_capture(directory, run, manifest, hashes, results, failures, stop_r
     return 0 if committed and prospective['recording_complete'] else 2
 
 
-def snapshot(root, directory, *, profile='all_sensors', storage_policy=None, sides='all'):
-    selection = source_selection(profile, sides)
+def snapshot(root, directory, *, profile='all_sensors', storage_policy=None, sides='all', cameras=None):
+    selection = source_selection(profile, sides, cameras)
     cfg = directory/'configuration'
     cfg.mkdir()
     paths = {'runtime_config.json': 'config/mapping_live.json', 'hardware_setup.json': 'config/hardware_setup.json',
@@ -858,8 +890,15 @@ def run_capture(args):
         raise ValueError('manual-drive recording on exFAT currently supports only --staging memory; the wheel owner requires an authenticated RAM capture session')
     if destination_guard is not None and not output_root.is_dir():
         raise ValueError('CAPTURE_DESTINATION_UNAVAILABLE: external output-root must already exist')
+    camera_profile = getattr(args, 'camera_profile', None) or DEFAULT_CAMERA_PROFILE
+    camera_roles = getattr(args, 'cameras', None)
+    if camera_roles is not None:
+        camera_roles = selected_camera_roles(args.profile, camera_roles)
+    camera_options = {'cameras': camera_roles} if camera_roles is not None else {}
     checks = preflight(ROOT, args.profile, args.duration, manual_drive=manual_drive,
                        **({'sides':sides,'preview_layout':preview_layout} if sides != 'all' or preview_layout != 'separate' else {}),
+                       **({'camera_profile':camera_profile} if camera_profile != DEFAULT_CAMERA_PROFILE else {}),
+                       **camera_options,
                        **({'capacity_path':destination_guard.mount_root} if destination_guard is not None else {}))
     if destination_guard is not None: checks['destination']=destination_guard.check()
     if preview:
@@ -885,8 +924,10 @@ def run_capture(args):
                   startup_policy='DIRECT_CAPTURE_WITH_RUNTIME_STORAGE_GUARD',
                   storage_staging=dict(mode=staging,live_directory=str(directory),final_directory=str(final_directory),
                       durable_archive=False,cleanup='NOT_ATTEMPTED'),
-                  **source_selection(args.profile, sides),
+                  **source_selection(args.profile, sides, camera_roles),
                   lidar_sides=sides, preview_layout=preview_layout,
+                  **({'camera_profile':camera_profile} if args.profile in CAMERA_PROFILES else {}),
+                  **({'camera_roles':camera_roles} if camera_roles is not None else {}),
                   sensor_scope='DUAL_LIDAR' if sides == 'all' else 'SINGLE_LIDAR_DIAGNOSTIC',
                   recorder_queue_size=recorder_queue_size,
                   manual_drive=manual_drive, preview=preview, control_transmissions=0 if args.dry_run else None,
@@ -939,10 +980,12 @@ def run_capture(args):
         from .capture_support import progress
         progress(directory,'PREPARING')
         hashes = snapshot(ROOT, directory, profile=args.profile,
-                          storage_policy=getattr(destination_guard, 'storage_policy', None), sides=sides)
+                          storage_policy=getattr(destination_guard, 'storage_policy', None), sides=sides,
+                          **camera_options)
         from .capture_contract import build_capture_contract, read_source_readiness
         contract = build_capture_contract(directory/'configuration',args.profile,args.session,
-                                           imu_sensor_id=device_bindings['imu']['sensor_id'], sides=sides)
+                                           imu_sensor_id=device_bindings['imu']['sensor_id'], sides=sides,
+                                           **camera_options)
         atomic_json(directory/'configuration/capture_contract.json',contract)
         hashes['configuration/capture_contract.json'] = digest(directory/'configuration/capture_contract.json')
         if manual_drive:
@@ -953,7 +996,9 @@ def run_capture(args):
             atomic_json(directory/'configuration/manual_runtime.json', runtime)
             hashes['configuration/manual_runtime.json'] = digest(directory/'configuration/manual_runtime.json')
         commands = source_commands(ROOT, RUN, directory, args.session, args.profile, manual_drive=manual_drive,
-                                   sides=sides, preview_layout=preview_layout)
+                                   sides=sides, preview_layout=preview_layout,
+                                   **({'camera_profile':camera_profile} if camera_profile != DEFAULT_CAMERA_PROFILE else {}),
+                                   **camera_options)
         if preview:
             commands['preview'] = ros_command([sys.executable,'-m','wc_runtime.capture_preview',
                 '--session-root',directory,'--session-id',args.session,'--preview-hz','3','--cloud-source','raw',
@@ -1204,6 +1249,11 @@ def main(argv=None):
     parser.add_argument('--preview',action='store_true',help='Independent subscribed native lidar and camera views; never another device reader')
     parser.add_argument('--sides',choices=('left','right','all'),default='all',help='Record only selected lidar sources; single lidar is diagnostic')
     parser.add_argument('--preview-layout',choices=('separate','unified'),default='separate')
+    parser.add_argument('--camera-profile', choices=('monitor_320', 'detail_640', 'detail_640_10fps'), default=None,
+                        help='camera capture profile from cameras.json for camera profiles (default: monitor_320)')
+    parser.add_argument('--cameras', default=None,
+                        help='comma-separated camera roles to record (default: all four); unselected cameras are '
+                             'excluded sources, never preflighted or started')
     parser.add_argument('--diagnostic', action='store_true', help='explicit incomplete diagnostic capture; missing sources remain errors')
     parser.add_argument('--manual-drive', action='store_true',
                         help='authorize this session user WASD/hybrid hand-push; one wheel owner; no EKF/SLAM')

@@ -53,6 +53,55 @@ def mock_preflight(monkeypatch, *, missing_camera=None):
     monkeypatch.setattr(capture.shutil, 'disk_usage', lambda path: SimpleNamespace(free=10**12))
 
 
+def test_camera_profile_option_selects_resolution_and_keeps_default(monkeypatch, tmp_path):
+    from wc_runtime import cli
+    monkeypatch.setattr(cli, 'ros_command', lambda args: list(map(str, args)))
+    bindings = json.loads((PROJECT/'config/device_bindings.json').read_text())
+    for name in ('a', 'b'):
+        (tmp_path/name/'configuration').mkdir(parents=True)
+        atomic_json(tmp_path/name/'configuration/device_bindings.json', bindings)
+    default = capture.source_commands(PROJECT, tmp_path/'run', tmp_path/'a', 'test', 'mapping_cameras')
+    chosen = capture.source_commands(PROJECT, tmp_path/'run', tmp_path/'b', 'test', 'mapping_cameras',
+                                     camera_profile='detail_640_10fps')
+    for name in CAMERAS:
+        assert default[name][default[name].index('--profile')+1] == 'monitor_320'
+        assert chosen[name][chosen[name].index('--profile')+1] == 'detail_640_10fps'
+    mock_preflight(monkeypatch, missing_camera=None)
+    result = capture.preflight(PROJECT, 'mapping_cameras', 30, camera_profile='detail_640_10fps')
+    assert result['camera_configuration']['profile'] == 'detail_640_10fps'
+    assert result['camera_configuration']['capture_profile']['width'] == 640
+    assert result['capacity']['estimated_recording_bytes'] > \
+        capture.preflight(PROJECT, 'mapping_cameras', 30)['capacity']['estimated_recording_bytes']
+    with pytest.raises(ValueError):
+        capture.preflight(PROJECT, 'mapping_core', 30, camera_profile='detail_640')
+
+
+def test_camera_subset_is_explicit_excluded_scope(monkeypatch, tmp_path):
+    from wc_runtime import cli
+    front = ['left_front', 'right_front']
+    selection = capture.source_selection('mapping_cameras', 'all', 'right_front,left_front')
+    assert [s for s in selection['selected_sources'] if s.startswith('camera_')] == ['camera_'+r for r in front]
+    assert set(selection['excluded_sources']) == {'camera_left_side', 'camera_right_side', 'ultrasonic'}
+    assert capture.source_selection('mapping_cameras') == capture.source_selection('mapping_cameras', 'all', None)
+    for bad in ('', 'left_front,left_front', 'front'):
+        with pytest.raises(ValueError):
+            capture.source_selection('mapping_cameras', 'all', bad)
+    with pytest.raises(ValueError):
+        capture.source_selection('mapping_core', 'all', front)
+    monkeypatch.setattr(cli, 'ros_command', lambda args: list(map(str, args)))
+    (tmp_path/'configuration').mkdir()
+    atomic_json(tmp_path/'configuration/device_bindings.json',
+                json.loads((PROJECT/'config/device_bindings.json').read_text()))
+    commands = capture.source_commands(PROJECT, tmp_path/'run', tmp_path, 'test', 'mapping_cameras', cameras=front)
+    assert {k for k in commands if k.startswith('camera_')} == {'camera_'+r for r in front}
+    mock_preflight(monkeypatch, missing_camera='left_side')  # 未选中的相机缺失也不影响
+    result = capture.preflight(PROJECT, 'mapping_cameras', 30, cameras=front)
+    assert {k for k in result if k.startswith('camera_') and k != 'camera_configuration'} == {'camera_'+r for r in front}
+    assert all(result['camera_'+r]['status'] == 'AVAILABLE' for r in front)
+    assert capture.capacity('mapping_cameras', 30, 10**12, cameras=front)['estimated_recording_bytes'] < \
+        capture.capacity('mapping_cameras', 30, 10**12)['estimated_recording_bytes']
+
+
 @pytest.mark.parametrize('missing_camera', [None, 'left_front'])
 def test_preflight_checks_all_requested_cameras_but_never_ultrasound(monkeypatch, missing_camera):
     mock_preflight(monkeypatch, missing_camera=missing_camera)

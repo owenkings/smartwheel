@@ -137,7 +137,7 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
     manifest_path = root/'capture_manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {}
     sides = manifest.get('lidar_sides','all')
-    selection = source_selection(profile, sides)
+    selection = source_selection(profile, sides, manifest.get('camera_roles'))
     contract_path = root/'configuration/capture_contract.json'
     contract = None
     contract_invalid = False
@@ -334,8 +334,8 @@ def audit_capture(root, profile, process_results, *, durability_complete=None):
     except (OSError, ValueError, KeyError) as exc:
         issue('WHEEL_EVIDENCE_INVALID', 'sources/wheel_feedback.jsonl', exc)
     if profile in CAMERA_PROFILES:
-        from wc_cameras.config import ROLES
-        for role in ROLES:
+        from .capture import selected_camera_roles
+        for role in selected_camera_roles(profile, manifest.get('camera_roles')):
             try:
                 directory = root/'sources/cameras'/role
                 summary = checked_summary(directory/'summary.json', 'captured_frames')
