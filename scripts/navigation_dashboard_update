@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Add archived autonomy simulation runs to a new copy of the offline progress dashboard; read only.
+set -euo pipefail
+DASHBOARD_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$DASHBOARD_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -B -s -m wc_navigation.autonomy.dashboard_update --project-root "$DASHBOARD_PROJECT" "$@"

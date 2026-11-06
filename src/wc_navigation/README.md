@@ -36,3 +36,4 @@
 - [dashboard.py](dashboard.py)、[progress_dashboard.html](progress_dashboard.html)：真实归档结果的只读进度看板，含地图回看、近点与定位证据。见[说明](../../docs/operations/navigation_dashboard.md)。
 
 - [native_pair_registration.py](native_pair_registration.py)：未知车体安装变换时的原生左雷达点云一致性诊断，不生成车轴位姿。见[说明](../../docs/operations/navigation_native_pair.md)。
+- [autonomy/](autonomy/README.md)：自主探索建图、Nav2 规划与控制、安全闸门在仿真轮椅上的闭环框架，以及在真实录包上的开环影子运行，见[说明](../../docs/operations/navigation_autonomy.md)。

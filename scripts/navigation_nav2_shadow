@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Open-loop shadow run of the full Nav2 stack along a frozen recording; commands are recorded, never sent.
+# WC_AUTONOMY_ROS_DOMAIN=97 runs beside another autonomy run (default 96).
+set -eo pipefail
+SHADOW_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$SHADOW_PROJECT/install/main/setup.bash"
+set -u
+WC_AUTONOMY_ROS_DOMAIN="${WC_AUTONOMY_ROS_DOMAIN:-96}"
+case "$WC_AUTONOMY_ROS_DOMAIN" in
+  96|97) ;;
+  *) echo "WC_AUTONOMY_ROS_DOMAIN must be 96 or 97" >&2; exit 2 ;;
+esac
+export PYTHONPATH="$SHADOW_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export WC_AUTONOMY_ROS_DOMAIN ROS_DOMAIN_ID="$WC_AUTONOMY_ROS_DOMAIN" ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+exec /usr/bin/python3 -B -s -m wc_navigation.autonomy.shadow_cli --project-root "$SHADOW_PROJECT" "$@"

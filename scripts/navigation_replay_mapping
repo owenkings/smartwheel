@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Offline replay of the exploration mapper on a frozen single-left frontend; no nodes or devices.
+set -eo pipefail
+REPLAY_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$REPLAY_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$REPLAY_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+exec /usr/bin/python3 -B -s -m wc_navigation.autonomy.replay_mapping --project-root "$REPLAY_PROJECT" "$@"
