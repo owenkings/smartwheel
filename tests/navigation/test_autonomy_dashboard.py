@@ -105,7 +105,15 @@ def test_shadow_rows_summarize_agreement_and_failure_reasons(tmp_path):
     row = shadow_row(shadow_dir(tmp_path))
     assert row["drive_label"] == "62%" and row["plan_label"] == "72/120 成功"
     assert row["failure_label"].startswith("未知格膨胀后截断路线 28；实时扫描标记压住起点 20")
-    assert row["turn_label"] == "97%（181 个样本）" and row["window_label"] == "57–180 s"
+    assert row["turn_label"] == "97%（181 个样本）" and row["window_label"] == "cell_a · 57–180 s"
+    frontend = tmp_path / "analysis"
+    (frontend / "cell").mkdir(parents=True)
+    (frontend / "result.json").write_text(json.dumps({"dataset": "/data/experiments/zoulang_test3min"}), encoding="utf-8")
+    named = tmp_path / "named"
+    named.mkdir()
+    row = shadow_row(shadow_dir(named, config={"source_cell": str(frontend / "cell"), "window_s": [57.3, 180.3],
+                                              "map_yaml": "/r/run_x/odom_grid/map_nav.yaml"}))
+    assert row["recording"] == "zoulang_test3min" and row["window_label"].startswith("zoulang_test3min · ")
     assert row["map_label"] == "run_x/odom_grid/map_nav.yaml" and row["preview_data_url"].startswith("data:image/png")
 
 

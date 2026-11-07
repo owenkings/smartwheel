@@ -145,14 +145,19 @@ def shadow_row(directory, *, preview=True):
     requests = planner.get("plan_requests") or 0
     succeeded = round((planner.get("plan_success_fraction") or 0.0) * requests)
     window = config.get("window_s") or [0.0, 0.0]
+    recording = Path(config["source_cell"]).parent.name
+    try:  # the frontend analysis records which capture it came from
+        frontend = json.loads(_bounded(Path(config["source_cell"]).parent / "result.json", MAX_RESULT_BYTES))
+        recording = Path(frontend["dataset"]).name
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     mode = result.get("shadow_mode", config.get("shadow_mode", "navigate"))
     profile = config.get("profile") or {}
     label = "录包影子 · " + ("Nav2 规划并跟踪" if mode == "navigate" else "控制器沿司机路线")
     if profile.get("radius_m") is not None:
         label += " · 假设包络 %.2f m" % profile["radius_m"]
-    row = {"run_id": directory.name, "label": label, "shadow_mode": mode,
-           "recording": Path(config["source_cell"]).parent.name,
-           "window_label": "%.0f–%.0f s" % (window[0], window[1]),
+    row = {"run_id": directory.name, "label": label, "shadow_mode": mode, "recording": recording,
+           "window_label": "%s · %.0f–%.0f s" % (recording, window[0], window[1]),
            "map_label": Path(config["map_yaml"]).parent.parent.name + "/" + Path(config["map_yaml"]).parent.name
                         + "/" + Path(config["map_yaml"]).name,
            "status": result["status"], "status_label": SHADOW_STATUS_LABELS.get(result["status"], result["status"]),

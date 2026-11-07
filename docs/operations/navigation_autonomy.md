@@ -66,6 +66,21 @@ bash scripts/navigation_replay_mapping \
 
 `map.yaml` 按对数几率阈值分三类。`map_nav.yaml` 另外把“看过至少 5 次、其中回波不超过 25%”的格记为空闲：这类格多数时候被射线穿过，是有人走过或零星回波留下的痕迹，不是没观测到。没观测到或观测不足 5 次的格仍是未知，占据阈值仍然优先。规划器把未知格当障碍并按包络膨胀（与离线规划的保守约定一致），所以一个 5 cm 的未知格就能封住 2.6 m 走廊；`result.json` 的 `unknown_pockets` 分别给出两张图里被已知格包围的小未知块（≤20 格）数量。`--map-bin-deg 0.5|0.25` 用更细的方位扇区建图，留出帧略好，但小未知块并没有减少，因为它们来自有冲突证据的格，而不是射线间隙。
 
+### 为没有冻结外参的录包生成单左前端
+
+2026-10-09 的 RoomA1/RoomAB 录包没有冻结左雷达外参，`compare` 会按外参能力检查拒绝。经用户同意，可以用 2026-10-26 现场外参作显式实验覆盖，参数与走廊前端完全相同（不加原生地图、运动候选或机械初值），输出目录名注明实验：
+
+```bash
+R=/media/nvidia/tiany-USB/wheelchair
+python3 -s scripts/wc_phase1 compare \
+  --dataset $R/data/experiments/RoomA1capture_2026_1009_154830 \
+  --output  $R/data/analysis/<时间>_RoomA1_single_left_fieldext20261026_EXPERIMENTAL \
+  --lidar left --cloud filtered --estimators robot_localization --input-rate-hz 5 --filter on \
+  --hardware-setup config/local/project/hardware_setup.json
+```
+
+覆盖文件同时带入现场轮半径 0.172 m。运行前核对它的 SHA256 仍是 `12ea737c…`（与走廊前端相同）；录包与标定之间是否重装雷达没有记录，结论都要按实验外参解读。每份录包约 8–10 分钟，派生结果约 1–1.5 GB。
+
 ## 在真实录包上做 Nav2 影子运行
 
 ```bash
