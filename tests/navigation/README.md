@@ -24,7 +24,7 @@
 
 动态停车数值模型见 [test_dynamic_simulation.py](test_dynamic_simulation.py)，覆盖延迟观测、制动、恢复、断流及不可避免碰撞。负例通过表示检出了失败，不能解释为所有场景都无碰撞。看板更新的来源哈希、PNG 校验与离线标志见 [test_autonomy_dashboard.py](test_autonomy_dashboard.py)。这些测试不启动 ROS 闭环；完整仿真运行结果另行归档。
 
-多边形车体的精确栅格检查（与密集采样对照）、原地转向扫过、薄墙不漏检、车体间隙也在 [test_autonomy_world.py](test_autonomy_world.py)；仿真车体随外形选项变化、默认仍是圆见 [test_autonomy_config.py](test_autonomy_config.py)。可选规划器与控制器（默认参数不变、不倒车、读回一致、覆盖项校验）见 [test_planning_stack.py](test_planning_stack.py)。
+多边形车体的精确栅格检查（与密集采样对照）、原地转向扫过、薄墙不漏检、车体间隙也在 [test_autonomy_world.py](test_autonomy_world.py)；仿真车体随外形选项变化、默认仍是圆见 [test_autonomy_config.py](test_autonomy_config.py)。可选规划器与控制器（默认参数不变、不倒车、读回一致、覆盖项校验）、用真值世界当地图的导航配置见 [test_planning_stack.py](test_planning_stack.py)；规划台架的录包请求、司机路线分类、真实车体路径评分（间隙、重叠、原地转向、倒车）与汇总见 [test_planning_bench.py](test_planning_bench.py)。
 
 
 

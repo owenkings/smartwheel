@@ -68,8 +68,12 @@ def arguments(argv=None):
     explore.add_argument("--slam-loop-closure", action="store_true",
                          help="with --mapper slam_toolbox: enable loop closure (off by default)")
     navigate = sub.add_parser("navigate", parents=[common], help="AMCL + Nav2 mission on a saved map")
-    navigate.add_argument("--from-exploration", type=Path, required=True,
-                          help="result directory of an explore run (world, saved map and frame link)")
+    known = navigate.add_mutually_exclusive_group(required=True)
+    known.add_argument("--from-exploration", type=Path,
+                       help="result directory of an explore run (world, saved map and frame link)")
+    known.add_argument("--world", help="synthetic world that is both the truth and the saved map (no mapping error)")
+    known.add_argument("--world-map", type=Path,
+                       help="saved trinary map that is both the truth (unknown = solid) and the navigation map")
     navigate.add_argument("--goal", nargs=3, type=_finite, action="append", default=[],
                           metavar=("X", "Y", "YAW"), help="map-frame goal; default chooses far reachable goals")
     navigate.add_argument("--auto-goals", type=int, default=3)
@@ -98,11 +102,15 @@ def _write_json(path, value):
 
 def _auto_goals(map_yaml, start_map, radius, margin, count):
     """Farthest-point goals in reachable, inflated known-free space of the saved map."""
-    from ..geometry import Grid, inflate_grid
-    from .frontier import reachable_distances, with_robot_disc_free
     from .maps import read_back
     _, data, meta = read_back(map_yaml)
-    grid = with_robot_disc_free(Grid(data, meta["resolution"], tuple(meta["origin"])), start_map[:2], radius + margin)
+    return _auto_goals_grid(data, meta["resolution"], meta["origin"], start_map, radius, margin, count)
+
+
+def _auto_goals_grid(data, resolution, origin, start_map, radius, margin, count):
+    from ..geometry import Grid, inflate_grid
+    from .frontier import reachable_distances, with_robot_disc_free
+    grid = with_robot_disc_free(Grid(data, resolution, tuple(origin)), start_map[:2], radius + margin)
     inflated = inflate_grid(grid, radius + grid.resolution * math.sqrt(2), margin)
     start = grid.world_to_cell(start_map[:2])
     distances = reachable_distances(inflated.free, start, grid.resolution)
@@ -158,6 +166,30 @@ def build_config(args):
                       mapper=args.mapper, slam_loop_closure=bool(args.slam_loop_closure),
                       explorer={"initial_spin": not args.no_initial_spin, "return_home": not args.no_return_home,
                                 "max_goals": args.max_goals})
+    elif args.from_exploration is None:
+        # The truth is also the saved map: planning and control are judged without mapping error.
+        if args.world:
+            world, default_start = synthetic_world(args.world, obstacles)
+            map_yaml = None                                   # written into the run directory by main()
+        else:
+            world = map_world(args.world_map, obstacles)
+            default_start = auto_start(world, profile.body_circumscribed_m, profile.margin_m)
+            map_yaml = world.source["yaml"]
+        start = tuple(args.start) if args.start else tuple(default_start)
+        if world.body_collides(start, _body(profile, config["body_model"])):
+            raise ValueError("start pose collides with the world for this body")
+        initial = (start[0] + args.initial_pose_error[0], start[1] + args.initial_pose_error[1],
+                   start[2] + args.initial_pose_error[2])
+        data = np.where(world.solid, 100, 0).astype(np.int8)        # discs stay out of the map
+        goals = [list(g) for g in args.goal] or _auto_goals_grid(data, world.grid.resolution, world.grid.origin,
+                                                               start, profile.body_inscribed_m, profile.margin_m,
+                                                               args.auto_goals)
+        if not goals:
+            raise ValueError("no navigation goals were given or found")
+        config.update(world=dict(world.source, obstacles=obstacles), start_pose_world=list(start),
+                      world_T_map=[0.0, 0.0, 0.0], map_yaml=map_yaml, map_from_world=True,
+                      initial_pose_map=list(initial), initial_pose_std=list(args.initial_pose_std),
+                      true_start_map=list(start), goals_map=goals)
     else:
         source = args.from_exploration.expanduser().resolve(strict=True)
         previous = json.loads((source / "result.json").read_text(encoding="utf-8"))
@@ -183,18 +215,33 @@ def build_config(args):
     return config
 
 
+def _body(profile, label):
+    from ..planning.body import Body
+    return Body.from_profile(profile, source=label)
+
+
+def write_world_map(config, output):
+    """For ``navigate --world``: save the synthetic truth (without extra discs) as the navigation map."""
+    from .maps import save_trinary_map
+    from .world import load_world
+    world = load_world(dict(config["world"], obstacles=[]))
+    spec, _ = save_trinary_map(output, "world_map", np.where(world.solid, 100, 0).astype(np.int8),
+                               world.grid.resolution, tuple(world.grid.origin))
+    config["map_yaml"] = str(spec)
+    return spec
+
+
 def summarize(config, report, output):
     """Turn the supervisor report into result.json, trajectory.csv and preview.png."""
     from . import report as metrics
     from .maps import read_back
     from .ros_util import compose
     from .world import load_world
-    from ..planning.body import Body
     from .nav2_config import NavProfile
     world = load_world(config["world"])
     radius = config["profile"]["radius_m"]
     profile = NavProfile(**config["profile"])
-    body = Body.from_profile(profile, source=config.get("body_model"))
+    body = _body(profile, config.get("body_model"))
     recorded = report.pop("recorded", {})
     rows = recorded.get("rows", [])
     metrics.write_trajectory(output / "trajectory.csv", rows)
@@ -279,6 +326,8 @@ def main(argv=None):
     output = storage.resolve("reports/navigation_autonomy/" + run_id)
     with domain_lock(args.project_root):
         output.mkdir(parents=True, exist_ok=False)
+        if config.get("map_from_world") and not config.get("map_yaml"):
+            write_world_map(config, output)
         _write_json(output / "run_config.json", config)
         report = Supervisor(args.project_root, output, config).run()
     storage.check()

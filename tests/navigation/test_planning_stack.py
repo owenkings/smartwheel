@@ -110,6 +110,57 @@ def test_cli_keeps_reversing_and_unknown_space_fixed(extra):
         arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms", *extra])
 
 
+@pytest.mark.parametrize("name", stack.CONTROLLERS)
+def test_each_controller_keeps_forward_only_motion_and_reads_back(name):
+    profile = nav2_config.NavProfile(footprint=OUTLINE)
+    choice = stack.PlanningChoice(controller=name)
+    p = params(choice, footprint=OUTLINE)
+    follow = p["controller_server"]["ros__parameters"]["FollowPath"]
+    assert follow["plugin"] == stack.CONTROLLER_PLUGINS[name]
+    if name == "mppi":
+        assert follow["vx_min"] == 0.0 and follow["vx_max"] == profile.max_linear
+        assert follow["motion_model"] == "DiffDrive" and follow["CostCritic"]["consider_footprint"] is True
+        assert follow["model_dt"] == pytest.approx(1.0 / profile.controller_frequency_hz)
+        assert set(follow["critics"]) <= set(follow)
+    else:
+        assert follow["allow_reversing"] is False and follow["use_collision_detection"] is True
+    if name == "shim_rpp":
+        assert follow["primary_controller"] == stack.RPP_PLUGIN and follow["use_rotate_to_heading"] is False
+        assert follow["angular_dist_threshold"] == pytest.approx(0.785)
+    base = params(None, footprint=OUTLINE)
+    for key in base:
+        if key not in ("controller_server",):
+            assert p[key] == base[key], key
+    assert p["velocity_smoother"]["ros__parameters"]["min_velocity"][0] == 0.0
+    expected = nav2_config.readback_expectations(profile, "navigate", planning=choice)
+    for node, values in expected.items():
+        for dotted, value in values.items():
+            assert _same(_lookup(p, node, dotted), value), (name, node, dotted)
+
+
+def test_navigation_can_use_the_true_world_as_its_map(tmp_path):
+    from wc_navigation.autonomy import cli
+    from wc_navigation.autonomy.maps import read_back, save_trinary_map
+    from wc_navigation.autonomy.world import synthetic_world
+    config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                                             "--goal", "8.0", "1.4", "0.0", "--planner", "smac_hybrid"]))
+    assert config["map_from_world"] is True and config["map_yaml"] is None and config["world_T_map"] == [0.0, 0.0, 0.0]
+    spec = cli.write_world_map(config, tmp_path)
+    _, data, meta = read_back(spec)
+    world, start = synthetic_world("two_rooms")
+    assert (data == 100).sum() == world.solid.sum() and config["map_yaml"] == str(spec)
+    assert config["true_start_map"] == list(start) and config["goals_map"] == [[8.0, 1.4, 0.0]]
+    grid = data.copy()
+    grid[:4, :] = -1
+    saved, _ = save_trinary_map(tmp_path, "saved", grid, 0.05, (0.0, 0.0, 0.0))
+    recorded = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "navigate", "--world-map", str(saved),
+                                               "--start", "1.2", "1.4", "0.0", "--goal", "8.0", "1.4", "0.0"]))
+    assert recorded["map_yaml"] == str(Path(saved).resolve()) and recorded["world"]["kind"] == "map"
+    with pytest.raises(SystemExit):
+        cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                       "--from-exploration", str(tmp_path)])
+
+
 def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     from wc_navigation.autonomy import cli, shadow_cli
     config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms",

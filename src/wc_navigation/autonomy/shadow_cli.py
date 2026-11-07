@@ -45,6 +45,7 @@ LOG_PATTERNS = {
     # Regulated Pure Pursuit and the rotation shim ("detected (a potential) collision ahead").
     "controller_collision_ahead": ("controller_server", r"collision ahead"),
     "controller_optimizer_failed": ("controller_server", r"optimizer fail"),          # MPPI
+    "controller_missed_rate": ("controller_server", r"missed its desired rate"),
     "controller_no_progress": ("controller_server", r"failed to make progress"),
     "collision_monitor_stop": ("collision_monitor", r"robot to stop"),
     "collision_monitor_slowdown": ("collision_monitor", r"robot to slow ?down"),   # 1.1.20 prints "slowdown"

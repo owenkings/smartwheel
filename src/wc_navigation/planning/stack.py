@@ -19,8 +19,9 @@ Planners (Humble 1.1.20 packages installed on the Orin):
   primitives (which include in-place rotations, penalized), reverse expansion
   off, full outline checked.
 
-Controllers: ``rpp`` (default Regulated Pure Pursuit), ``shim_rpp`` and ``mppi``
-are added by the controller comparison (see ``CONTROLLERS``).
+Controllers (see ``controller_plugin``): ``rpp`` (default Regulated Pure
+Pursuit), ``shim_rpp`` (rotation shim + RPP that turns while driving) and
+``mppi`` (forward-only MPPI with the outline in its cost critic).
 """
 from __future__ import annotations
 
@@ -41,7 +42,15 @@ PLANNER_PLUGINS = {
 }
 PLANNERS = tuple(PLANNER_PLUGINS)
 FOOTPRINT_PLANNERS = ("smac_hybrid", "smac_lattice")     # check the body outline at each heading (SE2)
-CONTROLLERS = ("rpp",)
+RPP_PLUGIN = "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+CONTROLLER_PLUGINS = {
+    "rpp": RPP_PLUGIN,
+    "shim_rpp": "nav2_rotation_shim_controller::RotationShimController",
+    "mppi": "nav2_mppi_controller::MPPIController",
+}
+CONTROLLERS = tuple(CONTROLLER_PLUGINS)
+MPPI_CRITICS = ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
 GOAL_TOLERANCE_M = 0.25                                  # same as NavFn's GridBased.tolerance
 _SMOOTHER = {"max_iterations": 1000, "w_smooth": 0.3, "w_data": 0.2, "tolerance": 1.0e-10, "do_refinement": True}
 
@@ -137,6 +146,52 @@ def planner_plugin(name, *, exploring, tolerance=GOAL_TOLERANCE_M):
     raise ValueError("unknown planner: " + str(name))
 
 
+def controller_plugin(name, rpp, profile):
+    """``FollowPath`` parameters of one controller; ``rpp`` is the stack's Regulated Pure Pursuit section.
+
+    ``shim_rpp``: the rotation shim turns in place only when a new path starts
+    more than 45 degrees off the heading (checked for collision over 1 s), then
+    hands over to RPP with its own rotate-to-heading off, so RPP turns while
+    driving along the path curvature (regulated down to 0.10 m/s on tight arcs).
+    ``mppi``: sampling MPC on the differential-drive model with forward speeds
+    only (vx_min 0), the body outline in its costmap critic, and no hard stop of
+    its own; the collision monitor and the gate still stop the chair.
+    """
+    if name == "rpp":
+        return dict(rpp)
+    if name == "shim_rpp":
+        out = dict(rpp)
+        out.update(plugin=CONTROLLER_PLUGINS[name], primary_controller=RPP_PLUGIN, use_rotate_to_heading=False,
+                   angular_dist_threshold=0.785, forward_sampling_distance=0.5, simulate_ahead_time=1.0,
+                   rotate_to_goal_heading=False)
+        return out
+    if name == "mppi":
+        critics = {
+            "ConstraintCritic": {"enabled": True, "cost_power": 1, "cost_weight": 4.0},
+            "CostCritic": {"enabled": True, "cost_power": 1, "cost_weight": 3.81, "critical_cost": 300.0,
+                           "consider_footprint": True, "collision_cost": 1000000.0, "near_goal_distance": 0.5,
+                           "trajectory_point_step": 2},
+            "GoalCritic": {"enabled": True, "cost_power": 1, "cost_weight": 5.0, "threshold_to_consider": 1.4},
+            "GoalAngleCritic": {"enabled": True, "cost_power": 1, "cost_weight": 3.0, "threshold_to_consider": 0.5},
+            "PathAlignCritic": {"enabled": True, "cost_power": 1, "cost_weight": 14.0, "max_path_occupancy_ratio": 0.05,
+                                "trajectory_point_step": 4, "threshold_to_consider": 0.5, "offset_from_furthest": 20,
+                                "use_path_orientations": False},
+            "PathFollowCritic": {"enabled": True, "cost_power": 1, "cost_weight": 5.0, "offset_from_furthest": 5,
+                                 "threshold_to_consider": 1.4},
+            "PathAngleCritic": {"enabled": True, "cost_power": 1, "cost_weight": 2.0, "offset_from_furthest": 4,
+                                "threshold_to_consider": 0.5, "max_angle_to_furthest": 1.0, "forward_preference": True},
+            "PreferForwardCritic": {"enabled": True, "cost_power": 1, "cost_weight": 5.0, "threshold_to_consider": 0.5},
+        }
+        return {"plugin": CONTROLLER_PLUGINS[name], "motion_model": "DiffDrive", "time_steps": 30,
+                "model_dt": round(1.0 / profile.controller_frequency_hz, 6), "batch_size": 1000,
+                "iteration_count": 1, "temperature": 0.3, "gamma": 0.015,
+                "vx_std": 0.2, "vy_std": 0.2, "wz_std": 0.4, "vx_max": profile.max_linear, "vx_min": 0.0,
+                "vy_max": 0.0, "wz_max": profile.max_angular, "prune_distance": 1.7, "transform_tolerance": 0.3,
+                "reset_period": 1.0, "regenerate_noises": False, "retry_attempt_limit": 1, "visualize": False,
+                "critics": list(MPPI_CRITICS), **critics}
+    raise ValueError("unknown controller: " + str(name))
+
+
 def apply(params, profile, choice, *, exploring):
     """Replace planner and controller plugins in a ``navigation_parameters`` result, in place."""
     if choice.is_default:
@@ -146,6 +201,7 @@ def apply(params, profile, choice, *, exploring):
     for key, value in choice.planner_params:
         _set(planner["GridBased"], key, value)
     controller = params["controller_server"]["ros__parameters"]
+    controller["FollowPath"] = controller_plugin(choice.controller, controller["FollowPath"], profile)
     for key, value in choice.controller_params:
         _set(controller["FollowPath"], key, value)
     return params
@@ -173,6 +229,15 @@ def adjust_readback(expected, choice, profile, *, exploring):
             planner["GridBased." + key] = value
     expected["planner_server"] = planner
     controller = expected.setdefault("controller_server", {})
+    controller["FollowPath.plugin"] = CONTROLLER_PLUGINS[choice.controller]
+    if choice.controller == "shim_rpp":
+        controller.update({"FollowPath.primary_controller": RPP_PLUGIN, "FollowPath.use_rotate_to_heading": False})
+    if choice.controller == "mppi":
+        for key in ("FollowPath.desired_linear_vel", "FollowPath.allow_reversing", "FollowPath.use_collision_detection"):
+            controller.pop(key, None)
+        controller.update({"FollowPath.vx_min": 0.0, "FollowPath.vx_max": profile.max_linear,
+                           "FollowPath.wz_max": profile.max_angular, "FollowPath.motion_model": "DiffDrive",
+                           "FollowPath.CostCritic.consider_footprint": True})
     for key, value in choice.controller_params:
         if not isinstance(value, dict):
             controller["FollowPath." + key] = value
