@@ -98,12 +98,15 @@ def arguments(argv=None):
     parser.add_argument("--scan-height", nargs=2, type=_finite, default=[-0.5, 0.5], metavar=("MIN", "MAX"),
                         help="height band in the prepared lidar frame, as in the AMCL and mapping replays")
     parser.add_argument("--real-time-factor", type=_positive, default=1.0)
+    from ..perception import shadow_cli_options
     from ..planning.options import add_planning_arguments, resolve_planning_arguments
     add_planning_arguments(parser)
     shadow_localization.add_arguments(parser)
+    shadow_cli_options.add_arguments(parser)
     args = parser.parse_args(argv)
     resolve_planning_arguments(parser, args)
     shadow_localization.check_arguments(parser, args)
+    shadow_cli_options.check_arguments(parser, args)
     if args.footprint is not None:
         if len(args.footprint) < 6 or len(args.footprint) % 2:
             parser.error("--footprint needs at least three x y pairs")
@@ -133,8 +136,12 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def prepare_recording(source, scan_height):
-    """Hashed frozen frames -> planar axle poses and 161-bin scans (missing bins stay inf)."""
+def prepare_recording(source, scan_height, obstacles=None):
+    """Hashed frozen frames -> planar axle poses and 161-bin scans (missing bins stay inf).
+
+    ``obstacles`` (keyword arguments of ``perception.shadow_obstacles.prepare``)
+    adds the filtered obstacle clouds of the requested lidars to the recording.
+    """
     from ..amcl_replay import build_scan
     from ..rebuild import validate_frontend_row
     from ..replay_cli import checked_frames, select_rows
@@ -171,6 +178,9 @@ def prepare_recording(source, scan_height):
                  "ranges": np.asarray(ranges, dtype=np.float32), "observed_bins": np.asarray(observed, dtype=np.int32),
                  "lever_xy": lever, "angle_min": np.float64(ANGLE_MIN), "angle_increment": np.float64(ANGLE_INCREMENT),
                  "range_limits": np.asarray(RANGE_LIMITS, dtype=float)}
+    if obstacles:
+        from ..perception import shadow_obstacles
+        recording.update(shadow_obstacles.prepare(frames, runtime, hashes=hashes, **obstacles))
     return source, recording, hashes
 
 
@@ -601,6 +611,8 @@ def summarize(config, report, output, recording):
         "interpretation": ("OPEN_LOOP_SHADOW: the recording does not react to the commands; agreement and stop "
                            "counts describe this recording and the assumed circular body only"),
     }
+    from ..perception import shadow_cli_options
+    result.update(shadow_cli_options.result_entries(recording, config, profile, (float(times[0]), float(times[-1]))))
     from .maps import read_back
     _, map_data, map_meta = read_back(config["map_yaml"])
     conservative = shadow.StaticPlanningMap(map_data, map_meta["resolution"], map_meta["origin"],
@@ -775,9 +787,10 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
 
 
 def build_config(args, output, recording, source):
+    from ..perception import shadow_cli_options
     profile = nav2_config.NavProfile(radius_m=args.assumed_radius, margin_m=args.margin,
                                      max_linear=args.max_linear, max_angular=args.max_angular,
-                                     footprint=args.footprint or ())
+                                     footprint=args.footprint or (), **shadow_cli_options.profile_fields(args))
     times, poses = recording["times_s"], recording["base_poses"]
     window = list(args.window) if args.window else list(shadow.motion_window(times, poses))
     window = [max(window[0], float(times[0])), min(window[1], float(times[-1]))]
@@ -800,7 +813,8 @@ def build_config(args, output, recording, source):
             "base_reference": "FROZEN_PLANAR_AXLE_FROM_LEVER_ARM_UNVALIDATED",
             "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
             "planning": args.planning.as_dict(),
-            "open_loop": True, "commands_sent": False, "hardware_control": False, **localization}
+            "open_loop": True, "commands_sent": False, "hardware_control": False, **localization,
+            **shadow_cli_options.config_entries(args, recording)}
 
 
 def main(argv=None):
@@ -808,7 +822,9 @@ def main(argv=None):
     from wc_runtime.storage_policy import StoragePolicy
     storage = StoragePolicy(args.project_root)
     storage.check()
-    source, recording, hashes = prepare_recording(args.source_cell, args.scan_height)
+    from ..perception import shadow_cli_options
+    source, recording, hashes = prepare_recording(args.source_cell, args.scan_height,
+                                                  shadow_cli_options.prepare_kwargs(args))
     run_id = (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_shadow_" + args.mode + "_"
               + uuid.uuid4().hex[:8])
     output = storage.resolve("reports/navigation_nav2_shadow/" + run_id)
