@@ -4,7 +4,7 @@
 
 ## 运行前
 
-Orin 已安装 Humble 版 Nav2 1.1.20（含 collision_monitor 与 RPP）和 slam_toolbox 2.6，无需额外安装。确认没有其他人在用域 96；有其他节点时程序会拒绝启动。需要同时跑第二个仿真时，在命令前加 `WC_AUTONOMY_ROS_DOMAIN=97`，两次运行各自持有独占锁、互不干扰。
+Orin 已安装 Humble 版 Nav2 1.1.20（含 collision_monitor 与 RPP）和 slam_toolbox 2.6，无需额外安装。确认没有其他人在用域 96；有其他节点时程序会拒绝启动。需要同时跑第二个仿真时，在命令前加 `WC_AUTONOMY_ROS_DOMAIN=97`（可选 97–101），各次运行各自持有独占锁、互不干扰。独占锁放在各自检出目录的 `.phase1_runtime/locks` 下，多个检出（git worktree）并行开发时要给每个检出分配不同的域，启动前的外来节点检查只是兜底。
 
 ## 自主探索建图
 
@@ -96,6 +96,7 @@ bash scripts/navigation_nav2_shadow --mode follow --source-cell <同上> --map <
 - `--mode follow`：把司机接下来 15 s 的实际路线直接交给控制器（FollowPath），不经规划器和地图。检验控制器、碰撞监控和闸门沿司机路线会怎么做。
 - 地图必须在录包里程计坐标中（例如同一录包的建图重放结果）；记录路径落在空闲格上的比例低于一半时拒绝运行。`--assumed-radius`、`--margin`、`--max-linear`、`--max-angular` 与仿真相同；`WC_AUTONOMY_ROS_DOMAIN=97` 可与另一次运行并行。
 - `--footprint X1 Y1 X2 Y2 ...` 用凸多边形外形代替圆（车轴为原点，x 向前、y 向左，至少 3 个点，车轴须在外形内）。`--footprint-source` 写明外形来源，默认 `EXAMPLE_NOT_MEASURED`；实测后改为例如 `MEASURED_20261120`，结果和看板会按来源标注“示例”或“实测”。
+- 地图来自另一段录包时用 `--localization fixed|amcl` 加 `--map-alignment`（固定对齐或已存地图上的 AMCL），见[实车影子链路](navigation_live_shadow.md)。
 
 输出在 `reports/navigation_nav2_shadow/<时间>_shadow_<模式>_<编号>/`：
 

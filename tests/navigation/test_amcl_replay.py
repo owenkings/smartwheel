@@ -145,3 +145,33 @@ def test_unknown_laser_model_rejected_before_ros_or_output(tmp_path):
     with pytest.raises(ValueError, match='unsupported AMCL laser model'):
         run_amcl_replay(tmp_path / 'missing.yaml', [], np.eye(4), tmp_path / 'output', laser_model='unknown')
     assert not (tmp_path / 'output').exists()
+
+
+def test_amcl_overrides_are_explicit_typed_model_parameters():
+    from wc_navigation.amcl_replay import amcl_parameter_overrides
+    assert amcl_parameter_overrides(None) == {}
+    values = amcl_parameter_overrides({'max_beams': 60.0, 'alpha1': 0, 'do_beamskip': False, 'z_hit': .5})
+    assert values == {'max_beams': 60, 'alpha1': 0.0, 'do_beamskip': False, 'z_hit': .5}
+    assert type(values['max_beams']) is int and type(values['alpha1']) is float
+    for bad in [{'global_frame_id': 'map'}, {'scan_topic': 'scan'}, {'laser_model_type': 'beam'},
+                {'use_sim_time': False}, {'max_beams': 1.5}, {'alpha1': -1}, {'alpha1': float('nan')},
+                {'do_beamskip': 1}, {'max_beams': True}, {'min_particles': 900, 'max_particles': 500}, []]:
+        with pytest.raises(ValueError):
+            amcl_parameter_overrides(bad)
+
+
+def test_initial_standard_deviations_default_and_bounds():
+    from wc_navigation.amcl_replay import initial_standard_deviations
+    assert initial_standard_deviations(None) == pytest.approx((.20, .20, math.radians(5.0)))
+    assert initial_standard_deviations([.25, .25, .15]) == (.25, .25, .15)
+    for bad in [[.25, .25], [0, .2, .1], [3, .2, .1], [.2, .2, 4], [True, .2, .1], 'abc', [float('inf'), .2, .1]]:
+        with pytest.raises(ValueError):
+            initial_standard_deviations(bad)
+
+
+@pytest.mark.parametrize('keyword', [{'update_policy': 'SOMETIMES'}, {'amcl_overrides': {'odom_frame_id': 'x'}},
+                                     {'initial_std': [1, 1]}, {'evaluation_scope': 'CROSS'}])
+def test_new_options_fail_before_ros_or_output(tmp_path, keyword):
+    with pytest.raises(ValueError):
+        run_amcl_replay(tmp_path / 'missing.yaml', [frame(10), frame(20)], np.eye(4), tmp_path / 'output', **keyword)
+    assert not (tmp_path / 'output').exists()

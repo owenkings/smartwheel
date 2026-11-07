@@ -5,7 +5,7 @@ reference) moves base_link, the recorded scans feed the costmaps and the
 collision monitor, and Nav2 plans toward the recorded pose a few seconds
 ahead. Every stage of the velocity chain is recorded and compared with the
 driver's recorded motion; nothing subscribes to the gated command. Everything
-runs in localhost ROS domain 96 (97 with WC_AUTONOMY_ROS_DOMAIN=97). Open loop:
+runs in localhost ROS domain 96 (97-101 with WC_AUTONOMY_ROS_DOMAIN). Open loop:
 the result shows agreement, slowdowns, stops and planning failures on real
 sensor data, not what would happen with Nav2 in control.
 """
@@ -26,7 +26,7 @@ import uuid
 
 import numpy as np
 
-from . import nav2_config, shadow
+from . import nav2_config, shadow, shadow_localization
 from .bringup import EXECUTABLES, PACKAGES, Recorder, RunError, Supervisor, _same, domain_lock
 from .ros_util import latched_qos, require_isolated_domain, simulation_domain, stamp_seconds
 
@@ -93,7 +93,9 @@ def arguments(argv=None):
     parser.add_argument("--scan-height", nargs=2, type=_finite, default=[-0.5, 0.5], metavar=("MIN", "MAX"),
                         help="height band in the prepared lidar frame, as in the AMCL and mapping replays")
     parser.add_argument("--real-time-factor", type=_positive, default=1.0)
+    shadow_localization.add_arguments(parser)
     args = parser.parse_args(argv)
+    shadow_localization.check_arguments(parser, args)
     if args.footprint is not None:
         if len(args.footprint) < 6 or len(args.footprint) % 2:
             parser.error("--footprint needs at least three x y pairs")
@@ -284,18 +286,21 @@ class ShadowSupervisor(Supervisor):
                                          nav2_config.behavior_tree_xml(through_poses=True))
         files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"]))
-        localization = nav2_config.localization_parameters(profile, cfg["map_yaml"])
-        manager = dict(localization["lifecycle_manager_localization"]["ros__parameters"], node_names=["map_server"])
-        files["mapping"] = self.write("map_server_params.yaml", {
-            "map_server": localization["map_server"],
-            "lifecycle_manager_localization": {"ros__parameters": manager}})
+        if shadow_localization.active(cfg):
+            files.update(shadow_localization.write_files(self, profile, cfg))
+        else:
+            localization = nav2_config.localization_parameters(profile, cfg["map_yaml"])
+            manager = dict(localization["lifecycle_manager_localization"]["ros__parameters"], node_names=["map_server"])
+            files["mapping"] = self.write("map_server_params.yaml", {
+                "map_server": localization["map_server"],
+                "lifecycle_manager_localization": {"ros__parameters": manager}})
         files["replay"] = self.write("replay_config.json", {
             "recording": cfg["recording"], "window_s": cfg["window_s"], "real_time_factor": cfg["real_time_factor"],
             "tail_hold_s": cfg["tail_hold_s"], "hold_scan_period_s": 0.3, "odom_hz": 50.0, "start_time_s": 100.0})
-        files["gate"] = self.write("gate_config.json", {"gate": {
-            "max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": False}})
+        files["gate"] = self.write("gate_config.json", shadow_localization.gate_config(profile, cfg))
         files["task"] = self.write("carrot_config.json", {
-            "output_dir": str(self.output), "recording": cfg["recording"], "window_s": cfg["window_s"],
+            "output_dir": str(self.output), "recording": cfg.get("carrot_recording", cfg["recording"]),
+            "window_s": cfg["window_s"],
             "mode": cfg.get("shadow_mode", "navigate"), "lead_s": cfg["lead_s"],
             "update_period_s": cfg["update_period_s"]})
         return profile, files
@@ -328,16 +333,19 @@ class ShadowSupervisor(Supervisor):
             foreign = recorder.foreign_nodes()
             if foreign:
                 raise RunError(f"ROS domain {domain} is already in use: {foreign}")
-            self.launch_python("replay", "wc_navigation.autonomy.replay_node", files["replay"])
-            self.wait_for(recorder, lambda: recorder.clock_messages > 10 and recorder.truth is not None
-                          and (recorder.replay_status or {}).get("state") == "HOLD", 30, "replay_clock")
-            self.launch_ros("map_server", "map_server", files["mapping"])
-            self.launch_ros("lifecycle_manager_localization", "lifecycle_manager", files["mapping"],
-                            ["-r", "__node:=lifecycle_manager_localization"])
-            self.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_localization/is_active") is True,
-                          60, "map_server_active")
-            self.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
-                          30, "map_and_tf")
+            if shadow_localization.active(cfg):
+                shadow_localization.start(self, recorder, files, cfg)
+            else:
+                self.launch_python("replay", "wc_navigation.autonomy.replay_node", files["replay"])
+                self.wait_for(recorder, lambda: recorder.clock_messages > 10 and recorder.truth is not None
+                              and (recorder.replay_status or {}).get("state") == "HOLD", 30, "replay_clock")
+                self.launch_ros("map_server", "map_server", files["mapping"])
+                self.launch_ros("lifecycle_manager_localization", "lifecycle_manager", files["mapping"],
+                                ["-r", "__node:=lifecycle_manager_localization"])
+                self.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_localization/is_active") is True,
+                              60, "map_server_active")
+                self.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
+                              30, "map_and_tf")
             for name in nav2_config.NAV2_NODES:
                 self.launch_ros(name, name, files["nav2"])
             self.launch_ros("lifecycle_manager_navigation", "lifecycle_manager", files["nav2"],
@@ -633,6 +641,7 @@ def summarize(config, report, output, recording):
         complete = (replay.get("state") == "FINISHED" and mission.get("status") == "COMPLETE"
                     and "error" not in report)
         result["status"] = "COMPLETE" if complete else "INCOMPLETE"
+    result["localization"] = shadow_localization.summarize_safely(config, recorded, output, replay, recording)
     try:
         render(output / "preview.png", config, times, poses, audit, table, recorded.get("plans", []),
                replay, profile, failures)
@@ -756,7 +765,8 @@ def build_config(args, output, recording, source):
         raise ValueError("the replay window must cover at least 5 s of the recording")
     map_yaml = args.map_yaml.expanduser().resolve(strict=True)
     from .replay_node import window_frames
-    fit = map_fit(map_yaml, poses[window_frames(recording, window)])
+    localization = shadow_localization.config_section(args, output, recording, window)
+    fit = map_fit(map_yaml, shadow_localization.map_frame_poses(localization, poses[window_frames(recording, window)]))
     if fit["free"] < 0.5:
         raise ValueError(f"only {fit['free']:.0%} of the recorded path lies on free map cells; "
                          "the map must be in the recording's odometry frame")
@@ -769,7 +779,7 @@ def build_config(args, output, recording, source):
             "real_time_factor": args.real_time_factor, "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
             "base_reference": "FROZEN_PLANAR_AXLE_FROM_LEVER_ARM_UNVALIDATED",
             "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
-            "open_loop": True, "commands_sent": False, "hardware_control": False}
+            "open_loop": True, "commands_sent": False, "hardware_control": False, **localization}
 
 
 def main(argv=None):
@@ -786,6 +796,8 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=False)
         with (output / "recording.npz").open("xb") as stream:
             np.savez_compressed(stream, **recording)
+        recording_map = shadow_localization.map_frame_recording(config, recording)
+        shadow_localization.write_map_recording(config, recording_map)
         _write_json(output / "run_config.json", config)
         _write_json(output / "input_contract.json", {
             "source_cell": str(source), "source_sha256": hashes, "source_files_checked": len(hashes),
@@ -798,7 +810,7 @@ def main(argv=None):
             "lever_xy_m": recording["lever_xy"].tolist(), "hardware_started": False})
         report = ShadowSupervisor(args.project_root, output, config).run()
     storage.check()
-    result = summarize(config, report, output, recording)
+    result = summarize(config, report, output, recording_map)
     unchanged = all(_sha256(path) == digest for path, digest in hashes.items()) and \
         _sha256(config["map_yaml"]) == config["map_sha256"]
     commands = result.get("commands") or {}
@@ -817,6 +829,7 @@ def main(argv=None):
                  "fraction_within_lethal_of_occupied", "fraction_within_lethal_of_unknown",
                  "unknown_pinholes_within_lethal_of_path")},
              "log_counts": result["log_counts"], "frames_stop_expected": result["scan_zone_audit"]["frames_stop_expected"],
+             "localization": config["localization"], "localization_brief": result["localization"].get("brief"),
              "commands_sent": False, "hardware_control": False}
     print(json.dumps(_json_safe(brief), ensure_ascii=True, allow_nan=False), flush=True)
     return 0 if result["status"] == "COMPLETE" and unchanged else 1

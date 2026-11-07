@@ -179,6 +179,25 @@ def test_second_simulation_domain_is_explicit(monkeypatch):
         simulation_domain()
 
 
+@pytest.mark.parametrize("domain", ["98", "99", "100", "101"])
+def test_parallel_checkout_domains_are_accepted(monkeypatch, domain):
+    from wc_navigation.autonomy.ros_util import require_isolated_domain, simulation_domain
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", domain)
+    monkeypatch.setenv("ROS_DOMAIN_ID", domain)
+    monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
+    monkeypatch.delenv("ROS_DISCOVERY_SERVER", raising=False)
+    assert simulation_domain() == domain
+    require_isolated_domain()
+
+
+@pytest.mark.parametrize("domain", ["83", "84", "89", "95", "102"])
+def test_production_and_tool_domains_stay_rejected(monkeypatch, domain):
+    from wc_navigation.autonomy.ros_util import simulation_domain
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", domain)
+    with pytest.raises(RuntimeError, match="must be one of"):
+        simulation_domain()
+
+
 def test_synthetic_world_layout_is_versioned():
     from wc_navigation.autonomy.world import load_world, synthetic_world
     world, _ = synthetic_world("office_floor")

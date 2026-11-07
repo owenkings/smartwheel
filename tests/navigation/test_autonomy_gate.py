@@ -134,3 +134,36 @@ def test_heading_wraparound_is_not_a_jump():
 def test_invalid_configuration_rejected(field, value):
     with pytest.raises(ValueError):
         GateConfig(**{field: value})
+
+
+def test_robot_reference_ignores_heading_correction_lever_far_from_odom_origin():
+    # 13 m from the odom origin a 1 degree heading correction moves map->odom by about 0.23 m,
+    # while the robot itself, rotated in place about its own position, does not move.
+    robot = (13.0, 0.0)
+    rotate_about_robot = math.radians(1.0)
+    c, s = math.cos(rotate_about_robot), math.sin(rotate_about_robot)
+    shifted = (robot[0] - (c * robot[0] - s * robot[1]), robot[1] - (s * robot[0] + c * robot[1]), rotate_about_robot)
+    origin = CorrectionMonitor(max_translation_m=0.2, max_yaw_rad=math.radians(5))
+    at_robot = CorrectionMonitor(max_translation_m=0.2, max_yaw_rad=math.radians(5), reference="robot")
+    assert origin.update(0.0, (0.0, 0.0, 0.0))[0] and at_robot.update(0.0, (0.0, 0.0, 0.0), robot)[0]
+    assert math.hypot(*shifted[:2]) > 0.2
+    assert origin.update(0.5, shifted)[1] == "MAP_CORRECTION_CHANGING_FAST"
+    assert at_robot.update(0.5, shifted, robot)[0]
+
+
+def test_robot_reference_still_stops_on_a_translation_jump_and_needs_the_robot_pose():
+    monitor = CorrectionMonitor(reference="robot")
+    assert monitor.update(0.0, (0.0, 0.0, 0.0), (5.0, 1.0))[0]
+    assert monitor.update(0.4, (0.3, 0.0, 0.0), (5.1, 1.0))[1] == "MAP_CORRECTION_CHANGING_FAST"
+    assert monitor.events == 1
+    with pytest.raises(ValueError):
+        monitor.update(0.5, (0.3, 0.0, 0.0))
+    with pytest.raises(ValueError):
+        CorrectionMonitor(reference="map")
+
+
+def test_default_reference_keeps_the_map_to_odom_translation_measure():
+    default = CorrectionMonitor()
+    assert default.reference == "odom_origin"
+    assert default.update(0.0, (0.0, 0.0, 0.0))[0]
+    assert not default.update(0.5, (0.26, 0.0, 0.0))[0]

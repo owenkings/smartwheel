@@ -50,25 +50,46 @@ class CorrectionMonitor:
     Loop closures therefore cause a short stop rather than a blind continuation.
     """
 
-    def __init__(self, window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5.0), hold_s=3.0):
+    REFERENCES = ("odom_origin", "robot")
+
+    def __init__(self, window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5.0), hold_s=3.0,
+                 reference="odom_origin"):
         self.window_s = _number(window_s, "window_s", positive=True)
         self.max_translation_m = _number(max_translation_m, "max_translation_m", positive=True)
         self.max_yaw_rad = _number(max_yaw_rad, "max_yaw_rad", positive=True)
         self.hold_s = _number(hold_s, "hold_s", nonnegative=True)
+        if reference not in self.REFERENCES:
+            raise ValueError("reference must be odom_origin or robot")
+        # odom_origin (default): translation of map->odom itself. robot: how far the correction change moves
+        # the robot's current map position; a heading correction far from the odom origin then no longer
+        # counts as a translation jump of (distance x angle).
+        self.reference = reference
         self._history = []
         self._untrusted_until = -math.inf
         self.events = 0
 
-    def update(self, now, correction):
-        """Add ``(x, y, yaw)`` of map->odom at ``now``; return (ok, reason)."""
+    def update(self, now, correction, robot_in_odom=None):
+        """Add ``(x, y, yaw)`` of map->odom at ``now``; return (ok, reason).
+
+        With ``reference='robot'`` the robot's current odom pose ``(x, y[, yaw])`` is required.
+        """
         x, y, yaw = (float(v) for v in correction)
+        px = py = 0.0
+        if self.reference == "robot":
+            if robot_in_odom is None:
+                raise ValueError("the robot reference needs the robot's odom position")
+            px, py = float(robot_in_odom[0]), float(robot_in_odom[1])
         self._history.append((float(now), x, y, yaw))
         while self._history and now - self._history[0][0] > self.window_s:
             self._history.pop(0)
+        c, s = math.cos(yaw), math.sin(yaw)
+        mx, my = x + c * px - s * py, y + s * px + c * py
         jumped = False
         for t, hx, hy, hyaw in self._history[:-1]:
             dyaw = abs(math.atan2(math.sin(yaw - hyaw), math.cos(yaw - hyaw)))
-            if math.hypot(x - hx, y - hy) > self.max_translation_m or dyaw > self.max_yaw_rad:
+            hc, hs = math.cos(hyaw), math.sin(hyaw)
+            moved = math.hypot(mx - (hx + hc * px - hs * py), my - (hy + hs * px + hc * py))
+            if moved > self.max_translation_m or dyaw > self.max_yaw_rad:
                 jumped = True
                 break
         if jumped:

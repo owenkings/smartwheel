@@ -19,6 +19,7 @@
 | [dashboard_update.py](dashboard_update.py) | 把归档的仿真运行加入离线进度看板的新副本，原快照不改。 |
 | [replay_mapping.py](replay_mapping.py) | 在冻结的单左前端上离线重放两种建图方式，用留出帧比较自洽性，另存按观测证据分类的导航用地图 `map_nav.yaml`；不启动节点或设备。 |
 | [shadow.py](shadow.py)、[replay_node.py](replay_node.py)、[carrot_node.py](carrot_node.py)、[shadow_cli.py](shadow_cli.py) | 录包影子运行：录包运动带动 `base_link`、录到的扫描进入代价地图与碰撞监控；Nav2 朝录包前方位姿规划（`navigate`）或直接跟随司机路线（`follow`）。各级指令只记录不发出；规划失败按静态地图和录下的全局代价地图归因。 |
+| [shadow_localization.py](shadow_localization.py)、[shadow_localization_node.py](shadow_localization_node.py) | 影子运行的定位模式：恒等（默认）、地图来自另一段录包时的固定对齐、已存地图上的 AMCL；闸门定位条件在真实 AMCL 输出上的统计与离线换阈值重算，见[实车影子链路](../../../docs/operations/navigation_live_shadow.md)。 |
 
 速度链路：`controller_server/behavior_server → /cmd_vel_nav → velocity_smoother → /cmd_vel_smoothed → collision_monitor → /cmd_vel_monitored → 安全闸门 → /wc_nav/cmd_vel_gated → 底盘`。整个链路没有进程发布 `/cmd_vel`。
 

@@ -2,7 +2,7 @@
 
 ``explore``  builds a map (odometry grid by default) while frontier goals drive Nav2.
 ``navigate`` localizes with AMCL on a saved map and drives a goal sequence.
-Everything runs in localhost ROS domain 96 (97 with WC_AUTONOMY_ROS_DOMAIN=97)
+Everything runs in localhost ROS domain 96 (97-101 with WC_AUTONOMY_ROS_DOMAIN)
 against a simulated wheelchair.
 Outputs go to the configured reports storage; nothing touches the vehicle.
 """

@@ -55,7 +55,11 @@ class RunError(RuntimeError):
 
 @contextmanager
 def domain_lock(project_root):
-    """Exclusive owner of this run's simulation domain (96 or 97) on this machine."""
+    """Exclusive owner of this run's simulation domain (96-101) within this checkout.
+
+    The lock file lives under ``project_root``; separate checkouts running in
+    parallel must use distinct domains (the foreign-node check is the backstop).
+    """
     import fcntl
     domain = simulation_domain()
     directory = Path(project_root) / ".phase1_runtime/locks"

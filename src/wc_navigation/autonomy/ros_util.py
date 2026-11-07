@@ -6,11 +6,14 @@ import math
 import os
 
 
-SIMULATION_DOMAINS = ("96", "97")
+# 96 is the default. 97-101 let parallel runs, including separate development
+# checkouts (git worktrees), each use their own localhost domain. Domain locks
+# live under each checkout, so parallel checkouts must be given distinct domains.
+SIMULATION_DOMAINS = ("96", "97", "98", "99", "100", "101")
 
 
 def simulation_domain():
-    """Dedicated domain of this run: 96 by default, 97 for a second parallel run."""
+    """Dedicated domain of this run: 96 by default, 97-101 for parallel runs."""
     domain = os.environ.get("WC_AUTONOMY_ROS_DOMAIN", "96")
     if domain not in SIMULATION_DOMAINS:
         raise RuntimeError("WC_AUTONOMY_ROS_DOMAIN must be one of " + ", ".join(SIMULATION_DOMAINS))
