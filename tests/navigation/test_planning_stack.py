@@ -265,3 +265,59 @@ def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),
                                  "--map", str(tmp_path / "m.yaml"), "--planner", "theta_star"])
     assert args.planning.planner == "theta_star" and args.planning.controller == "rpp"
+
+
+MEASURED_ARGS = ["0.81", "0.2425", "0.2", "0.35", "-0.255", "0.35", "-0.255", "-0.35", "0.2", "-0.35", "0.81", "-0.2425"]
+RECOMMENDED = ["--planner", "smac_hybrid", "--planner-fallback", "smac_lattice", "--controller", "shim_rpp",
+               "--footprint", *MEASURED_ARGS, "--footprint-source", "MEASURED_20261107"]
+
+
+def test_recommended_scheme_builds_a_forward_only_stack_that_reads_back(tmp_path):
+    """The command line recommended in docs/architecture/planning_control.md (an option, not the default)."""
+    import yaml
+    from wc_navigation.autonomy import cli, shadow_cli
+    from wc_navigation.autonomy.bringup import Supervisor
+    from wc_navigation.planning.body import Body
+    config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                                             "--goal", "8.0", "1.4", "0.0", *RECOMMENDED]))
+    choice = stack.PlanningChoice.from_dict(config["planning"])
+    assert (choice.planner, choice.fallback_planner, choice.controller) == ("smac_hybrid", "smac_lattice", "shim_rpp")
+    assert not choice.is_default and config["body_model"] == "POLYGON_MEASURED_20261107"
+    body = Body.from_profile(config["profile"])
+    assert body.inscribed_m == pytest.approx(0.255) and body.circumscribed_m == pytest.approx(0.846, abs=5e-4)
+
+    out = tmp_path / "run"
+    out.mkdir()
+    cli.write_world_map(config, out)
+    _, files = Supervisor(PROJECT, out, config).prepare()
+    p = yaml.safe_load(Path(files["nav2"]).read_text())
+    planner = p["planner_server"]["ros__parameters"]
+    assert planner["planner_plugins"] == ["GridBased", "Fallback"]
+    assert planner["GridBased"]["plugin"] == stack.PLANNER_PLUGINS["smac_hybrid"]
+    assert planner["GridBased"]["motion_model_for_search"] == "DUBIN"
+    assert planner["Fallback"]["plugin"] == stack.PLANNER_PLUGINS["smac_lattice"]
+    assert planner["Fallback"]["allow_reverse_expansion"] is False
+    follow = p["controller_server"]["ros__parameters"]["FollowPath"]
+    assert follow["plugin"] == stack.CONTROLLER_PLUGINS["shim_rpp"] and follow["primary_controller"] == stack.RPP_PLUGIN
+    assert follow["use_rotate_to_heading"] is False and follow["allow_reversing"] is False
+    assert follow["use_collision_detection"] is True
+
+    # the measured outline is checked in both costmaps: with the margin for planning, as it is for control
+    profile = nav2_config.NavProfile(**config["profile"])
+    outline = nav2_config.footprint_string(profile.footprint)
+    for name, padding in (("global_costmap", profile.margin_m), ("local_costmap", 0.0)):
+        costmap = p[name][name]["ros__parameters"]
+        assert costmap["footprint"] == outline and costmap["footprint_padding"] == pytest.approx(padding)
+    inflation = p["global_costmap"]["global_costmap"]["ros__parameters"]["inflation_layer"]["inflation_radius"]
+    assert inflation >= body.circumscribed_m + profile.margin_m
+
+    tree = Path(files["bt_to_pose"]).read_text()
+    assert 'planner_id="Fallback"' in tree
+    assert not any(tag in tree for tag in ("<Spin", "<BackUp", "<DriveOnHeading"))
+    for node, values in nav2_config.readback_expectations(profile, "navigate", planning=choice).items():
+        for dotted, value in values.items():
+            assert _same(_lookup(p, node, dotted), value), (node, dotted)
+
+    args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),
+                                 "--map", str(tmp_path / "m.yaml"), *RECOMMENDED])
+    assert args.planning == choice
