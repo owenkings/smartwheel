@@ -63,6 +63,9 @@ def add_planning_arguments(parser):
                              "check the body outline at every heading, the others pass by its inscribed radius")
     parser.add_argument("--planner-param", action="append", default=[], metavar="NAME=VALUE",
                         help="override a GridBased planner parameter (JSON value), e.g. minimum_turning_radius=0.6")
+    parser.add_argument("--planner-fallback", choices=("none", *PLANNERS), default="none",
+                        help="second planner the behaviour tree asks only when --planner finds no path "
+                             "(e.g. smac_lattice, which can turn in place, behind forward-only smac_hybrid)")
     parser.add_argument("--controller", choices=CONTROLLERS, default=DEFAULT_CONTROLLER,
                         help="local controller plugin (default rpp: Regulated Pure Pursuit, unchanged)")
     parser.add_argument("--controller-param", action="append", default=[], metavar="NAME=VALUE",
@@ -73,6 +76,9 @@ def add_planning_arguments(parser):
     parser.add_argument("--recovery-retries", type=int, default=4,
                         help="behaviour-tree recovery rounds (clear costmaps, wait) before a goal fails (default 4)")
     parser.add_argument("--recovery-wait", type=float, default=3.0, help="seconds of each recovery wait (default 3)")
+    parser.add_argument("--global-costmap", choices=["live", "static"], default="live",
+                        help="live (default): the global costmap also marks live scans; static: plan on the saved "
+                             "map only, live scans stay in the local costmap, the controller check and the monitor")
 
 
 def resolve_planning_arguments(parser, args):
@@ -83,7 +89,9 @@ def resolve_planning_arguments(parser, args):
                                        planner_params=parse_overrides(args.planner_param),
                                        controller_params=parse_overrides(args.controller_param),
                                        server_params=parse_overrides(args.checker_param),
-                                       recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait)
+                                       recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
+                                       global_live_scans=args.global_costmap == "live",
+                                       fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
