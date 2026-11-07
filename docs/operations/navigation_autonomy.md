@@ -69,6 +69,8 @@ bash scripts/navigation_replay_mapping \
 
 ### 为没有冻结外参的录包生成单左前端
 
+（历史记录：2026-11-07 起 RoomA1/RoomAB 录包停用，不再需要这一步。下面用到的 `config/local/project/hardware_setup.json` 也已在 2026-11-07 改成新的轮参数，不再是 `12ea737c…` 那份文件。）
+
 2026-10-09 的 RoomA1/RoomAB 录包没有冻结左雷达外参，`compare` 会按外参能力检查拒绝。经用户同意，可以用 2026-10-26 现场外参作显式实验覆盖，参数与走廊前端完全相同（不加原生地图、运动候选或机械初值），输出目录名注明实验：
 
 ```bash
