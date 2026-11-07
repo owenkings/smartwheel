@@ -188,6 +188,33 @@ def test_recovery_tree_and_checkers_are_explicit_options():
         stack.PlanningChoice(recovery_wait_s=0.0)
 
 
+@pytest.mark.parametrize("through", [False, True])
+def test_fallback_planner_is_asked_only_after_the_primary(through):
+    import xml.etree.ElementTree as ET
+    choice = stack.PlanningChoice(planner="smac_hybrid", fallback_planner="smac_lattice")
+    root = ET.fromstring(nav2_config.behavior_tree_xml(through_poses=through, **choice.behavior_tree_options()))
+    fallback = list(root.iter("Fallback"))
+    assert len(fallback) == 1
+    tag = "ComputePathThroughPoses" if through else "ComputePathToPose"
+    assert [e.get("planner_id") for e in fallback[0] if e.tag == tag] == ["GridBased", "Fallback"]
+    assert {e.tag for e in root.iter()} & {"Spin", "BackUp", "DriveOnHeading"} == set()
+    p = params(choice)["planner_server"]["ros__parameters"]
+    assert p["planner_plugins"] == ["GridBased", "Fallback"]
+    assert p["Fallback"]["plugin"] == stack.PLANNER_PLUGINS["smac_lattice"]
+    assert p["Fallback"]["allow_reverse_expansion"] is False and p["GridBased"]["motion_model_for_search"] == "DUBIN"
+    expected = nav2_config.readback_expectations(nav2_config.NavProfile(), "navigate", planning=choice)
+    for dotted, value in expected["planner_server"].items():
+        current = p
+        for part in dotted.split("."):
+            current = current[part]
+        assert _same(current, value), dotted
+    assert stack.PlanningChoice.from_dict(choice.as_dict()) == choice
+    with pytest.raises(ValueError):
+        stack.PlanningChoice(planner="navfn", fallback_planner="navfn")
+    default = nav2_config.behavior_tree_xml(through_poses=through)
+    assert 'planner_id="Fallback"' not in default and not list(ET.fromstring(default).iter("Fallback"))
+
+
 def test_planning_on_the_saved_map_only_is_explicit():
     choice = stack.PlanningChoice(planner="smac_hybrid", global_live_scans=False)
     p = params(choice)
@@ -208,7 +235,7 @@ def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     assert config["planning"] == {"planner": "smac_hybrid", "controller": "rpp",
                                   "planner_params": [["minimum_turning_radius", 0.5]], "controller_params": [],
                                   "server_params": [], "recovery_retries": 4, "recovery_wait_s": 3.0,
-                                  "global_live_scans": True}
+                                  "global_live_scans": True, "fallback_planner": ""}
     default = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms"]))
     assert stack.PlanningChoice.from_dict(default["planning"]).is_default
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),

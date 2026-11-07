@@ -264,14 +264,15 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
     return params
 
 
-def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0):
+def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fallback_planner=False):
     """Replanning tree without Spin or BackUp recoveries.
 
     The wheelchair has no rear range sensor, so reversing is never used, and an
     unprompted spin would sweep the unobserved rear of a non-circular body.
     Recovery only clears costmaps and waits before replanning;
     ``recovery_retries`` and ``wait_s`` (defaults 4 and 3 s) set how often and
-    how long.
+    how long. With ``fallback_planner`` a second planner plugin named
+    ``Fallback`` is asked only when ``GridBased`` finds no path.
     """
     retries = int(recovery_retries)
     wait = float(wait_s)
@@ -279,13 +280,17 @@ def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0):
         raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
     wait_text = ("%g" % wait)
     if through_poses:
-        planner = ('<ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>')
+        template = '<ComputePathThroughPoses goals="{{goals}}" path="{{path}}" planner_id="{}"/>'
         goal_updated = "<GoalUpdated/>"
         head = ('<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>\n            ')
     else:
-        planner = '<ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>'
+        template = '<ComputePathToPose goal="{{goal}}" path="{{path}}" planner_id="{}"/>'
         goal_updated = "<GoalUpdated/>"
         head = ""
+    planner = template.format("GridBased")
+    if fallback_planner:
+        planner = ('<Fallback name="PlannerFallback">\n              ' + planner + "\n              "
+                   + template.format("Fallback") + "\n            </Fallback>")
     return f"""<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="{retries}" name="NavigateRecovery">
