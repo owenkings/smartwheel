@@ -14,6 +14,11 @@ import sys
 from .mapping_planar import validate_confirmed_bias
 from .device_bindings import identity_token
 
+# Upper bound for an explicit per-calibration stationary-mean limit. The
+# default (StationaryCalibrationPolicy, 0.0015 rad/s) is unchanged; a raised
+# limit is recorded in the evidence and never relaxes the held-out residual.
+MAX_BIAS_NORM_OVERRIDE_RAD_S = 0.005
+
 
 def _read(path, maximum=262144):
     if not path.is_file() or path.stat().st_size > maximum:
@@ -98,7 +103,12 @@ def main(argv=None):
     parser.add_argument('--confirm-stationary', action='store_true',
                         help='明确声明候选显示的完整时段内轮椅物理静止；零轮速本身不足以确认')
     parser.add_argument('--candidate-token', help='先查看候选得到的凭据；与--confirm-stationary配合，防止确认了不同窗口')
+    parser.add_argument('--max-bias-norm-rad-s', type=float,
+                        help='三阶段模式：本次标定显式放宽零偏模长与静止段均值上限（默认0.0015 rad/s，最大0.005）；'
+                             '留出段残差门限不变，取值写入依据文件')
     args = parser.parse_args(argv)
+    if args.max_bias_norm_rad_s is not None and not (args.calibration_jsonl or args.capture_dataset):
+        parser.error('--max-bias-norm-rad-s applies only to --calibration-jsonl/--capture-dataset')
     if args.calibration_jsonl or args.capture_dataset:
         if args.session or not args.stationary_evidence or not args.output:
             parser.error('--calibration-jsonl requires --stationary-evidence and --output; no session argument')
@@ -106,7 +116,8 @@ def main(argv=None):
             parser.error('choose --calibration-jsonl or --capture-dataset')
         try:
             result = save_holdout_calibration(args.calibration_jsonl, args.stationary_evidence, args.output,
-                                             capture_dataset=args.capture_dataset)
+                                             capture_dataset=args.capture_dataset,
+                                             max_bias_norm_rad_s=args.max_bias_norm_rad_s)
             print(json.dumps(result, ensure_ascii=False, allow_nan=False))
             return 0
         except (ValueError, OSError, KeyError, TypeError) as error:
@@ -135,8 +146,25 @@ def main(argv=None):
         return 1
 
 
-def save_holdout_calibration(rows_path, evidence_path, output, *, capture_dataset=None):
-    from .mapping_bias import calibrate_stationary
+def save_holdout_calibration(rows_path, evidence_path, output, *, capture_dataset=None, max_bias_norm_rad_s=None):
+    import math
+    from dataclasses import asdict
+    from .mapping_bias import StationaryCalibrationPolicy, calibrate_stationary
+    policy, override = None, None
+    if max_bias_norm_rad_s is not None:
+        limit = max_bias_norm_rad_s
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit) or \
+                not 0 < limit <= MAX_BIAS_NORM_OVERRIDE_RAD_S:
+            raise ValueError('explicit bias-norm limit must be finite, positive and <= %.3f rad/s'
+                             % MAX_BIAS_NORM_OVERRIDE_RAD_S)
+        # The calibration-phase mean is the bias estimate, so both limits bound the same quantity.
+        policy = StationaryCalibrationPolicy(max_bias_norm_rad_s=float(limit), max_gyro_mean_rad_s=float(limit))
+        defaults = asdict(StationaryCalibrationPolicy())
+        override = {'max_bias_norm_rad_s': float(limit), 'max_gyro_mean_rad_s': float(limit),
+                    'defaults': {key: defaults[key] for key in ('max_bias_norm_rad_s', 'max_gyro_mean_rad_s')},
+                    'unchanged': {key: defaults[key] for key in ('max_holdout_mean_rad_s', 'max_axis_std_rad_s',
+                                                                 'max_gyro_sample_rad_s')},
+                    'basis': 'EXPLICIT_COMMAND_LINE_OPTION_FOR_THIS_CALIBRATION'}
     evidence_path, output = Path(evidence_path), Path(output).absolute()
     if capture_dataset:
         rows, source_provenance = capture_calibration_rows(capture_dataset)
@@ -162,28 +190,35 @@ def save_holdout_calibration(rows_path, evidence_path, output, *, capture_datase
         raise ValueError('unidentified rows require a sensor_id in the independent declaration')
     source_provenance['sensor_id'] = sensor_id
     declaration['evidence_sha256'] = hashlib.sha256(evidence_raw).hexdigest()
-    result = calibrate_stationary(rows,declaration)
+    result = calibrate_stationary(rows,declaration,policy)
     if result['status'] != 'HOLDOUT_PASSED':
         raise ValueError('10+10+10 calibration rejected: '+','.join(result['rejection_reasons']))
     result.update(input_rows_sha256=hashlib.sha256(rows_raw).hexdigest(),
                   source_provenance=source_provenance,
                   independent_declaration_sha256=hashlib.sha256(evidence_raw).hexdigest(),
-                  confirmed_at_utc=datetime.now(timezone.utc).isoformat())
+                  confirmed_at_utc=datetime.now(timezone.utc).isoformat(),
+                  policy_override=override)
     destination = output.with_name(output.stem+'.evidence.json')
     if output.suffix != '.json' or not output.parent.is_dir() or output.exists() or destination.exists():
         raise ValueError('choose new calibration/evidence files in an existing directory')
     if any(p.is_symlink() or getattr(p,'is_junction',lambda:False)() for p in (output,*output.parents)):
         raise ValueError('linked calibration destinations not allowed')
     result_raw=(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2)+'\n').encode('utf-8')
+    note = '10 s warmup + 10 s estimate + independent 10 s held-out residual screening; thresholds experimental.'
+    if override is not None:
+        note += (' Bias-norm and stationary-mean limits explicitly set to %.4f rad/s for this calibration '
+                 '(default %.4f); held-out residual limit unchanged.'
+                 % (override['max_bias_norm_rad_s'], override['defaults']['max_bias_norm_rad_s']))
     bias = validate_confirmed_bias({'status':'INDEPENDENTLY_CONFIRMED','sensor_id':sensor_id,
         'bias_native_rad_s':result['bias_native_rad_s'],'evidence_id':declaration['evidence_id'],
         'evidence_sha256':hashlib.sha256(result_raw).hexdigest(),'source':declaration['source'],
-        'evidence_note':'10 s warmup + 10 s estimate + independent 10 s held-out residual screening; thresholds experimental.'})
+        'evidence_note':note})
     with destination.open('xb') as stream: stream.write(result_raw)
     with output.open('x',encoding='utf-8') as stream:
         json.dump(bias,stream,ensure_ascii=False,allow_nan=False,indent=2); stream.write('\n')
     return {'status':'HOLDOUT_CALIBRATION_SAVED','file':str(output),'evidence':str(destination),
             'protocol':'SOURCE_TIME_10_10_10','bias_native_rad_s':bias['bias_native_rad_s'],
+            'policy_override':override,
             'applied_to_running_session':False,'hardware_started':False,
             'holdout_accuracy_validated':False,'holdout_residual_screening_passed':True}
 
