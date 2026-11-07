@@ -303,7 +303,16 @@ def result_entries(config, output):
     armed = next((e["t"] for e in events if e["event"] == "first_command"), None)
     section["first_command_sim_s"] = armed
     section["log_rows"] = len(rows)
-    live = [r for r in rows if r["armed"]]
+    # the task's active span: first motion command to the last goal's end (afterwards the chair just stands)
+    end = None
+    mission_path = Path(output) / "mission_result.json"
+    if mission_path.exists():
+        finished = [r.get("finished_time_s") for r in json.loads(mission_path.read_text(encoding="utf-8")).get(
+            "records", []) if r.get("finished_time_s") is not None]
+        end = max(finished) if finished else None
+    section["active_until_sim_s"] = end
+    live = [r for r in rows if r["armed"] and (end is None or r["t"] <= end)]
+    section["contact_events"] = [e for e in events if e["event"] in ("contact_start", "chair_blocked_by_actor")]
     per_actor = {}
     for spec in parse_actors(items):
         gaps = np.asarray([next(a["gap_m"] for a in r["actors"] if a["id"] == spec.id) for r in live], dtype=float)

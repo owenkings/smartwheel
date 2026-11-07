@@ -124,6 +124,23 @@ def test_actors_on_the_start_pose_are_refused():
     actors.check_start([walker()], (2.0, 0.0, 0.0), body)
 
 
+def test_summary_stops_at_the_end_of_the_task(tmp_path):
+    items = [walker()]
+    log = [{"event": "first_command", "t": 100.0}]
+    for k in range(40):                                      # 4 s: 2 s driving, then standing at the goal
+        t = 100.0 + 0.1 * k
+        log.append({"t": round(t, 1), "armed": True, "chair": [0.0, 0.0, 0.0], "chair_v": 0.3 if k < 20 else 0.0,
+                    "chair_w": 0.0, "actors": [{"id": "w", "x": 8.0, "y": 0.0, "gap_m": 7.0, "state": "waiting"}]})
+    (tmp_path / actors.LOG_NAME).write_text("\n".join(json.dumps(r) for r in log) + "\n")
+    (tmp_path / "mission_result.json").write_text(json.dumps({"records": [{"finished_time_s": 101.95}]}))
+    section = actors.result_entries({"world": {"actors": items}}, tmp_path)["actors"]
+    assert section["active_until_sim_s"] == 101.95
+    assert section["chair_stopped_s"] == {"actor_within_1_5_m": 0.0, "no_actor_within_1_5_m": 0.0}
+    (tmp_path / "mission_result.json").unlink()
+    section = actors.result_entries({"world": {"actors": items}}, tmp_path)["actors"]
+    assert section["chair_stopped_s"]["no_actor_within_1_5_m"] == pytest.approx(2.0)
+
+
 def test_runs_without_actors_are_unchanged_and_with_actors_carry_the_scenario(tmp_path):
     from wc_navigation.autonomy.bringup import Supervisor
     from wc_navigation.autonomy.cli import arguments, build_config
