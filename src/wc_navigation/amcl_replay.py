@@ -35,6 +35,76 @@ SCAN_SETTINGS = {
     'per_point_acquisition_timing_known': False,
 }
 
+EVALUATION_SCOPES = ('SAME_RECORDING_MAP_REUSE_NOT_INDEPENDENT_HOLDOUT',
+                     'DISJOINT_TIME_TRAINING_MAP_SHARED_ODOMETRY_NOT_ABSOLUTE_TRUTH',
+                     'SYNTHETIC_KNOWN_TRUTH_NOT_PHYSICAL_ACCURACY',
+                     'CROSS_RECORDING_SAVED_MAP_ALIGNMENT_PRIOR_NOT_ABSOLUTE_TRUTH')
+# Default: force one filter update per original scan. The opt-in alternative
+# leaves AMCL's own update_min_d/update_min_a gating active, as on a vehicle;
+# every processed scan is then acknowledged by AMCL's map->odom broadcast.
+UPDATE_POLICIES = ('REQUEST_NOMOTION_UPDATE_BEFORE_EACH_ORIGINAL_SCAN', 'AMCL_MOTION_GATED_UPDATES')
+# Model parameters a caller may set explicitly. Frames, topics, clock, map and
+# initial-pose handling stay owned by the replay; the laser model has its own argument.
+AMCL_OVERRIDE_TYPES = {
+    'alpha1': float, 'alpha2': float, 'alpha3': float, 'alpha4': float, 'alpha5': float,
+    'beam_skip_distance': float, 'beam_skip_error_threshold': float, 'beam_skip_threshold': float,
+    'do_beamskip': bool, 'lambda_short': float, 'laser_likelihood_max_dist': float,
+    'laser_max_range': float, 'laser_min_range': float, 'max_beams': int, 'max_particles': int,
+    'min_particles': int, 'pf_err': float, 'pf_z': float, 'recovery_alpha_fast': float,
+    'recovery_alpha_slow': float, 'resample_interval': int, 'sigma_hit': float,
+    'transform_tolerance': float, 'update_min_a': float, 'update_min_d': float,
+    'z_hit': float, 'z_max': float, 'z_rand': float, 'z_short': float,
+}
+DEFAULT_INITIAL_STD = (.20, .20, math.radians(5.0))
+
+
+def amcl_parameter_overrides(values):
+    """Validate explicit AMCL model overrides; coerce to the declared ROS parameter types."""
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError('AMCL overrides must be a mapping')
+    result = {}
+    for name, value in values.items():
+        kind = AMCL_OVERRIDE_TYPES.get(name)
+        if kind is None:
+            raise ValueError('AMCL parameter is not overridable here: ' + repr(name))
+        if kind is bool:
+            if type(value) is not bool:
+                raise ValueError(name + ' must be a boolean')
+            result[name] = value
+            continue
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) or not math.isfinite(value):
+            raise ValueError(name + ' must be a finite number')
+        if kind is int:
+            if float(value) != int(value) or not 1 <= int(value) <= 100_000:
+                raise ValueError(name + ' must be a positive integer')
+            result[name] = int(value)
+        else:
+            if float(value) < 0:
+                raise ValueError(name + ' must be nonnegative')
+            result[name] = float(value)
+    if result.get('min_particles', 1) > result.get('max_particles', 100_000):
+        raise ValueError('min_particles cannot exceed max_particles')
+    return result
+
+
+def initial_standard_deviations(value):
+    """Operator-style initial uncertainty (x m, y m, yaw rad); default 0.20 m, 0.20 m, 5 degrees."""
+    if value is None:
+        return DEFAULT_INITIAL_STD
+    try:
+        if isinstance(value, (str, bytes, dict)) or len(value) != 3:
+            raise ValueError
+        if any(isinstance(v, (bool, np.bool_)) or not isinstance(v, Real) for v in value):
+            raise ValueError
+        std = tuple(float(v) for v in value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('initial standard deviations require three finite numbers') from exc
+    if not all(math.isfinite(v) and v > 0 for v in std) or max(std[:2]) > 2.0 or std[2] > math.pi:
+        raise ValueError('initial standard deviations must be positive, xy <= 2 m and yaw <= pi')
+    return std
+
 
 def _height_band(value):
     try:
@@ -152,22 +222,34 @@ def _sha(path):
 
 def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
                     *, scan_height_m=(-.50, .50), base_from_lidar=None, laser_model='likelihood_field',
-                    evaluation_scope='SAME_RECORDING_MAP_REUSE_NOT_INDEPENDENT_HOLDOUT'):
+                    evaluation_scope='SAME_RECORDING_MAP_REUSE_NOT_INDEPENDENT_HOLDOUT',
+                    amcl_overrides=None, initial_std=None,
+                    update_policy='REQUEST_NOMOTION_UPDATE_BEFORE_EACH_ORIGINAL_SCAN'):
     """Run map_server + AMCL on original-stamp scans and frozen prior odometry.
 
     Returns a JSON-serializable result, including partial evidence on runtime
     failure. Invalid input/isolation fails before starting ROS. Original map
     and input arrays are never changed. Only this invocation's children stop.
+
+    Opt-in options (defaults reproduce earlier runs): ``amcl_overrides`` sets
+    AMCL model parameters, ``initial_std`` the initial-pose uncertainty, and
+    ``update_policy='AMCL_MOTION_GATED_UPDATES'`` keeps AMCL's own motion gating
+    instead of forcing an update per scan; each scan is then acknowledged by the
+    map->odom broadcast stamped scan + transform_tolerance, and every broadcast
+    is kept in ``map_odom_trajectory``.
     """
     timeout = float(timeout_s)
     if not math.isfinite(timeout) or not 10 <= timeout <= 900:
         raise ValueError('finite timeout_s in [10,900] required')
-    if evaluation_scope not in ('SAME_RECORDING_MAP_REUSE_NOT_INDEPENDENT_HOLDOUT',
-                                 'DISJOINT_TIME_TRAINING_MAP_SHARED_ODOMETRY_NOT_ABSOLUTE_TRUTH',
-                                 'SYNTHETIC_KNOWN_TRUTH_NOT_PHYSICAL_ACCURACY'):
+    if evaluation_scope not in EVALUATION_SCOPES:
         raise ValueError('explicit supported evaluation scope required')
     if laser_model not in ('likelihood_field', 'likelihood_field_prob'):
         raise ValueError('unsupported AMCL laser model')
+    if update_policy not in UPDATE_POLICIES:
+        raise ValueError('unsupported AMCL update policy')
+    overrides = amcl_parameter_overrides(amcl_overrides)
+    std = initial_standard_deviations(initial_std)
+    gated = update_policy == 'AMCL_MOTION_GATED_UPDATES'
     prepared, initial = prepare_frames(frames, initial_pose, scan_height_m)
     fixed_base_lidar = None if base_from_lidar is None else planar_base_from_lidar(base_from_lidar)
     lidar_from_base = np.eye(4) if fixed_base_lidar is None else np.linalg.inv(fixed_base_lidar)
@@ -232,6 +314,8 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
             'tf_broadcast': True, 'set_initial_pose': False,
             'always_reset_initial_pose': True, 'save_pose_rate': -1.0}},
     }
+    parameters[namespace + '/amcl']['ros__parameters'].update(overrides)
+    tolerance_ns = int(round(parameters[namespace + '/amcl']['ros__parameters']['transform_tolerance'] * 1e9))
     params_file.write_text(yaml.safe_dump(parameters, sort_keys=False), encoding='utf-8')
     result = {
         'schema_version': 1, 'status': 'STARTING', 'map_yaml': str(source), 'source_sha256': source_hashes,
@@ -252,13 +336,18 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
         'model_weights_validated': False,
         'initial_pose': initial_base.tolist(), 'initial_lidar_pose': initial.tolist(),
         'initial_base_pose': initial_base.tolist(), 'initial_pose_publications': 0,
-        'initial_standard_deviations': {'x_m': .20, 'y_m': .20, 'yaw_deg': 5.0},
+        'initial_standard_deviations': {'x_m': std[0], 'y_m': std[1], 'yaw_deg': math.degrees(std[2])},
         'input_frames': len(prepared), 'published_frames': 0, 'acknowledged_frames': 0,
         'trajectory': [], 'scan_stats': [], 'unacknowledged_stamps_ns': [],
         'output_dir': str(directory), 'source_arrays_modified': False,
-        'force_update_policy': 'REQUEST_NOMOTION_UPDATE_BEFORE_EACH_ORIGINAL_SCAN',
+        'force_update_policy': update_policy,
         'primary_interface_source': 'https://raw.githubusercontent.com/ros-navigation/navigation2/humble/nav2_amcl/src/amcl_node.cpp',
     }
+    if overrides:
+        result['amcl_parameter_overrides'] = dict(overrides)
+    if gated:
+        result['map_odom_trajectory'] = []
+        result['acknowledgement'] = 'MAP_TO_ODOM_BROADCAST_STAMPED_SCAN_PLUS_TRANSFORM_TOLERANCE'
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -389,6 +478,26 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
         map_sub = node.create_subscription(OccupancyGrid, map_topic,
                                            lambda msg: received.__setitem__('map', msg), transient)
         pose_sub = node.create_subscription(PoseWithCovarianceStamped, namespace + '/amcl_pose', pose_callback, transient)
+        map_odom = {}
+
+        def tf_callback(message):
+            for transform in message.transforms:
+                if transform.header.frame_id != map_frame or transform.child_frame_id != odom_frame:
+                    continue
+                expires = int(transform.header.stamp.sec) * 10**9 + int(transform.header.stamp.nanosec)
+                t, q = transform.transform.translation, transform.transform.rotation
+                values = [t.x, t.y, q.x, q.y, q.z, q.w]
+                if not all(math.isfinite(v) for v in values):
+                    raise AMCLReplayError('AMCL broadcast a nonfinite map->odom transform')
+                yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+                map_odom[expires - tolerance_ns] = {'x_m': float(t.x), 'y_m': float(t.y), 'yaw_rad': yaw}
+
+        def acknowledged(stamp):
+            return any(abs(key - stamp) <= 1000 for key in map_odom) if gated else stamp in poses
+
+        tf_sub = (node.create_subscription(TFMessage, namespace + '/tf', tf_callback,
+                                           QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE))
+                  if gated else None)
         static_broadcaster = None
         if fixed_base_lidar is not None:
             static_broadcaster = StaticTransformBroadcaster(node)
@@ -461,9 +570,9 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
         initial_message.header.stamp = msg_time(current_stamp)
         initial_message.header.frame_id = map_frame
         fill_pose(initial_message.pose.pose, initial_base)
-        initial_message.pose.covariance[0] = .20**2
-        initial_message.pose.covariance[7] = .20**2
-        initial_message.pose.covariance[35] = math.radians(5)**2
+        initial_message.pose.covariance[0] = std[0]**2
+        initial_message.pose.covariance[7] = std[1]**2
+        initial_message.pose.covariance[35] = std[2]**2
         initial_pub.publish(initial_message)
         result['initial_pose_publications'] += 1
         settle_end = time.monotonic() + .20
@@ -474,7 +583,11 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
             current_stamp = frame['stamp_ns']
             healthy()
             publish_tf(frame)
-            future_result(nomotion.call_async(Empty.Request()), 3)
+            if not gated:
+                future_result(nomotion.call_async(Empty.Request()), 3)
+            else:
+                # Let the odometry transform arrive before its scan, as in a continuous TF stream.
+                spin_until(lambda: False, .01)
             scan = LaserScan()
             scan.header.stamp = msg_time(current_stamp)
             scan.header.frame_id = laser_frame
@@ -487,12 +600,15 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
             scan_pub.publish(scan)
             result['published_frames'] += 1
             result['scan_stats'].append({'stamp_ns': current_stamp, **frame['scan_stats']})
-            if spin_until(lambda: current_stamp in poses, 5):
+            if spin_until(lambda: acknowledged(current_stamp), 5):
                 result['acknowledged_frames'] += 1
             else:
                 result['unacknowledged_stamps_ns'].append(current_stamp)
             if (index + 1) % 20 == 0:
                 print('AMCL_REPLAY', index + 1, '/', len(prepared), 'poses', len(poses), flush=True)
+        if gated:
+            # A filter update publishes its pose next to the broadcast; let the last one arrive.
+            spin_until(lambda: False, .3)
         result['status'] = 'AMCL_REPLAY_COMPLETE' if result['acknowledged_frames'] == len(prepared) else 'PARTIAL_AMCL_POSES'
         result['sources_unchanged'] = all(_sha(path) == value for path, value in source_hashes.items())
         if not result['sources_unchanged']:
@@ -518,5 +634,13 @@ def run_amcl_replay(map_yaml, frames, initial_pose, output_dir, timeout_s=180,
         allowed = {frame['stamp_ns'] for frame in prepared}
         result['trajectory'] = [poses[stamp] for stamp in sorted(poses) if stamp in allowed]
         result['pose_frames'] = len(result['trajectory'])
+        if gated:
+            rows = []
+            for frame in prepared:
+                key = min(map_odom, key=lambda k: abs(k - frame['stamp_ns']), default=None)
+                if key is not None and abs(key - frame['stamp_ns']) <= 1000:
+                    rows.append({'stamp_ns': frame['stamp_ns'], **map_odom[key],
+                                 'filter_updated': frame['stamp_ns'] in poses})
+            result['map_odom_trajectory'] = rows
         (directory / 'result.json').write_text(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + '\n', encoding='utf-8')
     return result

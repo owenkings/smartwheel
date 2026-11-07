@@ -38,6 +38,7 @@
 
 - [autonomy/](autonomy/README.md)：自主探索建图、Nav2 规划与控制、安全闸门在仿真轮椅上的闭环框架，以及在真实录包上的开环影子运行，见[说明](../../docs/operations/navigation_autonomy.md)。
 - [planning/](planning/README.md)：车体模型（圆或凸多边形）与规划、控制的可选配置和对比工具。
+- [live/](live/README.md)：已存地图上的跨录包定位检查和实车影子链路（验证阶梯第 4 级），见[说明](../../docs/operations/navigation_live_shadow.md)。
 
 - [amcl_replay.py](amcl_replay.py)、[amcl_cli.py](amcl_cli.py)：隔离域中的 AMCL 单雷达功能回放。
 

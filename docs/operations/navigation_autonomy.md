@@ -69,6 +69,8 @@ bash scripts/navigation_replay_mapping \
 
 ### 为没有冻结外参的录包生成单左前端
 
+（历史记录：2026-11-07 起 RoomA1/RoomAB 录包停用，不再需要这一步。下面用到的 `config/local/project/hardware_setup.json` 也已在 2026-11-07 改成新的轮参数，不再是 `12ea737c…` 那份文件。）
+
 2026-10-09 的 RoomA1/RoomAB 录包没有冻结左雷达外参，`compare` 会按外参能力检查拒绝。经用户同意，可以用 2026-10-26 现场外参作显式实验覆盖，参数与走廊前端完全相同（不加原生地图、运动候选或机械初值），输出目录名注明实验：
 
 ```bash
@@ -98,6 +100,7 @@ bash scripts/navigation_nav2_shadow --mode follow --source-cell <同上> --map <
 - 地图必须在录包里程计坐标中（例如同一录包的建图重放结果）；记录路径落在空闲格上的比例低于一半时拒绝运行。`--assumed-radius`、`--margin`、`--max-linear`、`--max-angular` 与仿真相同；`WC_AUTONOMY_ROS_DOMAIN=97` 可与另一次运行并行。
 - `--footprint X1 Y1 X2 Y2 ...` 用凸多边形外形代替圆（车轴为原点，x 向前、y 向左，至少 3 个点，车轴须在外形内）。`--footprint-source` 写明外形来源，默认 `EXAMPLE_NOT_MEASURED`；实测后改为例如 `MEASURED_20261120`，结果和看板会按来源标注“示例”或“实测”。
 - `--planner`、`--controller`（默认 NavFn 与 RPP，不变）选其他规划器和控制器，见[规划与控制](navigation_planning.md)。
+- 地图来自另一段录包时用 `--localization fixed|amcl` 加 `--map-alignment`（固定对齐或已存地图上的 AMCL），见[实车影子链路](navigation_live_shadow.md)。
 
 输出在 `reports/navigation_nav2_shadow/<时间>_shadow_<模式>_<编号>/`：
 
