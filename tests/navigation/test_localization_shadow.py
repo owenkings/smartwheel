@@ -91,7 +91,16 @@ def test_gate_config_is_unchanged_without_amcl_and_requires_covariance_with_it(t
     assert config["gate"]["covariance_xy_std_max_m"] == 0.4
     assert config["gate"]["covariance_yaw_std_max_rad"] == pytest.approx(math.radians(20))
     assert config["correction_monitor"] == {"window_s": 2.0, "max_translation_m": 0.5,
-                                            "max_yaw_rad": pytest.approx(math.radians(8)), "hold_s": 3.0}
+                                            "max_yaw_rad": pytest.approx(math.radians(8)), "hold_s": 3.0,
+                                            "reference": "robot"}
+    defaults = sl.config_section(parse(tmp_path, ["--localization", "amcl", "--map-alignment", "0", "0", "0"]),
+                                 tmp_path, recording(), [0.0, 10.0])["gate_limits"]
+    assert (defaults["correction_translation_m"], defaults["correction_yaw_deg"], defaults["correction_reference"],
+            defaults["covariance_xy_std_m"]) == (0.25, 10.0, "robot", 0.50)
+    from wc_navigation.autonomy.safety_gate import CorrectionMonitor, GateConfig
+    assert defaults["covariance_xy_std_m"] == GateConfig().covariance_xy_std_max_m
+    assert math.radians(defaults["correction_yaw_deg"]) == pytest.approx(CorrectionMonitor().max_yaw_rad)
+    assert defaults["correction_reference"] == CorrectionMonitor().reference
 
 
 class FakeSupervisor:

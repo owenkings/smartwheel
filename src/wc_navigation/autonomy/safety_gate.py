@@ -26,7 +26,10 @@ class GateConfig:
     enable_timeout_s: float = 1.0
     localization_max_age_s: float = 0.5
     require_covariance: bool = False
-    covariance_xy_std_max_m: float = 0.30
+    # 0.50 m since 2026-11-07 (user decision; was 0.30 m): with the navigation AMCL parameters on the ZL1107
+    # corridor, 0.30 m stopped 35% of the mapped stretch while the blank-map stretch stays above 0.50 m
+    # (docs/architecture/live_shadow.md).
+    covariance_xy_std_max_m: float = 0.50
     covariance_yaw_std_max_rad: float = 0.25
 
     def __post_init__(self):
@@ -44,25 +47,32 @@ class GateConfig:
 class CorrectionMonitor:
     """Flag implausibly fast changes of the global correction ``map -> odom``.
 
-    Odometry drifts slowly, so a localization backend that moves ``map -> odom``
-    by more than the stated translation or heading within the window is not
-    trusted until the correction has stayed within bounds for ``hold_s``.
-    Loop closures therefore cause a short stop rather than a blind continuation.
+    Odometry drifts slowly, so a localization backend that moves the robot's
+    map position by more than the stated translation, or its heading by more
+    than the stated angle, within the window is not trusted until the
+    correction has stayed within bounds for ``hold_s``. Loop closures therefore
+    cause a short stop rather than a blind continuation.
+
+    Defaults since 2026-11-07 (user decision): the translation is measured at
+    the robot's current position (``reference='robot'``) and the heading limit
+    is 10 degrees. Measured on ``map -> odom`` itself (``'odom_origin'``, the
+    earlier default with 5 degrees), a 1 degree heading correction 13 m from the
+    odom origin already looked like a 0.23 m jump.
     """
 
     REFERENCES = ("odom_origin", "robot")
 
-    def __init__(self, window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5.0), hold_s=3.0,
-                 reference="odom_origin"):
+    def __init__(self, window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(10.0), hold_s=3.0,
+                 reference="robot"):
         self.window_s = _number(window_s, "window_s", positive=True)
         self.max_translation_m = _number(max_translation_m, "max_translation_m", positive=True)
         self.max_yaw_rad = _number(max_yaw_rad, "max_yaw_rad", positive=True)
         self.hold_s = _number(hold_s, "hold_s", nonnegative=True)
         if reference not in self.REFERENCES:
             raise ValueError("reference must be odom_origin or robot")
-        # odom_origin (default): translation of map->odom itself. robot: how far the correction change moves
-        # the robot's current map position; a heading correction far from the odom origin then no longer
-        # counts as a translation jump of (distance x angle).
+        # robot (default): how far the correction change moves the robot's current map position, so a heading
+        # correction far from the odom origin no longer counts as a translation jump of (distance x angle).
+        # odom_origin: translation of map->odom itself.
         self.reference = reference
         self._history = []
         self._untrusted_until = -math.inf

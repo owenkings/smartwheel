@@ -88,6 +88,10 @@ class PlanningChoice:
     server_params: tuple = field(default_factory=tuple)
     recovery_retries: int = DEFAULT_RECOVERY_RETRIES          # behaviour tree: clear costmaps / wait rounds
     recovery_wait_s: float = DEFAULT_RECOVERY_WAIT_S
+    # Navigate mode: False plans on the saved map only (live scans stay in the local costmap and the monitor).
+    global_live_scans: bool = True
+    # Second planner plugin ("Fallback"), asked by the behaviour tree only when GridBased finds no path.
+    fallback_planner: str = ""
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
@@ -104,22 +108,31 @@ class PlanningChoice:
         if type(retries) is not int or not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
             raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
         object.__setattr__(self, "recovery_wait_s", wait)
+        if not isinstance(self.global_live_scans, bool):
+            raise ValueError("global_live_scans must be true or false")
+        if self.fallback_planner not in ("", *PLANNERS) or self.fallback_planner == self.planner:
+            raise ValueError("fallback planner must be another one of " + ", ".join(PLANNERS))
 
     @property
     def is_default(self):
         return (self.planner == DEFAULT_PLANNER and self.controller == DEFAULT_CONTROLLER
                 and not self.planner_params and not self.controller_params and not self.server_params
-                and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S)
+                and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S
+                and self.global_live_scans and not self.fallback_planner)
 
     def as_dict(self):
         return {"planner": self.planner, "controller": self.controller,
                 "planner_params": [list(p) for p in self.planner_params],
                 "controller_params": [list(p) for p in self.controller_params],
                 "server_params": [list(p) for p in self.server_params],
-                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s}
+                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s,
+                "global_live_scans": self.global_live_scans, "fallback_planner": self.fallback_planner}
 
     def behavior_tree_options(self):
-        return {"recovery_retries": self.recovery_retries, "wait_s": self.recovery_wait_s}
+        options = {"recovery_retries": self.recovery_retries, "wait_s": self.recovery_wait_s}
+        if self.fallback_planner:
+            options["fallback_planner"] = True
+        return options
 
     @classmethod
     def from_dict(cls, value):
@@ -129,7 +142,9 @@ class PlanningChoice:
                    controller_params=tuple(tuple(p) for p in value.get("controller_params", ())),
                    server_params=tuple(tuple(p) for p in value.get("server_params", ())),
                    recovery_retries=int(value.get("recovery_retries", DEFAULT_RECOVERY_RETRIES)),
-                   recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)))
+                   recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)),
+                   global_live_scans=bool(value.get("global_live_scans", True)),
+                   fallback_planner=str(value.get("fallback_planner", "")))
 
 
 def _set(section, dotted, value):
@@ -223,12 +238,18 @@ def apply(params, profile, choice, *, exploring):
     planner["GridBased"] = planner_plugin(choice.planner, exploring=exploring)
     for key, value in choice.planner_params:
         _set(planner["GridBased"], key, value)
+    if choice.fallback_planner:
+        planner["planner_plugins"] = ["GridBased", "Fallback"]
+        planner["Fallback"] = planner_plugin(choice.fallback_planner, exploring=exploring)
     controller = params["controller_server"]["ros__parameters"]
     controller["FollowPath"] = controller_plugin(choice.controller, controller["FollowPath"], profile)
     for key, value in choice.controller_params:
         _set(controller["FollowPath"], key, value)
     for key, value in choice.server_params:
         _set(controller, key, value)
+    if not choice.global_live_scans:
+        costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+        costmap["plugins"] = [p for p in costmap["plugins"] if p != "obstacle_layer"]
     return params
 
 
@@ -252,6 +273,14 @@ def adjust_readback(expected, choice, profile, *, exploring):
     for key, value in choice.planner_params:
         if not isinstance(value, dict):
             planner["GridBased." + key] = value
+    if choice.fallback_planner:
+        backup = planner_plugin(choice.fallback_planner, exploring=exploring)
+        planner.update({"planner_plugins": ["GridBased", "Fallback"], "Fallback.plugin": backup["plugin"],
+                        "Fallback.allow_unknown": bool(exploring)})
+        if choice.fallback_planner == "smac_lattice":
+            planner["Fallback.allow_reverse_expansion"] = False
+        if choice.fallback_planner == "smac_hybrid":
+            planner["Fallback.motion_model_for_search"] = "DUBIN"
     expected["planner_server"] = planner
     controller = expected.setdefault("controller_server", {})
     controller["FollowPath.plugin"] = CONTROLLER_PLUGINS[choice.controller]
@@ -269,6 +298,9 @@ def adjust_readback(expected, choice, profile, *, exploring):
     for key, value in choice.server_params:
         if not isinstance(value, dict):
             controller[key] = value
+    if not choice.global_live_scans:
+        plugins = expected["global_costmap/global_costmap"]["plugins"]
+        expected["global_costmap/global_costmap"]["plugins"] = [p for p in plugins if p != "obstacle_layer"]
     return expected
 
 

@@ -65,7 +65,7 @@ class ShadowRecorder:
         node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self.on_pose, latched_qos())
         node.create_subscription(PathMessage, "/plan", self.on_plan, 10)
         for topic in ("/wc_nav/gate_status", "/wc_live/inputs_status", "/wc_live/inputs_status/scan",
-                      "/wc_live/inputs_status/odometry", "/wc_live/goal_status"):
+                      "/wc_live/inputs_status/odometry", "/wc_live/goal_status", "/wc_live/relay_status"):
             node.create_subscription(String, topic, lambda m, t=topic: self.on_status(t, m), latched_qos())
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, node)
