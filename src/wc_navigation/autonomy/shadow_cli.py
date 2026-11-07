@@ -83,6 +83,10 @@ def arguments(argv=None):
     parser.add_argument("--update-period", type=_positive, default=4.0, help="s between carrot goal updates")
     parser.add_argument("--assumed-radius", type=_positive, default=0.55,
                         help="assumed circular body radius (m); not a measured outline")
+    parser.add_argument("--footprint", nargs="+", type=_finite, metavar="X Y",
+                        help="convex body outline in base_link (axle origin), x1 y1 x2 y2 ...; replaces the circle")
+    parser.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED",
+                        help="what the outline is, recorded in the result (default: an example, not a measurement)")
     parser.add_argument("--margin", type=_positive, default=0.10)
     parser.add_argument("--max-linear", type=_positive, default=0.30)
     parser.add_argument("--max-angular", type=_positive, default=0.50)
@@ -90,6 +94,14 @@ def arguments(argv=None):
                         help="height band in the prepared lidar frame, as in the AMCL and mapping replays")
     parser.add_argument("--real-time-factor", type=_positive, default=1.0)
     args = parser.parse_args(argv)
+    if args.footprint is not None:
+        if len(args.footprint) < 6 or len(args.footprint) % 2:
+            parser.error("--footprint needs at least three x y pairs")
+        args.footprint = [args.footprint[k:k + 2] for k in range(0, len(args.footprint), 2)]
+        try:
+            nav2_config.NavProfile(footprint=args.footprint)
+        except ValueError as exc:
+            parser.error("--footprint: " + str(exc))
     if not 0.25 <= args.real_time_factor <= 2.0:
         parser.error("--real-time-factor must be within 0.25..2")
     if args.window and not 0 <= args.window[0] < args.window[1]:
@@ -532,9 +544,13 @@ def summarize(config, report, output, recording):
     ranges = recording["ranges"][index]
     angles = ANGLE_MIN + ANGLE_INCREMENT * np.arange(BINS)
     stop_radius = profile.radius_m + nav2_config.STOP_RING_M
+    outline = profile.footprint
+    stop_polygon = nav2_config.offset_polygon(outline, nav2_config.STOP_RING_M) if outline else None
+    lethal_polygon = nav2_config.offset_polygon(outline, profile.margin_m) if outline else None
     audit = shadow.zone_audit(angles, ranges, recording["lever_xy"], stop_radius,
-                              nav2_config.slowdown_polygon(profile), nav2_config.MONITOR_MAX_POINTS)
-    near = shadow.near_points(angles, ranges, recording["lever_xy"], profile.lethal_radius_m)
+                              nav2_config.slowdown_polygon(profile), nav2_config.MONITOR_MAX_POINTS,
+                              stop_polygon=stop_polygon)
+    near = shadow.near_points(angles, ranges, recording["lever_xy"], profile.lethal_radius_m, polygon=lethal_polygon)
     mission_path = output / "shadow_mission_result.json"
     mission = json.loads(mission_path.read_text(encoding="utf-8")) if mission_path.exists() else {}
     result = {
@@ -545,7 +561,8 @@ def summarize(config, report, output, recording):
         "mission": {k: mission.get(k) for k in ("status", "goals_sent", "outcome_counts", "lead_s", "update_period_s")},
         "log_counts": log_counts(report.get("logs", {})),
         "scan_zone_audit": {
-            "frames": int(len(times)), "stop_radius_m": stop_radius,
+            "frames": int(len(times)), "stop_radius_m": None if outline else stop_radius,
+            "stop_polygon": stop_polygon, "body_model": config.get("body_model", "CIRCLE_ASSUMED_NOT_MEASURED"),
             "slowdown_polygon": nav2_config.slowdown_polygon(profile),
             "monitor_max_points": nav2_config.MONITOR_MAX_POINTS,
             "frames_stop_expected": int(audit["stop_expected"].sum()),
@@ -555,7 +572,7 @@ def summarize(config, report, output, recording):
             "frames_with_returns_inside_lethal_radius": len({row[0] for row in near}),
             "returns_inside_lethal_radius": len(near),
             "lethal_radius_m": profile.lethal_radius_m,
-            "basis": "EACH_SCAN_AT_ITS_CAPTURE_POSE_AXLE_FRAME_ASSUMED_CIRCLE"},
+            "basis": "EACH_SCAN_AT_ITS_CAPTURE_POSE_AXLE_FRAME_" + ("BODY_OUTLINE" if outline else "ASSUMED_CIRCLE")},
         "interpretation": ("OPEN_LOOP_SHADOW: the recording does not react to the commands; agreement and stop "
                            "counts describe this recording and the assumed circular body only"),
     }
@@ -662,7 +679,13 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
             ax.plot(xy[:, 0], xy[:, 1], color="#2e9e5b", linewidth=0.8, alpha=0.55,
                     label="Nav2 global plan (sampled)" if k == 0 else None)
     ax.plot(poses[:, 0], poses[:, 1], color="#2b7bb9", linewidth=1.6, label="Recorded axle path (driver)")
-    ax.add_patch(plt.Circle(poses[0, :2], profile.radius_m, fill=False, color="#2b7bb9", linewidth=1.2))
+    if profile.footprint:
+        x0, y0, yaw0 = poses[0]
+        c, s = np.cos(yaw0), np.sin(yaw0)
+        body = np.array([[x0 + c * px - s * py, y0 + s * px + c * py] for px, py in profile.footprint])
+        ax.add_patch(plt.Polygon(body, closed=True, fill=False, color="#2b7bb9", linewidth=1.2))
+    else:
+        ax.add_patch(plt.Circle(poses[0, :2], profile.radius_m, fill=False, color="#2b7bb9", linewidth=1.2))
     for reason, (color, label) in FAILURE_STYLE.items():
         xy = np.asarray([f["start_xy"] for f in failures if f["reason"] == reason], dtype=float).reshape(-1, 2)
         if len(xy):
@@ -687,7 +710,12 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
     ax.set_title("SHADOW RUN (open loop, %s) on a frozen recording - commands recorded, never sent\n"
                  "%s; assumed circular body r=%.2f m (+%.2f m planning margin); not a vehicle test"
                  % (mode, "Nav2 plans toward the recorded pose ahead" if mode == "navigate"
-                    else "controller follows the driver's recorded path", profile.radius_m, profile.margin_m))
+                    else "controller follows the driver's recorded path", profile.radius_m, profile.margin_m)
+                 if not profile.footprint else
+                 "SHADOW RUN (open loop, %s) on a frozen recording - commands recorded, never sent\n"
+                 "body outline %s (inscribed %.2f m, circumscribed %.2f m, +%.2f m planning margin); "
+                 "not a vehicle test" % (mode, config.get("body_model", "POLYGON"), profile.body_inscribed_m,
+                                         profile.body_circumscribed_m, profile.margin_m))
     if table is not None:
         t = table["t"]
         axes[1].plot(t, table["v_rec"], color="black", linewidth=1.2, label="recorded (driver)")
@@ -706,8 +734,8 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
             axis.legend(loc="upper right", fontsize=8)
     axes[3].plot(times, np.where(np.isfinite(audit["nearest_m"]), audit["nearest_m"], np.nan), color="#555",
                  linewidth=1.0, label="nearest return to axle")
-    axes[3].axhline(profile.radius_m + nav2_config.STOP_RING_M, color="#c0392b", linewidth=1.0, linestyle="--",
-                    label="stop circle")
+    axes[3].axhline(profile.body_inscribed_m + nav2_config.STOP_RING_M, color="#c0392b", linewidth=1.0,
+                    linestyle="--", label="stop zone, nearest body edge" if profile.footprint else "stop circle")
     axes[3].set_ylim(0, 2.5)
     axes[3].set_ylabel("distance (m)")
     axes[3].set_xlabel("recording time (s)")
@@ -719,7 +747,8 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
 
 def build_config(args, output, recording, source):
     profile = nav2_config.NavProfile(radius_m=args.assumed_radius, margin_m=args.margin,
-                                     max_linear=args.max_linear, max_angular=args.max_angular)
+                                     max_linear=args.max_linear, max_angular=args.max_angular,
+                                     footprint=args.footprint or ())
     times, poses = recording["times_s"], recording["base_poses"]
     window = list(args.window) if args.window else list(shadow.motion_window(times, poses))
     window = [max(window[0], float(times[0])), min(window[1], float(times[-1]))]
@@ -739,6 +768,7 @@ def build_config(args, output, recording, source):
             "update_period_s": args.update_period, "tail_hold_s": 5.0, "scan_height_m": list(args.scan_height),
             "real_time_factor": args.real_time_factor, "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
             "base_reference": "FROZEN_PLANAR_AXLE_FROM_LEVER_ARM_UNVALIDATED",
+            "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
             "open_loop": True, "commands_sent": False, "hardware_control": False}
 
 

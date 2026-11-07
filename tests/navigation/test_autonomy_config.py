@@ -233,3 +233,48 @@ def test_cli_rejects_out_of_scope_options(extra):
     from wc_navigation.autonomy.cli import arguments
     with pytest.raises(SystemExit):
         arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms", *extra])
+
+
+EXAMPLE_OUTLINE = [[0.70, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.70, -0.35]]   # rectangle, not measured
+
+
+def test_body_outline_radii_and_validation():
+    profile = nav2_config.NavProfile(footprint=EXAMPLE_OUTLINE)
+    assert profile.body_inscribed_m == pytest.approx(0.35) and profile.lethal_radius_m == pytest.approx(0.45)
+    assert profile.body_circumscribed_m == pytest.approx((0.70 ** 2 + 0.35 ** 2) ** 0.5)
+    assert nav2_config.NavProfile().lethal_radius_m == pytest.approx(0.65)          # the circle is unchanged
+    assert nav2_config.NavProfile(**profile.as_dict()) == profile                   # JSON round trip
+    for bad in ([[0.5, 0.3], [0.5, -0.3]],                                            # two points
+                [[0.5, 0.3], [-0.2, 0.3], [0.5, -0.3], [-0.2, -0.3]],                # self-crossing
+                [[0.5, 0.3], [0.1, 0.3], [0.1, -0.3], [0.5, -0.3]],                  # base_link outside
+                [[3.0, 0.3], [-0.2, 0.3], [-0.2, -0.3], [3.0, -0.3]]):               # beyond 2 m
+        with pytest.raises(ValueError):
+            nav2_config.NavProfile(footprint=bad)
+
+
+def test_grown_outline_keeps_a_constant_ring():
+    grown = nav2_config.offset_polygon(nav2_config.NavProfile(footprint=EXAMPLE_OUTLINE).footprint, 0.02)
+    assert grown == pytest.approx([0.72, 0.37, -0.37, 0.37, -0.37, -0.37, 0.72, -0.37])
+
+
+def test_body_outline_flows_into_costmaps_monitor_and_readback():
+    profile = nav2_config.NavProfile(footprint=EXAMPLE_OUTLINE)
+    p = nav2_config.navigation_parameters(profile, mode="navigate", bt_to_pose_path="/tmp/a.xml",
+                                          bt_through_poses_path="/tmp/b.xml")
+    local = p["local_costmap"]["local_costmap"]["ros__parameters"]
+    global_ = p["global_costmap"]["global_costmap"]["ros__parameters"]
+    assert local["footprint"] == global_["footprint"] == nav2_config.footprint_string(profile.footprint)
+    assert local["footprint_padding"] == 0.0 and global_["footprint_padding"] == pytest.approx(0.10)
+    assert global_["inflation_layer"]["inflation_radius"] >= profile.body_circumscribed_m + profile.margin_m
+    monitor = p["collision_monitor"]["ros__parameters"]
+    assert monitor["polygons"] == ["FootprintStop", "PolygonSlow", "FootprintApproach"]
+    assert monitor["FootprintStop"]["type"] == "polygon" and monitor["FootprintApproach"]["type"] == "polygon"
+    for node, expected in nav2_config.readback_expectations(profile, "navigate").items():
+        section = p
+        for part in node.split("/"):
+            section = section[part]
+        for dotted, value in expected.items():
+            current = section["ros__parameters"]
+            for part in dotted.split("."):
+                current = current[part]
+            assert _same(current, value), (node, dotted)

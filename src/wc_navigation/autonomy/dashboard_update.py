@@ -154,7 +154,13 @@ def shadow_row(directory, *, preview=True):
     mode = result.get("shadow_mode", config.get("shadow_mode", "navigate"))
     profile = config.get("profile") or {}
     label = "录包影子 · " + ("Nav2 规划并跟踪" if mode == "navigate" else "控制器沿司机路线")
-    if profile.get("radius_m") is not None:
+    outline = profile.get("footprint") or []
+    if outline:
+        xs, ys = [p[0] for p in outline], [p[1] for p in outline]
+        model = str(config.get("body_model", ""))
+        measured = "MEASURED" in model and "NOT_MEASURED" not in model
+        label += " · %s外形 %.2f×%.2f m" % ("实测" if measured else "示例", max(xs) - min(xs), max(ys) - min(ys))
+    elif profile.get("radius_m") is not None:
         label += " · 假设包络 %.2f m" % profile["radius_m"]
     row = {"run_id": directory.name, "label": label, "shadow_mode": mode, "recording": recording,
            "window_label": "%s · %.0f–%.0f s" % (recording, window[0], window[1]),

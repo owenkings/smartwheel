@@ -159,3 +159,15 @@ def test_shadow_previews_are_embedded_as_a_narrower_copy(tmp_path):
     assert row["preview_sha256"] != row["embedded_preview_sha256"]
     assert row["label"].endswith("0.45 m") and row["plan_label"].startswith("不经规划")
     assert "preview_data_url" not in shadow_row(directory, preview=False)
+
+
+def test_shadow_rows_name_the_body_outline_and_its_source(tmp_path):
+    from wc_navigation.autonomy.dashboard_update import shadow_row
+    outline = [[0.70, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.70, -0.35]]
+    for source, word in (("POLYGON_EXAMPLE_NOT_MEASURED", "示例外形"), ("POLYGON_MEASURED_20261120", "实测外形")):
+        directory = tmp_path / source
+        directory.mkdir()
+        row = shadow_row(shadow_dir(directory, config={"source_cell": "/a/b/c", "window_s": [0, 10],
+                                                       "map_yaml": "/m/r/k/map.yaml", "body_model": source,
+                                                       "profile": {"radius_m": 0.55, "footprint": outline}}))
+        assert row["label"].endswith(word + " 1.05×0.70 m"), row["label"]

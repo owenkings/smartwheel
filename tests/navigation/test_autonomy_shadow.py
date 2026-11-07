@@ -362,3 +362,28 @@ def test_offset_to_the_latest_plan_respects_its_age():
                                           plans, max_age_s=2.0)
     assert offset[0] == pytest.approx(0.5) and offset[2] == pytest.approx(0.2)
     assert np.isnan(offset[1]) and np.isnan(offset[3])                      # newest plan older than 2 s
+
+
+def test_zone_audit_with_a_body_outline():
+    outline = [[0.70, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.70, -0.35]]
+    stop = nav2_config.offset_polygon(nav2_config.NavProfile(footprint=outline).footprint, nav2_config.STOP_RING_M)
+    side = np.full(161, np.inf)
+    side[:5] = 0.35                     # returns at about (0.5, -0.07): inside the 0.55 m circle and the box
+    ahead = np.full(161, np.inf)
+    ahead[78:83] = 0.45                 # returns at about (0.77, 0.23): outside the box, inside 0.78 m sweep
+    audit = shadow.zone_audit(ANGLES, [side, ahead], LEVER, 0.57, [0, 0, 1, 0, 1, 1], 3, stop_polygon=stop)
+    assert audit["stop_points"].tolist() == [5, 0] and audit["stop_expected"].tolist() == [True, False]
+    rows = shadow.near_points(ANGLES, [side, ahead], LEVER, 0.65,
+                              polygon=nav2_config.offset_polygon(tuple(map(tuple, outline)), 0.10))
+    assert {r[0] for r in rows} == {0, 1}            # within the margin of the outline in both frames
+
+
+def test_shadow_cli_footprint_option(tmp_path):
+    from wc_navigation.autonomy.shadow_cli import arguments
+    base = ["--project-root", str(tmp_path), "--source-cell", str(tmp_path), "--map", str(tmp_path / "m.yaml")]
+    args = arguments(base + ["--footprint", "0.7", "0.35", "-0.35", "0.35", "-0.35", "-0.35", "0.7", "-0.35"])
+    assert args.footprint == [[0.7, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.7, -0.35]]
+    assert args.footprint_source == "EXAMPLE_NOT_MEASURED"
+    for bad in (["0.7", "0.35", "-0.35"], ["0.7", "0.3", "0.6", "0.3", "0.6", "0.2"]):
+        with pytest.raises(SystemExit):
+            arguments(base + ["--footprint", *bad])

@@ -74,19 +74,94 @@ class NavProfile:
     sensor_range_m: float = 8.0
     sensor_min_range_m: float = 0.3
     controller_frequency_hz: float = 10.0
+    # Optional convex body outline [(x, y), ...] in base_link (axle origin inside). Empty: the circle above.
+    footprint: tuple = ()
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
+            if name != "footprint":
+                object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
+        object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
+
+    @property
+    def body_inscribed_m(self):
+        """Distance from base_link to the nearest body edge (the circle radius without an outline)."""
+        if not self.footprint:
+            return self.radius_m
+        points = self.footprint
+        return min(_distance_to_segment((0.0, 0.0), a, b) for a, b in zip(points, points[1:] + points[:1]))
+
+    @property
+    def body_circumscribed_m(self):
+        """Farthest body point from base_link: what an in-place turn sweeps."""
+        if not self.footprint:
+            return self.radius_m
+        return max(math.hypot(x, y) for x, y in self.footprint)
 
     @property
     def lethal_radius_m(self):
-        return self.radius_m + self.margin_m
+        """Planning lethal radius: the body plus margin as Nav2 inflation sees it (inscribed radius)."""
+        return self.body_inscribed_m + self.margin_m
 
     def as_dict(self):
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        values = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        values["footprint"] = [list(p) for p in self.footprint]
+        return values
+
+
+def _distance_to_segment(p, a, b):
+    ax, ay, bx, by = a[0], a[1], b[0], b[1]
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / max(dx * dx + dy * dy, 1e-12)))
+    return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
+
+
+def _convex_footprint(points):
+    """Validate an outline: at least 3 finite points, convex, base_link strictly inside, within 2 m."""
+    points = tuple(tuple(_number(v, "footprint coordinate") for v in p) for p in (points or ()))
+    if not points:
+        return ()
+    if len(points) < 3 or any(len(p) != 2 for p in points):
+        raise ValueError("footprint needs at least three (x, y) points")
+    if any(math.hypot(*p) > 2.0 for p in points):
+        raise ValueError("footprint points must lie within 2 m of base_link")
+    n = len(points)
+    crosses = [(points[(k + 1) % n][0] - points[k][0]) * (points[(k + 2) % n][1] - points[(k + 1) % n][1])
+               - (points[(k + 1) % n][1] - points[k][1]) * (points[(k + 2) % n][0] - points[(k + 1) % n][0])
+               for k in range(n)]
+    if not (all(c > 0 for c in crosses) or all(c < 0 for c in crosses)):
+        raise ValueError("footprint must be a convex polygon in consistent order")
+    inside = [(x2 - x1) * (0.0 - y1) - (y2 - y1) * (0.0 - x1)
+              for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1])]
+    if not (all(v > 0 for v in inside) or all(v < 0 for v in inside)):
+        raise ValueError("base_link must lie strictly inside the footprint")
+    return points
+
+
+def footprint_string(points):
+    """Nav2 costmap footprint parameter text, e.g. '[[0.7, 0.35], [0.7, -0.35], ...]'."""
+    return "[" + ", ".join("[%s, %s]" % (repr(float(x)), repr(float(y))) for x, y in points) + "]"
+
+
+def offset_polygon(points, distance):
+    """Convex outline grown outward by ``distance`` along each vertex bisector (flat x, y list)."""
+    out = []
+    n = len(points)
+    area = sum(points[k][0] * points[(k + 1) % n][1] - points[(k + 1) % n][0] * points[k][1] for k in range(n))
+    sign = 1.0 if area > 0 else -1.0                      # counter-clockwise: outward normal is (dy, -dx)
+    for k in range(n):
+        prev, cur, nxt = points[k - 1], points[k], points[(k + 1) % n]
+        normals = []
+        for a, b in ((prev, cur), (cur, nxt)):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            normals.append((sign * dy / length, -sign * dx / length))
+        nx, ny = normals[0][0] + normals[1][0], normals[0][1] + normals[1][1]
+        scale = distance / max(1e-9, 1.0 + normals[0][0] * normals[1][0] + normals[0][1] * normals[1][1])
+        out.extend([cur[0] + nx * scale, cur[1] + ny * scale])
+    return out
 
 
 def _p(values):
@@ -95,8 +170,30 @@ def _p(values):
 
 def slowdown_polygon(profile):
     """Collision-monitor slowdown box ahead of the axle, flat [x0, y0, x1, y1, ...] in base_link."""
-    front, side = profile.radius_m, profile.radius_m * 0.8
-    return [front + 0.65, side + 0.20, front + 0.65, -side - 0.20, 0.40, -side - 0.20, 0.40, side + 0.20]
+    if profile.footprint:
+        front = max(x for x, _ in profile.footprint)
+        side = max(abs(y) for _, y in profile.footprint)
+    else:
+        front, side = profile.radius_m, profile.radius_m * 0.8
+    start = min(0.40, front - 0.15)
+    return [front + 0.65, side + 0.20, front + 0.65, -side - 0.20, start, -side - 0.20, start, side + 0.20]
+
+
+def monitor_polygons(profile):
+    """Collision-monitor zones: stop just outside the body, slowdown ahead, approach along the motion."""
+    common = {"max_points": MONITOR_MAX_POINTS, "visualize": False, "enabled": True}
+    slow = dict(common, type="polygon", points=slowdown_polygon(profile), action_type="slowdown",
+                slowdown_ratio=0.4, polygon_pub_topic="polygon_slowdown")
+    approach = dict(common, action_type="approach", time_before_collision=1.2, simulation_time_step=0.1)
+    if profile.footprint:
+        stop = dict(common, type="polygon", points=offset_polygon(profile.footprint, STOP_RING_M),
+                    action_type="stop", polygon_pub_topic="polygon_stop")
+        approach.update(type="polygon", points=[float(v) for p in profile.footprint for v in p])
+        return {"FootprintStop": stop, "PolygonSlow": slow, "FootprintApproach": approach}
+    stop = dict(common, type="circle", radius=profile.radius_m + STOP_RING_M, action_type="stop",
+                polygon_pub_topic="polygon_stop")
+    approach.update(type="circle", radius=profile.radius_m)
+    return {"CircleStop": stop, "PolygonSlow": slow, "FootprintApproach": approach}
 
 
 def _scan_source(profile):
@@ -130,6 +227,12 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
     1.8 m door left 0.25 m of slack per side; Regulated Pure Pursuit reported
     "collision ahead" 334 times and five goals aborted while the simulated
     centre was still 0.82-0.93 m from the nearest wall.
+
+    With a body outline both costmaps carry the polygon instead of a radius:
+    the global one padded by the margin (Nav2 inflation then treats its
+    inscribed radius as lethal, so the planner passes anywhere the narrowest
+    body width fits), the local one unpadded for the controller's footprint
+    collision check along each arc, rotations included.
     """
     lethal = profile.lethal_radius_m
     params = {
@@ -141,9 +244,13 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
                            "footprint_clearing_enabled": True, "observation_sources": "scan",
                            "scan": _scan_source(profile)},
         "inflation_layer": {"plugin": "nav2_costmap_2d::InflationLayer", "enabled": True,
-                            "cost_scaling_factor": 3.0, "inflation_radius": lethal + 0.35,
+                            "cost_scaling_factor": 3.0,
+                            "inflation_radius": max(lethal + 0.35, profile.body_circumscribed_m + profile.margin_m),
                             "inflate_unknown": False, "inflate_around_unknown": inflate_around_unknown},
     }
+    if profile.footprint:
+        params.update(footprint=footprint_string(profile.footprint),
+                      footprint_padding=profile.margin_m if global_map else 0.0)
     if global_map:
         params.update({"global_frame": "map", "update_frequency": 2.0, "publish_frequency": 1.0,
                        "rolling_window": False, "track_unknown_space": True,
@@ -223,8 +330,9 @@ def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_pa
     # place inside the assumed circle was collision free. The stop zone is
     # therefore a circle just outside the body (imminent contact from any
     # side); forward speed near obstacles is limited by the "approach" model,
-    # which predicts contact along the commanded motion.
-    slow_points = slowdown_polygon(profile)
+    # which predicts contact along the commanded motion. With a body outline the
+    # stop zone is that outline grown by the same ring (see monitor_polygons).
+    zones = monitor_polygons(profile)
     return {
         "controller_server": _p({
             "use_sim_time": True, "controller_frequency": profile.controller_frequency_hz,
@@ -300,16 +408,7 @@ def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_pa
             "cmd_vel_in_topic": CMD_SMOOTHED, "cmd_vel_out_topic": CMD_MONITORED,
             "transform_tolerance": 0.3, "source_timeout": 1.0, "base_shift_correction": True,
             "stop_pub_timeout": 2.0,
-            "polygons": ["CircleStop", "PolygonSlow", "FootprintApproach"],
-            "CircleStop": {"type": "circle", "radius": profile.radius_m + STOP_RING_M, "action_type": "stop",
-                           "max_points": MONITOR_MAX_POINTS, "visualize": False, "polygon_pub_topic": "polygon_stop",
-                           "enabled": True},
-            "PolygonSlow": {"type": "polygon", "points": slow_points, "action_type": "slowdown",
-                            "max_points": MONITOR_MAX_POINTS, "slowdown_ratio": 0.4, "visualize": False,
-                            "polygon_pub_topic": "polygon_slowdown", "enabled": True},
-            "FootprintApproach": {"type": "circle", "radius": profile.radius_m, "action_type": "approach",
-                                  "time_before_collision": 1.2, "simulation_time_step": 0.1,
-                                  "max_points": MONITOR_MAX_POINTS, "visualize": False, "enabled": True},
+            "polygons": list(zones), **zones,
             "observation_sources": ["scan"],
             "scan": {"type": "scan", "topic": "/scan", "enabled": True}}),
         "lifecycle_manager_navigation": _p({
@@ -421,20 +520,28 @@ def localization_parameters(profile, map_yaml):
 def readback_expectations(profile, mode):
     """Parameters whose running values must equal the request before motion."""
     exploring = mode == "explore"
+    zones = monitor_polygons(profile)
+    if profile.footprint:
+        outline = footprint_string(profile.footprint)
+        global_body = {"footprint": outline, "footprint_padding": profile.margin_m}
+        local_body = {"footprint": outline, "footprint_padding": 0.0}
+        stop = {"FootprintStop.points": zones["FootprintStop"]["points"]}
+    else:
+        global_body = {"robot_radius": profile.lethal_radius_m}
+        local_body = {"robot_radius": profile.radius_m}
+        stop = {"CircleStop.radius": profile.radius_m + STOP_RING_M}
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,
                               "FollowPath.use_collision_detection": True,
                               "progress_checker.plugin": "nav2_controller::PoseProgressChecker"},
         "planner_server": {"GridBased.allow_unknown": exploring, "GridBased.use_astar": False},
-        "global_costmap/global_costmap": {"robot_radius": profile.lethal_radius_m,
-                                          "plugins": global_plugins(mode),
+        "global_costmap/global_costmap": {**global_body, "plugins": global_plugins(mode),
                                           "inflation_layer.inflate_around_unknown": not exploring},
-        "local_costmap/local_costmap": {"robot_radius": profile.radius_m},
+        "local_costmap/local_costmap": local_body,
         "velocity_smoother": {"max_velocity": [profile.max_linear, 0.0, profile.max_angular],
                               "min_velocity": [0.0, 0.0, -profile.max_angular]},
         "behavior_server": {"behavior_plugins": ["spin", "wait"]},
         "collision_monitor": {"cmd_vel_in_topic": CMD_SMOOTHED, "cmd_vel_out_topic": CMD_MONITORED,
-                              "polygons": ["CircleStop", "PolygonSlow", "FootprintApproach"],
-                              "CircleStop.radius": profile.radius_m + STOP_RING_M},
+                              "polygons": list(zones), **stop},
     }

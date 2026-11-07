@@ -95,6 +95,7 @@ bash scripts/navigation_nav2_shadow --mode follow --source-cell <同上> --map <
 - `--mode navigate`（默认）：每 4 s 把 NavigateToPose 目标更新为录包中 15 s 之后的位姿（`--lead`、`--update-period`），由规划器选路线。检验在自建地图和真实扫描上能否规划、规划失败的原因、路线与司机是否一致。
 - `--mode follow`：把司机接下来 15 s 的实际路线直接交给控制器（FollowPath），不经规划器和地图。检验控制器、碰撞监控和闸门沿司机路线会怎么做。
 - 地图必须在录包里程计坐标中（例如同一录包的建图重放结果）；记录路径落在空闲格上的比例低于一半时拒绝运行。`--assumed-radius`、`--margin`、`--max-linear`、`--max-angular` 与仿真相同；`WC_AUTONOMY_ROS_DOMAIN=97` 可与另一次运行并行。
+- `--footprint X1 Y1 X2 Y2 ...` 用凸多边形外形代替圆（车轴为原点，x 向前、y 向左，至少 3 个点，车轴须在外形内）。`--footprint-source` 写明外形来源，默认 `EXAMPLE_NOT_MEASURED`；实测后改为例如 `MEASURED_20261120`，结果和看板会按来源标注“示例”或“实测”。
 
 输出在 `reports/navigation_nav2_shadow/<时间>_shadow_<模式>_<编号>/`：
 

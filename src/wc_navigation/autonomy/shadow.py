@@ -155,31 +155,39 @@ def inside_polygon(points, flat_polygon):
     return inside
 
 
-def zone_audit(angles, ranges_by_frame, lever_xy, stop_radius_m, slow_polygon, max_points):
-    """Per frame: nearest return to the axle, points in the stop circle and in the slowdown box.
+def zone_audit(angles, ranges_by_frame, lever_xy, stop_radius_m, slow_polygon, max_points, stop_polygon=None):
+    """Per frame: nearest return to the axle, points in the stop zone and in the slowdown box.
 
-    A zone acts once it holds more than ``max_points`` points (Humble collision
-    monitor). This uses each scan at its own capture pose; the running monitor
-    also shifts scans to the current pose, so small differences are expected.
+    The stop zone is the circle ``stop_radius_m`` or, when given, ``stop_polygon``
+    (flat x, y list). A zone acts once it holds more than ``max_points`` points
+    (Humble collision monitor). This uses each scan at its own capture pose; the
+    running monitor also shifts scans to the current pose, so small differences
+    are expected.
     """
     nearest, stop, slow = [], [], []
     for ranges in ranges_by_frame:
         points = scan_points_base(angles, ranges, lever_xy)
         distance = np.hypot(points[:, 0], points[:, 1])
         nearest.append(float(distance.min()) if len(distance) else math.inf)
-        stop.append(int((distance <= stop_radius_m).sum()))
+        if stop_polygon is not None:
+            stop.append(int(inside_polygon(points, stop_polygon).sum()) if len(points) else 0)
+        else:
+            stop.append(int((distance <= stop_radius_m).sum()))
         slow.append(int(inside_polygon(points, slow_polygon).sum()))
     stop, slow = np.asarray(stop), np.asarray(slow)
     return {"nearest_m": np.asarray(nearest), "stop_points": stop, "slow_points": slow,
             "stop_expected": stop > max_points, "slow_expected": slow > max_points}
 
 
-def near_points(angles, ranges_by_frame, lever_xy, radius_m):
-    """All returns within ``radius_m`` of the axle as rows (frame index, x, y) in base_link."""
+def near_points(angles, ranges_by_frame, lever_xy, radius_m, polygon=None):
+    """Returns within ``radius_m`` of the axle (or inside ``polygon``) as rows (frame, x, y) in base_link."""
     rows = []
     for k, ranges in enumerate(ranges_by_frame):
         points = scan_points_base(angles, ranges, lever_xy)
-        close = points[np.hypot(points[:, 0], points[:, 1]) <= radius_m]
+        if polygon is not None:
+            close = points[inside_polygon(points, polygon)] if len(points) else points
+        else:
+            close = points[np.hypot(points[:, 0], points[:, 1]) <= radius_m]
         rows.extend((k, float(x), float(y)) for x, y in close)
     return rows
 
