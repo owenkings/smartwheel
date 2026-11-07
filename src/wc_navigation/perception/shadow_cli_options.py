@@ -51,6 +51,10 @@ def check_arguments(parser, args):
         parser.error("the right obstacle cloud needs --obstacle-right-cell")
     if args.obstacle_scan == "filtered" and "left" not in args.obstacle_sides:
         parser.error("--obstacle-scan filtered needs the left obstacle cloud")
+    if (args.obstacle_scan == "filtered" and args.obstacle_input == "cloud"
+            and getattr(args, "global_costmap", "live") == "static"):
+        parser.error("--obstacle-scan filtered with --obstacle-input cloud and --global-costmap static: "
+                     "no costmap would read the filtered scan")
     lever = args.obstacle_right_lever
     if lever not in ("frozen", "symmetric"):
         try:

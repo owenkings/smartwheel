@@ -109,6 +109,23 @@ def test_filtered_scan_feeds_the_costmap_obstacle_layers_only_when_asked():
             nav2_config.NavProfile(**bad)
 
 
+def test_filtered_scan_with_planning_on_the_saved_map_only():
+    from wc_navigation.planning import stack
+    profile = nav2_config.NavProfile(obstacle_input="scan_and_cloud", obstacle_clouds=("left",),
+                                     obstacle_scan="filtered", footprint=MEASURED)
+    choice = stack.PlanningChoice(global_live_scans=False)
+    p = nav2_config.navigation_parameters(profile, mode="navigate", bt_to_pose_path="/tmp/a.xml",
+                                          bt_through_poses_path="/tmp/b.xml", planning=choice)
+    assert "obstacle_layer" not in p["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    assert local(p)["obstacle_layer"]["scan"]["topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+    expected = nav2_config.readback_expectations(profile, "navigate", planning=choice)
+    body = expected["global_costmap/global_costmap"]
+    assert "obstacle_layer" not in body["plugins"] and not any(k.startswith("obstacle_layer.") for k in body)
+    assert body["inflation_layer.inflate_around_unknown"] is True
+    live = nav2_config.readback_expectations(profile, "navigate", planning=stack.PlanningChoice())
+    assert live["global_costmap/global_costmap"]["obstacle_layer.scan.topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+
+
 @pytest.mark.parametrize("kwargs", [{"obstacle_input": "lidar"}, {"obstacle_input": "cloud"},
                                     {"obstacle_input": "scan", "obstacle_clouds": ("left",)},
                                     {"obstacle_input": "cloud", "obstacle_clouds": ("left", "left")},
@@ -178,6 +195,7 @@ def parse(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--footprint", nargs="+", type=float)
     parser.add_argument("--assumed-radius", type=float, default=0.55)
+    parser.add_argument("--global-costmap", choices=["live", "static"], default="live")   # planning.options
     shadow_cli_options.add_arguments(parser)
     args = parser.parse_args(argv)
     shadow_cli_options.check_arguments(parser, args)
@@ -213,7 +231,9 @@ def test_cli_cloud_options(tmp_path):
                                   ["--obstacle-input", "cloud", "--obstacle-right-cell", "/tmp", "--obstacle-sides",
                                    "right", "--obstacle-scan", "filtered"],
                                   ["--obstacle-input", "cloud", "--obstacle-right-lever", "1,2"],
-                                  ["--obstacle-input", "cloud", "--obstacle-filter", "{\"min_height_m\": 5}"]])
+                                  ["--obstacle-input", "cloud", "--obstacle-filter", "{\"min_height_m\": 5}"],
+                                  ["--obstacle-input", "cloud", "--obstacle-scan", "filtered", "--global-costmap",
+                                   "static"]])
 def test_cli_rejects_inconsistent_options(argv):
     with pytest.raises(SystemExit):
         parse(argv)

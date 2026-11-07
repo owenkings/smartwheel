@@ -575,6 +575,14 @@ def readback_expectations(profile, mode, planning=None):
     if planning is not None:
         from ..planning.stack import adjust_readback
         adjust_readback(expected, planning, profile, exploring=mode == "explore")
+    # A layer left out of a costmap (e.g. planning on the saved map only) declares no parameters;
+    # its "plugins" entry above already checks that it is absent.
+    for values in expected.values():
+        plugins = values.get("plugins")
+        if isinstance(plugins, list):
+            for key in [k for k in values if k.split(".", 1)[0].endswith("_layer")
+                        and "." in k and k.split(".", 1)[0] not in plugins]:
+                del values[key]
     return expected
 
 
