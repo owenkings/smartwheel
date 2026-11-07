@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Closed-loop autonomy simulation (exploration / navigation mission); no vehicle driver.
-# WC_AUTONOMY_ROS_DOMAIN=97 runs a second simulation in parallel (default 96).
+# WC_AUTONOMY_ROS_DOMAIN=97..101 runs another simulation in parallel (default 96).
 set -eo pipefail
 AUTONOMY_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 set -u
 WC_AUTONOMY_ROS_DOMAIN="${WC_AUTONOMY_ROS_DOMAIN:-96}"
 case "$WC_AUTONOMY_ROS_DOMAIN" in
-  96|97) ;;
-  *) echo "WC_AUTONOMY_ROS_DOMAIN must be 96 or 97" >&2; exit 2 ;;
+  96|97|98|99|100|101) ;;
+  *) echo "WC_AUTONOMY_ROS_DOMAIN must be one of 96-101" >&2; exit 2 ;;
 esac
 export PYTHONPATH="$AUTONOMY_PROJECT/src:${PYTHONPATH:-}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1

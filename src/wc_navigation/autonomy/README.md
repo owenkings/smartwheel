@@ -6,7 +6,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| [world.py](world.py) | 仿真真值世界：合成楼层或已保存地图（未知按实体处理）、额外圆形障碍、平面激光光线投射、圆形车体碰撞判断。 |
+| [world.py](world.py) | 仿真真值世界：合成楼层或已保存地图（未知按实体处理）、额外圆形障碍、平面激光光线投射、车体碰撞判断（假设圆，或与 `NavProfile.footprint` 相同的凸多边形，含原地转向扫过，见 [planning/body.py](../planning/body.py)）。 |
 | [kinematics.py](kinematics.py) | 差速底盘：加速度上限、指令超时刹停、带比例误差/偏置/噪声的里程计（`wheel_imu`、`wheel_only`、`ideal`）。 |
 | [safety_gate.py](safety_gate.py) | 最后一道软件闸门：急停锁存、操作员使能心跳、定位可信、地图修正突变、指令新鲜；限速并禁止倒车。 |
 | [frontier.py](frontier.py) | 前沿探索：前沿聚类、带额外间隙的已知空闲目标、同一连通区可达性与黑名单。 |

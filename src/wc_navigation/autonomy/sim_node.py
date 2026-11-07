@@ -4,6 +4,8 @@ Publishes ``/clock``, ``/odom`` + ``odom->base_link``, a static
 ``base_link->laser``, ``/scan``, and ground truth on ``/wc_sim/ground_truth``
 (frame ``wc_sim_world``). It accepts motion only from the safety gate output
 topic. There is no device access and no connection to the wheel owner.
+Collisions use the configured body: the assumed circle, or the convex outline
+of the navigation profile, checked along every step including turns.
 """
 from __future__ import annotations
 
@@ -17,6 +19,14 @@ from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel
 from .nav2_config import CMD_GATED
 from .ros_util import json_message, latched_qos, load_config, require_isolated_domain, yaw_to_quaternion
 from .world import LaserModel, load_world
+
+
+def collision_body(config):
+    """Simulated body: ``collision_body`` (circle or the NavProfile outline), else the legacy radius."""
+    from ..planning.body import Body
+    if config.get("collision_body"):
+        return Body.from_config(config["collision_body"])
+    return Body(radius_m=float(config["collision_radius_m"]))
 
 
 def _time_msg(seconds):
@@ -38,9 +48,10 @@ class Simulator:
         self.node = node
         self.world = load_world(config["world"])
         self.laser = LaserModel(**config.get("laser", {}))
-        self.radius = float(config["collision_radius_m"])
+        self.body = collision_body(config)
+        self.radius = self.body.radius_m
         start = tuple(float(v) for v in config["start_pose"])
-        if self.world.collides(start[0], start[1], self.radius):
+        if self.world.body_collides(start, self.body):
             raise ValueError("start pose collides with the simulated world")
         self.base = DiffDriveSim(start, BaseLimits(**config.get("base_limits", {})),
                                  OdometryErrorModel(**config.get("odometry", {})))
@@ -82,7 +93,7 @@ class Simulator:
         self.base.set_command(message.linear.x, message.angular.z, self.sim_time)
 
     def _collides(self, a, b):
-        return self.world.segment_collides(a, b, self.radius)
+        return self.world.swept_body_collides(a, b, self.body)
 
     def tick(self):
         moved = self.base.step(self.dt, self.sim_time, self._collides)
@@ -90,7 +101,9 @@ class Simulator:
         if not moved and not self.contact:
             x, y, yaw = self.base.pose
             event = {"sim_time_s": round(self.sim_time, 3), "x": x, "y": y, "yaw": yaw,
-                     "clearance_m": self.world.clearance(x, y), "count": self.base.collisions}
+                     "clearance_m": self.world.clearance(x, y),
+                     "body_gap_m": self.world.body_clearance(self.base.pose, self.body),
+                     "body": self.body.source, "count": self.base.collisions}
             self.contacts.append(event)
             self.collision_pub.publish(json_message(event))
         self.contact = not moved

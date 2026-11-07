@@ -138,7 +138,9 @@ class DiffDriveSim:
         return self.command
 
     def step(self, dt, now, collides=None):
-        """Advance by ``dt``. ``collides(old_xy, new_xy)`` vetoes the motion.
+        """Advance by ``dt``. ``collides(old_pose, new_pose)`` (x, y, yaw) vetoes the motion.
+
+        Full poses are passed so a non-circular body can be checked while turning.
 
         A vetoed step leaves the pose unchanged, zeroes the velocity and counts
         one collision event per contact onset. Returns True when moved freely.
@@ -149,7 +151,7 @@ class DiffDriveSim:
         w_next = _approach(self.w, tw, lim.angular_accel, lim.angular_accel, dt)
         v_mid, w_mid = 0.5 * (self.v + v_next), 0.5 * (self.w + w_next)
         proposed = integrate(self.pose, v_mid, w_mid, dt)
-        if collides is not None and (v_mid or w_mid) and collides(self.pose[:2], proposed[:2]):
+        if collides is not None and (v_mid or w_mid) and collides(self.pose, proposed):
             if self.v or self.w:
                 self.collisions += 1
             self.v = self.w = 0.0

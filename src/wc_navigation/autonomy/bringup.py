@@ -46,6 +46,8 @@ PACKAGES = ["ros-humble-nav2-controller", "ros-humble-nav2-planner", "ros-humble
             "ros-humble-nav2-collision-monitor", "ros-humble-nav2-lifecycle-manager",
             "ros-humble-nav2-map-server", "ros-humble-nav2-amcl",
             "ros-humble-nav2-regulated-pure-pursuit-controller", "ros-humble-nav2-navfn-planner",
+            "ros-humble-nav2-smac-planner", "ros-humble-nav2-theta-star-planner",
+            "ros-humble-nav2-rotation-shim-controller", "ros-humble-nav2-mppi-controller",
             "ros-humble-slam-toolbox"]
 
 
@@ -53,9 +55,19 @@ class RunError(RuntimeError):
     """The supervised run could not be started or completed as configured."""
 
 
+def planning_choice(config):
+    """Planner/controller selection of a run config (NavFn + RPP when absent)."""
+    from ..planning.stack import PlanningChoice
+    return PlanningChoice.from_dict(config.get("planning"))
+
+
 @contextmanager
 def domain_lock(project_root):
-    """Exclusive owner of this run's simulation domain (96 or 97) on this machine."""
+    """Exclusive owner of this run's simulation domain (96-101) within this checkout.
+
+    The lock file lives under ``project_root``; separate checkouts running in
+    parallel must use distinct domains (the foreign-node check is the backstop).
+    """
     import fcntl
     domain = simulation_domain()
     directory = Path(project_root) / ".phase1_runtime/locks"
@@ -337,10 +349,13 @@ class Supervisor:
         profile = nav2_config.NavProfile(**cfg["profile"])
         (self.output / "logs").mkdir()
         files = {}
-        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml())
-        files["bt_through"] = self.write("bt_navigate_through_poses.xml", nav2_config.behavior_tree_xml(through_poses=True))
+        tree = planning_choice(cfg).behavior_tree_options()
+        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml(**tree))
+        files["bt_through"] = self.write("bt_navigate_through_poses.xml",
+                                         nav2_config.behavior_tree_xml(through_poses=True, **tree))
         files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
-            profile, mode=mode, bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"]))
+            profile, mode=mode, bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
+            planning=planning_choice(cfg)))
         if mode == "explore":
             if self.mapper() == "slam_toolbox":
                 files["mapping"] = self.write("slam_params.yaml", nav2_config.slam_parameters(
@@ -351,16 +366,20 @@ class Supervisor:
         else:
             files["mapping"] = self.write("localization_params.yaml", nav2_config.localization_parameters(
                 profile, cfg["map_yaml"]))
+        from ..planning.body import Body
         files["sim"] = self.write("sim_config.json", {
             "world": cfg["world"], "start_pose": cfg["start_pose_world"], "laser": cfg["laser"],
-            "collision_radius_m": profile.radius_m, "odometry": cfg["odometry"],
-            "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]})
+            "collision_radius_m": profile.radius_m,
+            # Same body as the costmaps and the collision monitor: the circle or the profile outline.
+            "collision_body": Body.from_profile(profile, source=cfg.get("body_model")).as_config(),
+            "odometry": cfg["odometry"], "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]})
         files["gate"] = self.write("gate_config.json", {"gate": {
             "max_linear": profile.max_linear, "max_angular": profile.max_angular,
             "require_covariance": mode == "navigate"}})
         if mode == "explore":
             files["task"] = self.write("explorer_config.json", {
-                "output_dir": str(self.output), "radius_m": profile.radius_m, "margin_m": profile.margin_m,
+                # Planning radius: the circle, or the outline's inscribed radius the planner passes with.
+                "output_dir": str(self.output), "radius_m": profile.body_inscribed_m, "margin_m": profile.margin_m,
                 "max_duration_s": cfg["max_duration_s"], "nominal_speed": profile.max_linear * 0.6,
                 **cfg.get("explorer", {})})
         else:
@@ -437,7 +456,8 @@ class Supervisor:
             self.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_navigation/is_active") is True,
                           120, "nav2_active")
             readback = {}
-            for node_name, expected in nav2_config.readback_expectations(profile, mode).items():
+            for node_name, expected in nav2_config.readback_expectations(profile, mode,
+                                                                         planning=planning_choice(cfg)).items():
                 actual = recorder.get_parameters(node_name, list(expected))
                 readback[node_name] = {"expected": expected, "actual": actual}
                 bad = [k for k in expected if not _same(actual.get(k), expected[k])]

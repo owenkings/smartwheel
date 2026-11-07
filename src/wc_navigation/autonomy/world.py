@@ -4,6 +4,9 @@ Simulation only. The occupancy grid is the true environment used to generate
 synthetic scans and to detect simulated collisions. Unknown cells of a recorded
 map are treated as solid, so the simulated robot never enters space the source
 map did not observe. Grids use ROS bottom-up row order: ``data[row, column]``.
+Collisions are judged for the assumed circle or, with a body outline, for the
+same convex polygon the costmaps and the collision monitor use
+(``wc_navigation.planning.body``).
 """
 from __future__ import annotations
 
@@ -116,6 +119,60 @@ class SimWorld:
     def collides(self, x, y, radius):
         return self.clearance(x, y) + 1e-12 < radius
 
+    def body_collides(self, pose, body, grow=0.0):
+        """Whether ``body`` (planning.body.Body) at ``pose`` overlaps a solid cell or disc, grown by ``grow``."""
+        x, y = float(pose[0]), float(pose[1])
+        if not body.is_polygon:
+            return self.clearance(x, y) + 1e-12 < body.radius_m + grow
+        from ..planning.body import point_polygon_distance, polygon_hits_cells
+        polygon = body.outline_at(pose, grow)
+        reach = float(np.hypot(polygon[:, 0] - x, polygon[:, 1] - y).max())
+        if self.clearance(x, y) > reach + 1e-6:
+            return False                      # nothing solid within reach of any body point
+        if polygon_hits_cells(polygon, self.solid, self.grid.resolution, self.grid.origin[:2]):
+            return True
+        for o in self.obstacles:
+            if point_polygon_distance((o.x, o.y), polygon)[0] + 1e-12 < o.radius:
+                return True
+        return False
+
+    def swept_body_collides(self, start, end, body):
+        """Swept check of the body between two poses (x, y, yaw) without skipping cells.
+
+        The circle keeps the original segment check; an outline is sampled so no
+        body point moves more than half a cell between samples (turns included).
+        """
+        if not body.is_polygon:
+            return self.segment_collides(start, end, body.radius_m)
+        poses, grow = body.swept_samples(start, end, self.grid.resolution)
+        return any(self.body_collides(p, body, grow) for p in poses)
+
+    def body_clearance(self, pose, body, max_distance=1.0):
+        """Exact gap from the body at ``pose`` to the nearest solid cell square, the grid edge or a disc.
+
+        0 when they overlap; capped at ``max_distance``. Unlike ``clearance``
+        (a conservative axle-point bound), this measures the body itself.
+        """
+        from ..planning.body import point_cell_distance, point_polygon_distance, polygon_cell_distance
+        res, (x0, y0) = self.grid.resolution, self.grid.origin[:2]
+        x1, y1 = x0 + self.grid.width * res, y0 + self.grid.height * res
+        if body.is_polygon:
+            if self.body_collides(pose, body):
+                return 0.0
+            polygon = body.outline_at(pose)
+            gap = polygon_cell_distance(polygon, self.solid, res, (x0, y0), max_distance)
+            gap = min(gap, float((polygon[:, 0] - x0).min()), float((x1 - polygon[:, 0]).min()),
+                      float((polygon[:, 1] - y0).min()), float((y1 - polygon[:, 1]).min()))
+            for o in self.obstacles:
+                gap = min(gap, float(point_polygon_distance((o.x, o.y), polygon)[0]) - o.radius)
+        else:
+            x, y, r = float(pose[0]), float(pose[1]), body.radius_m
+            gap = point_cell_distance((x, y), self.solid, res, (x0, y0), max_distance + r) - r
+            gap = min(gap, x - x0 - r, x1 - x - r, y - y0 - r, y1 - y - r)
+            for o in self.obstacles:
+                gap = min(gap, math.hypot(x - o.x, y - o.y) - o.radius - r)
+        return float(min(max(gap, 0.0), max_distance))
+
     def clearance_grid(self):
         """Clearance at every cell centre, including disc obstacles (conservative)."""
         values = np.array(self.clearance_m, dtype=float)
@@ -129,8 +186,8 @@ class SimWorld:
         return values
 
     def segment_collides(self, start, end, radius):
-        """Check a swept disc between two poses without skipping cells."""
-        (x0, y0), (x1, y1) = start, end
+        """Check a swept disc between two positions (x, y; a yaw is ignored) without skipping cells."""
+        (x0, y0), (x1, y1) = start[:2], end[:2]
         length = math.hypot(x1 - x0, y1 - y0)
         count = max(1, math.ceil(length / (self.grid.resolution * 0.5)))
         penalty = length / count * 0.5
@@ -244,6 +301,21 @@ _SYNTHETIC = {
         "furniture": [(1.0, 9.6, 2.6, 10.4), (9.0, 10.6, 11.0, 11.4), (16.4, 8.6, 17.4, 9.6),
                       (3.0, 1.0, 4.4, 1.8), (13.0, 1.4, 14.2, 3.0), (8.0, 4.8, 8.6, 5.3)],
         "revision": 2,
+    },
+    # Doors and aisles sized like this building for the measured body (0.70 m wide, 0.81 m nose,
+    # 0.846 m turning sweep): a 1.8 m corridor (y 3.2..5.0) with doors of 1.2, 1.0 and 0.9 m into
+    # three rooms above; below, one room behind a 1.0 m door with a 1.0 m aisle between desk rows.
+    "narrow_doors": {
+        "size": (13.0, 8.4),
+        "start": (1.0, 4.1, 0.0),
+        "walls": [
+            (0.0, 5.0, 1.4, 5.2), (2.6, 5.0, 5.5, 5.2), (6.5, 5.0, 9.55, 5.2), (10.45, 5.0, 13.0, 5.2),
+            (4.3, 5.2, 4.5, 8.4), (8.4, 5.2, 8.6, 8.4),
+            (0.0, 3.0, 3.0, 3.2), (4.0, 3.0, 13.0, 3.2),
+        ],
+        "furniture": [(1.0, 0.2, 2.6, 1.0), (1.0, 2.0, 2.6, 2.6), (5.0, 1.4, 6.6, 2.0), (7.6, 1.4, 9.2, 2.0),
+                      (2.0, 7.4, 3.6, 8.2), (11.0, 6.0, 12.6, 6.8)],
+        "revision": 1,
     },
 }
 
