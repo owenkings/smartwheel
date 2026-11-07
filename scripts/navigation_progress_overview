@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Write a plain one-page progress overview (ladder, headline numbers, workstreams) to a new reports directory; read only.
+set -euo pipefail
+OVERVIEW_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$OVERVIEW_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -B -s -m wc_navigation.progress_overview --project-root "$OVERVIEW_PROJECT" "$@"

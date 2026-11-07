@@ -41,6 +41,7 @@
 
 
 离线看板的快照状态、注入转义与报告路径保护见 [test_dashboard.py](test_dashboard.py)。
+一页进展总览的内容校验、转义、地图图和不覆盖输出见 [test_progress_overview.py](test_progress_overview.py)。
 
 
 原生点云刚体配准、逆向一致性、平面弱约束与未知变换保留见 [test_native_pair_registration.py](test_native_pair_registration.py)。

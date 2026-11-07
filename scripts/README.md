@@ -48,6 +48,7 @@
 
 - [navigation_autonomy_sim](navigation_autonomy_sim)：在 ROS 域 96 中对仿真轮椅运行自主探索建图或 AMCL 目标导航，见[说明](../docs/operations/navigation_autonomy.md)。
 - [navigation_dashboard_update](navigation_dashboard_update)：把归档的仿真运行加入离线进度看板的新副本，见[说明](../docs/operations/navigation_autonomy.md#更新进度看板)。
+- [navigation_progress_overview](navigation_progress_overview)：按人工整理的内容生成给用户看的一页进展总览（验证阶梯、关键数字、各工作线、在用的走廊地图），见[说明](../docs/operations/navigation_dashboard.md#一页进展总览)。
 - [navigation_replay_mapping](navigation_replay_mapping)：在冻结的单左前端上离线重放探索建图（纯里程计与扫描匹配对比、留出帧自洽性），见[说明](../docs/operations/navigation_autonomy.md#在已录数据上检验建图)。
 - [navigation_nav2_shadow](navigation_nav2_shadow)：在冻结录包上开环运行 Nav2 全链路（规划或沿司机路线），记录各级速度指令但不发出，见[说明](../docs/operations/navigation_autonomy.md#在真实录包上做-nav2-影子运行)。
 - [navigation_planner_bench](navigation_planner_bench)：同一批录包起终点、同一张静态代价地图上并排比较各 Nav2 规划器（成功率、规划耗时、车体到障碍间隙、窄过道），见[说明](../docs/operations/navigation_planning.md)。

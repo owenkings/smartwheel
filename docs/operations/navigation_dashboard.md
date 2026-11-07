@@ -2,6 +2,18 @@
 
 看板集中显示已经归档的地图、路径、数值仿真、近回波和定位证据。它是离线结果快照，不读取实时传感器或当前车位，不启动 ROS，不提供车辆控制。可在二楼电脑浏览，现场检查仍集中安排。
 
+## 一页进展总览
+
+先看这一页：验证阶梯走到了哪一级、几个关键数字、每条工作线做完了什么和正在做什么、在用的走廊地图，以及需要用户做的事。文字来自人工整理的内容文件（JSON，`schema_version` 为 1），由总管在巡检或合并后更新；地图图直接由地图文件和建图轨迹绘制，不经过任何拟合。下面的详细看板保留，用于查看具体运行。
+
+```bash
+bash scripts/navigation_progress_overview \
+  --content ~/wheelchair_coord/overview/overview_content.json \
+  --output-dir reports/navigation_dashboard/<日期>_overview
+```
+
+内容文件里每段文字都会转义，阶梯状态只能是 `done`、`doing`、`waiting`、`todo`，字段多了或缺了都会拒绝。输出目录必须是 reports 下的新目录，已有的不覆盖；目录里有 `index.html`（单文件，不含脚本，可直接打开）、内容文件副本和 `manifest.json`（内容、地图、轨迹和各数据来源的 SHA256）。
+
 ## 四个页面
 
 - 进度总览：已完成工作、用途、局限、导航测试来源和本轮交叉验证；不使用没有依据的完成百分比。
