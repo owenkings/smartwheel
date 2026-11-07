@@ -46,4 +46,42 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_nav2_shadow \
 
 判读：follow 模式的路线按对齐放进地图，AMCL 修正越大，车体估计离路线越远，控制器的原地转向和前方碰撞会因此增加；这是定位修正对跟线的影响，不全是控制器的问题。端点支撑条件目前只在离线重算里，闸门还没有这一项。
 
+## 实时链路的录包检验
+
+```bash
+R=/media/nvidia/tiany-USB/wheelchair
+CELL=$R/data/analysis/20261107_190332_ZL1107_nav_single_left_gyrobias_wheel/robot_localization_hz5_filter_on
+WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
+  --cell $CELL \
+  --hardware-setup $R/data/calibration/wheel_odometry/ZL1107_ab_hardware_setup_override.json \
+  --gyro-bias $R/data/calibration/gyro_bias/ZL1107capture_2026_1107_154018_gyro_bias.json \
+  --bag $R/data/experiments/ZL21107corridor_nav_2026_1107_155149/bag
+```
+
+- `ros2 bag play --clock` 只回放左雷达 host_filtered 帧、H30 帧和轮速记录三个话题，按录包时间送进扫描和里程计两个进程；不启动驱动、面板或任何会打开设备的节点。整个运行在 `WC_AUTONOMY_ROS_DOMAIN` 的隔离域里，占用本检出该域的锁。
+- `--cell` 给外参、主机滤波、运动先验和设备编号；`--hardware-setup` 的 `wheel_odometry` 和 `--gyro-bias` 替换轮参数和零偏。ZL1107 系列录包冻结的是旧轮参数，必须给覆盖文件，否则和冻结前端对不上。
+- `--scan-rate-hz`（默认 10，0 为每帧都发）、`--bag-rate`（0.1–2）、`--relay-test`（录包放在 `/relay_source` 前缀下，经单向转发进程进来，检验转发）。
+- 输出在 `reports/navigation_live_shadow/<时间>_inputs_<编号>/`：`scans.csv`（含 161 格距离）、`odom.csv`、`events.jsonl`、各进程日志和 `result.json`。`result.json` 的 `comparison` 给出与冻结前端逐帧的扫描比较（匹配帧、完全相同的帧、不同的格数）和里程计比较（第一帧对齐后的位置与航向差）。
+
+## 实车影子运行
+
+```bash
+WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source bag \
+  --cell $CELL --hardware-setup <同上> --gyro-bias <同上> \
+  --bag $R/data/experiments/ZL21107corridor_nav_2026_1107_155149/bag \
+  --map $R/reports/navigation_replay_mapping/20261107T111004Z_3f0ae14a/odom_grid/map_nav.yaml \
+  --initial-pose -0.331 1.902 -85.0 \
+  --goals-along-cell $CELL --map-alignment-json <对齐结果> \
+  --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107
+```
+
+一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`）、Nav2 各服务器（参数读回核对）、安全闸门，然后由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°），再启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 没有任何订阅者；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
+
+- `--source bag`：上面的录包检验，录包时间，域 100。
+- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间；三个传感器话题经单向转发从面板域进影子域。只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。到时和用户确认影子用哪个域、怎样和面板共存（见检查单）。
+
+输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
+
+上车前检查单：`bash scripts/navigation_live_shadow checklist`（内容与命令里的相同，要点：用户同意并记录；确认域和面板状态；物理急停、没有任何进程订阅闸门输出或发布 `/cmd_vel`；传感器频率；标定输入与设备当前配置一致；起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差；目标；记录空间；运行后核对结果）。
+
 返回[操作导航](README.md)。

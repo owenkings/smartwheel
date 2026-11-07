@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Live shadow chain: rosbag tests of the live inputs and the (prepared) vehicle shadow run; nothing drives the chair.
+# Runs in WC_AUTONOMY_ROS_DOMAIN (96-101, localhost only; default 96). The vehicle mode additionally needs the
+# user's dated approval, see docs/operations/navigation_live_shadow.md.
+set -eo pipefail
+LIVE_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$LIVE_PROJECT/install/main/setup.bash"
+set -u
+WC_AUTONOMY_ROS_DOMAIN="${WC_AUTONOMY_ROS_DOMAIN:-96}"
+case "$WC_AUTONOMY_ROS_DOMAIN" in
+  96|97|98|99|100|101) ;;
+  *) echo "WC_AUTONOMY_ROS_DOMAIN must be one of 96-101" >&2; exit 2 ;;
+esac
+export PYTHONPATH="$LIVE_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export WC_AUTONOMY_ROS_DOMAIN ROS_DOMAIN_ID="$WC_AUTONOMY_ROS_DOMAIN" ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+unset ROS_DISCOVERY_SERVER
+LIVE_ARGS=("$@")
+if [ "${#LIVE_ARGS[@]}" -gt 0 ] && [ "${LIVE_ARGS[0]}" != "-h" ] && [ "${LIVE_ARGS[0]}" != "--help" ]; then
+  LIVE_ARGS=("${LIVE_ARGS[0]}" --project-root "$LIVE_PROJECT" "${LIVE_ARGS[@]:1}")
+  if [ "${LIVE_ARGS[0]}" = "checklist" ]; then LIVE_ARGS=(checklist); fi
+fi
+exec /usr/bin/python3 -B -s -m wc_navigation.live.cli "${LIVE_ARGS[@]}"

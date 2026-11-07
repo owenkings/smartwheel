@@ -5,5 +5,11 @@
 | 文件 | 职责 |
 |---|---|
 | [amcl_cross.py](amcl_cross.py) | 跨录包定位检查：验证录包的冻结扫描和里程计，在另一段建图录包的地图上跑 map_server + AMCL（隔离域 95，经 `amcl_replay`）。初值来自两段里程计坐标系的刚体对齐和刻意扰动；与固定对齐（纯里程计）比较扫描端点到地图的距离，统计协方差、收敛与失败、沿车头方向的歧义，以及闸门条件在真实 AMCL 输出上的表现。起点和终点在地图空白区（门内）的帧单独统计。 |
+| [config.py](config.py) | 实时链路配置：外参、主机滤波、运动先验和设备编号取自冻结前端，轮参数和陀螺零偏由显式标定文件替换，IMU 用到达时间。 |
+| [scan_adapter.py](scan_adapter.py)、[odometry_adapter.py](odometry_adapter.py) | 左雷达 host_filtered 帧经生产主机滤波、旋到 `mapping_reference` 后按离线 `build_scan` 投影成 161 格扫描；轮速记录和 H30 帧经原样使用的 `MotionPrior` 得到车轴里程计。 |
+| [inputs_node.py](inputs_node.py) | 扫描进程（`/scan`）和里程计进程（`/odom`、`odom→base_link`、静态 `base_link→laser`），状态在 `/wc_live/inputs_status/<role>`。 |
+| [relay_node.py](relay_node.py) | 三个传感器话题从传感器域到影子隔离域的单向原样转发；转发非仿真域需要用户当次同意。 |
+| [recorder_node.py](recorder_node.py)、[goals_node.py](goals_node.py) | 记录器（四级指令、实际运动、定位、规划、状态，逐行落盘）和操作员目标序列。 |
+| [supervisor.py](supervisor.py)、[cli.py](cli.py)、[bag_check.py](bag_check.py)、[shadow_summary.py](shadow_summary.py) | 一条命令启动录包检验或实车影子运行（域锁、按序启动、参数读回、初始位姿、只停自己的进程）、与冻结前端的比较和影子运行的汇总；上车前检查单。 |
 
-命令为 `bash scripts/navigation_amcl_replay cross ...`，用法见[实车影子操作说明](../../../docs/operations/navigation_live_shadow.md)，设计见[实车影子链路](../../../docs/architecture/live_shadow.md)。测试为 `tests/navigation/test_amcl_cross.py` 等 `test_live_*.py`、`test_amcl_*.py`。返回[离线导航开发](../README.md)。
+命令为 `bash scripts/navigation_amcl_replay cross ...` 和 `bash scripts/navigation_live_shadow inputs|shadow|checklist ...`，用法见[实车影子操作说明](../../../docs/operations/navigation_live_shadow.md)，设计见[实车影子链路](../../../docs/architecture/live_shadow.md)。测试为 `tests/navigation/test_amcl_cross.py`、`test_live_chain.py`、`test_live_checks.py`。返回[离线导航开发](../README.md)。
