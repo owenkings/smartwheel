@@ -27,7 +27,7 @@ import uuid
 import numpy as np
 
 from . import nav2_config, shadow, shadow_localization
-from .bringup import EXECUTABLES, PACKAGES, Recorder, RunError, Supervisor, _same, domain_lock
+from .bringup import EXECUTABLES, PACKAGES, Recorder, RunError, Supervisor, _same, domain_lock, planning_choice
 from .ros_util import latched_qos, require_isolated_domain, simulation_domain, stamp_seconds
 
 ANGLE_MIN, ANGLE_INCREMENT, BINS = -math.pi / 3, math.pi / 240, 161   # amcl_replay.build_scan bins
@@ -40,7 +40,12 @@ LOG_PATTERNS = {
     # One planner_server line per failed request (NavFn adds its own "failed to create plan" line).
     "planner_failed": ("planner_server", r"failed to generate a valid path|plugin failed to plan"),
     "planner_start_or_goal_blocked": ("planner_server", r"lethal|off the global costmap"),
+    "planner_start_or_goal_invalid": ("planner_server", r"no valid start or goal|goal is occupied"),
+    "planner_iterations_exceeded": ("planner_server", r"exceeded maximum iterations|iterations has exceeded"),
+    # Regulated Pure Pursuit and the rotation shim ("detected (a potential) collision ahead").
     "controller_collision_ahead": ("controller_server", r"collision ahead"),
+    "controller_optimizer_failed": ("controller_server", r"optimizer fail"),          # MPPI
+    "controller_missed_rate": ("controller_server", r"missed its desired rate"),
     "controller_no_progress": ("controller_server", r"failed to make progress"),
     "collision_monitor_stop": ("collision_monitor", r"robot to stop"),
     "collision_monitor_slowdown": ("collision_monitor", r"robot to slow ?down"),   # 1.1.20 prints "slowdown"
@@ -93,8 +98,11 @@ def arguments(argv=None):
     parser.add_argument("--scan-height", nargs=2, type=_finite, default=[-0.5, 0.5], metavar=("MIN", "MAX"),
                         help="height band in the prepared lidar frame, as in the AMCL and mapping replays")
     parser.add_argument("--real-time-factor", type=_positive, default=1.0)
+    from ..planning.options import add_planning_arguments, resolve_planning_arguments
+    add_planning_arguments(parser)
     shadow_localization.add_arguments(parser)
     args = parser.parse_args(argv)
+    resolve_planning_arguments(parser, args)
     shadow_localization.check_arguments(parser, args)
     if args.footprint is not None:
         if len(args.footprint) < 6 or len(args.footprint) % 2:
@@ -281,11 +289,13 @@ class ShadowSupervisor(Supervisor):
         profile = nav2_config.NavProfile(**cfg["profile"])
         (self.output / "logs").mkdir()
         files = {}
-        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml())
+        tree = planning_choice(cfg).behavior_tree_options()
+        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml(**tree))
         files["bt_through"] = self.write("bt_navigate_through_poses.xml",
-                                         nav2_config.behavior_tree_xml(through_poses=True))
+                                         nav2_config.behavior_tree_xml(through_poses=True, **tree))
         files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
-            profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"]))
+            profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
+            planning=planning_choice(cfg)))
         if shadow_localization.active(cfg):
             files.update(shadow_localization.write_files(self, profile, cfg))
         else:
@@ -353,7 +363,8 @@ class ShadowSupervisor(Supervisor):
             self.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_navigation/is_active") is True,
                           120, "nav2_active")
             readback = {}
-            for node_name, expected in nav2_config.readback_expectations(profile, "navigate").items():
+            for node_name, expected in nav2_config.readback_expectations(profile, "navigate",
+                                                                         planning=planning_choice(cfg)).items():
                 actual = recorder.get_parameters(node_name, list(expected))
                 readback[node_name] = {"expected": expected, "actual": actual}
                 bad = [k for k in expected if not _same(actual.get(k), expected[k])]
@@ -527,7 +538,13 @@ def planner_report(action_results, records, times, poses, w0, start, conservativ
         failures.append(entry)
     planned = counts.get("compute_path_to_pose", {})
     attempts = sum(planned.values())
+    # Server acceptance stamp to the terminal status (simulated clock, 10 ms steps; equals wall time at 1x).
+    durations = {status: [r["time_s"] - r["accepted_s"] for r in action_results
+                          if r["action"] == "compute_path_to_pose" and r["status"] == status
+                          and r.get("accepted_s") is not None]
+                 for status in ("SUCCEEDED", "ABORTED")}
     return {"terminal_status_counts": counts, "plan_requests": attempts,
+            "plan_duration_s": {status: shadow._stats(values) for status, values in durations.items()},
             "plan_success_fraction": (planned.get("SUCCEEDED", 0) / attempts) if attempts else None,
             "failed_plans": len(failures), "failure_reasons": reasons, "failures": failures[:300],
             "planner_tolerance_m": PLANNER_TOLERANCE_M, "recorded_costmaps": len(costmaps),
@@ -716,6 +733,9 @@ def render(path, config, times, poses, audit, table, plans, replay, profile, fai
     ax.set_ylabel("map y (m)")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3, fontsize=8)
     mode = config.get("shadow_mode", "navigate")
+    choice = config.get("planning")
+    if choice:
+        mode += ", planner %s, controller %s" % (choice.get("planner"), choice.get("controller"))
     ax.set_title("SHADOW RUN (open loop, %s) on a frozen recording - commands recorded, never sent\n"
                  "%s; assumed circular body r=%.2f m (+%.2f m planning margin); not a vehicle test"
                  % (mode, "Nav2 plans toward the recorded pose ahead" if mode == "navigate"
@@ -779,6 +799,7 @@ def build_config(args, output, recording, source):
             "real_time_factor": args.real_time_factor, "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
             "base_reference": "FROZEN_PLANAR_AXLE_FROM_LEVER_ARM_UNVALIDATED",
             "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
+            "planning": args.planning.as_dict(),
             "open_loop": True, "commands_sent": False, "hardware_control": False, **localization}
 
 
@@ -815,7 +836,8 @@ def main(argv=None):
         _sha256(config["map_yaml"]) == config["map_sha256"]
     commands = result.get("commands") or {}
     brief = {"status": result["status"], "shadow_mode": args.mode, "output": str(output), "error": report.get("error"),
-             "sources_unchanged": unchanged, "window_s": config["window_s"],
+             "sources_unchanged": unchanged, "window_s": config["window_s"], "planning": config.get("planning"),
+             "body_model": config.get("body_model"),
              "drives_forward_while_driver_drives_forward":
                  commands.get("drives_forward_fraction_while_recording_drives_forward"),
              "outcomes_while_moving": commands.get("outcome_fractions_while_recording_moves"),
@@ -824,7 +846,7 @@ def main(argv=None):
                  "plans_compared", "max_deviation_m", "offset_to_latest_plan_m_while_moving",
                  "rotations_with_offset_over_0_3_m")},
              "planner": {k: (result.get("planner") or {}).get(k)
-                         for k in ("plan_requests", "plan_success_fraction", "failure_reasons")},
+                         for k in ("plan_requests", "plan_success_fraction", "failure_reasons", "plan_duration_s")},
              "static_map_audit": {k: result["static_map_audit"][k] for k in (
                  "fraction_within_lethal_of_occupied", "fraction_within_lethal_of_unknown",
                  "unknown_pinholes_within_lethal_of_path")},

@@ -29,4 +29,5 @@
 
 - [离线导航开发](navigation_offline.md)：保存地图规划、数值跟踪及远程工作顺序。
 - [自主导航仿真](navigation_autonomy.md)：仿真轮椅上的自主探索建图、AMCL 目标导航与安全闸门闭环，以及真实录包上的 Nav2 影子运行。
+- [规划与控制](navigation_planning.md)：车体外形（仿真碰撞、代价地图、碰撞监控同一外形）、可选规划器与控制器。
 - [实车影子链路](navigation_live_shadow.md)：跨录包 AMCL 检查、影子运行的定位模式、实时链路与上车前检查单。

@@ -264,13 +264,20 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
     return params
 
 
-def behavior_tree_xml(*, through_poses=False):
+def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0):
     """Replanning tree without Spin or BackUp recoveries.
 
     The wheelchair has no rear range sensor, so reversing is never used, and an
     unprompted spin would sweep the unobserved rear of a non-circular body.
-    Recovery only clears costmaps and waits before replanning.
+    Recovery only clears costmaps and waits before replanning;
+    ``recovery_retries`` and ``wait_s`` (defaults 4 and 3 s) set how often and
+    how long.
     """
+    retries = int(recovery_retries)
+    wait = float(wait_s)
+    if not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
+        raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
+    wait_text = ("%g" % wait)
     if through_poses:
         planner = ('<ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>')
         goal_updated = "<GoalUpdated/>"
@@ -281,7 +288,7 @@ def behavior_tree_xml(*, through_poses=False):
         head = ""
     return f"""<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="4" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="{retries}" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePath">
@@ -303,7 +310,7 @@ def behavior_tree_xml(*, through_poses=False):
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Wait wait_duration="3"/>
+          <Wait wait_duration="{wait_text}"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
@@ -312,14 +319,26 @@ def behavior_tree_xml(*, through_poses=False):
 """
 
 
-def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path):
+def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path, planning=None):
     """Parameters for the Nav2 servers. ``mode`` is ``explore`` or ``navigate``.
 
     Exploration lets the planner cross unknown cells at near-lethal cost (the
     robot starts with its own unobserved body area unknown, and frontier goals
     sit next to unknown space); goals are still chosen in known free space.
     Navigation on a saved map blocks unknown space entirely.
+    ``planning`` (``wc_navigation.planning.stack.PlanningChoice``) selects
+    another planner or controller plugin; None or the default choice keeps
+    NavFn and Regulated Pure Pursuit as below.
     """
+    params = _navigation_parameters(profile, mode=mode, bt_to_pose_path=bt_to_pose_path,
+                                    bt_through_poses_path=bt_through_poses_path)
+    if planning is not None:
+        from ..planning.stack import apply
+        apply(params, profile, planning, exploring=mode == "explore")
+    return params
+
+
+def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path):
     if mode not in ("explore", "navigate"):
         raise ValueError("mode must be explore or navigate")
     exploring = mode == "explore"
@@ -517,8 +536,16 @@ def localization_parameters(profile, map_yaml):
     }
 
 
-def readback_expectations(profile, mode):
+def readback_expectations(profile, mode, planning=None):
     """Parameters whose running values must equal the request before motion."""
+    expected = _readback_expectations(profile, mode)
+    if planning is not None:
+        from ..planning.stack import adjust_readback
+        adjust_readback(expected, planning, profile, exploring=mode == "explore")
+    return expected
+
+
+def _readback_expectations(profile, mode):
     exploring = mode == "explore"
     zones = monitor_polygons(profile)
     if profile.footprint:

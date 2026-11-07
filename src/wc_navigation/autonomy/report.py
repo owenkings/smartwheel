@@ -36,11 +36,13 @@ def _pose_errors(estimate, truth):
     return valid, position, np.degrees(yaw)
 
 
-def trajectory_metrics(world, rows, radius_m, start_pose_world=None):
+def trajectory_metrics(world, rows, radius_m, start_pose_world=None, body=None):
     """Errors of the map-frame estimate and, for comparison, of raw odometry.
 
     The simulated odometry frame starts at the start pose, so odometry in the
-    world frame is ``start_pose_world * odom``.
+    world frame is ``start_pose_world * odom``. With a body outline
+    (``planning.body.Body``) the true gap is measured from the outline at each
+    true pose; for the circle it stays axle clearance minus the radius.
     """
     if not rows:
         return {"samples": 0}
@@ -49,6 +51,13 @@ def trajectory_metrics(world, rows, radius_m, start_pose_world=None):
     estimate = data[:, 7:10]
     valid, position_error, yaw_error = _pose_errors(estimate, truth)
     clearance = [world.clearance(x, y) for x, y in truth[:, :2]]
+    if body is not None and body.is_polygon:
+        gaps = [world.body_clearance(tuple(p), body) for p in truth]
+        body_gap = {"minimum_true_gap_to_body_m": float(min(gaps)),
+                    "true_gap_to_body_m": _stats(gaps), "gap_basis": "BODY_OUTLINE_AT_TRUE_POSE"}
+    else:
+        body_gap = {"minimum_true_gap_to_body_m": float(min(clearance) - radius_m),
+                    "gap_basis": "AXLE_CLEARANCE_MINUS_RADIUS"}
     gated = data[:, 10:12]
     odometry = {}
     if start_pose_world is not None:
@@ -63,7 +72,7 @@ def trajectory_metrics(world, rows, radius_m, start_pose_world=None):
         "localization_yaw_error_deg": _stats(yaw_error),
         **odometry,
         "minimum_true_clearance_m": float(min(clearance)),
-        "minimum_true_gap_to_body_m": float(min(clearance) - radius_m),
+        **body_gap,
         "max_gated_linear_mps": float(np.max(gated[:, 0])) if len(gated) else 0.0,
         "min_gated_linear_mps": float(np.min(gated[:, 0])) if len(gated) else 0.0,
         "max_abs_gated_angular_radps": float(np.max(np.abs(gated[:, 1]))) if len(gated) else 0.0,
@@ -125,7 +134,13 @@ def coverage_metrics(world, start_xy, data, resolution, origin, world_T_map, rad
     return result
 
 
-def render_preview(path, world, rows, *, title, map_layer=None, goals=(), collisions=(), radius_m=0.55):
+def _body_patch(plt, pose, radius_m, body, color):
+    if body is not None and body.is_polygon:
+        return plt.Polygon(body.outline_at(pose), closed=True, fill=False, color=color, linewidth=1.2)
+    return plt.Circle(pose[:2], radius_m, fill=False, color=color, linewidth=1.2)
+
+
+def render_preview(path, world, rows, *, title, map_layer=None, goals=(), collisions=(), radius_m=0.55, body=None):
     import matplotlib
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
@@ -149,13 +164,14 @@ def render_preview(path, world, rows, *, title, map_layer=None, goals=(), collis
         valid = np.isfinite(data[:, 7:9]).all(axis=1)
         ax.plot(data[valid, 7], data[valid, 8], color="#d98a1c", linewidth=1.0, linestyle="--",
                 label="Localization estimate")
-        ax.add_patch(plt.Circle(data[0, 1:3], radius_m, fill=False, color="#1d8a4f", linewidth=1.2))
-        ax.add_patch(plt.Circle(data[-1, 1:3], radius_m, fill=False, color="#555", linewidth=1.2))
+        ax.add_patch(_body_patch(plt, data[0, 1:4], radius_m, body, "#1d8a4f"))
+        ax.add_patch(_body_patch(plt, data[-1, 1:4], radius_m, body, "#555"))
     for x, y, ok in goals:
         ax.scatter([x], [y], marker="*", s=90, color="#1d8a4f" if ok else "#c0392b", zorder=5)
     for x, y in collisions:
         ax.scatter([x], [y], marker="x", s=80, color="#c0392b", zorder=6)
-    ax.set_title(title + "\nSIMULATION ONLY - assumed circular body, simulated sensor; not a vehicle test")
+    shape = ("body outline " + body.source) if body is not None and body.is_polygon else "assumed circular body"
+    ax.set_title(title + "\nSIMULATION ONLY - " + shape + ", simulated sensor; not a vehicle test")
     ax.set_xlabel("world x (m)")
     ax.set_ylabel("world y (m)")
     ax.set_aspect("equal")
