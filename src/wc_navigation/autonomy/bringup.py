@@ -349,8 +349,10 @@ class Supervisor:
         profile = nav2_config.NavProfile(**cfg["profile"])
         (self.output / "logs").mkdir()
         files = {}
-        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml())
-        files["bt_through"] = self.write("bt_navigate_through_poses.xml", nav2_config.behavior_tree_xml(through_poses=True))
+        tree = planning_choice(cfg).behavior_tree_options()
+        files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml(**tree))
+        files["bt_through"] = self.write("bt_navigate_through_poses.xml",
+                                         nav2_config.behavior_tree_xml(through_poses=True, **tree))
         files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
             profile, mode=mode, bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
             planning=planning_choice(cfg)))

@@ -52,6 +52,9 @@ CONTROLLERS = tuple(CONTROLLER_PLUGINS)
 MPPI_CRITICS = ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic",
                 "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
 GOAL_TOLERANCE_M = 0.25                                  # same as NavFn's GridBased.tolerance
+DEFAULT_RECOVERY_RETRIES = 4                             # nav2_config.behavior_tree_xml defaults
+DEFAULT_RECOVERY_WAIT_S = 3.0
+SERVER_SECTIONS = ("general_goal_checker.", "progress_checker.")
 _SMOOTHER = {"max_iterations": 1000, "w_smooth": 0.3, "w_data": 0.2, "tolerance": 1.0e-10, "do_refinement": True}
 
 
@@ -81,32 +84,52 @@ class PlanningChoice:
     controller: str = DEFAULT_CONTROLLER
     planner_params: tuple = field(default_factory=tuple)      # ((name, value), ...) applied last
     controller_params: tuple = field(default_factory=tuple)
+    # controller_server goal and progress checkers, e.g. ("general_goal_checker.xy_goal_tolerance", 0.4)
+    server_params: tuple = field(default_factory=tuple)
+    recovery_retries: int = DEFAULT_RECOVERY_RETRIES          # behaviour tree: clear costmaps / wait rounds
+    recovery_wait_s: float = DEFAULT_RECOVERY_WAIT_S
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
             raise ValueError("planner must be one of " + ", ".join(PLANNERS))
         if self.controller not in CONTROLLERS:
             raise ValueError("controller must be one of " + ", ".join(CONTROLLERS))
-        for name in ("planner_params", "controller_params"):
+        for name in ("planner_params", "controller_params", "server_params"):
             value = tuple((str(k), v) for k, v in (getattr(self, name) or ()))
             object.__setattr__(self, name, value)
+        for key, _ in self.server_params:
+            if not key.startswith(SERVER_SECTIONS):
+                raise ValueError("controller server overrides are limited to " + ", ".join(SERVER_SECTIONS) + ": " + key)
+        retries, wait = self.recovery_retries, float(self.recovery_wait_s)
+        if type(retries) is not int or not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
+            raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
+        object.__setattr__(self, "recovery_wait_s", wait)
 
     @property
     def is_default(self):
         return (self.planner == DEFAULT_PLANNER and self.controller == DEFAULT_CONTROLLER
-                and not self.planner_params and not self.controller_params)
+                and not self.planner_params and not self.controller_params and not self.server_params
+                and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S)
 
     def as_dict(self):
         return {"planner": self.planner, "controller": self.controller,
                 "planner_params": [list(p) for p in self.planner_params],
-                "controller_params": [list(p) for p in self.controller_params]}
+                "controller_params": [list(p) for p in self.controller_params],
+                "server_params": [list(p) for p in self.server_params],
+                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s}
+
+    def behavior_tree_options(self):
+        return {"recovery_retries": self.recovery_retries, "wait_s": self.recovery_wait_s}
 
     @classmethod
     def from_dict(cls, value):
         value = value or {}
         return cls(planner=value.get("planner", DEFAULT_PLANNER), controller=value.get("controller", DEFAULT_CONTROLLER),
                    planner_params=tuple(tuple(p) for p in value.get("planner_params", ())),
-                   controller_params=tuple(tuple(p) for p in value.get("controller_params", ())))
+                   controller_params=tuple(tuple(p) for p in value.get("controller_params", ())),
+                   server_params=tuple(tuple(p) for p in value.get("server_params", ())),
+                   recovery_retries=int(value.get("recovery_retries", DEFAULT_RECOVERY_RETRIES)),
+                   recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)))
 
 
 def _set(section, dotted, value):
@@ -204,6 +227,8 @@ def apply(params, profile, choice, *, exploring):
     controller["FollowPath"] = controller_plugin(choice.controller, controller["FollowPath"], profile)
     for key, value in choice.controller_params:
         _set(controller["FollowPath"], key, value)
+    for key, value in choice.server_params:
+        _set(controller, key, value)
     return params
 
 
@@ -241,6 +266,9 @@ def adjust_readback(expected, choice, profile, *, exploring):
     for key, value in choice.controller_params:
         if not isinstance(value, dict):
             controller["FollowPath." + key] = value
+    for key, value in choice.server_params:
+        if not isinstance(value, dict):
+            controller[key] = value
     return expected
 
 

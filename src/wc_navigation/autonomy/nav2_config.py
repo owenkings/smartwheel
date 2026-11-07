@@ -264,13 +264,20 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
     return params
 
 
-def behavior_tree_xml(*, through_poses=False):
+def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0):
     """Replanning tree without Spin or BackUp recoveries.
 
     The wheelchair has no rear range sensor, so reversing is never used, and an
     unprompted spin would sweep the unobserved rear of a non-circular body.
-    Recovery only clears costmaps and waits before replanning.
+    Recovery only clears costmaps and waits before replanning;
+    ``recovery_retries`` and ``wait_s`` (defaults 4 and 3 s) set how often and
+    how long.
     """
+    retries = int(recovery_retries)
+    wait = float(wait_s)
+    if not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
+        raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
+    wait_text = ("%g" % wait)
     if through_poses:
         planner = ('<ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>')
         goal_updated = "<GoalUpdated/>"
@@ -281,7 +288,7 @@ def behavior_tree_xml(*, through_poses=False):
         head = ""
     return f"""<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="4" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="{retries}" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePath">
@@ -303,7 +310,7 @@ def behavior_tree_xml(*, through_poses=False):
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Wait wait_duration="3"/>
+          <Wait wait_duration="{wait_text}"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

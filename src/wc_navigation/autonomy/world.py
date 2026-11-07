@@ -302,6 +302,21 @@ _SYNTHETIC = {
                       (3.0, 1.0, 4.4, 1.8), (13.0, 1.4, 14.2, 3.0), (8.0, 4.8, 8.6, 5.3)],
         "revision": 2,
     },
+    # Doors and aisles sized like this building for the measured body (0.70 m wide, 0.81 m nose,
+    # 0.846 m turning sweep): a 1.8 m corridor (y 3.2..5.0) with doors of 1.2, 1.0 and 0.9 m into
+    # three rooms above; below, one room behind a 1.0 m door with a 1.0 m aisle between desk rows.
+    "narrow_doors": {
+        "size": (13.0, 8.4),
+        "start": (1.0, 4.1, 0.0),
+        "walls": [
+            (0.0, 5.0, 1.4, 5.2), (2.6, 5.0, 5.5, 5.2), (6.5, 5.0, 9.55, 5.2), (10.45, 5.0, 13.0, 5.2),
+            (4.3, 5.2, 4.5, 8.4), (8.4, 5.2, 8.6, 8.4),
+            (0.0, 3.0, 3.0, 3.2), (4.0, 3.0, 13.0, 3.2),
+        ],
+        "furniture": [(1.0, 0.2, 2.6, 1.0), (1.0, 2.0, 2.6, 2.6), (5.0, 1.4, 6.6, 2.0), (7.6, 1.4, 9.2, 2.0),
+                      (2.0, 7.4, 3.6, 8.2), (11.0, 6.0, 12.6, 6.8)],
+        "revision": 1,
+    },
 }
 
 

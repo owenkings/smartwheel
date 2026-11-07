@@ -43,8 +43,11 @@ def _finite(value):
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--recording", type=Path, required=True,
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--recording", type=Path,
                         help="recording.npz of a shadow run (times_s, base_poses), or a frozen single-left source cell")
+    source.add_argument("--requests-file", type=Path,
+                        help='JSON list of {"start": [x, y, yaw], "goal": [x, y, yaw]} in the map frame (no recording)')
     parser.add_argument("--map", dest="map_yaml", type=Path, required=True, help="map in the recording's odometry frame")
     parser.add_argument("--label", default="", help="short name of the recording in the result (e.g. RoomA1)")
     parser.add_argument("--window", nargs=2, type=_finite, metavar=("START", "END"),
@@ -432,9 +435,18 @@ def main(argv=None):
     body = Body.from_profile(profile, source=label)           # scored body: the outline (or the circle)
     if args.plan_radius is not None:                         # planned body: a circle, the outline only scored
         profile = nav2_config.NavProfile(radius_m=args.plan_radius, margin_m=args.margin)
-    times, poses, provenance, default_window = load_recording(args.recording)
-    window = list(args.window or default_window or [float(times[0]), float(times[-1])])
-    requests = bench.make_requests(times, poses, window, args.lead, args.every)
+    if args.requests_file is not None:
+        listed = json.loads(args.requests_file.read_text(encoding="utf-8"))
+        requests = [{"index": k, "t": float(k), "goal_t": float(k), "start": [float(v) for v in r["start"]],
+                     "goal": [float(v) for v in r["goal"]], "driver": np.asarray([r["start"], r["goal"]], dtype=float)}
+                    for k, r in enumerate(listed)]
+        provenance = {"requests_file": str(args.requests_file.resolve()), "sha256": _sha256(args.requests_file),
+                      "note": "explicit requests: the route context covers only the start and goal poses"}
+        window = None
+    else:
+        times, poses, provenance, default_window = load_recording(args.recording)
+        window = list(args.window or default_window or [float(times[0]), float(times[-1])])
+        requests = bench.make_requests(times, poses, window, args.lead, args.every)
     if not requests:
         raise SystemExit("no requests in the window")
     map_yaml = args.map_yaml.expanduser().resolve(strict=True)

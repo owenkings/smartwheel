@@ -161,13 +161,41 @@ def test_navigation_can_use_the_true_world_as_its_map(tmp_path):
                        "--from-exploration", str(tmp_path)])
 
 
+def test_recovery_tree_and_checkers_are_explicit_options():
+    import xml.etree.ElementTree as ET
+    assert nav2_config.behavior_tree_xml(**stack.PlanningChoice().behavior_tree_options()) == \
+        nav2_config.behavior_tree_xml()
+    root = ET.fromstring(nav2_config.behavior_tree_xml(recovery_retries=8, wait_s=5.0))
+    top = [e for e in root.iter("RecoveryNode") if e.get("name") == "NavigateRecovery"][0]
+    assert top.get("number_of_retries") == "8" and [e.get("wait_duration") for e in root.iter("Wait")] == ["5"]
+    assert {e.tag for e in root.iter()} & {"Spin", "BackUp", "DriveOnHeading"} == set()
+    with pytest.raises(ValueError):
+        nav2_config.behavior_tree_xml(recovery_retries=-1)
+    choice = stack.PlanningChoice(server_params=(("general_goal_checker.xy_goal_tolerance", 0.35),
+                                                 ("progress_checker.movement_time_allowance", 30.0)),
+                                  recovery_retries=6, recovery_wait_s=5.0)
+    assert not choice.is_default and stack.PlanningChoice.from_dict(choice.as_dict()) == choice
+    p = params(choice)
+    server = p["controller_server"]["ros__parameters"]
+    assert server["general_goal_checker"]["xy_goal_tolerance"] == 0.35
+    assert server["progress_checker"]["movement_time_allowance"] == 30.0
+    expected = nav2_config.readback_expectations(nav2_config.NavProfile(), "navigate", planning=choice)
+    assert expected["controller_server"]["general_goal_checker.xy_goal_tolerance"] == 0.35
+    for bad in ((("FollowPath.allow_reversing", True),), (("failure_tolerance", 3.0),)):
+        with pytest.raises(ValueError):
+            stack.PlanningChoice(server_params=bad)
+    with pytest.raises(ValueError):
+        stack.PlanningChoice(recovery_wait_s=0.0)
+
+
 def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     from wc_navigation.autonomy import cli, shadow_cli
     config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms",
                                              "--planner", "smac_hybrid", "--planner-param",
                                              "minimum_turning_radius=0.5"]))
     assert config["planning"] == {"planner": "smac_hybrid", "controller": "rpp",
-                                  "planner_params": [["minimum_turning_radius", 0.5]], "controller_params": []}
+                                  "planner_params": [["minimum_turning_radius", 0.5]], "controller_params": [],
+                                  "server_params": [], "recovery_retries": 4, "recovery_wait_s": 3.0}
     default = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms"]))
     assert stack.PlanningChoice.from_dict(default["planning"]).is_default
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),

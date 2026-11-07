@@ -22,6 +22,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--planner-param NAME=VALUE` | 覆盖 `GridBased` 规划器参数，值按 JSON 解析，可重复，例如 `minimum_turning_radius=0.6` |
 | `--controller` | `rpp`（默认）、`shim_rpp`（新路线起点偏差超过 45° 时先原地转向并检查碰撞，之后 RPP 关闭行进中原地转向、沿曲率边走边转）、`mppi`（MPPI，差速模型，只前进 `vx_min=0`，代价评价按外形） |
 | `--controller-param NAME=VALUE` | 覆盖 `FollowPath` 控制器参数，例如 `use_rotate_to_heading=false` |
+| `--checker-param NAME=VALUE` | 覆盖目标检查和进度检查参数，只限 `general_goal_checker.*`、`progress_checker.*`，例如 `general_goal_checker.xy_goal_tolerance=0.35` |
+| `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查完整外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
@@ -36,6 +38,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
   --start -0.323 -0.229 0 --goal 7.945 1.098 -2.336 --goal -3.04 -0.053 -3.111 \
   --planner smac_hybrid --footprint ...（同上） --footprint-source MEASURED_20261107
 ```
+
+合成世界 `narrow_doors`（13 m × 8.4 m，第 1 版）按这栋楼和实测车体设计：1.8 m 走廊（y 3.2–5.0 m），上方三个房间的门宽 1.2、1.0、0.9 m，下方房间门宽 1.0 m、课桌间过道 1.0 m，起点 (1.0, 4.1, 0)。
 
 `navigate --world 名称` 或 `--world-map 地图` 不需要先探索：真值世界本身就是导航地图（合成世界写到运行目录的 `world_map.yaml`，已保存地图直接使用；`--obstacle` 圆盘只在真值里、不进地图），世界坐标与地图坐标重合。这样比较规划和控制时不混入建图误差；AMCL 和闸门照常运行。起点要让车体（按外形）不与世界重叠。
 
@@ -52,6 +56,14 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_planner_bench \
 
 评分用真实车体（不加余量）对地图占据格的精确间隙，路径朝向对 Hybrid-A* 和 State Lattice 用规划器给的朝向，其余用行进方向。每个请求先按司机自己的路线分类：`clear`（车体加余量处处放得下）、`tight`（车体放得下、余量放不下）、`conflict`（车体本身在司机路线上就与占据或未知格重叠，多半是地图里的临时物体或漂移，任何规划都不可能既成功又安全）。“安全成功”指路径上没有任何位姿让车体与占据或未知格重叠；“不安全成功”是规划器返回了、但真实车体跟不了的路径。
 
-输出在 `reports/navigation_planner_bench/<时间>_bench_<标签>_<编号>/`：`result.json`（按规划器和类别的成功率、安全成功、耗时、间隙、急弯、原地转向、倒车、与司机路线的偏差）、`answers.jsonl`（每个请求每个规划器的结果和路径）、`requests.json`、`preview.png`。
+输出在 `reports/navigation_planner_bench/<时间>_bench_<标签>_<编号>/`：`result.json`（按规划器和类别的成功率、安全成功、耗时、间隙、急弯、原地转向、倒车、与司机路线的偏差）、`answers.jsonl`（每个请求每个规划器的结果和路径）、`requests.json`、`preview.png`。没有录包时用 `--requests-file 文件.json`（`[{"start": [x, y, yaw], "goal": [x, y, yaw]}, ...]`）给出请求，例如合成世界导出的地图。
+
+## 跟随模式审查：原地转向、停车原因、窄处速度
+
+```bash
+PYTHONPATH=src python3 -s -m wc_navigation.planning.follow_audit <影子运行目录>... --output 审查.json
+```
+
+不启动 ROS，只读影子运行目录（`recording.npz`、`samples.csv`、`run_config.json`、地图）。逐项给出：司机边走边转时控制器要求原地转向的时长；每次控制器停车时，最近 2 s 的扫描（各按采集位姿放进地图）有没有落进车体沿司机实际下一段 0.6 m 路线的范围——有，说明扫描本身与司机路线矛盾（近处或移动物体、近场或地面回波、外形比车大）；没有，才是控制器自己的预测弧线或原地转向造成的误停；以及司机前进时控制器和闸门输出速度按车体到静态地图间隙分段的中位数。
 
 返回[操作导航](README.md)。

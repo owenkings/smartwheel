@@ -67,6 +67,12 @@ def add_planning_arguments(parser):
                         help="local controller plugin (default rpp: Regulated Pure Pursuit, unchanged)")
     parser.add_argument("--controller-param", action="append", default=[], metavar="NAME=VALUE",
                         help="override a FollowPath controller parameter (JSON value), e.g. use_rotate_to_heading=false")
+    parser.add_argument("--checker-param", action="append", default=[], metavar="NAME=VALUE",
+                        help="override a goal or progress checker parameter of the controller server, e.g. "
+                             "general_goal_checker.xy_goal_tolerance=0.35 or progress_checker.movement_time_allowance=30")
+    parser.add_argument("--recovery-retries", type=int, default=4,
+                        help="behaviour-tree recovery rounds (clear costmaps, wait) before a goal fails (default 4)")
+    parser.add_argument("--recovery-wait", type=float, default=3.0, help="seconds of each recovery wait (default 3)")
 
 
 def resolve_planning_arguments(parser, args):
@@ -75,7 +81,9 @@ def resolve_planning_arguments(parser, args):
     try:
         args.planning = PlanningChoice(planner=args.planner, controller=args.controller,
                                        planner_params=parse_overrides(args.planner_param),
-                                       controller_params=parse_overrides(args.controller_param))
+                                       controller_params=parse_overrides(args.controller_param),
+                                       server_params=parse_overrides(args.checker_param),
+                                       recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
