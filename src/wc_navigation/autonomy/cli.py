@@ -81,6 +81,10 @@ def arguments(argv=None):
                           metavar=("DX", "DY", "DYAW"), help="error added to the AMCL initial pose (map frame)")
     navigate.add_argument("--initial-pose-std", nargs=2, type=_positive, default=[0.25, 0.15],
                           metavar=("XY_M", "YAW_RAD"), help="uncertainty sent with the initial pose")
+    navigate.add_argument("--localization", choices=["amcl", "truth"], default="amcl",
+                          help="amcl (default): map_server + AMCL from the approximate initial pose; truth: the "
+                               "simulator publishes map->odom from ground truth and the gate does not require an "
+                               "AMCL covariance, to judge planning and control without localization effects")
     args = parser.parse_args(argv)
     from ..planning.options import resolve_body_arguments, resolve_planning_arguments
     resolve_body_arguments(parser, args)
@@ -189,7 +193,7 @@ def build_config(args):
         config.update(world=dict(world.source, obstacles=obstacles), start_pose_world=list(start),
                       world_T_map=[0.0, 0.0, 0.0], map_yaml=map_yaml, map_from_world=True,
                       initial_pose_map=list(initial), initial_pose_std=list(args.initial_pose_std),
-                      true_start_map=list(start), goals_map=goals)
+                      true_start_map=list(start), goals_map=goals, localization=args.localization)
     else:
         source = args.from_exploration.expanduser().resolve(strict=True)
         previous = json.loads((source / "result.json").read_text(encoding="utf-8"))
@@ -211,7 +215,7 @@ def build_config(args):
         config.update(world=spec, start_pose_world=list(start), world_T_map=list(world_T_map),
                       map_yaml=saved, source_exploration=str(source), initial_pose_map=list(initial),
                       initial_pose_std=list(args.initial_pose_std),
-                      true_start_map=list(start_map), goals_map=goals)
+                      true_start_map=list(start_map), goals_map=goals, localization=args.localization)
     return config
 
 

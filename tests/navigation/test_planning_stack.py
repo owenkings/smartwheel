@@ -227,6 +227,30 @@ def test_planning_on_the_saved_map_only_is_explicit():
         "global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
 
 
+@pytest.mark.parametrize("mode", ["amcl", "truth"])
+def test_truth_localization_replaces_amcl_only_when_asked(tmp_path, mode):
+    import yaml
+    from wc_navigation.autonomy import cli
+    from wc_navigation.autonomy.bringup import Supervisor, truth_localization
+    extra = [] if mode == "amcl" else ["--localization", "truth"]
+    config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                                             "--goal", "8.0", "1.4", "0.0", *extra]))
+    assert config["localization"] == mode and truth_localization(config) is (mode == "truth")
+    out = tmp_path / "run"
+    out.mkdir()
+    cli.write_world_map(config, out)
+    _, files = Supervisor(PROJECT, out, config).prepare()
+    sim = json.loads((out / "sim_config.json").read_text())
+    gate = json.loads((out / "gate_config.json").read_text())["gate"]
+    mapping = yaml.safe_load(Path(files["mapping"]).read_text())
+    if mode == "truth":
+        assert sim["map_to_odom_from_truth"] == {"world_T_map": [0.0, 0.0, 0.0]}
+        assert gate["require_covariance"] is False and "amcl" not in mapping
+        assert mapping["lifecycle_manager_localization"]["ros__parameters"]["node_names"] == ["map_server"]
+    else:
+        assert "map_to_odom_from_truth" not in sim and gate["require_covariance"] is True and "amcl" in mapping
+
+
 def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     from wc_navigation.autonomy import cli, shadow_cli
     config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms",
