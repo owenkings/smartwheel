@@ -1,6 +1,6 @@
-# 障碍感知：三维障碍输入的影子运行与离线检查
+# 障碍感知：三维障碍输入、离线检查与仿真行人
 
-用左右雷达的三维点云代替 /scan 做局部代价地图和碰撞监控的障碍输入，在冻结录包上开环检验。只读冻结前端和地图，不打开设备、不发布速度指令；影子运行在独立的 ROS 域里，本窗口用 99。设计与证据见[障碍感知与避障](../architecture/obstacle_avoidance.md)。数据只用 ZL1107 走廊系列。
+用左右雷达的三维点云代替 /scan 做局部代价地图和碰撞监控的障碍输入，在冻结录包上开环检验；在闭环仿真里加移动行人。只读冻结前端和地图，不打开设备、不发布速度指令；影子运行和仿真在独立的 ROS 域里，本窗口用 99。设计与证据见[障碍感知与避障](../architecture/obstacle_avoidance.md)。数据只用 ZL1107 走廊系列。
 
 ## 影子运行
 
@@ -19,12 +19,13 @@ WC_AUTONOMY_ROS_DOMAIN=99 nice -n 10 bash scripts/navigation_nav2_shadow --mode 
 
 | 选项 | 含义 |
 |---|---|
-| `--obstacle-input scan\|cloud\|scan_and_cloud` | 局部代价地图和碰撞监控用什么。`scan`（默认）与以前完全相同；`cloud` 用三维障碍点代替 /scan；`scan_and_cloud` 两者都用。全局代价地图始终用 /scan。 |
+| `--obstacle-input scan\|cloud\|scan_and_cloud` | 局部代价地图和碰撞监控用什么。`scan`（默认）与以前完全相同；`cloud` 用三维障碍点代替 /scan；`scan_and_cloud` 两者都用。 |
+| `--obstacle-scan raw\|filtered` | 代价地图里 ObstacleLayer 读的扫描（全局代价地图总有一个，`scan` 和 `scan_and_cloud` 时局部也有）：`raw`（默认）是 /scan；`filtered` 是 `/obstacles/left/scan`，左雷达过滤后的障碍点按 /scan 同样的 161 个方位格取最近距离（frame laser，8 m 内）。和 `--obstacle-input scan` 一起用时两个代价地图都还是二维 ObstacleLayer，只是换成过滤后的扫描，碰撞监控仍用 /scan，只准备左雷达点云（右前端只作见证）。和 B 的 `--global-costmap static` 一起用时，`cloud` 输入下没有代价地图读它，直接报错。 |
 | `--obstacle-right-cell` | 同一录包的单右冻结前端。给了才有右雷达障碍点，也才有两台雷达互相见证。 |
 | `--obstacle-sides left right` | 发布哪几台的障碍点（默认：左，给了右前端时左右都发）。 |
 | `--obstacle-no-consensus` | 不用另一台雷达否决悬空小团，只按尺寸判别。 |
 | `--obstacle-right-lever frozen\|symmetric\|X,Y,Z` | 右雷达杆臂：冻结的现场外参（默认）、左雷达的镜像位置，或显式值。 |
-| `--obstacle-filter '{"max_range_m": 3.5}'` | 覆盖过滤参数（`ObstacleFilter` 的字段，见源码）。 |
+| `--obstacle-filter '{"max_range_m": 3.5}'` | 覆盖过滤参数（`ObstacleFilter` 的字段，见源码）。例如 `{"persist_min_age_s": 0.6}` 打开前后帧持续性检查：通过见证和尺寸规则的悬空小团，0.6–2 s 前同一台雷达在同一世界位置没有候选点的就去掉（默认关）。 |
 
 验证包和建图包是两段录包，要在建图包地图上跑验证包时，加定位模式 `--localization fixed|amcl --map-alignment-json <对齐结果>`（见[实车影子链路](navigation_live_shadow.md)）。障碍点坐标系由回放进程里一个不受重映射影响的节点发布，三种定位模式下都可用。
 
@@ -50,6 +51,31 @@ nice -n 10 bash scripts/navigation_obstacle_eval \
 
 不启动 ROS 节点。对每帧过滤后的障碍点，检查它们是否落在车接下来 `--horizon`（默认 4 s）秒的录包路径扫过的外形里（外形内缩 3 cm）；静止障碍不可能在那里，所以这类点是伪点或走开的物体。同时对当前 /scan 做同样统计。输出在 `reports/navigation_obstacles/<时间>_<标签>_<编号>/`：`result.json`（汇总、参数、来源）、`frames.jsonl`（逐帧计数）、`swept_points.npz`（落进扫掠外形的点）。
 
+## 仿真里的移动行人
+
+闭环仿真（[自主导航操作说明](navigation_autonomy.md)）加 `--actors 场景.json`：
+
+```bash
+WC_AUTONOMY_ROS_DOMAIN=99 nice -n 10 bash scripts/navigation_autonomy_sim navigate \
+  --world-map $R/reports/navigation_replay_mapping/20261107T111004Z_3f0ae14a/odom_grid/map_nav.yaml \
+  --start -1.5 -0.2 3.14159 --goal -10.0 -0.2 3.14159 --max-duration 240 \
+  --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 \
+  --footprint-source MEASURED_20261107 --actors oncoming.json
+```
+
+场景文件（世界坐标，`--world-map` 时就是地图坐标）：
+
+```json
+{"schema_version": 1, "name": "oncoming",
+ "actors": [{"id": "walker", "waypoints": [[-10.5, -0.35], [0.5, -0.35]], "speed_mps": 1.0,
+             "radius_m": 0.25, "start_after_s": 2.0, "pause_s": 0.0, "repeat": "once", "yield_gap_m": 0.0}]}
+```
+
+- 行人是圆盘，按路点匀速走；时钟从车第一次收到非零指令开始，再加 `start_after_s`，之前站在第一个路点。`repeat` 为 once（停在终点）、loop、pingpong；`pause_s` 是每到一个路点停的时间。行人不看墙，路点要放在空地上。
+- `yield_gap_m` 为 0（默认，最坏情况）时行人不管车，会走进车里；大于 0 时，不走会让它离车体更近、且近于这个距离的那一步。
+- 行人每个物理步之前并入仿真世界，所以仿真扫描、扫掠碰撞否决和接触间隙都包括行人。车开进行人照常算这次运行的碰撞（FAIL）；行人走进停着的车只记在 `actors` 一节。
+- 运行目录多出 `actors.jsonl`（每 0.1 s 仿真时间一行位置、间隙和状态，另有第一次指令、接触开始和结束、车被行人挡住的事件），`result.json` 多出 `actors`：每个行人到车体的最小间隙和时刻、0.3/0.5/1.0/1.5 m 内的时间、接触次数（车在动时的另计）、行人 1 m 内的车速、让行时间，以及行人 1.5 m 内和以外的停车时间。不给 `--actors` 时配置和结果与以前相同。
+
 ## 边界
 
-结论只针对冻结录包和空车外形。过滤参数（高度窗、远处低点门限 2 m、悬空小团规则）是在建图包上定的，验证包和以后的走廊录包要再看。坐人时乘坐者伸出外形的部分会被当成障碍，需要坐人录包确认。返回[操作导航](README.md)。
+结论只针对冻结录包和空车外形。过滤参数（高度窗、远处低点门限 2 m、悬空小团规则）是在建图包上定的，验证包和以后的走廊录包要再看。坐人时乘坐者伸出外形的部分会被当成障碍，需要坐人录包确认。仿真行人只是圆盘，没有腿、身高和真实的避让行为。返回[操作导航](README.md)。

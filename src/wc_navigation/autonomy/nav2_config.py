@@ -117,7 +117,7 @@ class NavProfile:
     def as_dict(self):
         values = {name: getattr(self, name) for name in self.__dataclass_fields__}
         values["footprint"] = [list(p) for p in self.footprint]
-        if self.obstacle_input == "scan":          # default runs keep their recorded profile unchanged
+        if self.obstacle_input == "scan" and self.obstacle_scan == "raw":   # default: recorded profile unchanged
             values.pop("obstacle_input")
             values.pop("obstacle_clouds")
             values.pop("obstacle_scan")
@@ -603,9 +603,13 @@ def _readback_expectations(profile, mode):
         local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
         stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
                                                                                    profile.obstacle_clouds))
-        if profile.obstacle_scan != "raw" and mode != "explore":
-            global_body = dict(global_body, **{"obstacle_layer.scan.topic":
-                                               nav2_obstacles.scan_topic(profile.obstacle_scan)})
+    if profile.obstacle_scan != "raw":             # and so must the filtered scan
+        from ..perception import nav2_obstacles
+        topic = {"obstacle_layer.scan.topic": nav2_obstacles.scan_topic(profile.obstacle_scan)}
+        if mode != "explore":
+            global_body = dict(global_body, **topic)
+        if profile.obstacle_input != "cloud":
+            local_body = dict(local_body, **topic)
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,

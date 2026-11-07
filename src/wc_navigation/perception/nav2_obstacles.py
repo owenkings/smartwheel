@@ -15,6 +15,9 @@ cleared by the footprint or the rolling window.
 obstacle layers (``_scan_source``; the global costmap always has one): ``raw``
 (default, /scan) or ``filtered`` (``/obstacles/left/scan``: the left lidar's
 filtered obstacle points up to 8 m in the same 161 bins and frame as /scan).
+``scan`` with ``filtered`` keeps both costmaps two-dimensional (ObstacleLayer)
+on the filtered scan; the collision monitor keeps /scan and no cloud is wired
+in (the left cloud, ``obstacle_clouds`` = left, only feeds the filtered scan).
 The global costmap's layers and plugins are not touched here.
 """
 from __future__ import annotations
@@ -41,14 +44,16 @@ def check(obstacle_input, sides, obstacle_scan="raw"):
     if obstacle_scan not in OBSTACLE_SCANS:
         raise ValueError("obstacle_scan must be one of " + ", ".join(OBSTACLE_SCANS))
     sides = tuple(sides or ())
-    if obstacle_input == "scan":
-        if sides or obstacle_scan != "raw":
-            raise ValueError("obstacle_clouds and a filtered obstacle_scan need obstacle_input cloud or scan_and_cloud")
+    if obstacle_input == "scan" and obstacle_scan == "raw":
+        if sides:
+            raise ValueError("obstacle_clouds need obstacle_input cloud or scan_and_cloud, or a filtered obstacle_scan")
         return obstacle_input, (), obstacle_scan
     if not sides or len(set(sides)) != len(sides) or any(s not in SIDES for s in sides):
         raise ValueError("obstacle_clouds must name left and/or right once each")
     if obstacle_scan == "filtered" and "left" not in sides:
         raise ValueError("the filtered scan comes from the left lidar; obstacle_clouds must include left")
+    if obstacle_input == "scan" and sides != ("left",):
+        raise ValueError("with obstacle_input scan the clouds only feed the filtered scan: obstacle_clouds is left")
     return obstacle_input, tuple(s for s in SIDES if s in sides), obstacle_scan
 
 

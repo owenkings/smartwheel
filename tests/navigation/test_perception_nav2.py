@@ -104,9 +104,29 @@ def test_filtered_scan_feeds_the_costmap_obstacle_layers_only_when_asked():
     assert nav2_config.NavProfile(**filtered.as_dict()) == filtered
     for bad in ({"obstacle_scan": "filtered"},
                 {"obstacle_input": "cloud", "obstacle_clouds": ("right",), "obstacle_scan": "filtered"},
-                {"obstacle_input": "cloud", "obstacle_clouds": ("left",), "obstacle_scan": "smoothed"}):
+                {"obstacle_input": "cloud", "obstacle_clouds": ("left",), "obstacle_scan": "smoothed"},
+                {"obstacle_input": "scan", "obstacle_clouds": ("left", "right"), "obstacle_scan": "filtered"},
+                {"obstacle_input": "scan", "obstacle_clouds": ("left",)}):
         with pytest.raises(ValueError):
             nav2_config.NavProfile(**bad)
+
+
+def test_filtered_scan_alone_keeps_both_costmaps_two_dimensional():
+    def layer(p, which):
+        return p[which + "_costmap"][which + "_costmap"]["ros__parameters"]
+    profile = nav2_config.NavProfile(obstacle_input="scan", obstacle_clouds=("left",), obstacle_scan="filtered",
+                                     footprint=MEASURED)
+    p, q = params(profile), params(nav2_config.NavProfile(footprint=MEASURED))
+    for which in ("local", "global"):
+        assert layer(p, which)["obstacle_layer"]["scan"]["topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+        assert layer(p, which)["plugins"] == layer(q, which)["plugins"]          # no voxel layer anywhere
+        assert "voxel_layer" not in layer(p, which)
+    assert monitor(p) == monitor(q)                                              # the monitor keeps /scan
+    expected = nav2_config.readback_expectations(profile, "navigate")
+    for node in ("local_costmap/local_costmap", "global_costmap/global_costmap"):
+        assert expected[node]["obstacle_layer.scan.topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+    assert "observation_sources" not in expected["collision_monitor"]
+    assert profile.as_dict()["obstacle_scan"] == "filtered" and nav2_config.NavProfile(**profile.as_dict()) == profile
 
 
 def test_filtered_scan_with_planning_on_the_saved_map_only():
@@ -223,11 +243,18 @@ def test_cli_cloud_options(tmp_path):
     args = parse(["--obstacle-input", "cloud", "--obstacle-scan", "filtered"])
     assert shadow_cli_options.prepare_kwargs(args)["scan"] is True
     assert shadow_cli_options.profile_fields(args)["obstacle_scan"] == "filtered"
+    # the filtered scan alone: only the left cloud is prepared (the right cell is its witness)
+    args = parse(["--obstacle-scan", "filtered", "--obstacle-right-cell", str(tmp_path)])
+    kwargs = shadow_cli_options.prepare_kwargs(args)
+    assert kwargs["sides"] == ("left",) and kwargs["scan"] is True and kwargs["right_cell"] == tmp_path
+    assert shadow_cli_options.profile_fields(args) == {"obstacle_input": "scan", "obstacle_clouds": ("left",),
+                                                       "obstacle_scan": "filtered"}
+    nav2_config.NavProfile(**shadow_cli_options.profile_fields(args))
 
 
 @pytest.mark.parametrize("argv", [["--obstacle-right-cell", "/tmp"], ["--obstacle-input", "cloud", "--obstacle-sides",
                                                                        "right"],
-                                  ["--obstacle-scan", "filtered"],
+                                  ["--obstacle-scan", "filtered", "--obstacle-sides", "left", "right"],
                                   ["--obstacle-input", "cloud", "--obstacle-right-cell", "/tmp", "--obstacle-sides",
                                    "right", "--obstacle-scan", "filtered"],
                                   ["--obstacle-input", "cloud", "--obstacle-right-lever", "1,2"],

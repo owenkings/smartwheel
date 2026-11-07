@@ -31,16 +31,27 @@ def add_arguments(parser):
     group.add_argument("--obstacle-scan", choices=OBSTACLE_SCANS, default="raw",
                        help="LaserScan of the costmaps' obstacle layers, including the global costmap's: raw /scan "
                             "(default) or filtered (/obstacles/left/scan: the left lidar's filtered obstacle points "
-                            "in the same 161 bins)")
+                            "in the same 161 bins). With --obstacle-input scan both costmaps stay 2D on the filtered "
+                            "scan and the collision monitor keeps /scan")
+
+
+def _off(args):
+    """The default: no obstacle clouds prepared at all."""
+    return args.obstacle_input == "scan" and args.obstacle_scan == "raw"
 
 
 def check_arguments(parser, args):
-    if args.obstacle_input == "scan":
-        if args.obstacle_right_cell or args.obstacle_sides or args.obstacle_scan != "raw":
-            parser.error("--obstacle-right-cell, --obstacle-sides and --obstacle-scan filtered need "
-                         "--obstacle-input cloud or scan_and_cloud")
+    if _off(args):
+        if args.obstacle_right_cell or args.obstacle_sides:
+            parser.error("--obstacle-right-cell and --obstacle-sides need --obstacle-input cloud or scan_and_cloud, "
+                         "or --obstacle-scan filtered")
         args.obstacle_filter_settings = None
         return
+    if args.obstacle_input == "scan":
+        # only the left cloud is prepared, to build the filtered scan; the right cell is its witness
+        if args.obstacle_sides and list(args.obstacle_sides) != ["left"]:
+            parser.error("with --obstacle-input scan only the left cloud is used (for the filtered scan)")
+        args.obstacle_sides = ["left"]
     try:
         args.obstacle_filter_settings = ObstacleFilter(**json.loads(args.obstacle_filter))
     except (TypeError, ValueError) as exc:
@@ -72,7 +83,7 @@ def _sides(args):
 
 def prepare_kwargs(args):
     """Keyword arguments of shadow_obstacles.prepare, or None for the default scan input."""
-    if args.obstacle_input == "scan":
+    if _off(args):
         return None
     return {"sides": _sides(args), "right_cell": args.obstacle_right_cell, "cfg": args.obstacle_filter_settings,
             "footprint": args.footprint or (), "radius_m": None if args.footprint else args.assumed_radius,
@@ -83,14 +94,14 @@ def prepare_kwargs(args):
 
 
 def profile_fields(args):
-    if args.obstacle_input == "scan":
+    if _off(args):
         return {}
     return {"obstacle_input": args.obstacle_input, "obstacle_clouds": _sides(args),
             "obstacle_scan": args.obstacle_scan}
 
 
 def config_entries(args, recording):
-    if args.obstacle_input == "scan":
+    if _off(args):
         return {}
     from .shadow_obstacles import settings
     return {"obstacles": settings(recording)}
