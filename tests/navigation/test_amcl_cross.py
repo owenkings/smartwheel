@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 
 from wc_navigation.live.amcl_cross import (CAP_M, EndpointScorer, arguments, convergence, door_segments,
-                                           heading_components, heading_std, perturbed_start, profile_settings,
-                                           se2, window_medians, xyyaw)
+                                           heading_components, heading_std, motion_breakdown, motion_classes,
+                                           perturbed_start, planar_from_rigid, profile_settings,
+                                           rigid_from_planar, se2, shifted_odometry, window_medians, wrap,
+                                           xyyaw)
 
 
 def corridor_grid():
@@ -175,3 +177,63 @@ def test_evaluate_run_flags_each_gate_variant_on_a_heading_correction_far_from_t
     assert after["gate_until_20261107_correction_ok"] is False and after["gate_default_correction_ok"] is True
     assert after["gate_until_20261107_covariance_ok"] is False and after["gate_default_covariance_ok"] is True
     assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_default": 0}
+
+
+def track(lidar_poses, dt=0.3):
+    return [{"stamp_ns": 1_000_000_000 + int(round(k * dt * 1e9)), "points": np.zeros((2, 3)),
+             "odometry_T": rigid_from_planar(se2(*pose))} for k, pose in enumerate(lidar_poses)]
+
+
+def test_lidar_time_offset_pairs_each_scan_with_the_earlier_odometry():
+    # 0.5 m/s along x while turning at 1 rad/s through +-pi; frames every 0.3 s
+    frames = track([(0.15 * k, 0.0, wrap(3.0 + 0.3 * k)) for k in range(6)])
+    unchanged = shifted_odometry(frames, 0.0)
+    assert all(a is b for a, b in zip(unchanged, frames)) and len(unchanged) == len(frames)
+    shifted = shifted_odometry(frames, 75.0)
+    for k, (new, old) in enumerate(zip(shifted, frames)):
+        assert new["stamp_ns"] == old["stamp_ns"] and new["points"] is old["points"]
+        x, y, yaw = xyyaw(planar_from_rigid(new["odometry_T"]))
+        lag = 0.075 if k else 0.0                       # the first frame holds the first pose
+        assert (x, y) == pytest.approx((0.15 * k - 0.5 * lag, 0.0), abs=1e-9)
+        assert wrap(yaw - (3.0 + 0.3 * k - 1.0 * lag)) == pytest.approx(0.0, abs=1e-9)
+    assert xyyaw(planar_from_rigid(frames[3]["odometry_T"]))[0] == pytest.approx(0.45)   # input untouched
+    with pytest.raises(ValueError):
+        shifted_odometry(frames, 300.0)
+    with pytest.raises(ValueError):
+        shifted_odometry(frames, math.nan)
+
+
+def test_motion_classes_come_from_the_recorded_axle_motion():
+    lever = (0.3, 0.2)
+    axle = ([(0.0, 0.0, 0.0)] * 4 + [(0.15 * k, 0.0, 0.0) for k in range(1, 5)]
+            + [(0.6, 0.0, 0.18 * k) for k in range(1, 5)])      # stand, 0.5 m/s straight, turn in place 0.6 rad/s
+    lidar = [xyyaw(se2(*pose) @ se2(lever[0], lever[1], 0.0)) for pose in axle]
+    labels, rate, speed = motion_classes(track(lidar), lever)
+    assert list(labels[:3]) == ["STATIONARY"] * 3
+    assert list(labels[5:7]) == ["STRAIGHT"] * 2 and speed[5:7] == pytest.approx([0.5, 0.5])
+    assert list(labels[9:11]) == ["TURNING"] * 2 and rate[9:11] == pytest.approx([0.6, 0.6])
+    assert speed[9:11] == pytest.approx([0.0, 0.0], abs=1e-9)   # the lidar moves, the axle does not
+
+
+def test_motion_breakdown_counts_mapped_frames_per_class():
+    frames = [{"segment": s, "motion": m} for s, m in (("MIDDLE", "TURNING"), ("MIDDLE", "TURNING"),
+                                                       ("MIDDLE", "STRAIGHT"), ("END_DOOR", "TURNING"))]
+    rows = [{"fit": 0.1, "change_2s_yaw": math.radians(2.0), "gate_default_correction_ok": False},
+            {"fit": 0.3, "change_2s_yaw": math.radians(-4.0), "gate_default_covariance_ok": True},
+            {"fit": 0.05},
+            {"fit": 0.5, "gate_default_correction_ok": False}]
+    result = motion_breakdown(rows, frames)
+    assert [result[name]["frames"] for name in ("TURNING", "STRAIGHT", "STATIONARY", "OTHER")] == [2, 1, 0, 0]
+    assert result["TURNING"]["fit_m"]["median"] == pytest.approx(0.2)
+    assert result["TURNING"]["change_2s_yaw_deg"]["max"] == pytest.approx(4.0)
+    assert result["TURNING"]["gate_default_untrusted_frames"] == 1
+    assert result["TURNING"]["gate_until_20261107_untrusted_frames"] == 0
+    assert result["STATIONARY"]["fit_m"] is None
+
+
+def test_lidar_time_offset_argument_is_explicit_and_bounded(tmp_path):
+    base = ["--project-root", str(tmp_path), "--source-cell", "c", "--map", "m.yaml", "--alignment", "0", "1", "-85"]
+    assert arguments(base).lidar_time_offset_ms == 0.0
+    assert arguments(base + ["--lidar-time-offset-ms", "75"]).lidar_time_offset_ms == 75.0
+    with pytest.raises(SystemExit):
+        arguments(base + ["--lidar-time-offset-ms", "300"])

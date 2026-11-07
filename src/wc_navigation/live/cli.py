@@ -55,6 +55,9 @@ def _common(parser):
     parser.add_argument("--scan-rate-hz", type=_finite, default=10.0, help="0 keeps every lidar frame")
     parser.add_argument("--relay-test", action="store_true",
                         help="play the bag under a prefix and pass it through the one-way relay (same domain)")
+    parser.add_argument("--lidar-time-offset-ms", type=_finite, default=0.0, metavar="MS",
+                        help="stamp each scan MS earlier than its lidar frame, because the lidar stamps are late "
+                             "against the wheel/IMU odometry (default 0 = recorded stamps)")
 
 
 def arguments(argv=None):
@@ -113,6 +116,9 @@ def arguments(argv=None):
             nav2_config.NavProfile(footprint=args.footprint)
     if not 0.1 <= args.bag_rate <= 2.0:
         parser.error("--bag-rate must be within 0.1..2")
+    from .scan_adapter import MAX_LIDAR_TIME_OFFSET_MS
+    if abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
+        parser.error("--lidar-time-offset-ms must be within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
     return args
 
 
@@ -162,6 +168,7 @@ def main(argv=None):
     config = {"schema_version": 1, "kind": args.command, "source": "bag" if bag else "vehicle",
               "bag": None if bag is None else str(bag), "bag_rate": args.bag_rate,
               "use_sim_time": bag is not None, "scan_rate_hz": args.scan_rate_hz,
+              "lidar_time_offset_ms": args.lidar_time_offset_ms,
               "live_config_file": str(output / "live_config.json"), "record_scan_ranges": args.command == "inputs",
               "hardware_control": False, "commands_sent": False, "open_loop": True}
     if args.relay_test:
@@ -202,7 +209,7 @@ def main(argv=None):
               "live_provenance": live["provenance"], "supervisor": report,
               "hardware_control": False, "commands_sent": False, "physical_navigation_validated": False}
     if args.command == "inputs":
-        result["comparison"] = check_run(output, args.cell)
+        result["comparison"] = check_run(output, args.cell, args.lidar_time_offset_ms)
         scans = result["comparison"]["scans"]
         odometry = result["comparison"]["odometry"]
         result["status"] = ("COMPLETE" if "error" not in report and scans["matched_frames"] > 0

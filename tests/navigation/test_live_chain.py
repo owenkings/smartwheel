@@ -278,6 +278,23 @@ def test_command_line_requires_explicit_vehicle_inputs_and_goals(tmp_path):
         arguments(shadow + ["--source", "bag", "--bag", "x", "--goal", "1", "2", "0", "--amcl-params", "other"])
 
 
+def test_lidar_time_offset_is_explicit_and_stamps_the_scan_earlier(tmp_path):
+    from wc_navigation.live.cli import arguments
+    from wc_navigation.live.scan_adapter import scan_stamp_ns
+    assert scan_stamp_ns(1_794_037_921_007_690_136) == 1_794_037_921_007_690_136          # default: as recorded
+    assert scan_stamp_ns(1_794_037_921_007_690_136, 75.0) == 1_794_037_920_932_690_136
+    assert scan_stamp_ns(1_000_000_000, 75.5) == 924_500_000
+    for bad in (300.0, math.nan, math.inf):
+        with pytest.raises(ValueError):
+            scan_stamp_ns(1_000_000_000, bad)
+    common = ["inputs", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+              "--bag", "x"]
+    assert arguments(common).lidar_time_offset_ms == 0.0
+    assert arguments(common + ["--lidar-time-offset-ms", "75"]).lidar_time_offset_ms == 75.0
+    with pytest.raises(SystemExit):
+        arguments(common + ["--lidar-time-offset-ms", "251"])
+
+
 def test_vehicle_mode_refuses_without_the_dated_user_approval(tmp_path, monkeypatch):
     from wc_navigation.live import cli
     monkeypatch.delenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", raising=False)

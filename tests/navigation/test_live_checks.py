@@ -47,6 +47,24 @@ def test_recorder_files_are_read_back(tmp_path):
     assert odometry[:, 0].tolist() == [1.0, 1.1]          # repeated stamps dropped
 
 
+def test_run_check_expects_scans_stamped_earlier_by_the_lidar_time_offset(tmp_path, monkeypatch):
+    from wc_navigation.live import bag_check
+    stamps = np.array([1.0, 1.3, 1.6])
+    frozen = np.full((3, 161), np.inf)
+    frozen[:, 80] = 2.0
+    axle = np.column_stack([0.5 * stamps, np.zeros(3), np.zeros(3)])
+    monkeypatch.setattr(bag_check, "frozen_frontend", lambda cell: (stamps, frozen, axle, {}))
+    header = "time_s,stamp_s,observed_bins,nearest_m," + ",".join("r%03d" % k for k in range(161))
+    row = ",".join(["inf"] * 80 + ["2.00000"] + ["inf"] * 80)
+    (tmp_path / "scans.csv").write_text(header + "\n" + "".join("0,%.6f,1,2.0,%s\n" % (s - 0.075, row) for s in stamps))
+    (tmp_path / "odom.csv").write_text("time_s,stamp_s,x,y,yaw,linear,angular\n"
+                                       + "".join("0,%.3f,%.4f,0,0,0,0\n" % (s, 0.5 * s) for s in stamps))
+    shifted = bag_check.check_run(tmp_path, "cell", 75.0)
+    assert shifted["lidar_time_offset_ms"] == 75.0
+    assert shifted["scans"]["matched_frames"] == 3 and shifted["scans"]["identical_frames"] == 3
+    assert bag_check.check_run(tmp_path, "cell")["scans"]["matched_frames"] == 0
+
+
 def test_gate_time_is_split_by_state_and_reason():
     events = [{"time_s": 10.0, "topic": "/wc_nav/gate_status", "value": {"state": "ACTIVE"}},
               {"time_s": 12.0, "topic": "/wc_live/inputs_status", "value": {"state": "RUNNING"}},

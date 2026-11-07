@@ -119,13 +119,16 @@ def frozen_frontend(cell):
     return stamps, ranges, base_poses_from_lidar(lidar, lever), hashes
 
 
-def check_run(run_dir, cell):
+def check_run(run_dir, cell, lidar_time_offset_ms=0.0):
+    """``lidar_time_offset_ms``: the run stamped its scans this much earlier than the lidar frames."""
     run_dir = Path(run_dir)
     stamps, ranges, axle, hashes = frozen_frontend(cell)
     live_stamps, live_ranges = read_live_scans(run_dir / "scans.csv")
     odometry = read_live_odometry(run_dir / "odom.csv")
+    expected = stamps - float(lidar_time_offset_ms) * 1e-3
     result = {"frozen_cell": str(cell), "live_scans": int(len(live_stamps)), "live_odometry_samples": int(len(odometry)),
-              "scans": compare_scans(stamps, ranges, live_stamps, live_ranges),
+              "lidar_time_offset_ms": float(lidar_time_offset_ms),
+              "scans": compare_scans(expected, ranges, live_stamps, live_ranges),
               "odometry": compare_odometry(stamps, axle, odometry) if len(odometry) >= 2 else {"status": "NO_ODOMETRY"}}
     if len(live_stamps) > 1:
         result["live_scan_rate_hz"] = round(float((len(live_stamps) - 1) / (live_stamps.max() - live_stamps.min())), 2)
