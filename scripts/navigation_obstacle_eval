@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Offline obstacle-filter check on frozen ZL1107 frontends: obstacle points inside the recording's own future
+# swept footprint, new 3D input against the shadow runs' /scan. No ROS nodes, no devices, no commands.
+set -eo pipefail
+EVAL_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$EVAL_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$EVAL_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+exec /usr/bin/python3 -B -s -m wc_navigation.perception.evaluate --project-root "$EVAL_PROJECT" "$@"

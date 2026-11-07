@@ -76,14 +76,21 @@ class NavProfile:
     controller_frequency_hz: float = 10.0
     # Optional convex body outline [(x, y), ...] in base_link (axle origin inside). Empty: the circle above.
     footprint: tuple = ()
+    # Local costmap / collision monitor obstacle input (perception.nav2_obstacles): "scan" keeps /scan only.
+    obstacle_input: str = "scan"
+    obstacle_clouds: tuple = ()
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            if name != "footprint":
+            if name not in ("footprint", "obstacle_input", "obstacle_clouds"):
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
         object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
+        from ..perception.nav2_obstacles import check
+        obstacle_input, clouds = check(self.obstacle_input, self.obstacle_clouds)
+        object.__setattr__(self, "obstacle_input", obstacle_input)
+        object.__setattr__(self, "obstacle_clouds", clouds)
 
     @property
     def body_inscribed_m(self):
@@ -108,6 +115,11 @@ class NavProfile:
     def as_dict(self):
         values = {name: getattr(self, name) for name in self.__dataclass_fields__}
         values["footprint"] = [list(p) for p in self.footprint]
+        if self.obstacle_input == "scan":          # default runs keep their recorded profile unchanged
+            values.pop("obstacle_input")
+            values.pop("obstacle_clouds")
+        else:
+            values["obstacle_clouds"] = list(self.obstacle_clouds)
         return values
 
 
@@ -261,6 +273,12 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
         params.update({"global_frame": "odom", "update_frequency": 5.0, "publish_frequency": 2.0,
                        "rolling_window": True, "width": 6, "height": 6, "track_unknown_space": False,
                        "plugins": ["obstacle_layer", "inflation_layer"]})
+        if profile.obstacle_input != "scan":       # obstacle clouds (perception.nav2_obstacles)
+            from ..perception import nav2_obstacles
+            params.update(plugins=nav2_obstacles.local_plugins(profile.obstacle_input),
+                          voxel_layer=nav2_obstacles.voxel_layer(profile.obstacle_clouds))
+            if profile.obstacle_input == "cloud":
+                params.pop("obstacle_layer")
     return params
 
 
@@ -357,6 +375,14 @@ def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_p
     # which predicts contact along the commanded motion. With a body outline the
     # stop zone is that outline grown by the same ring (see monitor_polygons).
     zones = monitor_polygons(profile)
+    sources = {"observation_sources": ["scan"], "scan": {"type": "scan", "topic": "/scan", "enabled": True}}
+    if profile.obstacle_input != "scan":           # obstacle clouds (perception.nav2_obstacles)
+        from ..perception import nav2_obstacles
+        sources.update(nav2_obstacles.monitor_sources(profile.obstacle_clouds),
+                       observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
+                                                                                profile.obstacle_clouds))
+        if profile.obstacle_input == "cloud":
+            sources.pop("scan")
     return {
         "controller_server": _p({
             "use_sim_time": True, "controller_frequency": profile.controller_frequency_hz,
@@ -432,9 +458,7 @@ def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_p
             "cmd_vel_in_topic": CMD_SMOOTHED, "cmd_vel_out_topic": CMD_MONITORED,
             "transform_tolerance": 0.3, "source_timeout": 1.0, "base_shift_correction": True,
             "stop_pub_timeout": 2.0,
-            "polygons": list(zones), **zones,
-            "observation_sources": ["scan"],
-            "scan": {"type": "scan", "topic": "/scan", "enabled": True}}),
+            "polygons": list(zones), **zones, **sources}),
         "lifecycle_manager_navigation": _p({
             "use_sim_time": True, "autostart": True, "node_names": list(NAV2_NODES),
             "bond_timeout": 4.0}),
@@ -562,6 +586,11 @@ def _readback_expectations(profile, mode):
         global_body = {"robot_radius": profile.lethal_radius_m}
         local_body = {"robot_radius": profile.radius_m}
         stop = {"CircleStop.radius": profile.radius_m + STOP_RING_M}
+    if profile.obstacle_input != "scan":           # the obstacle clouds must really be wired in
+        from ..perception import nav2_obstacles
+        local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
+        stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
+                                                                                   profile.obstacle_clouds))
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,

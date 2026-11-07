@@ -11,6 +11,13 @@ Until ``/wc_shadow/start`` the pose holds at the first window frame and that
 frame's scan is repeated; after the last frame the last pose and scan are held
 for ``tail_hold_s``. Repeated scans are counted in the status. Nothing here
 subscribes to a velocity command, so the recorded motion never reacts to Nav2.
+
+Only when the recording carries obstacle clouds (shadow ``--obstacle-input``
+cloud or scan_and_cloud), each lidar's filtered cloud is also published on
+``/obstacles/<side>/points`` and its clearing rays on ``/obstacles/<side>/clearing``,
+in frame ``lidar_<side>`` at its own capture time, with static
+``base_link->lidar_<side>`` at the frozen 3D lever arm; held frames repeat the
+first or last cloud like the scan.
 """
 from __future__ import annotations
 
@@ -18,9 +25,27 @@ import argparse
 
 import numpy as np
 
+from ..perception import shadow_obstacles
+from ..perception.nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS
 from .ros_util import json_message, latched_qos, load_config, require_isolated_domain, yaw_to_quaternion
 from .shadow import interpolate_poses, segment_twist
 from .sim_node import _time_msg
+
+
+def pointcloud2(message_type, field_type, points, frame_id, stamp):
+    """x y z float32 PointCloud2 of an Nx3 array."""
+    pts = np.ascontiguousarray(np.asarray(points, dtype="<f4").reshape(-1, 3))
+    message = message_type()
+    message.header.stamp = stamp
+    message.header.frame_id = frame_id
+    message.height, message.width = 1, int(len(pts))
+    message.fields = [field_type(name=n, offset=4 * k, datatype=field_type.FLOAT32, count=1)
+                      for k, n in enumerate("xyz")]
+    message.is_bigendian = False
+    message.point_step, message.row_step = 12, 12 * int(len(pts))
+    message.is_dense = True
+    message.data = pts.tobytes()
+    return message
 
 
 def window_frames(recording, window):
@@ -78,14 +103,41 @@ class Replay:
         self.static_tf = StaticTransformBroadcaster(node)
         self.static_tf.sendTransform([self._transform("map", "odom", (0.0, 0.0, 0.0)),
                                       self._transform("base_link", "laser", (lever[0], lever[1], 0.0))])
+        self.recording = recording
+        self.clouds = {}
+        self.frames_node = None
+        cloud_statics = []
+        if shadow_obstacles.cloud_sides(recording):
+            from sensor_msgs.msg import PointCloud2, PointField
+            self.PointCloud2, self.PointField = PointCloud2, PointField
+        for side in shadow_obstacles.cloud_sides(recording):
+            t = shadow_obstacles.relative_times(recording, side)
+            frames = np.flatnonzero((t >= self.times[0] - 1e-9) & (t <= self.times[-1] + 1e-9))
+            if not len(frames):
+                continue
+            arm = [float(v) for v in recording["obstacle_%s_lever" % side]]
+            cloud_statics.append(self._transform("base_link", CLOUD_FRAMES[side], (arm[0], arm[1], 0.0), z=arm[2]))
+            self.clouds[side] = {"t": t[frames], "frames": frames, "next": 0, "published": 0,
+                                 "publisher": node.create_publisher(PointCloud2, CLOUD_TOPICS[side], 10),
+                                 "clearing": node.create_publisher(PointCloud2, CLEAR_TOPICS[side], 10)}
+        if cloud_statics:
+            # The fixed/amcl localization modes remap this process's /tf_static away (their helper then
+            # publishes map->odom and base_link->laser). The lidar frames go out from a node that ignores
+            # process-wide remaps, so they reach Nav2 in every localization mode.
+            import rclpy
+            self.frames_node = rclpy.create_node("wc_shadow_obstacle_frames", context=node.context,
+                                                 use_global_arguments=False)
+            self.frames_tf = StaticTransformBroadcaster(self.frames_node)
+            self.frames_tf.sendTransform(cloud_statics)
         node.create_service(Trigger, "/wc_shadow/start", self.on_start)
         node.create_timer(1.0 / self.tick_hz, self.tick)
 
-    def _transform(self, parent, child, pose, stamp=None):
+    def _transform(self, parent, child, pose, stamp=None, z=0.0):
         t = self.TransformStamped()
         t.header.stamp = stamp if stamp is not None else _time_msg(self.sim_time)
         t.header.frame_id, t.child_frame_id = parent, child
         t.transform.translation.x, t.transform.translation.y = float(pose[0]), float(pose[1])
+        t.transform.translation.z = float(z)
         qx, qy, qz, qw = yaw_to_quaternion(float(pose[2]))
         r = t.transform.rotation
         r.x, r.y, r.z, r.w = qx, qy, qz, qw
@@ -120,6 +172,7 @@ class Replay:
         self.clock_pub.publish(clock)
         if self.state == "PLAYING" and float(self.times[0]) + self.sim_time - self.playback_start >= float(self.times[-1]):
             self.flush_frames(float(self.times[-1]))
+            self.flush_clouds(float(self.times[-1]))
             self.state, self.tail_start = "TAIL_HOLD", self.sim_time
             self.next_hold_scan = self.sim_time + self.hold_period
             self.publish_status()
@@ -132,11 +185,14 @@ class Replay:
             self.publish_pose(r)
         if self.state == "PLAYING":
             self.flush_frames(r)
+            self.flush_clouds(r)
         elif self.sim_time + 1e-9 >= self.next_hold_scan:
             # The chair stands still here; repeat the nearest real scan with a fresh stamp.
             self.next_hold_scan += self.hold_period
             self.publish_pose(r)
             self.publish_scan(0 if self.state == "HOLD" else len(self.times) - 1, self.sim_time)
+            for side, cloud in self.clouds.items():
+                self.publish_cloud(side, 0 if self.state == "HOLD" else len(cloud["t"]) - 1, self.sim_time)
             self.hold_scans += 1
         if self.sim_time + 1e-9 >= self.next_status:
             self.next_status += 1.0
@@ -150,6 +206,24 @@ class Replay:
             self.publish_scan(k, stamp)
             self.next_frame += 1
             self.frames_published += 1
+
+    def flush_clouds(self, r):
+        """Publish every obstacle-cloud frame captured up to recording time ``r`` at its capture stamp."""
+        for side, cloud in self.clouds.items():
+            while cloud["next"] < len(cloud["t"]) and cloud["t"][cloud["next"]] <= r + 1e-9:
+                k = cloud["next"]
+                self.publish_cloud(side, k, self.playback_start + float(cloud["t"][k] - self.times[0]))
+                cloud["next"] += 1
+
+    def publish_cloud(self, side, k, stamp_s):
+        cloud = self.clouds[side]
+        frame = int(cloud["frames"][k])
+        stamp = _time_msg(stamp_s)
+        points = shadow_obstacles.frame_points(self.recording, side, frame)
+        cloud["publisher"].publish(pointcloud2(self.PointCloud2, self.PointField, points, CLOUD_FRAMES[side], stamp))
+        rays = shadow_obstacles.frame_clearing(self.recording, side, frame)
+        cloud["clearing"].publish(pointcloud2(self.PointCloud2, self.PointField, rays, CLOUD_FRAMES[side], stamp))
+        cloud["published"] += 1
 
     def publish_pose(self, r):
         if self.sim_time == self.last_pose_time:
@@ -191,6 +265,7 @@ class Replay:
             "recording_time_s": round(self.recording_time(), 3),
             "frames_total": int(len(self.times)), "frames_published": self.frames_published,
             "hold_scans_republished": self.hold_scans, "real_time_factor": self.rtf,
+            "obstacle_clouds_published": {side: c["published"] for side, c in self.clouds.items()},
             "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
             "commands_subscribed": False, "hardware_control": False}))
 
@@ -205,8 +280,9 @@ def main(argv=None):
     from rclpy.executors import ExternalShutdownException
     rclpy.init(args=ros_args)
     node = rclpy.create_node("wc_shadow_replay")
+    replay = None
     try:
-        Replay(node, config)
+        replay = Replay(node, config)
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
@@ -214,6 +290,8 @@ def main(argv=None):
         if rclpy.ok():
             raise
     finally:
+        if replay is not None and replay.frames_node is not None:
+            replay.frames_node.destroy_node()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
