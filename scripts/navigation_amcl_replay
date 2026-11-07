@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # AMCL and map server only, on frozen scans in an isolated software domain.
+# `navigation_amcl_replay cross ...` localizes one recording on another recording's saved map.
 set -eo pipefail
 AMCL_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
@@ -9,4 +10,9 @@ export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 export ROS_DOMAIN_ID=95 ROS_LOCALHOST_ONLY=1
 export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
 unset ROS_DISCOVERY_SERVER
-exec /usr/bin/python3 -B -s -m wc_navigation.amcl_cli --project-root "$AMCL_PROJECT" "$@"
+AMCL_MODULE=wc_navigation.amcl_cli
+if [ "${1:-}" = "cross" ]; then
+  shift
+  AMCL_MODULE=wc_navigation.live.amcl_cross
+fi
+exec /usr/bin/python3 -B -s -m "$AMCL_MODULE" --project-root "$AMCL_PROJECT" "$@"

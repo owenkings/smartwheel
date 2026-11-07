@@ -8,6 +8,7 @@
 - [navigation-and-obstacles.md](navigation-and-obstacles.md)：定位、地图朝向、超声波与激光雷达的职责及后续导航接入条件。
 - [autonomy_framework.md](autonomy_framework.md)：自主建图、路径规划、自动驾驶的分层结构、安全约束及仿真与实车的对应。
 - [planning_control.md](planning_control.md)：车体外形贯穿仿真、影子运行和代价地图；规划器与控制器的选择及对比证据。
+- [live_shadow.md](live_shadow.md)：已存地图上的定位、闸门的定位条件和实车影子链路的设计。
 
 ## 添加与验证
 

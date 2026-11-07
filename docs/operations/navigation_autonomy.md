@@ -98,6 +98,7 @@ bash scripts/navigation_nav2_shadow --mode follow --source-cell <同上> --map <
 - 地图必须在录包里程计坐标中（例如同一录包的建图重放结果）；记录路径落在空闲格上的比例低于一半时拒绝运行。`--assumed-radius`、`--margin`、`--max-linear`、`--max-angular` 与仿真相同；`WC_AUTONOMY_ROS_DOMAIN=97` 可与另一次运行并行。
 - `--footprint X1 Y1 X2 Y2 ...` 用凸多边形外形代替圆（车轴为原点，x 向前、y 向左，至少 3 个点，车轴须在外形内）。`--footprint-source` 写明外形来源，默认 `EXAMPLE_NOT_MEASURED`；实测后改为例如 `MEASURED_20261120`，结果和看板会按来源标注“示例”或“实测”。
 - `--planner`、`--controller`（默认 NavFn 与 RPP，不变）选其他规划器和控制器，见[规划与控制](navigation_planning.md)。
+- 地图来自另一段录包时用 `--localization fixed|amcl` 加 `--map-alignment`（固定对齐或已存地图上的 AMCL），见[实车影子链路](navigation_live_shadow.md)。
 
 输出在 `reports/navigation_nav2_shadow/<时间>_shadow_<模式>_<编号>/`：
 

@@ -54,7 +54,14 @@ class GateNode:
         correction = lookup_pose(self.buffer, "map", "odom")
         correction_ok, correction_reason = (True, "")
         if correction is not None:
-            correction_ok, correction_reason = self.correction.update(now, correction[0])
+            if self.correction.reference == "robot":
+                robot = lookup_pose(self.buffer, "odom", "base_link")
+                if robot is None:
+                    correction_ok, correction_reason = False, "ODOM_TO_BASE_TF_UNAVAILABLE"
+                else:
+                    correction_ok, correction_reason = self.correction.update(now, correction[0], robot[0])
+            else:
+                correction_ok, correction_reason = self.correction.update(now, correction[0])
         if found is None:
             self.gate.on_localization(False, "MAP_TO_BASE_TF_UNAVAILABLE")
         else:
@@ -93,7 +100,11 @@ def main(argv=None):
     from rclpy.parameter import Parameter
     from rclpy.executors import ExternalShutdownException
     rclpy.init(args=ros_args)
-    node = rclpy.create_node("wc_safety_gate", parameter_overrides=[Parameter("use_sim_time", value=True)])
+    # Simulated time by default (simulation and recorded shadow runs); the live shadow sets use_sim_time false.
+    use_sim_time = config.get("use_sim_time", True)
+    if type(use_sim_time) is not bool:
+        raise ValueError("use_sim_time must be a boolean")
+    node = rclpy.create_node("wc_safety_gate", parameter_overrides=[Parameter("use_sim_time", value=use_sim_time)])
     try:
         GateNode(node, config)
         rclpy.spin(node)
