@@ -2,10 +2,12 @@
 
 Publishes ``/clock``; ``/odom`` and ``odom->base_link`` with the recorded planar
 axle pose, interpolated at 50 Hz; static ``map->odom`` as identity, because the
-map was built in the recording's odometry frame; static ``base_link->laser``
-with the frozen lever arm; ``/scan`` with the prepared 161-bin scans at their
-recorded relative times; the recorded pose on ``/wc_shadow/recorded`` and
-status on ``/wc_shadow/status``.
+map was built in the recording's odometry frame (left out with the config key
+``publish_map_odom: false`` when another node owns map->odom); static
+``base_link->laser`` with the frozen lever arm; ``/scan`` with the prepared
+161-bin scans at their recorded relative times; the recorded pose on
+``/wc_shadow/recorded`` and status on ``/wc_shadow/status``. ROS arguments after
+``--ros-args`` (for example remaps) go to ``rclpy.init``.
 
 Until ``/wc_shadow/start`` the pose holds at the first window frame and that
 frame's scan is repeated; after the last frame the last pose and scan are held
@@ -17,7 +19,9 @@ cloud or scan_and_cloud), each lidar's filtered cloud is also published on
 ``/obstacles/<side>/points`` and its clearing rays on ``/obstacles/<side>/clearing``,
 in frame ``lidar_<side>`` at its own capture time, with static
 ``base_link->lidar_<side>`` at the frozen 3D lever arm; held frames repeat the
-first or last cloud like the scan.
+first or last cloud like the scan. With ``--obstacle-scan filtered`` the left
+lidar's filtered 161-bin scan goes out on ``/obstacles/left/scan`` in ``laser``
+with each left cloud.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ import argparse
 import numpy as np
 
 from ..perception import shadow_obstacles
-from ..perception.nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS
+from ..perception.nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC
 from .ros_util import json_message, latched_qos, load_config, require_isolated_domain, yaw_to_quaternion
 from .shadow import interpolate_poses, segment_twist
 from .sim_node import _time_msg
@@ -101,11 +105,18 @@ class Replay:
         self.status_pub = node.create_publisher(String, "/wc_shadow/status", latched_qos())
         self.tf = TransformBroadcaster(node)
         self.static_tf = StaticTransformBroadcaster(node)
-        self.static_tf.sendTransform([self._transform("map", "odom", (0.0, 0.0, 0.0)),
-                                      self._transform("base_link", "laser", (lever[0], lever[1], 0.0))])
+        statics = [self._transform("base_link", "laser", (lever[0], lever[1], 0.0))]
+        # publish_map_odom false: another node (a localization mode) owns map->odom.
+        self.publishes_map_odom = bool(config.get("publish_map_odom", True))
+        if self.publishes_map_odom:
+            statics.insert(0, self._transform("map", "odom", (0.0, 0.0, 0.0)))
+        self.static_tf.sendTransform(statics)
         self.recording = recording
         self.clouds = {}
         self.frames_node = None
+        self.filtered_scan_pub = None
+        if "obstacle_left_scan_ranges" in recording:
+            self.filtered_scan_pub = node.create_publisher(LaserScan, FILTERED_SCAN_TOPIC, 10)
         cloud_statics = []
         if shadow_obstacles.cloud_sides(recording):
             from sensor_msgs.msg import PointCloud2, PointField
@@ -223,6 +234,9 @@ class Replay:
         cloud["publisher"].publish(pointcloud2(self.PointCloud2, self.PointField, points, CLOUD_FRAMES[side], stamp))
         rays = shadow_obstacles.frame_clearing(self.recording, side, frame)
         cloud["clearing"].publish(pointcloud2(self.PointCloud2, self.PointField, rays, CLOUD_FRAMES[side], stamp))
+        ranges = shadow_obstacles.frame_scan(self.recording, side, frame)
+        if ranges is not None and self.filtered_scan_pub is not None:
+            self.filtered_scan_pub.publish(self.scan_message(ranges, stamp))
         cloud["published"] += 1
 
     def publish_pose(self, r):
@@ -245,17 +259,21 @@ class Replay:
             publisher.publish(message)
         self.tf.sendTransform(self._transform("odom", "base_link", (x, y, yaw), stamp))
 
-    def publish_scan(self, k, stamp_s):
+    def scan_message(self, ranges, stamp):
+        """LaserScan in ``laser`` with the recording's 161-bin geometry."""
         message = self.LaserScan()
-        message.header.stamp = _time_msg(stamp_s)
+        message.header.stamp = stamp
         message.header.frame_id = "laser"
         message.angle_min = self.angle_min
         message.angle_increment = self.angle_increment
-        message.angle_max = self.angle_min + self.angle_increment * (self.ranges.shape[1] - 1)
+        message.angle_max = self.angle_min + self.angle_increment * (len(ranges) - 1)
         message.time_increment, message.scan_time = 0.0, 0.0
         message.range_min, message.range_max = self.range_min, self.range_max
-        message.ranges = [float(v) for v in self.ranges[k]]
-        self.scan_pub.publish(message)
+        message.ranges = [float(v) for v in ranges]
+        return message
+
+    def publish_scan(self, k, stamp_s):
+        self.scan_pub.publish(self.scan_message(self.ranges[k], _time_msg(stamp_s)))
 
     def publish_status(self):
         self.status_pub.publish(json_message({
@@ -266,7 +284,10 @@ class Replay:
             "frames_total": int(len(self.times)), "frames_published": self.frames_published,
             "hold_scans_republished": self.hold_scans, "real_time_factor": self.rtf,
             "obstacle_clouds_published": {side: c["published"] for side, c in self.clouds.items()},
-            "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
+            "filtered_scan_published": self.filtered_scan_pub is not None,
+            "map_odom_published": self.publishes_map_odom,
+            "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME" if self.publishes_map_odom
+            else "MAP_TO_ODOM_FROM_ANOTHER_NODE",
             "commands_subscribed": False, "hardware_control": False}))
 
 

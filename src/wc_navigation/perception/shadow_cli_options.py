@@ -9,7 +9,7 @@ import json
 import math
 from pathlib import Path
 
-from .nav2_obstacles import OBSTACLE_INPUTS, SIDES
+from .nav2_obstacles import OBSTACLE_INPUTS, OBSTACLE_SCANS, SIDES
 from .obstacle_cloud import ObstacleFilter
 
 
@@ -28,12 +28,17 @@ def add_arguments(parser):
                        help="right lidar lever arm: frozen (field extrinsic in the right cell), symmetric (mirror of "
                             "the left mount) or 'X,Y,Z' in metres")
     group.add_argument("--obstacle-filter", default="{}", help="JSON object of ObstacleFilter overrides")
+    group.add_argument("--obstacle-scan", choices=OBSTACLE_SCANS, default="raw",
+                       help="LaserScan of the costmaps' obstacle layers, including the global costmap's: raw /scan "
+                            "(default) or filtered (/obstacles/left/scan: the left lidar's filtered obstacle points "
+                            "in the same 161 bins)")
 
 
 def check_arguments(parser, args):
     if args.obstacle_input == "scan":
-        if args.obstacle_right_cell or args.obstacle_sides:
-            parser.error("--obstacle-right-cell and --obstacle-sides need --obstacle-input cloud or scan_and_cloud")
+        if args.obstacle_right_cell or args.obstacle_sides or args.obstacle_scan != "raw":
+            parser.error("--obstacle-right-cell, --obstacle-sides and --obstacle-scan filtered need "
+                         "--obstacle-input cloud or scan_and_cloud")
         args.obstacle_filter_settings = None
         return
     try:
@@ -44,6 +49,8 @@ def check_arguments(parser, args):
         args.obstacle_sides = ["left", "right"] if args.obstacle_right_cell else ["left"]
     if "right" in args.obstacle_sides and not args.obstacle_right_cell:
         parser.error("the right obstacle cloud needs --obstacle-right-cell")
+    if args.obstacle_scan == "filtered" and "left" not in args.obstacle_sides:
+        parser.error("--obstacle-scan filtered needs the left obstacle cloud")
     lever = args.obstacle_right_lever
     if lever not in ("frozen", "symmetric"):
         try:
@@ -67,13 +74,15 @@ def prepare_kwargs(args):
             "footprint": args.footprint or (), "radius_m": None if args.footprint else args.assumed_radius,
             "consensus": not args.obstacle_no_consensus,
             "right_lever": None if args.obstacle_right_lever == "frozen" else args.obstacle_right_lever,
-            "window_s": list(args.window) if getattr(args, "window", None) else None}
+            "window_s": list(args.window) if getattr(args, "window", None) else None,
+            "scan": args.obstacle_scan == "filtered"}
 
 
 def profile_fields(args):
     if args.obstacle_input == "scan":
         return {}
-    return {"obstacle_input": args.obstacle_input, "obstacle_clouds": _sides(args)}
+    return {"obstacle_input": args.obstacle_input, "obstacle_clouds": _sides(args),
+            "obstacle_scan": args.obstacle_scan}
 
 
 def config_entries(args, recording):

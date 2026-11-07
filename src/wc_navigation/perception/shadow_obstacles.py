@@ -9,10 +9,12 @@ witness for unsupported clusters, and returns arrays for ``recording.npz``:
 ``obstacle_<side>_stamps_ns`` (n), ``obstacle_<side>_offsets`` (n + 1),
 ``obstacle_<side>_points`` (M x 3 float32, lidar frame), ``obstacle_<side>_lever`` (3),
 ``obstacle_<side>_clear_offsets`` (n + 1), ``obstacle_<side>_clear_points`` (K x 3
-float16 clearing-ray ends, lidar frame), ``obstacle_settings`` (JSON text).
+float16 clearing-ray ends, lidar frame), optionally ``obstacle_left_scan_ranges``
+(n x 161 float32, the filtered scan), ``obstacle_settings`` (JSON text).
 
 ``replay_node`` publishes them on ``/obstacles/<side>/points`` and
-``/obstacles/<side>/clearing`` in ``lidar_<side>``.
+``/obstacles/<side>/clearing`` in ``lidar_<side>``, and the filtered scan on
+``/obstacles/left/scan`` in ``laser``.
 """
 from __future__ import annotations
 
@@ -23,8 +25,8 @@ import numpy as np
 
 from . import frontend_frames
 from .consensus import Witness, move, planar_relative
-from .nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, SIDES
-from .obstacle_cloud import STAGES, ObstacleFilter, body_outline, filter_points
+from .nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC, SIDES
+from .obstacle_cloud import SCAN_BINS, STAGES, ObstacleFilter, body_outline, filter_frame
 
 SYMMETRIC_RIGHT_NOTE = ("right lever arm mirrored from the left mount (CAD-symmetric housing) instead of the "
                         "frozen 2026-10-26 field extrinsic, which puts the right lidar about 8.6 cm further forward")
@@ -62,12 +64,15 @@ def symmetric_right_lever(left_lever):
 
 def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None, cfg=ObstacleFilter(),
             footprint=(), radius_m=None, consensus=True, right_lever=None, witness_max_age_s=0.2, hashes=None,
-            window_s=None):
+            window_s=None, scan=False):
     """Filtered obstacle clouds of the requested lidars, packed for recording.npz.
 
     ``window_s`` (recording seconds from the first left frame) limits the work to
-    the frames a shadow run will publish, plus one second on each side.
+    the frames a shadow run will publish, plus one second on each side. ``scan``
+    also stores the left lidar's filtered 161-bin scan (``obstacle_left_scan_ranges``).
     """
+    if scan and "left" not in sides:
+        raise ValueError("the filtered scan comes from the left lidar")
     sides = tuple(s for s in SIDES if s in sides)
     if not sides:
         raise ValueError("at least one lidar side is required")
@@ -101,6 +106,8 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
         other = "right" if side == "left" else "left"
         chunks, offsets, stamps = [], [0], []
         clear_chunks, clear_offsets = [], [0]
+        scans = []
+        with_scan = scan and side == "left"
         total = {"frames": 0, "frames_with_witness": 0}
         for stamp, pts, _ in frames[side]:
             if stamp < path.stamps[0] - 10 ** 9 or stamp > path.stamps[-1]:
@@ -116,7 +123,10 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
                     relative = planar_relative(path.at(stamps_of[other][j]), path.at(stamp))
                     witness = Witness(move(frames[other][j][1].astype(float) + levers[other], relative),
                                       move(levers[other][None, :], relative)[0])
-            kept, stats, rays = filter_points(pts, levers[side], cfg, body, witness=witness, clearing=True)
+            result = filter_frame(pts, levers[side], cfg, body, witness, clearing=True, scan=with_scan)
+            kept, stats, rays = result["points"], result["stats"], result["rays"]
+            if with_scan:
+                scans.append(result["scan"])
             chunks.append(kept)
             offsets.append(offsets[-1] + len(kept))
             clear_chunks.append(rays.astype(np.float16))      # ray ends only: 1 cm steps are plenty
@@ -135,6 +145,9 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
         out["obstacle_%s_clear_offsets" % side] = np.asarray(clear_offsets, dtype=np.int64)
         out["obstacle_%s_clear_points" % side] = (np.concatenate(clear_chunks) if clear_chunks
                                                   else np.zeros((0, 3), dtype=np.float16))
+        if with_scan:
+            out["obstacle_left_scan_ranges"] = (np.stack(scans).astype(np.float32) if scans
+                                                else np.zeros((0, SCAN_BINS), dtype=np.float32))
         totals[side] = total
     settings = {"sides": list(sides), "filter": cfg.as_dict(), "consensus": bool(consensus),
                 "witness_max_age_s": witness_max_age_s, "levers": {s: levers[s].tolist() for s in levers},
@@ -142,6 +155,7 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
                 "lever_basis": lever_basis, "right_cell": str(right_cell) if right_cell is not None else None,
                 "body": [list(p) for p in body], "body_source": "FOOTPRINT" if footprint else "ASSUMED_CIRCLE",
                 "topics": {s: CLOUD_TOPICS[s] for s in sides}, "clearing_topics": {s: CLEAR_TOPICS[s] for s in sides},
+                "filtered_scan_topic": FILTERED_SCAN_TOPIC if scan else None,
                 "frames": {s: CLOUD_FRAMES[s] for s in sides},
                 "stage_order": list(STAGES), "totals": totals,
                 "right_lever_note": SYMMETRIC_RIGHT_NOTE if lever_basis.get("right") == "SYMMETRIC_TO_LEFT_MOUNT"
@@ -162,6 +176,13 @@ def cloud_sides(recording):
 def frame_points(recording, side, k):
     offsets = recording["obstacle_%s_offsets" % side]
     return recording["obstacle_%s_points" % side][offsets[k]:offsets[k + 1]]
+
+
+def frame_scan(recording, side, k):
+    """Filtered 161-bin scan of frame ``k`` of the left lidar, or None."""
+    if side != "left" or "obstacle_left_scan_ranges" not in recording:
+        return None
+    return recording["obstacle_left_scan_ranges"][k]
 
 
 def frame_clearing(recording, side, k):

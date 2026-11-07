@@ -44,6 +44,9 @@ import numpy as np
 
 AXLE_HEIGHT_M = 0.185        # drive-wheel hub centre above the floor, measured 2026-10-05
 STAGES = ("height", "range", "far_low", "body", "contradicted", "floating", "sparse")
+# The shadow runs' 161-bin scan (amcl_replay.build_scan): +-60 deg in 0.75 deg bins, 0.3-8 m.
+SCAN_ANGLE_MIN, SCAN_INCREMENT, SCAN_BINS = -math.pi / 3, math.pi / 240, 161
+SCAN_RANGE_M = (0.30, 8.0)
 
 
 def _positive(value, name):
@@ -73,6 +76,8 @@ class ObstacleFilter:
     voxel_m: float = 0.05
     cluster_voxel_m: float = 0.10
     min_voxel_points: int = 1
+    # Filtered 2D scan (same bins as /scan) from all kept points up to this range.
+    scan_max_range_m: float = 8.0
     # Clearing rays (free space for the costmap): nearest return per direction bin, shortened.
     clear_max_range_m: float = 10.0
     clear_bin_deg: float = 1.5
@@ -83,8 +88,8 @@ class ObstacleFilter:
     def __post_init__(self):
         for name in ("axle_height_m", "max_height_m", "max_range_m", "low_height_m", "low_max_range_m",
                      "body_max_height_m", "floating_max_extent_m", "floating_min_gap_m", "lowest_ray_deg",
-                     "voxel_m", "cluster_voxel_m", "clear_max_range_m", "clear_bin_deg", "clear_stop_short_m",
-                     "clear_stop_fraction", "clear_min_end_height_m"):
+                     "voxel_m", "cluster_voxel_m", "scan_max_range_m", "clear_max_range_m", "clear_bin_deg",
+                     "clear_stop_short_m", "clear_stop_fraction", "clear_min_end_height_m"):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
         for name in ("min_height_m", "body_margin_m"):
             value = float(getattr(self, name))
@@ -108,6 +113,8 @@ class ObstacleFilter:
             raise ValueError("lowest_ray_deg must be within 0..89")
         if self.clear_max_range_m > 15.0 or self.clear_stop_fraction >= 1.0 or self.clear_bin_deg > 10.0:
             raise ValueError("clearing settings out of range")
+        if self.scan_max_range_m > SCAN_RANGE_M[1]:
+            raise ValueError("scan_max_range_m cannot exceed the scan's 8 m")
 
     def as_dict(self):
         return asdict(self)
@@ -249,7 +256,31 @@ def clearing_rays(points, lever, exclude, cfg=ObstacleFilter()):
 
 
 def filter_points(points, lever, cfg=ObstacleFilter(), body=(), witness=None, clearing=False):
-    """Obstacle points of one frame.
+    """Obstacle points of one frame: (voxels, stats) and, with ``clearing``, the clearing rays too.
+
+    See ``filter_frame`` for the arguments.
+    """
+    result = filter_frame(points, lever, cfg, body, witness, clearing=clearing)
+    if clearing:
+        return result["points"], result["stats"], result["rays"]
+    return result["points"], result["stats"]
+
+
+def scan_ranges(points, cfg=ObstacleFilter()):
+    """Nearest horizontal range per bin of the shadow runs' 161-bin scan (inf where empty), float32."""
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    horizontal = np.hypot(p[:, 0], p[:, 1])
+    azimuth = np.arctan2(p[:, 1], p[:, 0])
+    ok = ((horizontal >= SCAN_RANGE_M[0]) & (horizontal <= min(SCAN_RANGE_M[1], cfg.scan_max_range_m))
+          & (np.abs(azimuth) <= -SCAN_ANGLE_MIN + 1e-12))
+    index = np.floor((azimuth[ok] - SCAN_ANGLE_MIN) / SCAN_INCREMENT + 0.5).astype(np.int64)
+    ranges = np.full(SCAN_BINS, np.inf, dtype=np.float32)
+    np.minimum.at(ranges, np.clip(index, 0, SCAN_BINS - 1), horizontal[ok].astype(np.float32))
+    return ranges
+
+
+def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, clearing=False, scan=False):
+    """Obstacle products of one frame.
 
     ``points``: Nx3 prepared cloud (lidar origin, axle-aligned axes); ``lever``: the
     lidar origin in base_link; ``body``: convex outline [(x, y), ...] in base_link
@@ -257,10 +288,13 @@ def filter_points(points, lever, cfg=ObstacleFilter(), body=(), witness=None, cl
     from the other lidar's nearest frame in this frame's base_link. Unsupported
     clusters the witness saw through are dropped (stage ``contradicted``); clusters
     it also hit are kept whatever their size; without a witness, or where it saw
-    nothing, the size rule of stage ``floating`` applies. Returns (kept points in
-    the lidar frame as float32 Mx3 after voxel reduction, stats dict with the
-    per-stage removal counts); with ``clearing`` also the frame's clearing rays
-    (``clearing_rays`` without the points dropped as floating or contradicted).
+    nothing, the size rule of stage ``floating`` applies.
+
+    Returns a dict: ``points`` (kept points within ``max_range_m`` in the lidar
+    frame, float32 Mx3 after voxel reduction), ``stats`` (per-stage removal counts),
+    with ``clearing`` also ``rays`` (``clearing_rays`` without the points dropped
+    as floating or contradicted) and with ``scan`` also ``scan`` (``scan_ranges``
+    of all kept points up to ``scan_max_range_m``, before voxel reduction).
     """
     p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     lever = np.asarray(lever, dtype=np.float64).reshape(3)
@@ -280,7 +314,7 @@ def filter_points(points, lever, cfg=ObstacleFilter(), body=(), witness=None, cl
         keep[removed] = False
 
     drop("height", (h < cfg.min_height_m) | (h > cfg.max_height_m))
-    drop("range", horizontal > cfg.max_range_m)
+    drop("range", horizontal > (max(cfg.max_range_m, cfg.scan_max_range_m) if scan else cfg.max_range_m))
     drop("far_low", (h < cfg.low_height_m) & (horizontal > cfg.low_max_range_m))
     outline = grow_convex(body, cfg.body_margin_m) if body else []
     if outline:
@@ -306,6 +340,13 @@ def filter_points(points, lever, cfg=ObstacleFilter(), body=(), witness=None, cl
     stats["unsupported_confirmed_by_witness"] = confirmed
     drop("contradicted", contradicted)
     drop("floating", floating)
+    result = {}
+    if scan:
+        result["scan"] = scan_ranges(p[keep], cfg)
+        stats["scan_bins"] = int(np.isfinite(result["scan"]).sum())
+        beyond = keep & (horizontal > cfg.max_range_m)
+        stats["beyond_cloud_range"] = int(beyond.sum())
+        keep &= ~beyond                     # the cloud itself stays within max_range_m
     kept = np.flatnonzero(keep)
     if len(kept):
         keys = _voxel_keys(base[kept], cfg.voxel_m)
@@ -331,11 +372,11 @@ def filter_points(points, lever, cfg=ObstacleFilter(), body=(), witness=None, cl
         out = np.zeros((0, 3), dtype=np.float32)
     stats["kept_points"] = int(len(kept))
     stats["voxels"] = int(len(out))
-    if not clearing:
-        return out, stats
-    rays = clearing_rays(p, lever, contradicted | floating, cfg)
-    stats["clearing_rays"] = int(len(rays))
-    return out, stats, rays
+    result.update(points=out, stats=stats)
+    if clearing:
+        result["rays"] = clearing_rays(p, lever, contradicted | floating, cfg)
+        stats["clearing_rays"] = int(len(result["rays"]))
+    return result
 
 
 def heights_above_floor(points, lever, cfg=ObstacleFilter()):

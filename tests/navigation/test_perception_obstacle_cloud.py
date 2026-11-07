@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from wc_navigation.perception.consensus import Witness, move, planar_relative
-from wc_navigation.perception.obstacle_cloud import (ObstacleFilter, body_outline, clearing_rays, filter_points,
-                                                     grow_convex, inside_convex)
+from wc_navigation.perception.obstacle_cloud import (ObstacleFilter, body_outline, clearing_rays, filter_frame,
+                                                     filter_points, grow_convex, inside_convex, scan_ranges)
 
 LEVER = np.array([0.323, 0.22875, 0.5915])          # left lidar in base_link (frozen mount)
 FLOOR = -LEVER[2] - 0.185                            # floor z in the lidar frame
@@ -135,6 +135,31 @@ def test_filter_returns_clearing_rays_without_artefact_directions():
     assert (ray_dirs @ ghost_dirs.T).max() < np.cos(np.radians(0.5)) or len(rays) == 0
 
 
+def test_filtered_scan_keeps_low_near_objects_and_far_walls_but_not_the_floor_curl():
+    low_box = block(1.6, 1.62, -0.1, 0.1, 0.05, 0.20)              # 1.3 m from the lidar, below the old band
+    curl = block(3.2, 3.22, 0.0, 0.2, 0.25, 0.40)                  # far low returns: the floor curl
+    far_wall = block(7.5, 7.52, -0.5, 0.5, 0.3, 1.2, step=0.05)    # 7.2 m: beyond the cloud's 4 m
+    result = filter_frame(np.vstack([low_box, curl, far_wall]), LEVER, scan=True)
+    ranges = result["scan"]
+    assert ranges.shape == (161,) and ranges.dtype == np.float32
+    finite = ranges[np.isfinite(ranges)]
+    assert finite.min() == pytest.approx(1.6 - LEVER[0], abs=0.03)
+    assert not np.any((finite > 2.5) & (finite < 3.5)), "floor-curl returns must not reach the scan"
+    assert np.any(finite > 7.0), "walls up to 8 m stay in the scan for clearing"
+    assert (base_of(result["points"])[:, 0] < LEVER[0] + 4.0 + 1e-6).all(), "the cloud keeps its 4 m range"
+    assert result["stats"]["beyond_cloud_range"] > 0 and result["stats"]["scan_bins"] > 0
+    plain = filter_frame(np.vstack([low_box, curl, far_wall]), LEVER)
+    assert "scan" not in plain and len(plain["points"]) == len(result["points"])
+
+
+def test_scan_ranges_use_the_shadow_scan_bins():
+    pts = np.array([[2.0, 0.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.2, 0.0, 0.0]])
+    ranges = scan_ranges(pts)
+    assert ranges[80] == pytest.approx(2.0)                         # straight ahead is the middle bin
+    assert ranges[int(round((math.pi / 4 + math.pi / 3) / (math.pi / 240)))] == pytest.approx(math.sqrt(2))
+    assert np.isfinite(ranges).sum() == 2                           # behind and too close are dropped
+
+
 def test_voxel_reduction_and_lidar_frame_output():
     box = block(1.5, 1.6, 0.0, 0.1, 0.3, 0.4, step=0.01)
     kept, stats = filter_points(box, LEVER)
@@ -161,7 +186,8 @@ def test_outline_helpers():
 
 
 @pytest.mark.parametrize("bad", [{"min_height_m": 1.7}, {"max_range_m": 20.0}, {"low_max_range_m": 5.0},
-                                 {"witness_min_share": 0.0}, {"floating_max_points": -1}, {"lowest_ray_deg": 95}])
+                                 {"witness_min_share": 0.0}, {"floating_max_points": -1}, {"lowest_ray_deg": 95},
+                                 {"scan_max_range_m": 9.0}])
 def test_invalid_settings_are_rejected(bad):
     with pytest.raises(ValueError):
         ObstacleFilter(**bad)
