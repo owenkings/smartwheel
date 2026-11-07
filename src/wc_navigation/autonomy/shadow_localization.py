@@ -271,6 +271,7 @@ def start(supervisor, recorder, files, config):
                           ["-r", "__node:=lifecycle_manager_localization"])
     supervisor.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_localization/is_active") is True,
                         60, "localization_active")
+    check_single_map_to_odom(supervisor, recorder, config)
     if mode == "amcl":
         settings = config["amcl"]
         covariance = nav2_config.initial_pose_covariance(*settings["initial_pose_std"])
@@ -292,6 +293,29 @@ def start(supervisor, recorder, files, config):
                                              "messages_sent": published["count"]}
     supervisor.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
                         30, "map_and_tf")
+
+
+def check_single_map_to_odom(supervisor, recorder, config, settle_s=1.0):
+    """Refuse to run if map->odom has a publisher other than this mode's (e.g. the replay's identity).
+
+    Before the start pose AMCL has not published yet, so in amcl mode no map->odom may exist; in fixed mode
+    it must be the alignment. A replay that ignored the /tf_static remap would otherwise publish a second,
+    identity map->odom and the run would silently mix the two.
+    """
+    from .bringup import RunError
+    from .ros_util import lookup_pose
+    recorder.spin(settle_s)
+    found = lookup_pose(recorder.buffer, "map", "odom")
+    if config["localization_mode"] == "amcl":
+        if found is not None:
+            raise RunError("map->odom exists before AMCL was given a start pose: another publisher (the replay's "
+                           "identity?) is active; refusing to mix it with AMCL")
+    else:
+        expected = _xyyaw(config["map_alignment"])
+        if found is None or math.hypot(found[0][0] - expected[0], found[0][1] - expected[1]) > 1e-6 or \
+                abs(math.atan2(math.sin(found[0][2] - expected[2]), math.cos(found[0][2] - expected[2]))) > 1e-6:
+            raise RunError("map->odom is not the fixed alignment (%s); another publisher is active" % (found,))
+    supervisor.report["map_to_odom_publisher_check"] = "PASS"
 
 
 # -- after the run --------------------------------------------------------------------------------
