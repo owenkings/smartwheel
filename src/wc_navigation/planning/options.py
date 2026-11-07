@@ -73,6 +73,9 @@ def add_planning_arguments(parser):
     parser.add_argument("--recovery-retries", type=int, default=4,
                         help="behaviour-tree recovery rounds (clear costmaps, wait) before a goal fails (default 4)")
     parser.add_argument("--recovery-wait", type=float, default=3.0, help="seconds of each recovery wait (default 3)")
+    parser.add_argument("--global-costmap", choices=["live", "static"], default="live",
+                        help="live (default): the global costmap also marks live scans; static: plan on the saved "
+                             "map only, live scans stay in the local costmap, the controller check and the monitor")
 
 
 def resolve_planning_arguments(parser, args):
@@ -83,7 +86,8 @@ def resolve_planning_arguments(parser, args):
                                        planner_params=parse_overrides(args.planner_param),
                                        controller_params=parse_overrides(args.controller_param),
                                        server_params=parse_overrides(args.checker_param),
-                                       recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait)
+                                       recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
+                                       global_live_scans=args.global_costmap == "live")
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))

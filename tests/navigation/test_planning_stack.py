@@ -188,6 +188,18 @@ def test_recovery_tree_and_checkers_are_explicit_options():
         stack.PlanningChoice(recovery_wait_s=0.0)
 
 
+def test_planning_on_the_saved_map_only_is_explicit():
+    choice = stack.PlanningChoice(planner="smac_hybrid", global_live_scans=False)
+    p = params(choice)
+    plugins = p["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    assert plugins == ["static_layer", "inflation_layer"]
+    assert "obstacle_layer" in p["local_costmap"]["local_costmap"]["ros__parameters"]["plugins"]
+    expected = nav2_config.readback_expectations(nav2_config.NavProfile(), "navigate", planning=choice)
+    assert expected["global_costmap/global_costmap"]["plugins"] == plugins
+    assert "obstacle_layer" in params(stack.PlanningChoice(planner="smac_hybrid"))[
+        "global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+
+
 def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     from wc_navigation.autonomy import cli, shadow_cli
     config = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms",
@@ -195,7 +207,8 @@ def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
                                              "minimum_turning_radius=0.5"]))
     assert config["planning"] == {"planner": "smac_hybrid", "controller": "rpp",
                                   "planner_params": [["minimum_turning_radius", 0.5]], "controller_params": [],
-                                  "server_params": [], "recovery_retries": 4, "recovery_wait_s": 3.0}
+                                  "server_params": [], "recovery_retries": 4, "recovery_wait_s": 3.0,
+                                  "global_live_scans": True}
     default = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms"]))
     assert stack.PlanningChoice.from_dict(default["planning"]).is_default
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),

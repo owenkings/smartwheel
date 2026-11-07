@@ -88,6 +88,8 @@ class PlanningChoice:
     server_params: tuple = field(default_factory=tuple)
     recovery_retries: int = DEFAULT_RECOVERY_RETRIES          # behaviour tree: clear costmaps / wait rounds
     recovery_wait_s: float = DEFAULT_RECOVERY_WAIT_S
+    # Navigate mode: False plans on the saved map only (live scans stay in the local costmap and the monitor).
+    global_live_scans: bool = True
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
@@ -104,19 +106,23 @@ class PlanningChoice:
         if type(retries) is not int or not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
             raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
         object.__setattr__(self, "recovery_wait_s", wait)
+        if not isinstance(self.global_live_scans, bool):
+            raise ValueError("global_live_scans must be true or false")
 
     @property
     def is_default(self):
         return (self.planner == DEFAULT_PLANNER and self.controller == DEFAULT_CONTROLLER
                 and not self.planner_params and not self.controller_params and not self.server_params
-                and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S)
+                and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S
+                and self.global_live_scans)
 
     def as_dict(self):
         return {"planner": self.planner, "controller": self.controller,
                 "planner_params": [list(p) for p in self.planner_params],
                 "controller_params": [list(p) for p in self.controller_params],
                 "server_params": [list(p) for p in self.server_params],
-                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s}
+                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s,
+                "global_live_scans": self.global_live_scans}
 
     def behavior_tree_options(self):
         return {"recovery_retries": self.recovery_retries, "wait_s": self.recovery_wait_s}
@@ -129,7 +135,8 @@ class PlanningChoice:
                    controller_params=tuple(tuple(p) for p in value.get("controller_params", ())),
                    server_params=tuple(tuple(p) for p in value.get("server_params", ())),
                    recovery_retries=int(value.get("recovery_retries", DEFAULT_RECOVERY_RETRIES)),
-                   recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)))
+                   recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)),
+                   global_live_scans=bool(value.get("global_live_scans", True)))
 
 
 def _set(section, dotted, value):
@@ -229,6 +236,9 @@ def apply(params, profile, choice, *, exploring):
         _set(controller["FollowPath"], key, value)
     for key, value in choice.server_params:
         _set(controller, key, value)
+    if not choice.global_live_scans:
+        costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+        costmap["plugins"] = [p for p in costmap["plugins"] if p != "obstacle_layer"]
     return params
 
 
@@ -269,6 +279,9 @@ def adjust_readback(expected, choice, profile, *, exploring):
     for key, value in choice.server_params:
         if not isinstance(value, dict):
             controller[key] = value
+    if not choice.global_live_scans:
+        plugins = expected["global_costmap/global_costmap"]["plugins"]
+        expected["global_costmap/global_costmap"]["plugins"] = [p for p in plugins if p != "obstacle_layer"]
     return expected
 
 

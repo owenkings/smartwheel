@@ -24,6 +24,7 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--controller-param NAME=VALUE` | 覆盖 `FollowPath` 控制器参数，例如 `use_rotate_to_heading=false` |
 | `--checker-param NAME=VALUE` | 覆盖目标检查和进度检查参数，只限 `general_goal_checker.*`、`progress_checker.*`，例如 `general_goal_checker.xy_goal_tolerance=0.35` |
 | `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
+| `--global-costmap live\|static` | `live`（默认）：导航时全局代价地图也标记实时扫描；`static`：只按保存的地图规划，实时扫描仍进局部代价地图、控制器碰撞检查和碰撞监控 |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查完整外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
