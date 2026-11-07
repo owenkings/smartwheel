@@ -76,3 +76,20 @@ def test_build_writes_a_new_directory_and_refuses_to_overwrite(tmp_path):
     assert manifest["hardware_started"] is False and len(manifest["map_inputs_sha256"]) == 3
     with pytest.raises(FileExistsError):
         po.build(content_path, output)
+
+
+def test_landing_page_points_to_the_newest_overview_and_keeps_old_snapshots(tmp_path):
+    map_yaml, poses = _map(tmp_path)
+    content_path = tmp_path / "content.json"
+    content_path.write_text(json.dumps(_content(), ensure_ascii=False), encoding="utf-8")
+    root = tmp_path / "dashboards"
+    po.build(content_path, root / "20261108_overview")
+    po.build(content_path, root / "20261109_overview")
+    (root / "20261107_office_outline").mkdir()
+    (root / "20261107_office_outline" / "index.html").write_text("old", encoding="utf-8")
+    result = po.write_landing(root)
+    page = (root / "index.html").read_text(encoding="utf-8")
+    assert result == {"landing": str(root / "index.html"), "overviews": 2, "other_snapshots": 1}
+    assert page.index('href="20261109_overview/"') < page.index('href="20261108_overview/"')
+    assert 'href="20261107_office_outline/"' in page and "打开最新的进展总览" in page
+    assert (root / "20261107_office_outline" / "index.html").read_text(encoding="utf-8") == "old"

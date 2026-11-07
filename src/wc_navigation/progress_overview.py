@@ -242,6 +242,54 @@ def render_html(content, map_png=None):
             + "".join(sections) + footer + "</main></body></html>")
 
 
+def write_landing(dashboard_root):
+    """Replace the dashboard root ``index.html`` with a short list of snapshots, newest overview first.
+
+    The root page is only a pointer, so it is replaced atomically each time;
+    the snapshot directories themselves are never touched.
+    """
+    import os
+    import tempfile
+    root = Path(dashboard_root)
+    overviews, others = [], []
+    for directory in sorted((p for p in root.iterdir() if p.is_dir() and (p / "index.html").is_file()),
+                            key=lambda p: p.name, reverse=True):
+        content = directory / "content.json"
+        if content.is_file():
+            try:
+                data = json.loads(content.read_text(encoding="utf-8"))
+                overviews.append((directory.name, str(data.get("updated", "")), str(data.get("title", "进展总览"))))
+                continue
+            except (OSError, ValueError):
+                pass
+        others.append(directory.name)
+    e = lambda value: html.escape(value, quote=True)  # noqa: E731
+    parts = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+             '<meta name="viewport" content="width=device-width, initial-scale=1"><title>轮椅导航进展</title>'
+             f'<style>{CSS}.big{{display:inline-block;margin:6px 0 4px;padding:12px 18px;border-radius:10px;'
+             'background:var(--doing);color:#fff;font-size:18px;font-weight:700;text-decoration:none}'
+             '.list a{color:var(--doing)}</style></head><body><main class="page">'
+             '<header><p class="eyebrow">离线进度快照目录</p><h1>轮椅导航进展</h1></header>']
+    if overviews:
+        name, updated, title = overviews[0]
+        parts.append(f'<section><a class="big" href="{e(name)}/">打开最新的进展总览</a>'
+                     f'<p class="note">{e(title)} · 更新于 {e(updated)}</p></section>')
+    if overviews[1:]:
+        parts.append('<section class="list"><h2>以前的总览</h2><ul>' + "".join(
+            f'<li><a href="{e(n)}/">{e(n)}</a>（{e(u)}）</li>' for n, u, _ in overviews[1:]) + "</ul></section>")
+    if others:
+        parts.append('<section class="list"><h2>详细看板（旧版，含历史数据）</h2><ul>' + "".join(
+            f'<li><a href="{e(n)}/">{e(n)}</a></li>' for n in others) + "</ul></section>")
+    parts.append("<footer><p>离线快照：页面不读实时数据，不连接车辆。</p></footer></main></body></html>")
+    page = "".join(parts)
+    handle, temporary = tempfile.mkstemp(dir=root, prefix=".index.", suffix=".html")
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(page)
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, root / "index.html")
+    return {"landing": str(root / "index.html"), "overviews": len(overviews), "other_snapshots": len(others)}
+
+
 def build(content_path, output):
     """Validate, render and write a new overview directory; return a summary dict."""
     raw = Path(content_path).read_bytes()
@@ -280,6 +328,8 @@ def main(argv=None):
     parser.add_argument("--content", type=Path, required=True, help="curated overview JSON (schema_version 1)")
     parser.add_argument("--output-dir", required=True, help="new directory under reports/, e.g. "
                                                             "reports/navigation_dashboard/20261108_overview")
+    parser.add_argument("--no-landing", action="store_true",
+                        help="do not refresh the index.html in the parent directory (a list of snapshots)")
     args = parser.parse_args(argv)
     from wc_runtime.storage_policy import StoragePolicy
     policy = StoragePolicy(args.project_root)
@@ -290,6 +340,8 @@ def main(argv=None):
         parser.error("--output-dir must be a new directory under reports/")
     try:
         result = build(args.content, output)
+        if not args.no_landing:
+            result.update(write_landing(output.parent))
     except (ContentError, OSError, ValueError, KeyError) as error:
         print(json.dumps({"status": "FAILED", "error": str(error)}, ensure_ascii=False))
         return 1
