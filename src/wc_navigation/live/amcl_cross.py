@@ -37,6 +37,12 @@ SUPPORT_M = 0.15            # localization_coverage support band
 SCAN_HEIGHT_M = (-0.5, 0.5)
 WINDOWS = (("first_40s", -math.inf, 40.0), ("40_80s", 40.0, 80.0), ("after_80s", 80.0, math.inf))
 SEGMENTS = ("START_DOOR", "MIDDLE", "END_DOOR")
+# The gate's localization conditions, evaluated explicitly on every run: the defaults before and after the
+# 2026-11-07 decision (safety_gate.GateConfig / CorrectionMonitor).
+GATE_VARIANTS = {
+    "gate_until_20261107": {"reference": "odom_origin", "translation_m": 0.25, "yaw_deg": 5.0, "cov_xy_m": 0.30},
+    "gate_default": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50},
+}
 JOIN_XY_M, JOIN_YAW_DEG, JOIN_SHARE = 0.25, 5.0, 0.9
 CONVERGED_XY_M, CONVERGED_YAW_DEG = 0.10, 2.0
 DIVERGED_XY_M, DIVERGED_YAW_DEG = 0.50, 10.0
@@ -206,12 +212,16 @@ def map_odom_series(result, odom_axle):
     return series
 
 
-def evaluate_run(result, frames, alignment, scorer, gate_config=None, analyzer=None):
-    """Per-frame table of one AMCL run; frames carry stamp, t, odom lidar/axle poses and endpoints."""
+def evaluate_run(result, frames, alignment, scorer, analyzer=None):
+    """Per-frame table of one AMCL run; frames carry stamp, t, odom lidar/axle poses and endpoints.
+
+    Every GATE_VARIANTS entry gets its own covariance check and correction monitor on the returned map->odom.
+    """
     from ..autonomy.safety_gate import CorrectionMonitor, GateConfig, SafetyGate
-    gate = SafetyGate(gate_config or GateConfig(require_covariance=True))
-    monitor = CorrectionMonitor()
-    robot_monitor = CorrectionMonitor(reference="robot")
+    variants = {name: (SafetyGate(GateConfig(require_covariance=True, covariance_xy_std_max_m=v["cov_xy_m"])),
+                       CorrectionMonitor(max_translation_m=v["translation_m"], max_yaw_rad=math.radians(v["yaw_deg"]),
+                                         reference=v["reference"]))
+                for name, v in GATE_VARIANTS.items()}
     poses = {row["stamp_ns"]: row for row in result.get("trajectory", [])}
     series = map_odom_series(result, {f["stamp_ns"]: f["axle"] for f in frames})
     rows, history = [], []
@@ -245,24 +255,26 @@ def evaluate_run(result, frames, alignment, scorer, gate_config=None, analyzer=N
         jump_xy = max(math.hypot(mx - h[0, 2], my - h[1, 2]) for _, h in history)
         jump_robot = max(float(np.hypot(*((map_odom - h) @ robot)[:2])) for _, h in history)
         jump_yaw = max(abs(wrap(myaw - math.atan2(h[1, 0], h[0, 0]))) for _, h in history)
-        correction_ok, _ = monitor.update(t, (mx, my, myaw))
-        robot_ok, _ = robot_monitor.update(t, (mx, my, myaw), robot[:2])
         row.update(x=x, y=y, yaw=yaw, map_odom=[mx, my, myaw], fit=fit, known=known, support=support,
                    along_vs_fixed=along, across_vs_fixed=across, yaw_vs_fixed=wrap(yaw - byaw),
-                   change_2s_xy=jump_xy, change_2s_robot_xy=jump_robot, change_2s_yaw=jump_yaw,
-                   correction_ok=correction_ok, correction_robot_ok=robot_ok)
+                   change_2s_xy=jump_xy, change_2s_robot_xy=jump_robot, change_2s_yaw=jump_yaw)
+        for name, (gate, monitor) in variants.items():
+            row[name + "_correction_ok"] = monitor.update(t, (mx, my, myaw), robot[:2])[0]
         if last_covariance is not None:
             std_along, std_across = heading_std(last_covariance, yaw)
-            covariance_ok, reason = gate.check_covariance(last_covariance)
             row.update(std_x=math.sqrt(max(last_covariance[0], 0.0)), std_y=math.sqrt(max(last_covariance[7], 0.0)),
-                       std_yaw=math.sqrt(max(last_covariance[35], 0.0)), std_along=std_along,
-                       std_across=std_across, covariance_ok=covariance_ok, covariance_reason=reason)
+                       std_yaw=math.sqrt(max(last_covariance[35], 0.0)), std_along=std_along, std_across=std_across)
+            for name, (gate, monitor) in variants.items():
+                ok, reason = gate.check_covariance(last_covariance)
+                row[name + "_covariance_ok"] = ok
+                if not ok:
+                    row[name + "_covariance_reason"] = reason
         if analyzer is not None:
             report = analyzer.analyze(frame["ranges"], frame["angles"], list(xyyaw(lidar)), heading_yaw_rad=yaw)
             row.update(coverage_insufficient=report["coverage_insufficient"],
                        along_heading_ambiguity=report["along_heading_ambiguity_evidence"])
         rows.append(row)
-    return rows, {"correction_jump_events": monitor.events, "correction_jump_events_robot": robot_monitor.events}
+    return rows, {"correction_jump_events": {name: monitor.events for name, (_, monitor) in variants.items()}}
 
 
 def summarize_run(rows, frames):
@@ -285,15 +297,20 @@ def summarize_run(rows, frames):
             values = np.abs(values)
         suffix = "_deg" if "yaw" in key else ("_fraction" if key in ("known", "support") else "_m")
         summary[key + suffix] = {name: stats(values[labels == name]) for name in SEGMENTS}
-    flags = [r for r in rows if "covariance_ok" in r]
-    summary["gate_covariance_failures"] = {name: int(sum(1 for r in flags if not r["covariance_ok"] and r["segment"] == name))
-                                           for name in SEGMENTS}
-    summary["gate_covariance_reasons"] = sorted({r["covariance_reason"] for r in flags if not r["covariance_ok"]})
-    summary["gate_correction_untrusted_frames"] = {
-        name: int(sum(1 for r in rows if r.get("correction_ok") is False and r["segment"] == name)) for name in SEGMENTS}
-    summary["gate_correction_robot_reference_untrusted_frames"] = {
-        name: int(sum(1 for r in rows if r.get("correction_robot_ok") is False and r["segment"] == name))
-        for name in SEGMENTS}
+    summary["gate"] = {}
+    for variant, settings in GATE_VARIANTS.items():
+        covariance, correction = variant + "_covariance_ok", variant + "_correction_ok"
+        summary["gate"][variant] = {
+            "settings": dict(settings),
+            "covariance_untrusted_frames": {name: int(sum(1 for r in rows if r.get(covariance) is False
+                                                          and r["segment"] == name)) for name in SEGMENTS},
+            "correction_untrusted_frames": {name: int(sum(1 for r in rows if r.get(correction) is False
+                                                          and r["segment"] == name)) for name in SEGMENTS},
+            "either_untrusted_frames": {name: int(sum(1 for r in rows if (r.get(covariance) is False
+                                                                          or r.get(correction) is False)
+                                                      and r["segment"] == name)) for name in SEGMENTS},
+            "covariance_reasons": sorted({r[variant + "_covariance_reason"] for r in rows
+                                          if r.get(variant + "_covariance_reason")})}
     ambiguous = [r for r in rows if r.get("along_heading_ambiguity") and r["segment"] == "MIDDLE"]
     if any("along_heading_ambiguity" in r for r in rows):
         clear = [r for r in rows if r.get("along_heading_ambiguity") is False and r["segment"] == "MIDDLE"
@@ -518,8 +535,8 @@ def case_name(perturbation):
 CSV_FIELDS = ("stamp_ns", "t", "segment", "acknowledged", "filter_updated", "x", "y", "yaw", "fit", "known",
               "support", "std_x", "std_y", "std_yaw", "std_along", "std_across", "along_vs_fixed",
               "across_vs_fixed", "yaw_vs_fixed", "change_2s_xy", "change_2s_robot_xy", "change_2s_yaw",
-              "correction_ok", "correction_robot_ok", "covariance_ok", "coverage_insufficient",
-              "along_heading_ambiguity")
+              *[name + suffix for name in GATE_VARIANTS for suffix in ("_correction_ok", "_covariance_ok")],
+              "coverage_insufficient", "along_heading_ambiguity")
 
 
 def write_rows(path, rows, frames, scorer, alignment):

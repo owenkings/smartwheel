@@ -96,7 +96,7 @@ def test_covariance_is_necessary_only():
     small[35] = 0.01
     assert gate.check_covariance(small) == (True, "")
     large = list(small)
-    large[0] = 0.25
+    large[0] = 0.36                       # 0.6 m standard deviation
     assert gate.check_covariance(large) == (False, "COVARIANCE_XY_TOO_LARGE")
     yaw = list(small)
     yaw[35] = 0.2
@@ -105,7 +105,8 @@ def test_covariance_is_necessary_only():
 
 
 def test_slow_map_correction_is_trusted():
-    monitor = CorrectionMonitor(window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5), hold_s=3.0)
+    monitor = CorrectionMonitor(window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5), hold_s=3.0,
+                                reference="odom_origin")
     for k in range(100):  # 1 cm and 0.2 degree per second of drift correction
         ok, reason = monitor.update(k * 0.1, (0.001 * k, 0.0, math.radians(0.02 * k)))
         assert ok and reason == ""
@@ -113,7 +114,8 @@ def test_slow_map_correction_is_trusted():
 
 
 def test_fast_map_correction_stops_until_stable_for_hold_time():
-    monitor = CorrectionMonitor(window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5), hold_s=3.0)
+    monitor = CorrectionMonitor(window_s=2.0, max_translation_m=0.25, max_yaw_rad=math.radians(5), hold_s=3.0,
+                                reference="odom_origin")
     assert monitor.update(0.0, (0.0, 0.0, 0.0))[0]
     assert monitor.update(0.5, (0.0, 0.0, math.radians(8)))[1] == "MAP_CORRECTION_CHANGING_FAST"
     assert not monitor.update(2.4, (0.0, 0.0, math.radians(8)))[0]   # stable, but within hold time
@@ -125,8 +127,8 @@ def test_fast_map_correction_stops_until_stable_for_hold_time():
 
 def test_heading_wraparound_is_not_a_jump():
     monitor = CorrectionMonitor()
-    assert monitor.update(0.0, (0.0, 0.0, math.pi - 0.01))[0]
-    assert monitor.update(0.1, (0.0, 0.0, -math.pi + 0.01))[0]
+    assert monitor.update(0.0, (0.0, 0.0, math.pi - 0.01), (0.0, 0.0))[0]
+    assert monitor.update(0.1, (0.0, 0.0, -math.pi + 0.01), (0.0, 0.0))[0]
 
 
 @pytest.mark.parametrize("field,value", [("max_linear", 0), ("max_angular", -1), ("allow_reverse", 1),
@@ -143,7 +145,7 @@ def test_robot_reference_ignores_heading_correction_lever_far_from_odom_origin()
     rotate_about_robot = math.radians(1.0)
     c, s = math.cos(rotate_about_robot), math.sin(rotate_about_robot)
     shifted = (robot[0] - (c * robot[0] - s * robot[1]), robot[1] - (s * robot[0] + c * robot[1]), rotate_about_robot)
-    origin = CorrectionMonitor(max_translation_m=0.2, max_yaw_rad=math.radians(5))
+    origin = CorrectionMonitor(max_translation_m=0.2, max_yaw_rad=math.radians(5), reference="odom_origin")
     at_robot = CorrectionMonitor(max_translation_m=0.2, max_yaw_rad=math.radians(5), reference="robot")
     assert origin.update(0.0, (0.0, 0.0, 0.0))[0] and at_robot.update(0.0, (0.0, 0.0, 0.0), robot)[0]
     assert math.hypot(*shifted[:2]) > 0.2
@@ -162,8 +164,21 @@ def test_robot_reference_still_stops_on_a_translation_jump_and_needs_the_robot_p
         CorrectionMonitor(reference="map")
 
 
-def test_default_reference_keeps_the_map_to_odom_translation_measure():
+def test_defaults_measure_at_the_robot_with_ten_degrees_and_half_metre_covariance():
     default = CorrectionMonitor()
-    assert default.reference == "odom_origin"
-    assert default.update(0.0, (0.0, 0.0, 0.0))[0]
-    assert not default.update(0.5, (0.26, 0.0, 0.0))[0]
+    assert default.reference == "robot" and default.max_yaw_rad == pytest.approx(math.radians(10))
+    assert default.max_translation_m == 0.25 and default.window_s == 2.0 and default.hold_s == 3.0
+    robot = (12.0, -3.0)
+    assert default.update(0.0, (0.0, 0.0, 0.0), robot)[0]
+    assert default.update(0.5, (0.0, 0.0, math.radians(9)), (0.0, 0.0))[0]       # 9 degrees at the origin: ok
+    assert not default.update(1.0, (0.26, 0.0, math.radians(9)), (0.0, 0.0))[0]  # 0.26 m at the robot
+    with pytest.raises(ValueError):
+        default.update(1.1, (0.0, 0.0, 0.0))
+    config = GateConfig()
+    assert config.covariance_xy_std_max_m == 0.50 and config.covariance_yaw_std_max_rad == 0.25
+    gate = SafetyGate(GateConfig(require_covariance=True))
+    covariance = [0.0] * 36
+    covariance[0], covariance[7], covariance[35] = 0.49 ** 2, 0.1, 0.01
+    assert gate.check_covariance(covariance) == (True, "")
+    covariance[7] = 0.51 ** 2
+    assert gate.check_covariance(covariance) == (False, "COVARIANCE_XY_TOO_LARGE")

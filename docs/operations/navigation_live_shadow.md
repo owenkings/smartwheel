@@ -39,7 +39,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_nav2_shadow \
 
 - `--localization identity`（默认）：地图在录包自己的里程计坐标系里，`map→odom` 恒等，行为与以前相同。
 - `--localization fixed`：地图来自另一段录包，静态 `map→odom` 取对齐值，不做修正；是跨录包时与 AMCL 对比的基线。
-- `--localization amcl`：map_server + AMCL。起点是对齐后的录包起点，`--initial-pose-offset FORWARD_M LEFT_M YAW_DEG` 可加操作员误差，`--initial-pose-std` 默认 0.25 m、8.6°；`--amcl-params` 选 `framework`（默认）或一组候选改动。闸门同时要求 AMCL 协方差；`--gate-correction-limits TRANSLATION_M YAW_DEG`、`--gate-covariance-limits XY_STD_M YAW_STD_DEG` 和 `--gate-correction-reference odom_origin|robot` 改闸门的定位条件，默认与闸门本身相同（0.25 m、5°，0.30 m、14.3°，按 `map→odom` 量）。
+- `--localization amcl`：map_server + AMCL。起点是对齐后的录包起点，`--initial-pose-offset FORWARD_M LEFT_M YAW_DEG` 可加操作员误差，`--initial-pose-std` 默认 0.25 m、8.6°；`--amcl-params` 选 `framework`（默认）或一组候选改动。闸门同时要求 AMCL 协方差；`--gate-correction-limits TRANSLATION_M YAW_DEG`、`--gate-covariance-limits XY_STD_M YAW_STD_DEG` 和 `--gate-correction-reference robot|odom_origin` 改闸门的定位条件，默认与闸门本身相同（2026-11-07 起：车体位置 2 s 内 0.25 m 或航向 10°，协方差 0.50 m、14.3°，按车体位置量）。
 - fixed 和 amcl 需要 `--map-alignment X Y YAW_DEG` 或 `--map-alignment-json`；记录路径放进地图后至少一半落在空闲格上才运行。
 
 输出与原影子运行相同，另有 `localization_samples.csv`（10 Hz 的 `map→odom` 和每个 AMCL 位姿与协方差）、`recording_map.npz`（放进地图的录包，给 carrot 和统计用）和 `result.json` 的 `localization` 一节：AMCL 与对齐的差、端点拟合（AMCL 与对齐）、闸门实际因定位不可信停车的秒数（按原因）、离线换阈值重算的不可信比例（两种修正量法、几档平移和航向、几档协方差、端点支撑），以及 2 s 内修正变化的分布。
@@ -78,7 +78,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`）、Nav2 各服务器（参数读回核对）、安全闸门，然后由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°），再启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 没有任何订阅者；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
 
 - `--source bag`：上面的录包检验，录包时间，域 100。
-- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间；三个传感器话题经单向转发从面板域进影子域。只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。到时和用户确认影子用哪个域、怎样和面板共存（见检查单）。
+- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间，影子框架在域 100（`WC_AUTONOMY_ROS_DOMAIN=100`，用户 2026-11-07 同意）；三个传感器话题经单向转发从面板域进影子域，转发的订阅范围和只读保证见[设计说明](../architecture/live_shadow.md#实车影子模式的单向转发第一次上车前由总管和用户评审)。第一次上车前总管和用户先评审这一部分；之后只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 

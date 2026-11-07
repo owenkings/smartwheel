@@ -133,3 +133,45 @@ def test_arguments_bound_perturbations_and_keep_the_reference_case(tmp_path):
         arguments(base + ["--perturbation", "3", "0", "0"])
     with pytest.raises(SystemExit):
         arguments(base[:-4] + ["--alignment", "0", "1", "-85", "--alignment-json", "a.json"])
+
+
+def test_gate_variants_are_explicit_and_the_default_one_matches_the_gate():
+    from wc_navigation.autonomy.safety_gate import CorrectionMonitor, GateConfig
+    from wc_navigation.live.amcl_cross import GATE_VARIANTS
+    current = GATE_VARIANTS["gate_default"]
+    monitor, config = CorrectionMonitor(), GateConfig()
+    assert current["reference"] == monitor.reference and current["translation_m"] == monitor.max_translation_m
+    assert math.radians(current["yaw_deg"]) == pytest.approx(monitor.max_yaw_rad)
+    assert current["cov_xy_m"] == config.covariance_xy_std_max_m
+    assert GATE_VARIANTS["gate_until_20261107"] == {"reference": "odom_origin", "translation_m": 0.25,
+                                                    "yaw_deg": 5.0, "cov_xy_m": 0.30}
+
+
+def test_evaluate_run_flags_each_gate_variant_on_a_heading_correction_far_from_the_origin():
+    from wc_navigation.live.amcl_cross import evaluate_run
+    scorer = EndpointScorer(corridor_grid(), 0.1, (0.0, 0.0, 0.0))
+    frames, trajectory = [], []
+    for k in range(12):
+        axle = se2(13.0, 2.0, 0.0)                       # standing 13 m from the odom origin
+        frames.append({"stamp_ns": 1_000_000_000 + k * 300_000_000, "t": k * 0.3, "segment": "MIDDLE",
+                       "axle": axle, "lidar": axle, "endpoints": np.array([[0.0, -0.95]])})
+    covariance = [0.0] * 36
+    covariance[0] = covariance[7] = 0.16                 # 0.4 m: fails 0.30, passes 0.50
+    covariance[35] = 0.01
+    rows = []
+    theta = math.radians(1.5)
+    c, s = math.cos(theta), math.sin(theta)
+    # From frame 6 on AMCL turns the heading by 1.5 degrees about the robot itself: map->odom rotates and
+    # shifts by p - R p (0.34 m), the robot's map position does not move.
+    shifted = (13.0 - (c * 13.0 - s * 2.0), 2.0 - (s * 13.0 + c * 2.0))
+    for k, frame in enumerate(frames):
+        x, y, yaw = (0.0, 0.0, 0.0) if k < 6 else (*shifted, theta)
+        rows.append({"stamp_ns": frame["stamp_ns"], "x_m": x, "y_m": y, "yaw_rad": yaw, "filter_updated": True})
+        trajectory.append({"stamp_ns": frame["stamp_ns"], "covariance": covariance})
+    result = {"map_odom_trajectory": rows, "trajectory": trajectory}
+    table, extra = evaluate_run(result, frames, np.eye(3), scorer)
+    after = table[6]
+    assert after["change_2s_xy"] == pytest.approx(math.hypot(*shifted)) and after["change_2s_robot_xy"] < 1e-9
+    assert after["gate_until_20261107_correction_ok"] is False and after["gate_default_correction_ok"] is True
+    assert after["gate_until_20261107_covariance_ok"] is False and after["gate_default_covariance_ok"] is True
+    assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_default": 0}
