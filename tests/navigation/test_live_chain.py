@@ -272,7 +272,8 @@ def test_command_line_requires_explicit_vehicle_inputs_and_goals(tmp_path):
     with pytest.raises(SystemExit):
         arguments(shadow + ["--source", "vehicle", "--sensor-domain", "83", "--bag", "x", "--goal", "1", "2", "0"])
     args = arguments(shadow + ["--source", "bag", "--bag", "x", "--goal", "1", "2", "90"])
-    assert args.goal == [[1.0, 2.0, 90.0]] and args.gate_correction_reference == "odom_origin"
+    assert args.goal == [[1.0, 2.0, 90.0]] and args.gate_correction_reference == "robot"
+    assert args.gate_correction_limits == [0.25, 10.0] and args.gate_covariance_limits[0] == 0.50
     with pytest.raises(SystemExit):
         arguments(shadow + ["--source", "bag", "--bag", "x", "--goal", "1", "2", "0", "--amcl-params", "other"])
 
@@ -284,4 +285,47 @@ def test_vehicle_mode_refuses_without_the_dated_user_approval(tmp_path, monkeypa
             "--source", "vehicle", "--sensor-domain", "83", "--map", "m.yaml", "--initial-pose", "0", "0", "0",
             "--goal", "1", "2", "0"]
     with pytest.raises(SystemExit, match="APPROVED_BY_USER"):
+        cli.main(argv)
+
+
+def test_relay_source_node_class_cannot_publish_serve_or_call():
+    from rcl_interfaces.msg import ParameterEvent
+    from rclpy.qos import qos_profile_parameter_events
+    from std_msgs.msg import String
+    from wc_navigation.live.relay_node import read_only_node_class
+    cls = read_only_node_class()
+    node = object.__new__(cls)            # methods only; no ROS context is created
+    stand_in = cls.create_publisher(node, ParameterEvent, "/parameter_events", qos_profile_parameter_events)
+    assert stand_in.publish(ParameterEvent()) is None and stand_in.destroy() is None
+    for topic in ("/wc_mapping/imu/source_frame", "/parameter_events_other", "/rosout"):
+        with pytest.raises(PermissionError):
+            cls.create_publisher(node, String, topic, 10)
+    with pytest.raises(PermissionError):
+        cls.create_publisher(node, String, "/parameter_events", 10)      # right name, wrong type
+    with pytest.raises(PermissionError):
+        cls.create_service(node, object, "/srv", lambda request, response: response)
+    with pytest.raises(PermissionError):
+        cls.create_client(node, object, "/srv")
+
+
+def test_relay_graph_check_requires_exactly_the_three_subscriptions_and_nothing_else():
+    from wc_navigation.live.relay_node import RELAYED_TOPICS, graph_check
+    expected = ["/p" + t for t in RELAYED_TOPICS]
+    subscriptions = [(t, ["type"]) for t in reversed(expected)]
+    assert graph_check([], subscriptions, [], [], expected)["status"] == "PASS"
+    assert graph_check([("/parameter_events", ["x"])], subscriptions, [], [], expected)["status"] == "FAIL"
+    assert graph_check([], subscriptions[:2], [], [], expected)["status"] == "FAIL"
+    assert graph_check([], subscriptions + [("/other", ["x"])], [], [], expected)["status"] == "FAIL"
+    assert graph_check([], subscriptions, [("/get_parameters", ["x"])], [], expected)["status"] == "FAIL"
+    assert graph_check([], subscriptions, [], [("/x", ["y"])], expected)["status"] == "FAIL"
+
+
+def test_vehicle_mode_also_requires_the_agreed_shadow_domain(tmp_path, monkeypatch):
+    from wc_navigation.live import cli
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261108")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "99")
+    argv = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--source", "vehicle", "--sensor-domain", "83", "--map", "m.yaml", "--initial-pose", "0", "0", "0",
+            "--goal", "1", "2", "0"]
+    with pytest.raises(SystemExit, match="domain 100"):
         cli.main(argv)

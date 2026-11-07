@@ -69,7 +69,7 @@ class LiveMonitor:
         self.enabled = False
         self.Bool, self.Pose = Bool, PoseWithCovarianceStamped
         for topic in ("/wc_live/inputs_status/scan", "/wc_live/inputs_status/odometry", "/wc_nav/gate_status",
-                      "/wc_live/goal_status"):
+                      "/wc_live/goal_status", "/wc_live/relay_status"):
             self.node.create_subscription(String, topic, lambda m, t=topic: self.status.__setitem__(
                 t, json.loads(m.data)), latched_qos())
         self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
@@ -169,6 +169,8 @@ class LiveSupervisor(Supervisor):
             self.launch_module("inputs_" + role, "wc_navigation.live.inputs_node", files["inputs_" + role])
         if cfg.get("relay"):
             self.launch_module("relay", "wc_navigation.live.relay_node", files["relay"])
+            self.wait_for(monitor, lambda: monitor.state("/wc_live/relay_status") == "RUNNING", 30, "relay_ready")
+            self.report["relay_self_check"] = (monitor.status.get("/wc_live/relay_status") or {}).get("self_check")
         self.wait_for(monitor, lambda: all(monitor.state("/wc_live/inputs_status/" + role) is not None
                                            for role in INPUT_ROLES), 30, "inputs_ready")
 
@@ -187,9 +189,8 @@ class LiveSupervisor(Supervisor):
         files["localization"] = self.write("localization_params.yaml", with_sim_time(localization, sim))
         limits = cfg["gate_limits"]
         monitor = {"window_s": 2.0, "max_translation_m": limits["correction_translation_m"],
-                   "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": 3.0}
-        if limits["correction_reference"] != "odom_origin":
-            monitor["reference"] = limits["correction_reference"]
+                   "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": 3.0,
+                   "reference": limits["correction_reference"]}
         files["gate"] = self.node_config("gate_config", {
             "use_sim_time": sim, "correction_monitor": monitor,
             "gate": {"max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": True,

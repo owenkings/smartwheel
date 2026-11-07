@@ -1,5 +1,7 @@
 # Offline localization evidence ledger
 
+> 历史记录：本页从“The current 132-frame holdout”起的帧数、冲突数和最大分歧，来自 2026-10-11 旧走廊录包（zoulang_test3min，70–105 s 留出段）。按 2026-11-07 的数据范围决定，这份录包及其前端和地图已停用，这些数字只作历史，不用于新结论或对比。工具和判据本身不变；ZL1107 走廊录包上的定位证据见[实车影子链路](navigation_live_shadow.md)。
+
 The ledger combines exact-capture-stamp localization output, the frozen prior,
 and scan/map coverage diagnostics. It never selects a controller pose or returns
 physical acceptance. Missing query results remain visible. No nearest-time join,

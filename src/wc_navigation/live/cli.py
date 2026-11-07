@@ -20,9 +20,11 @@ import uuid
 
 import numpy as np
 
+VEHICLE_SHADOW_DOMAIN = "100"     # user decision 2026-11-07; localhost only
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
+ 0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
- 2. 和用户确认：影子框架用哪个私有域（建议 100 或另定，ROS_LOCALHOST_ONLY=1），传感器话题在哪个域（面板域，现为 83），面板是否正在录制。影子框架只经单向转发读三个传感器话题，从不在面板域发布。
+ 2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；确认传感器话题所在的面板域（现为 83，用 --sensor-domain 给出）和面板是否正在录制。影子框架只经单向转发读三个传感器话题，从不在面板域发布；转发启动自检通过才继续。
  3. 物理急停可用、轮控所有者照常由面板管理；确认没有任何进程订阅 /wc_nav/cmd_vel_gated，也没有进程发布 /cmd_vel（ros2 topic info 检查）。
  4. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz（面板里看到，或在影子域 ros2 topic hz 检查转发后的话题）。
  5. 标定输入：--cell 用同一台车最新的单左前端（外参、主机滤波、运动先验）；--hardware-setup 用设备当前配置（2026-11-07 20:19 起为 0.1646/0.599）；--gyro-bias 用当前确认的零偏，且 IMU 编号一致。
@@ -76,9 +78,12 @@ def arguments(argv=None):
     shadow.add_argument("--goal-spacing", type=finite, default=8.0)
     shadow.add_argument("--advance-radius", type=finite, default=1.0)
     shadow.add_argument("--amcl-params", default="framework")
-    shadow.add_argument("--gate-correction-limits", nargs=2, type=finite, default=[0.25, 5.0])
-    shadow.add_argument("--gate-covariance-limits", nargs=2, type=finite, default=[0.30, math.degrees(0.25)])
-    shadow.add_argument("--gate-correction-reference", choices=["odom_origin", "robot"], default="odom_origin")
+    # Defaults are the safety gate's own (2026-11-07): 0.25 m or 10 deg at the robot within 2 s, std <= 0.50 m.
+    shadow.add_argument("--gate-correction-limits", nargs=2, type=finite, default=[0.25, 10.0],
+                        metavar=("TRANSLATION_M", "YAW_DEG"))
+    shadow.add_argument("--gate-covariance-limits", nargs=2, type=finite, default=[0.50, math.degrees(0.25)],
+                        metavar=("XY_STD_M", "YAW_STD_DEG"))
+    shadow.add_argument("--gate-correction-reference", choices=["odom_origin", "robot"], default="robot")
     shadow.add_argument("--footprint", nargs="+", type=finite)
     shadow.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     shadow.add_argument("--max-duration", type=finite, default=900.0, help="wall seconds")
@@ -139,9 +144,15 @@ def main(argv=None):
     from .bag_check import check_run
     from .config import load_live_config
     from .supervisor import LiveSupervisor, VEHICLE_APPROVAL_ENV, vehicle_approved
-    if args.command == "shadow" and args.source == "vehicle" and not vehicle_approved():
-        print(CHECKLIST)
-        raise SystemExit("vehicle shadow runs need the user present and %s=APPROVED_BY_USER_<date>" % VEHICLE_APPROVAL_ENV)
+    if args.command == "shadow" and args.source == "vehicle":
+        import os
+        if not vehicle_approved():
+            print(CHECKLIST)
+            raise SystemExit("vehicle shadow runs need the user present and %s=APPROVED_BY_USER_<date>"
+                             % VEHICLE_APPROVAL_ENV)
+        if os.environ.get("ROS_DOMAIN_ID") != VEHICLE_SHADOW_DOMAIN:
+            raise SystemExit("the vehicle shadow runs in domain %s (user decision 2026-11-07); "
+                             "set WC_AUTONOMY_ROS_DOMAIN=%s" % (VEHICLE_SHADOW_DOMAIN, VEHICLE_SHADOW_DOMAIN))
     storage = StoragePolicy(args.project_root)
     storage.check()
     live = load_live_config(args.cell, args.hardware_setup, args.gyro_bias)

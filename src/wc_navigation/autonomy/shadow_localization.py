@@ -41,9 +41,10 @@ LABELS = {"identity": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME",
 REPLAY_TF_STATIC = "/wc_shadow/replay_tf_static_unused"
 SAMPLES_FILE = "localization_samples.csv"
 MAP_RECORDING = "recording_map.npz"
-# Gate defaults (safety_gate.GateConfig / CorrectionMonitor) and the offline what-if grid around them.
-GATE_TRANSLATION_M, GATE_YAW_DEG, GATE_WINDOW_S, GATE_HOLD_S = 0.25, 5.0, 2.0, 3.0
-GATE_COV_XY_M, GATE_COV_YAW_RAD = 0.30, 0.25
+# Gate defaults (safety_gate.GateConfig / CorrectionMonitor, since 2026-11-07) and the offline what-if grid.
+GATE_TRANSLATION_M, GATE_YAW_DEG, GATE_WINDOW_S, GATE_HOLD_S = 0.25, 10.0, 2.0, 3.0
+GATE_REFERENCE = "robot"
+GATE_COV_XY_M, GATE_COV_YAW_RAD = 0.50, 0.25
 WHAT_IF_TRANSLATION_M = (0.25, 0.35, 0.5, 0.75, 1.0)
 WHAT_IF_YAW_DEG = (5.0, 8.0, 10.0, 15.0)
 WHAT_IF_COV_XY_M = (0.3, 0.4, 0.5, 0.75)
@@ -75,12 +76,12 @@ def add_arguments(parser):
     group.add_argument("--amcl-params", choices=("framework", *CANDIDATES),
                        help="amcl: nav2_config parameters (framework, default) or a named candidate change")
     group.add_argument("--gate-correction-limits", nargs=2, type=float, metavar=("TRANSLATION_M", "YAW_DEG"),
-                       help="amcl: map->odom change within 2 s that stops the gate (default 0.25 m, 5 deg)")
+                       help="amcl: correction change within 2 s that stops the gate (default 0.25 m, 10 deg)")
     group.add_argument("--gate-covariance-limits", nargs=2, type=float, metavar=("XY_STD_M", "YAW_STD_DEG"),
-                       help="amcl: largest AMCL standard deviations the gate accepts (default 0.30 m, 14.3 deg)")
+                       help="amcl: largest AMCL standard deviations the gate accepts (default 0.50 m, 14.3 deg)")
     group.add_argument("--gate-correction-reference", choices=("odom_origin", "robot"),
-                       help="amcl: measure the correction change as map->odom itself (odom_origin, default) or "
-                            "as the move of the robot's map position (robot)")
+                       help="amcl: measure the correction change as the move of the robot's map position "
+                            "(robot, default) or as map->odom itself (odom_origin, the earlier measure)")
 
 
 def check_arguments(parser, args):
@@ -174,7 +175,7 @@ def config_section(args, output, recording, window):
                            "initial_pose_std": [float(std_xy), math.radians(float(std_yaw_deg))]}
         section["gate_limits"] = {"correction_window_s": GATE_WINDOW_S, "correction_hold_s": GATE_HOLD_S,
                                   "correction_translation_m": float(translation), "correction_yaw_deg": float(yaw),
-                                  "correction_reference": args.gate_correction_reference or "odom_origin",
+                                  "correction_reference": args.gate_correction_reference or GATE_REFERENCE,
                                   "covariance_xy_std_m": float(cov_xy),
                                   "covariance_yaw_std_rad": math.radians(float(cov_yaw_deg)),
                                   "defaults": bool(args.gate_correction_limits is None
@@ -216,9 +217,8 @@ def gate_config(profile, config):
     gate.update(require_covariance=True, covariance_xy_std_max_m=limits["covariance_xy_std_m"],
                 covariance_yaw_std_max_rad=limits["covariance_yaw_std_rad"])
     monitor = {"window_s": limits["correction_window_s"], "max_translation_m": limits["correction_translation_m"],
-               "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": limits["correction_hold_s"]}
-    if limits.get("correction_reference", "odom_origin") != "odom_origin":
-        monitor["reference"] = limits["correction_reference"]
+               "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": limits["correction_hold_s"],
+               "reference": limits.get("correction_reference", GATE_REFERENCE)}
     return {"gate": gate, "correction_monitor": monitor}
 
 
@@ -271,6 +271,7 @@ def start(supervisor, recorder, files, config):
                           ["-r", "__node:=lifecycle_manager_localization"])
     supervisor.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_localization/is_active") is True,
                         60, "localization_active")
+    check_single_map_to_odom(supervisor, recorder, config)
     if mode == "amcl":
         settings = config["amcl"]
         covariance = nav2_config.initial_pose_covariance(*settings["initial_pose_std"])
@@ -292,6 +293,29 @@ def start(supervisor, recorder, files, config):
                                              "messages_sent": published["count"]}
     supervisor.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
                         30, "map_and_tf")
+
+
+def check_single_map_to_odom(supervisor, recorder, config, settle_s=1.0):
+    """Refuse to run if map->odom has a publisher other than this mode's (e.g. the replay's identity).
+
+    Before the start pose AMCL has not published yet, so in amcl mode no map->odom may exist; in fixed mode
+    it must be the alignment. A replay that ignored the /tf_static remap would otherwise publish a second,
+    identity map->odom and the run would silently mix the two.
+    """
+    from .bringup import RunError
+    from .ros_util import lookup_pose
+    recorder.spin(settle_s)
+    found = lookup_pose(recorder.buffer, "map", "odom")
+    if config["localization_mode"] == "amcl":
+        if found is not None:
+            raise RunError("map->odom exists before AMCL was given a start pose: another publisher (the replay's "
+                           "identity?) is active; refusing to mix it with AMCL")
+    else:
+        expected = _xyyaw(config["map_alignment"])
+        if found is None or math.hypot(found[0][0] - expected[0], found[0][1] - expected[1]) > 1e-6 or \
+                abs(math.atan2(math.sin(found[0][2] - expected[2]), math.cos(found[0][2] - expected[2]))) > 1e-6:
+            raise RunError("map->odom is not the fixed alignment (%s); another publisher is active" % (found,))
+    supervisor.report["map_to_odom_publisher_check"] = "PASS"
 
 
 # -- after the run --------------------------------------------------------------------------------
