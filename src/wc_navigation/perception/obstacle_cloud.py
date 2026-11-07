@@ -29,7 +29,13 @@ Stages, in order (each removed point is counted under the first stage that drops
    it. Without a verdict, only small clusters (``floating_max_points`` points,
    ``floating_max_extent_m`` across) are dropped as ``floating``; large overhangs
    such as table edges are kept.
-6. ``sparse``: voxels holding fewer than ``min_voxel_points`` returns (off by default).
+6. ``transient`` (off by default, ``persist_min_age_s`` > 0): an unsupported cluster
+   that survived stage 5 is dropped when less than ``persist_min_share`` of its
+   voxels had a candidate of the same lidar at the same world position
+   ``persist_min_age_s``-``persist_max_age_s`` earlier (``consensus.Recent``).
+   Clusters that both lidars return at the same place pass the witness, but they
+   move with the chair; a real overhang stays where it is.
+7. ``sparse``: voxels holding fewer than ``min_voxel_points`` returns (off by default).
 
 The kept points are reduced to one point (the mean) per ``voxel_m`` voxel and
 returned in the lidar frame, ready to publish in a frame placed at the lidar.
@@ -43,7 +49,7 @@ import math
 import numpy as np
 
 AXLE_HEIGHT_M = 0.185        # drive-wheel hub centre above the floor, measured 2026-10-05
-STAGES = ("height", "range", "far_low", "body", "contradicted", "floating", "sparse")
+STAGES = ("height", "range", "far_low", "body", "contradicted", "floating", "transient", "sparse")
 # The shadow runs' 161-bin scan (amcl_replay.build_scan): +-60 deg in 0.75 deg bins, 0.3-8 m.
 SCAN_ANGLE_MIN, SCAN_INCREMENT, SCAN_BINS = -math.pi / 3, math.pi / 240, 161
 SCAN_RANGE_M = (0.30, 8.0)
@@ -72,6 +78,10 @@ class ObstacleFilter:
     floating_min_gap_m: float = 0.30
     unsupported_max_points: int = 400   # larger unsupported clusters are always kept
     witness_min_share: float = 0.5      # share of a cluster's voxels the other lidar saw through
+    # Stage "transient": 0 = off; otherwise the age window of the same lidar's earlier frames checked.
+    persist_min_age_s: float = 0.0
+    persist_max_age_s: float = 2.0
+    persist_min_share: float = 0.5
     lowest_ray_deg: float = 28.0        # lowest ray below horizontal (blind-zone recording, A)
     voxel_m: float = 0.05
     cluster_voxel_m: float = 0.10
@@ -101,10 +111,16 @@ class ObstacleFilter:
             if value < 0 or value != getattr(self, name):
                 raise ValueError(name + " must be a non-negative integer")
             object.__setattr__(self, name, value)
-        share = float(self.witness_min_share)
-        if not 0 < share <= 1:
-            raise ValueError("witness_min_share must be within (0, 1]")
-        object.__setattr__(self, "witness_min_share", share)
+        for name in ("witness_min_share", "persist_min_share"):
+            share = float(getattr(self, name))
+            if not 0 < share <= 1:
+                raise ValueError(name + " must be within (0, 1]")
+            object.__setattr__(self, name, share)
+        low, high = float(self.persist_min_age_s), float(self.persist_max_age_s)
+        if not (math.isfinite(low) and math.isfinite(high) and 0 <= low and (low == 0 or low < high <= 5.0)):
+            raise ValueError("persist ages must satisfy 0 (off) or 0 < min < max <= 5 s")
+        object.__setattr__(self, "persist_min_age_s", low)
+        object.__setattr__(self, "persist_max_age_s", high)
         if not self.min_height_m < self.max_height_m <= 3.0:
             raise ValueError("height window must satisfy min < max <= 3 m")
         if self.max_range_m > 15.0 or self.low_max_range_m > self.max_range_m:
@@ -279,7 +295,8 @@ def scan_ranges(points, cfg=ObstacleFilter()):
     return ranges
 
 
-def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, clearing=False, scan=False):
+def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, clearing=False, scan=False,
+                 recent=None):
     """Obstacle products of one frame.
 
     ``points``: Nx3 prepared cloud (lidar origin, axle-aligned axes); ``lever``: the
@@ -288,13 +305,18 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     from the other lidar's nearest frame in this frame's base_link. Unsupported
     clusters the witness saw through are dropped (stage ``contradicted``); clusters
     it also hit are kept whatever their size; without a witness, or where it saw
-    nothing, the size rule of stage ``floating`` applies.
+    nothing, the size rule of stage ``floating`` applies. ``recent``: optional
+    ``consensus.Recent`` of the same lidar's earlier candidates for stage
+    ``transient`` (only with ``persist_min_age_s`` > 0; None gives no verdict).
 
     Returns a dict: ``points`` (kept points within ``max_range_m`` in the lidar
     frame, float32 Mx3 after voxel reduction), ``stats`` (per-stage removal counts),
     with ``clearing`` also ``rays`` (``clearing_rays`` without the points dropped
-    as floating or contradicted) and with ``scan`` also ``scan`` (``scan_ranges``
-    of all kept points up to ``scan_max_range_m``, before voxel reduction).
+    as floating, contradicted or transient) and with ``scan`` also ``scan``
+    (``scan_ranges`` of all kept points up to ``scan_max_range_m``, before voxel
+    reduction). With ``persist_min_age_s`` > 0 also ``candidates``: this frame's
+    points that reached stage ``transient``, one per ``cluster_voxel_m`` voxel in
+    base_link, for the next frames' ``recent``.
     """
     p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     lever = np.asarray(lever, dtype=np.float64).reshape(3)
@@ -341,6 +363,24 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     drop("contradicted", contradicted)
     drop("floating", floating)
     result = {}
+    transient = np.zeros(len(p), dtype=bool)
+    if cfg.persist_min_age_s > 0:
+        candidates = np.flatnonzero(keep)
+        if len(candidates):
+            keys = np.unique(_voxel_keys(base[candidates], cfg.cluster_voxel_m), axis=0)
+            result["candidates"] = ((keys + 0.5) * cfg.cluster_voxel_m).astype(np.float32)
+        else:
+            result["candidates"] = np.zeros((0, 3), dtype=np.float32)
+        judged = 0
+        if recent is not None:
+            for members, size, extent in clusters:
+                if contradicted[members[0]] or floating[members[0]]:
+                    continue
+                judged += 1
+                if recent.share(base[members]) < cfg.persist_min_share:
+                    transient[members] = True
+        stats["unsupported_judged_by_persistence"] = judged
+    drop("transient", transient)
     if scan:
         result["scan"] = scan_ranges(p[keep], cfg)
         stats["scan_bins"] = int(np.isfinite(result["scan"]).sum())
@@ -374,7 +414,7 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     stats["voxels"] = int(len(out))
     result.update(points=out, stats=stats)
     if clearing:
-        result["rays"] = clearing_rays(p, lever, contradicted | floating, cfg)
+        result["rays"] = clearing_rays(p, lever, contradicted | floating | transient, cfg)
         stats["clearing_rays"] = int(len(result["rays"]))
     return result
 

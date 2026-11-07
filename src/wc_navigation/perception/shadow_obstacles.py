@@ -24,7 +24,7 @@ import math
 import numpy as np
 
 from . import frontend_frames
-from .consensus import Witness, move, planar_relative
+from .consensus import RecentFrames, Witness, move, planar_relative
 from .nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC, SIDES
 from .obstacle_cloud import SCAN_BINS, STAGES, ObstacleFilter, body_outline, filter_frame
 
@@ -108,14 +108,20 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
         clear_chunks, clear_offsets = [], [0]
         scans = []
         with_scan = scan and side == "left"
-        total = {"frames": 0, "frames_with_witness": 0}
+        total = {"frames": 0, "frames_with_witness": 0, "frames_with_recent": 0}
+        history = (RecentFrames(cfg.persist_min_age_s, cfg.persist_max_age_s, cfg.cluster_voxel_m)
+                   if cfg.persist_min_age_s > 0 else None)
         for stamp, pts, _ in frames[side]:
             if stamp < path.stamps[0] - 10 ** 9 or stamp > path.stamps[-1]:
                 continue
+            store = True
             if window_s is not None:
                 t = (stamp - int(path.stamps[0])) * 1e-9
-                if not window_s[0] - 1.0 <= t <= window_s[1] + 1.0:
+                # the persistence check looks back persist_max_age_s: those frames only warm the history
+                lead = cfg.persist_max_age_s if history is not None else 0.0
+                if not window_s[0] - 1.0 - lead <= t <= window_s[1] + 1.0:
                     continue
+                store = t >= window_s[0] - 1.0
             witness = None
             if consensus and other in frames:
                 j = int(np.argmin(np.abs(stamps_of[other] - stamp)))
@@ -123,7 +129,18 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
                     relative = planar_relative(path.at(stamps_of[other][j]), path.at(stamp))
                     witness = Witness(move(frames[other][j][1].astype(float) + levers[other], relative),
                                       move(levers[other][None, :], relative)[0])
-            result = filter_frame(pts, levers[side], cfg, body, witness, clearing=True, scan=with_scan)
+            recent = None
+            if history is not None:
+                pose, t_s = path.at(stamp), stamp * 1e-9
+                recent = history.recent(t_s, pose)
+            result = filter_frame(pts, levers[side], cfg, body, witness, clearing=True, scan=with_scan,
+                                  recent=recent)
+            if history is not None:
+                history.add(t_s, pose, result["candidates"])
+            if not store:
+                continue
+            if history is not None:
+                total["frames_with_recent"] += int(recent is not None)
             kept, stats, rays = result["points"], result["stats"], result["rays"]
             if with_scan:
                 scans.append(result["scan"])

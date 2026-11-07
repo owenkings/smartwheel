@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from wc_navigation.perception.consensus import Witness, move, planar_relative
+from wc_navigation.perception.consensus import Recent, RecentFrames, Witness, move, planar_relative
 from wc_navigation.perception.obstacle_cloud import (ObstacleFilter, body_outline, clearing_rays, filter_frame,
                                                      filter_points, grow_convex, inside_convex, scan_ranges)
 
@@ -185,9 +185,55 @@ def test_outline_helpers():
     assert len(circle) == 32 and math.isclose(max(math.hypot(*p) for p in circle), 0.55)
 
 
+def test_transient_stage_is_off_by_default_and_drops_clusters_absent_earlier():
+    ghost = block(2.3, 2.42, 0.15, 0.30, 0.85, 0.91, step=0.03)     # 90 points: survives the size rule
+    cloud = np.vstack([ghost, floor(1.6, 3.0, -1.0, 1.4)])
+    elsewhere = Recent(base_of(block(1.0, 1.1, -0.8, -0.7, 0.85, 0.91)))
+    result = filter_frame(cloud, LEVER, ObstacleFilter(), recent=elsewhere)
+    assert result["stats"]["removed_transient"] == 0 and "candidates" not in result
+    cfg = ObstacleFilter(persist_min_age_s=0.6)
+    result = filter_frame(cloud, LEVER, cfg)                          # no earlier frames: no verdict
+    assert result["stats"]["removed_transient"] == 0 and len(result["candidates"]) > 0
+    result = filter_frame(cloud, LEVER, cfg, recent=elsewhere, clearing=True)
+    assert result["stats"]["removed_transient"] == len(ghost) and len(result["points"]) == 0
+    rays = result["rays"]
+    if len(rays):                                                   # no clearing rays toward the artefact
+        ghost_dirs = ghost / np.linalg.norm(ghost, axis=1)[:, None]
+        ray_dirs = rays / np.linalg.norm(rays, axis=1)[:, None]
+        assert (ray_dirs @ ghost_dirs.T).max() < np.cos(np.radians(0.5))
+    result = filter_frame(cloud, LEVER, cfg, recent=Recent(base_of(ghost)))   # seen there before: real
+    assert result["stats"]["removed_transient"] == 0 and len(result["points"]) > 0
+
+
+def test_supported_objects_are_never_judged_by_persistence():
+    person = block(2.3, 2.39, 0.2, 0.29, 0.0, 1.2, step=0.03)
+    cfg = ObstacleFilter(persist_min_age_s=0.6)
+    result = filter_frame(np.vstack([person, floor(1.6, 3.0, -1.0, 1.4)]), LEVER, cfg, recent=Recent(np.zeros((0, 3))))
+    assert result["stats"]["removed_transient"] == 0 and len(result["points"]) > 0
+
+
+def test_recent_frames_place_earlier_candidates_in_the_world():
+    def to_base(world, pose):
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        dx, dy = world[:, 0] - pose[0], world[:, 1] - pose[1]
+        return np.column_stack([c * dx + s * dy, -s * dx + c * dy, world[:, 2]])
+    frames = RecentFrames(0.6, 2.0)
+    obj = np.array([[3.0, 1.0, 0.9], [3.05, 1.0, 0.9]])
+    pose0, pose1 = (0.0, 0.0, 0.0), (0.5, 0.2, math.radians(20))
+    frames.add(10.0, pose0, to_base(obj, pose0))
+    assert frames.recent(10.3, pose1) is None                       # younger than 0.6 s
+    recent = frames.recent(11.0, pose1)
+    assert recent.share(to_base(obj, pose1)) == 1.0
+    assert recent.share(to_base(obj + np.array([0.5, 0.0, 0.0]), pose1)) == 0.0
+    frames.add(13.5, pose1, np.zeros((0, 3)))                         # entries older than 2 s are forgotten
+    assert frames.recent(14.2, pose1).points == 0
+
+
 @pytest.mark.parametrize("bad", [{"min_height_m": 1.7}, {"max_range_m": 20.0}, {"low_max_range_m": 5.0},
                                  {"witness_min_share": 0.0}, {"floating_max_points": -1}, {"lowest_ray_deg": 95},
-                                 {"scan_max_range_m": 9.0}])
+                                 {"scan_max_range_m": 9.0}, {"persist_min_age_s": -1.0},
+                                 {"persist_min_age_s": 2.0, "persist_max_age_s": 1.0},
+                                 {"persist_min_age_s": 0.5, "persist_max_age_s": 6.0}, {"persist_min_share": 0.0}])
 def test_invalid_settings_are_rejected(bad):
     with pytest.raises(ValueError):
         ObstacleFilter(**bad)

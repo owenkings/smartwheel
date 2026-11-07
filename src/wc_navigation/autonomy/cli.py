@@ -41,6 +41,8 @@ def arguments(argv=None):
                         help="start pose in the simulated world frame (m, m, rad)")
     common.add_argument("--obstacle", nargs=3, type=_finite, action="append", default=[],
                         metavar=("X", "Y", "R"), help="extra disc in the world, absent from any map")
+    common.add_argument("--actors", type=Path,
+                        help="moving pedestrians: scenario JSON in world coordinates (autonomy/actors.py)")
     common.add_argument("--assumed-radius", type=_positive, default=0.55,
                         help="assumed circular body radius (m); not a measured outline")
     from ..planning.options import add_body_arguments, add_planning_arguments
@@ -91,6 +93,12 @@ def arguments(argv=None):
         parser.error("--slam-loop-closure requires --mapper slam_toolbox")
     if args.max_linear > 0.6 or args.max_angular > 1.0:
         parser.error("speed limits above 0.6 m/s or 1.0 rad/s are outside this simulation's scope")
+    if args.actors is not None:
+        from .actors import load_scenario
+        try:
+            load_scenario(args.actors)
+        except (OSError, TypeError, ValueError) as exc:
+            parser.error("--actors: " + str(exc))
     return args
 
 
@@ -212,6 +220,13 @@ def build_config(args):
                       map_yaml=saved, source_exploration=str(source), initial_pose_map=list(initial),
                       initial_pose_std=list(args.initial_pose_std),
                       true_start_map=list(start_map), goals_map=goals)
+    config["world"].pop("actors", None)                  # actors are chosen per run, never inherited
+    if getattr(args, "actors", None) is not None:
+        from .actors import scenario_config
+        actors, provenance = scenario_config(args.actors, config["start_pose_world"],
+                                             _body(profile, config["body_model"]))
+        config["world"]["actors"] = actors
+        config["actor_scenario"] = provenance
     return config
 
 
@@ -311,6 +326,8 @@ def summarize(config, report, output):
         result["preview"] = str(output / "preview.png")
     except Exception as exc:  # the report must still be written
         result["preview_error"] = type(exc).__name__ + ": " + str(exc)
+    from .actors import result_entries
+    result.update(result_entries(config, output))          # {} without actors
     _write_json(output / "result.json", result)
     return result
 
