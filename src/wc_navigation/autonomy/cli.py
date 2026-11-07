@@ -2,7 +2,7 @@
 
 ``explore``  builds a map (odometry grid by default) while frontier goals drive Nav2.
 ``navigate`` localizes with AMCL on a saved map and drives a goal sequence.
-Everything runs in localhost ROS domain 96 (97 with WC_AUTONOMY_ROS_DOMAIN=97)
+Everything runs in localhost ROS domain 96 (97-101 with WC_AUTONOMY_ROS_DOMAIN)
 against a simulated wheelchair.
 Outputs go to the configured reports storage; nothing touches the vehicle.
 """
@@ -43,6 +43,9 @@ def arguments(argv=None):
                         metavar=("X", "Y", "R"), help="extra disc in the world, absent from any map")
     common.add_argument("--assumed-radius", type=_positive, default=0.55,
                         help="assumed circular body radius (m); not a measured outline")
+    from ..planning.options import add_body_arguments, add_planning_arguments
+    add_body_arguments(common)
+    add_planning_arguments(common)
     common.add_argument("--margin", type=_positive, default=0.10)
     common.add_argument("--max-linear", type=_positive, default=0.30)
     common.add_argument("--max-angular", type=_positive, default=0.50)
@@ -75,6 +78,9 @@ def arguments(argv=None):
     navigate.add_argument("--initial-pose-std", nargs=2, type=_positive, default=[0.25, 0.15],
                           metavar=("XY_M", "YAW_RAD"), help="uncertainty sent with the initial pose")
     args = parser.parse_args(argv)
+    from ..planning.options import resolve_body_arguments, resolve_planning_arguments
+    resolve_body_arguments(parser, args)
+    resolve_planning_arguments(parser, args)
     if not 0.1 <= args.real_time_factor <= 4.0:
         parser.error("--real-time-factor must be within 0.1..4")
     if args.mode == "explore" and args.slam_loop_closure and args.mapper != "slam_toolbox":
@@ -125,12 +131,16 @@ def build_config(args):
     from .nav2_config import NavProfile
     from .ros_util import compose, inverse
     from .world import CircleObstacle, LaserModel, auto_start, map_world, synthetic_world
+    from ..planning.options import body_model_label
     profile = NavProfile(radius_m=args.assumed_radius, margin_m=args.margin,
-                         max_linear=args.max_linear, max_angular=args.max_angular)
+                         max_linear=args.max_linear, max_angular=args.max_angular,
+                         footprint=getattr(args, "footprint", None) or ())
     obstacles = [list(o) for o in args.obstacle]
     for o in obstacles:
         CircleObstacle(*o)
     config = {"schema_version": 1, "mode": args.mode, "profile": profile.as_dict(),
+              "body_model": body_model_label(profile.footprint, getattr(args, "footprint_source", None)),
+              "planning": args.planning.as_dict(),
               "laser": LaserModel().as_dict(),
               "odometry": OdometryErrorModel.preset(args.odometry_error, seed=args.seed).as_dict(),
               "real_time_factor": args.real_time_factor, "max_duration_s": args.max_duration,
@@ -140,7 +150,8 @@ def build_config(args):
             world, default_start = synthetic_world(args.world, obstacles)
         else:
             world = map_world(args.world_map, obstacles)
-            default_start = auto_start(world, profile.radius_m, profile.margin_m)
+            # Any start heading must be free: an outline needs its full turning circle.
+            default_start = auto_start(world, profile.body_circumscribed_m, profile.margin_m)
         start = tuple(args.start) if args.start else tuple(default_start)
         spec = dict(world.source, obstacles=obstacles)
         config.update(world=spec, start_pose_world=list(start), world_T_map=list(start),
@@ -161,7 +172,7 @@ def build_config(args):
         start_map = compose(inverse(world_T_map), start)
         initial = (start_map[0] + args.initial_pose_error[0], start_map[1] + args.initial_pose_error[1],
                    start_map[2] + args.initial_pose_error[2])
-        goals = [list(g) for g in args.goal] or _auto_goals(saved, start_map, profile.radius_m,
+        goals = [list(g) for g in args.goal] or _auto_goals(saved, start_map, profile.body_inscribed_m,
                                                           profile.margin_m, args.auto_goals)
         if not goals:
             raise ValueError("no navigation goals were given or found")
@@ -178,8 +189,12 @@ def summarize(config, report, output):
     from .maps import read_back
     from .ros_util import compose
     from .world import load_world
+    from ..planning.body import Body
+    from .nav2_config import NavProfile
     world = load_world(config["world"])
     radius = config["profile"]["radius_m"]
+    profile = NavProfile(**config["profile"])
+    body = Body.from_profile(profile, source=config.get("body_model"))
     recorded = report.pop("recorded", {})
     rows = recorded.get("rows", [])
     metrics.write_trajectory(output / "trajectory.csv", rows)
@@ -192,7 +207,9 @@ def summarize(config, report, output):
     result = {"schema_version": 1, "mode": config["mode"], "status": "FAIL", "config": config,
               "simulation_only": True, "hardware_control": False, "physical_navigation_validated": False,
               "supervisor": report,
-              "trajectory": metrics.trajectory_metrics(world, rows, radius, config.get("start_pose_world")),
+              "body_model": body.source,
+              "trajectory": metrics.trajectory_metrics(world, rows, radius, config.get("start_pose_world"),
+                                                       body=body),
               "collisions": {"count": int(sim.get("collisions", 0)), "events": collisions},
               "distance_m": sim.get("distance_m"), "gate": {"final": gate, "tick_period_s": 0.05}}
     goals_plot = []
@@ -206,7 +223,7 @@ def summarize(config, report, output):
             _, data, meta = read_back(saved)
             result["coverage"] = metrics.coverage_metrics(world, config["start_pose_world"][:2], data,
                                                           meta["resolution"], meta["origin"], config["world_T_map"],
-                                                          radius_m=radius + config["profile"]["margin_m"])
+                                                          radius_m=profile.lethal_radius_m)
             map_layer = metrics.map_in_world(world, data, meta["resolution"], meta["origin"], config["world_T_map"])
         for g in explored.get("goals", []):
             if g.get("goal_xy"):
@@ -243,7 +260,7 @@ def summarize(config, report, output):
         title = f"{config['mode']} | {Path(str(config['world'].get('name') or config['world'].get('yaml'))).name}"
         metrics.render_preview(output / "preview.png", world, rows, title=title, map_layer=map_layer,
                                goals=goals_plot, collisions=[(c["x"], c["y"]) for c in collisions],
-                               radius_m=radius)
+                               radius_m=radius, body=body)
         result["preview"] = str(output / "preview.png")
     except Exception as exc:  # the report must still be written
         result["preview_error"] = type(exc).__name__ + ": " + str(exc)

@@ -312,14 +312,26 @@ def behavior_tree_xml(*, through_poses=False):
 """
 
 
-def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path):
+def navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path, planning=None):
     """Parameters for the Nav2 servers. ``mode`` is ``explore`` or ``navigate``.
 
     Exploration lets the planner cross unknown cells at near-lethal cost (the
     robot starts with its own unobserved body area unknown, and frontier goals
     sit next to unknown space); goals are still chosen in known free space.
     Navigation on a saved map blocks unknown space entirely.
+    ``planning`` (``wc_navigation.planning.stack.PlanningChoice``) selects
+    another planner or controller plugin; None or the default choice keeps
+    NavFn and Regulated Pure Pursuit as below.
     """
+    params = _navigation_parameters(profile, mode=mode, bt_to_pose_path=bt_to_pose_path,
+                                    bt_through_poses_path=bt_through_poses_path)
+    if planning is not None:
+        from ..planning.stack import apply
+        apply(params, profile, planning, exploring=mode == "explore")
+    return params
+
+
+def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_path):
     if mode not in ("explore", "navigate"):
         raise ValueError("mode must be explore or navigate")
     exploring = mode == "explore"
@@ -517,8 +529,16 @@ def localization_parameters(profile, map_yaml):
     }
 
 
-def readback_expectations(profile, mode):
+def readback_expectations(profile, mode, planning=None):
     """Parameters whose running values must equal the request before motion."""
+    expected = _readback_expectations(profile, mode)
+    if planning is not None:
+        from ..planning.stack import adjust_readback
+        adjust_readback(expected, planning, profile, exploring=mode == "explore")
+    return expected
+
+
+def _readback_expectations(profile, mode):
     exploring = mode == "explore"
     zones = monitor_polygons(profile)
     if profile.footprint:

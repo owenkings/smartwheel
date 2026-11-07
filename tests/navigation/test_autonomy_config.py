@@ -179,6 +179,25 @@ def test_second_simulation_domain_is_explicit(monkeypatch):
         simulation_domain()
 
 
+@pytest.mark.parametrize("domain", ["98", "99", "100", "101"])
+def test_parallel_checkout_domains_are_accepted(monkeypatch, domain):
+    from wc_navigation.autonomy.ros_util import require_isolated_domain, simulation_domain
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", domain)
+    monkeypatch.setenv("ROS_DOMAIN_ID", domain)
+    monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
+    monkeypatch.delenv("ROS_DISCOVERY_SERVER", raising=False)
+    assert simulation_domain() == domain
+    require_isolated_domain()
+
+
+@pytest.mark.parametrize("domain", ["83", "84", "89", "95", "102"])
+def test_production_and_tool_domains_stay_rejected(monkeypatch, domain):
+    from wc_navigation.autonomy.ros_util import simulation_domain
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", domain)
+    with pytest.raises(RuntimeError, match="must be one of"):
+        simulation_domain()
+
+
 def test_synthetic_world_layout_is_versioned():
     from wc_navigation.autonomy.world import load_world, synthetic_world
     world, _ = synthetic_world("office_floor")
@@ -236,6 +255,54 @@ def test_cli_rejects_out_of_scope_options(extra):
 
 
 EXAMPLE_OUTLINE = [[0.70, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.70, -0.35]]   # rectangle, not measured
+PARTIAL_OUTLINE_ARGS = ["--footprint", "0.79", "0.35", "-0.35", "0.35", "-0.35", "-0.35", "0.79", "-0.35",
+                        "--footprint-source", "FRONT_FROM_BLIND_RECORDING_REST_EXAMPLE"]
+
+
+def _prepared(tmp_path, extra):
+    from wc_navigation.autonomy.cli import arguments, build_config
+    import json
+    config = build_config(arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms", *extra]))
+    out = tmp_path / "run"
+    out.mkdir()
+    Supervisor(PROJECT, out, config).prepare()
+    return config, {name: json.loads((out / name).read_text()) for name in ("sim_config.json", "explorer_config.json")}
+
+
+def test_simulated_collisions_use_the_profile_outline(tmp_path):
+    import yaml
+    config, files = _prepared(tmp_path, PARTIAL_OUTLINE_ARGS)
+    outline = [[0.79, 0.35], [-0.35, 0.35], [-0.35, -0.35], [0.79, -0.35]]
+    assert config["profile"]["footprint"] == outline
+    assert config["body_model"] == "POLYGON_FRONT_FROM_BLIND_RECORDING_REST_EXAMPLE"
+    body = files["sim_config.json"]["collision_body"]
+    assert body["type"] == "polygon" and body["source"] == config["body_model"]
+    from wc_navigation.planning.body import Body
+    assert Body.from_config(body) == Body(outline=tuple(map(tuple, outline)), source=config["body_model"])
+    assert files["explorer_config.json"]["radius_m"] == pytest.approx(0.35)          # inscribed: what the planner passes
+    nav2 = yaml.safe_load((tmp_path / "run" / "nav2_params.yaml").read_text())
+    for costmap in ("local_costmap", "global_costmap"):
+        assert nav2[costmap][costmap]["ros__parameters"]["footprint"] == nav2_config.footprint_string(
+            nav2_config.NavProfile(footprint=outline).footprint)
+
+
+def test_simulated_collisions_default_to_the_assumed_circle(tmp_path):
+    config, files = _prepared(tmp_path, [])
+    assert config["body_model"] == "CIRCLE_ASSUMED_NOT_MEASURED" and config["profile"]["footprint"] == []
+    assert files["sim_config.json"]["collision_body"] == {"type": "circle", "radius_m": 0.55,
+                                                          "source": "CIRCLE_ASSUMED_NOT_MEASURED"}
+    assert files["sim_config.json"]["collision_radius_m"] == 0.55
+    assert files["explorer_config.json"]["radius_m"] == 0.55
+
+
+@pytest.mark.parametrize("extra", [["--footprint-source", "MEASURED_20261120"],
+                                   ["--footprint", "0.7", "0.35", "-0.35", "0.35"],
+                                   ["--footprint", "0.5", "0.3", "0.1", "0.3", "0.1", "-0.3", "0.5", "-0.3"],
+                                   [*PARTIAL_OUTLINE_ARGS[:9], "--footprint-source", "measured today"]])
+def test_simulation_rejects_bad_outline_options(extra):
+    from wc_navigation.autonomy.cli import arguments
+    with pytest.raises(SystemExit):
+        arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms", *extra])
 
 
 def test_body_outline_radii_and_validation():

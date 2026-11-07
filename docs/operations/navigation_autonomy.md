@@ -4,7 +4,7 @@
 
 ## 运行前
 
-Orin 已安装 Humble 版 Nav2 1.1.20（含 collision_monitor 与 RPP）和 slam_toolbox 2.6，无需额外安装。确认没有其他人在用域 96；有其他节点时程序会拒绝启动。需要同时跑第二个仿真时，在命令前加 `WC_AUTONOMY_ROS_DOMAIN=97`，两次运行各自持有独占锁、互不干扰。
+Orin 已安装 Humble 版 Nav2 1.1.20（含 collision_monitor 与 RPP）和 slam_toolbox 2.6，无需额外安装。确认没有其他人在用域 96；有其他节点时程序会拒绝启动。需要同时跑第二个仿真时，在命令前加 `WC_AUTONOMY_ROS_DOMAIN=97`（可选 97–101），各次运行各自持有独占锁、互不干扰。独占锁放在各自检出目录的 `.phase1_runtime/locks` 下，多个检出（git worktree）并行开发时要给每个检出分配不同的域，启动前的外来节点检查只是兜底。
 
 ## 自主探索建图
 
@@ -18,6 +18,7 @@ bash scripts/navigation_autonomy_sim explore \
 
 - `--world` 选合成楼层：`two_rooms`（10 m × 7 m，两个房间加走廊）或 `office_floor`（20 m × 12 m，走廊两侧五个房间）。门宽 1.8 m、走廊 2.4 m，按假设包络 0.55 m 加 0.10 m 余量设计。布局带版本号和哈希，记录在运行配置里；布局改动后旧运行不能再按新布局重算。`office_floor` 第 2 版把走廊中间的柜子移到墙边——第 1 版中它两侧各只剩 1.0 m，东半层对假设包络不可达。
 - `--world-map` 把已保存的栅格地图当作真值环境，未知格按实体处理；起点自动选在最大连通区域。
+- `--footprint`、`--footprint-source` 与影子运行相同：给了外形，仿真碰撞（含原地转向扫过）、代价地图和碰撞监控都用这个凸多边形，不给时都用圆。`--planner`、`--controller` 等规划控制选项见[规划与控制](navigation_planning.md)。
 - 流程：先原地环视一周，再反复选最佳可达前沿、导航、失败或到达后仍未消除的前沿列入黑名单；没有前沿后回到起点并保存 `map.pgm/map.yaml`。
 - 常用参数：`--max-duration`（仿真秒）、`--real-time-factor`（0.1–4）、`--obstacle X Y R`（地图中没有的圆形障碍，可重复）、`--no-initial-spin`、`--no-return-home`、`--slam-loop-closure`（默认关闭，见下）。
 - `--odometry-error` 选择里程计误差模型：`wheel_imu`（默认，轮速距离加陀螺航向，偏置取实测静止陀螺 z 均值约 0.0004 rad/s，2% 距离比例误差）、`wheel_only`（只用轮速航向的压力测试，偏置 5 倍、转向比例误差 1.5%）、`ideal`（无误差，用于单独检查规划控制）。
@@ -96,6 +97,7 @@ bash scripts/navigation_nav2_shadow --mode follow --source-cell <同上> --map <
 - `--mode follow`：把司机接下来 15 s 的实际路线直接交给控制器（FollowPath），不经规划器和地图。检验控制器、碰撞监控和闸门沿司机路线会怎么做。
 - 地图必须在录包里程计坐标中（例如同一录包的建图重放结果）；记录路径落在空闲格上的比例低于一半时拒绝运行。`--assumed-radius`、`--margin`、`--max-linear`、`--max-angular` 与仿真相同；`WC_AUTONOMY_ROS_DOMAIN=97` 可与另一次运行并行。
 - `--footprint X1 Y1 X2 Y2 ...` 用凸多边形外形代替圆（车轴为原点，x 向前、y 向左，至少 3 个点，车轴须在外形内）。`--footprint-source` 写明外形来源，默认 `EXAMPLE_NOT_MEASURED`；实测后改为例如 `MEASURED_20261120`，结果和看板会按来源标注“示例”或“实测”。
+- `--planner`、`--controller`（默认 NavFn 与 RPP，不变）选其他规划器和控制器，见[规划与控制](navigation_planning.md)。
 
 输出在 `reports/navigation_nav2_shadow/<时间>_shadow_<模式>_<编号>/`：
 
