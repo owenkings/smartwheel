@@ -263,6 +263,8 @@ def write_landing(dashboard_root):
             except (OSError, ValueError):
                 pass
         others.append(directory.name)
+    # Newest first by the content's own "updated" stamp (YYYY-MM-DD HH:MM sorts as text), not by directory name.
+    overviews.sort(key=lambda item: (item[1], item[0]), reverse=True)
     e = lambda value: html.escape(value, quote=True)  # noqa: E731
     parts = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
              '<meta name="viewport" content="width=device-width, initial-scale=1"><title>轮椅导航进展</title>'

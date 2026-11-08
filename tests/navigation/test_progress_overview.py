@@ -83,13 +83,15 @@ def test_landing_page_points_to_the_newest_overview_and_keeps_old_snapshots(tmp_
     content_path = tmp_path / "content.json"
     content_path.write_text(json.dumps(_content(), ensure_ascii=False), encoding="utf-8")
     root = tmp_path / "dashboards"
-    po.build(content_path, root / "20261108_overview")
     po.build(content_path, root / "20261109_overview")
+    newer = tmp_path / "newer.json"
+    newer.write_text(json.dumps(_content(updated="2026-11-09 08:00"), ensure_ascii=False), encoding="utf-8")
+    po.build(newer, root / "20261108_overview")  # name sorts first, but its content is newer
     (root / "20261107_office_outline").mkdir()
     (root / "20261107_office_outline" / "index.html").write_text("old", encoding="utf-8")
     result = po.write_landing(root)
     page = (root / "index.html").read_text(encoding="utf-8")
     assert result == {"landing": str(root / "index.html"), "overviews": 2, "other_snapshots": 1}
-    assert page.index('href="20261109_overview/"') < page.index('href="20261108_overview/"')
+    assert page.index('href="20261108_overview/"') < page.index('href="20261109_overview/"')  # newest content first
     assert 'href="20261107_office_outline/"' in page and "打开最新的进展总览" in page
     assert (root / "20261107_office_outline" / "index.html").read_text(encoding="utf-8") == "old"
