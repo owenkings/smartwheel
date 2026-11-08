@@ -2,20 +2,25 @@
 
 The detailed dashboard (``dashboard.py``) shows every archived run. This page
 is the front door for the user: the validation ladder, a few headline
-numbers, one card per workstream and what needs the user. Its text comes
-from a small, human-curated JSON file; the only figure is the corridor map in
-use, drawn from the map files themselves. The page is one self-contained HTML
-file (no scripts, no network), written to a new directory under ``reports``;
-an existing snapshot is never overwritten. Nothing here starts ROS or touches
-the vehicle.
+numbers, one card per workstream, the corridor maps and what needs the user.
+Its text comes from a small, human-curated JSON file. The map figures are
+drawn from the map files themselves: the whole observed map or a window given
+in metres, the recorded path, numbered markers and a scale bar. Each figure is
+written twice, page size and full size for zooming, so maps can be compared
+cell by cell. A snapshot is a new directory under ``reports`` holding
+``index.html`` (no scripts, no network), the figures, a copy of the content and
+a manifest; an existing snapshot is never overwritten. Nothing here starts ROS
+or touches the vehicle.
 """
 from __future__ import annotations
 
 import argparse
-import base64
+import functools
 import hashlib
 import html
 import json
+import math
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -28,7 +33,13 @@ STATES = {  # state -> (label, mark); the label carries the meaning, colour only
 MAX_TEXT = 400
 MAX_CONTENT_BYTES = 256 * 1024
 MAP_COLORS = {254: (255, 255, 255), 0: (51, 65, 85), 205: (226, 232, 240)}  # free, occupied, unknown
-PATH_COLOR, START_COLOR = (37, 99, 235), (22, 163, 74)
+PATH_COLOR, START_COLOR, MARKER_COLOR = (37, 99, 235), (22, 163, 74), (190, 18, 60)
+FIGURE_KEYS = ("title", "map_yaml", "path_csv", "window", "markers", "caption")
+MAX_FIGURES, MAX_MARKERS, MAX_WINDOW_M, MAX_CROP_CELLS = 6, 20, 200.0, 4000
+MARKER_LABEL = re.compile(r"[0-9A-Za-z]{1,3}")  # drawn into the image, so no fonts beyond ASCII are needed
+PAGE_WIDTH_PX, FULL_MAX_PX, FULL_MAX_SCALE = 1000, 4000, 8
+LEGEND = ("图例：白色是可通行区域，深灰是墙和障碍，浅灰是没看到的地方；蓝线是建图时推车走的路线，绿色实心圆是路线起点；"
+          "红圈加编号是说明里提到的位置；左下角是比例尺。点图打开原尺寸，可以放大看每一格。")
 
 
 class ContentError(ValueError):
@@ -58,12 +69,59 @@ def _items(value, where, keys, *, minimum, maximum):
     return out
 
 
+def _number(value, where):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ContentError(f"{where}: expected a finite number")
+    return float(value)
+
+
+def _figure(spec, where):
+    """One map figure: map file, optional path, optional window in metres, numbered markers, caption."""
+    window = spec.get("window")
+    if window is not None:
+        if not isinstance(window, list) or len(window) != 4:
+            raise ContentError(f"{where}.window: expected [x_min, y_min, x_max, y_max] in metres")
+        window = [_number(v, f"{where}.window[{i}]") for i, v in enumerate(window)]
+        if not (window[0] < window[2] and window[1] < window[3]) or \
+                max(window[2] - window[0], window[3] - window[1]) > MAX_WINDOW_M:
+            raise ContentError(f"{where}.window: needs x_min < x_max and y_min < y_max, "
+                               f"at most {MAX_WINDOW_M:g} m across")
+    markers = []
+    for i, marker in enumerate(_items(spec.get("markers", []), f"{where}.markers", ("x", "y", "label"),
+                                      minimum=0, maximum=MAX_MARKERS)):
+        label = marker.get("label")
+        if not isinstance(label, str) or not MARKER_LABEL.fullmatch(label):
+            raise ContentError(f"{where}.markers[{i}].label: 1-3 ASCII letters or digits (it is drawn in the image)")
+        markers.append({"x": _number(marker.get("x"), f"{where}.markers[{i}].x"),
+                        "y": _number(marker.get("y"), f"{where}.markers[{i}].y"), "label": label})
+    return {"title": _text(spec.get("title"), f"{where}.title"),
+            "map_yaml": _text(spec.get("map_yaml"), f"{where}.map_yaml"),
+            "path_csv": _text(spec["path_csv"], f"{where}.path_csv") if spec.get("path_csv") else None,
+            "window": window, "markers": markers, "caption": _text(spec.get("caption"), f"{where}.caption")}
+
+
+def _table(table):
+    """A small comparison table (for example the same quality numbers for an old and a new map)."""
+    if table is None:
+        return None
+    if not isinstance(table, dict) or set(table) - {"columns", "rows", "note"}:
+        raise ContentError("map_table: expected columns, rows and an optional note")
+    columns = _texts(table.get("columns"), "map_table.columns", minimum=2, maximum=6)
+    rows = table.get("rows")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 12:
+        raise ContentError("map_table.rows: expected 1-12 rows")
+    return {"columns": columns,
+            "rows": [_texts(row, f"map_table.rows[{i}]", minimum=len(columns), maximum=len(columns))
+                     for i, row in enumerate(rows)],
+            "note": _text(table["note"], "map_table.note") if table.get("note") else None}
+
+
 def validate_content(content):
     """Return a normalised copy; raise ContentError on anything unexpected."""
     if not isinstance(content, dict) or content.get("schema_version") != 1:
         raise ContentError("schema_version must be 1")
     allowed = {"schema_version", "title", "updated", "status_line", "safety_line", "ladder", "headline",
-               "lines", "needs_user", "map", "sources"}
+               "lines", "needs_user", "map", "figures", "map_table", "sources"}
     if set(content) - allowed:
         raise ContentError("unknown top-level keys: " + ", ".join(sorted(set(content) - allowed)))
     out = {key: _text(content.get(key), key) for key in ("title", "updated", "status_line", "safety_line")}
@@ -85,13 +143,18 @@ def validate_content(content):
                              "doing": _texts(line.get("doing", []), f"lines[{i}].doing"),
                              "attention": _texts(line.get("attention", []), f"lines[{i}].attention")})
     out["needs_user"] = _texts(content.get("needs_user", []), "needs_user")
+    out["figures"] = []
     map_spec = content.get("map")
-    if map_spec is not None:
+    if map_spec is not None:  # the original single figure; older content files still build
         if not isinstance(map_spec, dict) or set(map_spec) - {"map_yaml", "path_csv", "caption"}:
             raise ContentError("map: expected map_yaml, optional path_csv, caption")
-        out["map"] = {"map_yaml": _text(map_spec.get("map_yaml"), "map.map_yaml"),
-                      "path_csv": _text(map_spec["path_csv"], "map.path_csv") if map_spec.get("path_csv") else None,
-                      "caption": _text(map_spec.get("caption"), "map.caption")}
+        out["figures"].append(_figure(dict(map_spec, title="在用的走廊地图"), "map"))
+    for i, spec in enumerate(_items(content.get("figures", []), "figures", FIGURE_KEYS, minimum=0,
+                                    maximum=MAX_FIGURES)):
+        out["figures"].append(_figure(spec, f"figures[{i}]"))
+    if len(out["figures"]) > MAX_FIGURES:
+        raise ContentError(f"at most {MAX_FIGURES} map figures in all")
+    out["map_table"] = _table(content.get("map_table"))
     out["sources"] = [{"label": _text(s.get("label"), f"sources[{i}].label"),
                        "path": _text(s.get("path"), f"sources[{i}].path")}
                       for i, s in enumerate(_items(content.get("sources", []), "sources", ("label", "path"),
@@ -107,61 +170,174 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def render_map_png(map_yaml, path_csv=None, *, max_width=1000, padding_px=12):
-    """Trinary map cropped to what was observed, with the recorded axle path; PNG bytes and inputs."""
+def _load_grid(map_yaml):
+    """A ROS map_server map: the pixels, resolution, origin and the resolved file paths."""
     import numpy as np
     import yaml
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     map_yaml = Path(map_yaml)
     meta = yaml.safe_load(map_yaml.read_text(encoding="utf-8"))
     pgm = (map_yaml.parent / meta["image"]).resolve()
-    resolution = float(meta["resolution"])
-    origin_x, origin_y = float(meta["origin"][0]), float(meta["origin"][1])
     with Image.open(pgm) as image:
         pixels = np.asarray(image.convert("L"))
-    known = np.argwhere(pixels != 205)
-    if not len(known):
-        raise ContentError("the map has no observed cells")
+    return {"yaml": map_yaml.resolve(), "pgm": pgm, "pixels": pixels, "resolution": float(meta["resolution"]),
+            "origin": (float(meta["origin"][0]), float(meta["origin"][1]))}
+
+
+def _crop(grid, window=None, padding_px=12):
+    """Cells to draw and the map-image row and column of their top-left corner.
+
+    Without a window: everything observed plus a margin. With a window in
+    metres: exactly that area, so two maps with different grid origins show
+    the same place; cells outside the map are drawn as unknown.
+    """
+    import numpy as np
+
+    pixels, resolution, (origin_x, origin_y) = grid["pixels"], grid["resolution"], grid["origin"]
     height, width = pixels.shape
-    top, left = np.maximum(known.min(axis=0) - padding_px, 0)
-    bottom, right = np.minimum(known.max(axis=0) + padding_px + 1, (height, width))
-    crop = pixels[top:bottom, left:right]
+    if window is None:
+        known = np.argwhere(pixels != 205)
+        if not len(known):
+            raise ContentError("the map has no observed cells")
+        top, left = (int(v) for v in np.maximum(known.min(axis=0) - padding_px, 0))
+        bottom, right = (int(v) for v in np.minimum(known.max(axis=0) + padding_px + 1, (height, width)))
+        return pixels[top:bottom, left:right], top, left
+    x_min, y_min, x_max, y_max = window
+    eps = 1e-6  # a window edge lying on a cell edge must not pull in the neighbouring cell
+    left = math.floor((x_min - origin_x) / resolution + eps)
+    right = math.ceil((x_max - origin_x) / resolution - eps)
+    top = height - math.ceil((y_max - origin_y) / resolution - eps)
+    bottom = height - math.floor((y_min - origin_y) / resolution + eps)
+    if max(bottom - top, right - left) > MAX_CROP_CELLS:
+        raise ContentError("the window is too large for this map's resolution")
+    crop = np.full((bottom - top, right - left), 205, dtype=np.uint8)
+    r0, r1, c0, c1 = max(top, 0), min(bottom, height), max(left, 0), min(right, width)
+    if r0 < r1 and c0 < c1:
+        crop[r0 - top:r1 - top, c0 - left:c1 - left] = pixels[r0:r1, c0:c1]
+    return crop, top, left
+
+
+@functools.lru_cache(maxsize=8)
+def _font(size):
+    from PIL import ImageFont
+    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):  # found in the system font folders by Pillow
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _text_size(font, text):
+    """Width, height and the offset of the ink from the drawing origin."""
+    try:
+        left, top, right, bottom = font.getbbox(text)
+        return right - left, bottom - top, left, top
+    except AttributeError:  # bitmap fallback font on Pillow < 9.2
+        width, height = font.getsize(text)
+        return width, height, 0, 0
+
+
+def _label(draw, x, y, text, font, color):
+    """Text in a white box whose top-left corner is (x, y)."""
+    x, y = round(x), round(y)
+    width, height, dx, dy = _text_size(font, text)
+    pad = max(2, height // 4)
+    draw.rectangle((x, y, x + width + 2 * pad, y + height + 2 * pad), fill=(255, 255, 255), outline=color)
+    draw.text((x + pad - dx, y + pad - dy), text, fill=color, font=font)
+
+
+def _scale_bar(draw, figure, metres_per_px, font):
+    if figure.width < 200:
+        return
+    fitting = [m for m in (0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100) if m / metres_per_px <= 0.25 * figure.width]
+    if not fitting:
+        return
+    length = fitting[-1]
+    bar = length / metres_per_px
+    text = f"{length:g} m"
+    width, height, dx, dy = _text_size(font, text)
+    pad = max(4, height // 3)
+    thickness = max(3, height // 4)
+    x0, y_bar = 3 * pad, figure.height - 3 * pad
+    draw.rectangle((x0 - pad, y_bar - thickness - 2 * pad - height, x0 + max(bar, width) + pad, y_bar + pad),
+                   fill=(255, 255, 255), outline=MAP_COLORS[0])
+    draw.rectangle((x0, y_bar - thickness, x0 + bar, y_bar), fill=MAP_COLORS[0])
+    draw.text((x0 - dx, y_bar - thickness - pad - height - dy), text, fill=MAP_COLORS[0], font=font)
+
+
+def _draw(crop, grid, top, left, scale, path_points, markers):
+    import numpy as np
+    from PIL import Image, ImageDraw
+
     rgb = np.empty(crop.shape + (3,), dtype=np.uint8)
     rgb[:] = MAP_COLORS[205]
     rgb[crop >= 250] = MAP_COLORS[254]
     walls = crop <= 50
-    thick = walls.copy()  # one-pixel dilation, display only: 5 cm walls are invisible at page scale
-    thick[1:, :] |= walls[:-1, :]
-    thick[:-1, :] |= walls[1:, :]
-    thick[:, 1:] |= walls[:, :-1]
-    thick[:, :-1] |= walls[:, 1:]
-    rgb[thick] = MAP_COLORS[0]
-    scale = max(1, int(max_width // max(crop.shape[1], 1)))
+    if scale <= 2:  # display only: one-cell walls vanish when a cell is a pixel or two
+        thick = walls.copy()
+        thick[1:, :] |= walls[:-1, :]
+        thick[:-1, :] |= walls[1:, :]
+        thick[:, 1:] |= walls[:, :-1]
+        thick[:, :-1] |= walls[:, 1:]
+        walls = thick
+    rgb[walls] = MAP_COLORS[0]
     figure = Image.fromarray(rgb).resize((crop.shape[1] * scale, crop.shape[0] * scale), Image.NEAREST)
-    inputs = {str(map_yaml.resolve()): _sha256_file(map_yaml), str(pgm): _sha256_file(pgm)}
-    if path_csv:
-        import csv
-        points = []
-        with Path(path_csv).open(encoding="utf-8") as stream:
-            for row in csv.DictReader(stream):
-                x, y = float(row["used_x"]), float(row["used_y"])
-                column = (x - origin_x) / resolution - left
-                row_px = (height - 1 - (y - origin_y) / resolution) - top
-                points.append(((column + 0.5) * scale, (row_px + 0.5) * scale))
-        if points:
-            draw = ImageDraw.Draw(figure)
-            draw.line(points, fill=PATH_COLOR, width=max(2, scale * 2), joint="curve")
-            sx, sy = points[0]
-            radius = max(8, scale * 6)
-            draw.ellipse((sx - radius, sy - radius, sx + radius, sy + radius), fill=START_COLOR,
-                         outline=(255, 255, 255), width=2)
-        inputs[str(Path(path_csv).resolve())] = _sha256_file(path_csv)
-    if figure.width > max_width:
-        figure = figure.resize((max_width, max(1, round(figure.height * max_width / figure.width))), Image.LANCZOS)
-    out = BytesIO()
-    figure.save(out, format="PNG", optimize=True)
-    return out.getvalue(), inputs
+    draw = ImageDraw.Draw(figure)
+    resolution, (origin_x, origin_y) = grid["resolution"], grid["origin"]
+    height = grid["pixels"].shape[0]
+
+    def pixel(x, y):  # metres -> image pixels; cell edges fall on pixel edges
+        return ((x - origin_x) / resolution - left) * scale, (height - (y - origin_y) / resolution - top) * scale
+
+    if path_points:
+        points = [pixel(x, y) for x, y in path_points]
+        draw.line(points, fill=PATH_COLOR, width=max(2, scale), joint="curve")
+        sx, sy = points[0]
+        radius = max(7, round(0.25 / resolution * scale))
+        draw.ellipse((sx - radius, sy - radius, sx + radius, sy + radius), fill=START_COLOR,
+                     outline=(255, 255, 255), width=2)
+    font = _font(max(13, min(40, round(3.5 * scale))))
+    radius, ring = max(8, round(0.15 / resolution * scale)), max(2, scale // 2)
+    centres = [pixel(marker["x"], marker["y"]) for marker in markers]
+    for mx, my in centres:
+        draw.ellipse((mx - radius - 2, my - radius - 2, mx + radius + 2, my + radius + 2), outline=(255, 255, 255),
+                     width=ring + 2)
+        draw.ellipse((mx - radius, my - radius, mx + radius, my + radius), outline=MARKER_COLOR, width=ring)
+    for marker, (mx, my) in zip(markers, centres):  # labels last, so a neighbouring ring never hides one
+        _, label_height, _, _ = _text_size(font, marker["label"])
+        _label(draw, mx + 0.7 * radius + 2, my - 0.7 * radius - label_height - 6, marker["label"], font, MARKER_COLOR)
+    _scale_bar(draw, figure, resolution / scale, font)
+    return figure
+
+
+def render_figure(spec, *, page_width=PAGE_WIDTH_PX, full_max_px=FULL_MAX_PX):
+    """One map figure as page-size and full-size PNG bytes, their pixel sizes and the SHA256 of each input."""
+    import csv
+    from PIL import Image
+
+    grid = _load_grid(spec["map_yaml"])
+    crop, top, left = _crop(grid, spec.get("window"))
+    inputs = {str(grid["yaml"]): _sha256_file(grid["yaml"]), str(grid["pgm"]): _sha256_file(grid["pgm"])}
+    path_points = []
+    if spec.get("path_csv"):
+        with Path(spec["path_csv"]).open(encoding="utf-8") as stream:
+            path_points = [(float(row["used_x"]), float(row["used_y"])) for row in csv.DictReader(stream)]
+        inputs[str(Path(spec["path_csv"]).resolve())] = _sha256_file(spec["path_csv"])
+    rows, columns = crop.shape
+    page_scale = max(1, page_width // columns)
+    full_scale = max(page_scale, min(FULL_MAX_SCALE, full_max_px // max(rows, columns)))
+    out = {"inputs": inputs}
+    for name, scale in (("page", page_scale), ("full", full_scale)):
+        figure = _draw(crop, grid, top, left, scale, path_points, spec.get("markers", []))
+        if name == "page" and figure.width > page_width:
+            figure = figure.resize((page_width, max(1, round(figure.height * page_width / figure.width))),
+                                   Image.LANCZOS)
+        buffer = BytesIO()
+        figure.save(buffer, format="PNG", optimize=True)
+        out[name], out[name + "_size"] = buffer.getvalue(), figure.size
+    return out
 
 
 CSS = """
@@ -191,13 +367,41 @@ ul.done li::marker{content:"✓  ";color:var(--done)}ul.doing li::marker{content
 ul.attention li::marker{content:"!  ";color:var(--waiting)}
 figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px}
 figure img{display:block;max-width:100%;height:auto;margin:0 auto}figcaption{margin-top:8px;color:var(--muted);font-size:14px}
+.figs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:12px}.fig.wide{grid-column:1/-1}
+.table-wrap{overflow-x:auto;margin-top:16px}table{border-collapse:collapse;width:100%;background:#fff;font-size:15px}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}thead th{background:#f1f5f9}
 .you{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:16px}
 footer{color:var(--muted);font-size:14px}details summary{cursor:pointer;font-weight:600}code{font-size:13px;word-break:break-all}
-@media (max-width:820px){.ladder{grid-template-columns:1fr}.cards{grid-template-columns:1fr}}
+@media (max-width:820px){.ladder{grid-template-columns:1fr}.cards{grid-template-columns:1fr}.figs{grid-template-columns:1fr}}
 """
 
 
-def render_html(content, map_png=None):
+def _map_section(content, figures, e):
+    blocks = []
+    for spec, fig in zip(content["figures"], figures or []):
+        (page_w, page_h), (full_w, full_h) = fig["page_size"], fig["full_size"]
+        wide = "" if spec["window"] else " wide"  # whole maps span the page; same-window close-ups sit side by side
+        blocks.append(f'<figure class="fig{wide}"><h3>{e(spec["title"])}</h3><a href="{e(fig["full"])}">'
+                      f'<img src="{e(fig["page"])}" width="{page_w}" height="{page_h}" alt="{e(spec["title"])}"></a>'
+                      f'<figcaption>{e(spec["caption"])} <a href="{e(fig["full"])}">看原尺寸（{full_w}×{full_h} 像素）'
+                      '</a></figcaption></figure>')
+    table = ""
+    if content.get("map_table"):
+        spec = content["map_table"]
+        head = "".join(f'<th scope="col">{e(c)}</th>' for c in spec["columns"])
+        body = "".join(f'<tr><th scope="row">{e(row[0])}</th>' + "".join(f"<td>{e(c)}</td>" for c in row[1:])
+                       + "</tr>" for row in spec["rows"])
+        table = f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+        if spec["note"]:
+            table += f'<p class="note">{e(spec["note"])}</p>'
+    if not blocks and not table:
+        return ""
+    legend = f'<p class="note">{e(LEGEND)}</p><div class="figs">{"".join(blocks)}</div>' if blocks else ""
+    return f'<section aria-labelledby="map-h"><h2 id="map-h">走廊地图</h2>{legend}{table}</section>'
+
+
+def render_html(content, figures=None):
+    """The page; ``figures`` names the written PNG files of each content figure, in order."""
     e = lambda value: html.escape(value, quote=True)  # noqa: E731 - every text field goes through this
     steps = []
     for i, step in enumerate(content["ladder"], 1):
@@ -223,11 +427,7 @@ def render_html(content, map_png=None):
                         f'</section>')
     sections.append(f'<section aria-labelledby="lines-h"><h2 id="lines-h">各条工作线</h2>'
                     f'<div class="cards">{"".join(cards)}</div></section>')
-    if map_png is not None and content.get("map"):
-        uri = "data:image/png;base64," + base64.b64encode(map_png).decode("ascii")
-        caption = e(content["map"]["caption"])
-        sections.append(f'<section aria-labelledby="map-h"><h2 id="map-h">在用的走廊地图</h2><figure>'
-                        f'<img src="{uri}" alt="{caption}"><figcaption>{caption}</figcaption></figure></section>')
+    sections.append(_map_section(content, figures, e))
     if content["needs_user"]:
         sections.append('<section class="you" aria-labelledby="you-h"><h2 id="you-h">需要你做的</h2><ul>'
                         + "".join(f"<li>{e(item)}</li>" for item in content["needs_user"]) + "</ul></section>")
@@ -298,16 +498,25 @@ def build(content_path, output):
     if len(raw) > MAX_CONTENT_BYTES:
         raise ContentError("content file is too large")
     content = validate_content(json.loads(raw.decode("utf-8")))
-    map_png, inputs = None, {}
-    if content.get("map"):
-        map_png, inputs = render_map_png(content["map"]["map_yaml"], content["map"]["path_csv"])
-    page = render_html(content, map_png)
+    rendered = [render_figure(spec) for spec in content["figures"]]  # before mkdir: a failure leaves nothing behind
+    names = [{"page": f"fig{i}.png", "full": f"fig{i}_full.png", "page_size": r["page_size"],
+              "full_size": r["full_size"]} for i, r in enumerate(rendered, 1)]
+    inputs = {}
+    for result in rendered:
+        inputs.update(result["inputs"])
+    page = render_html(content, names)
     output = Path(output)
     output.mkdir(parents=True)  # refuses an existing directory
     with (output / "content.json").open("xb") as stream:
         stream.write(raw)
     with (output / "index.html").open("x", encoding="utf-8") as stream:
         stream.write(page)
+    figures_sha256 = {}
+    for name, result in zip(names, rendered):
+        for key in ("page", "full"):
+            with (output / name[key]).open("xb") as stream:
+                stream.write(result[key])
+            figures_sha256[name[key]] = hashlib.sha256(result[key]).hexdigest()
     sources = {}
     for source in content["sources"]:
         path = Path(source["path"]).expanduser()
@@ -315,13 +524,13 @@ def build(content_path, output):
             "DIRECTORY" if path.is_dir() else "NOT_FOUND")
     manifest = {"schema_version": 1, "content_sha256": hashlib.sha256(raw).hexdigest(),
                 "index_html_sha256": hashlib.sha256(page.encode("utf-8")).hexdigest(),
-                "map_inputs_sha256": inputs, "sources": sources, "hardware_started": False,
-                "live_data": False}
+                "map_inputs_sha256": inputs, "figures_sha256": figures_sha256, "sources": sources,
+                "hardware_started": False, "live_data": False}
     with (output / "manifest.json").open("x", encoding="utf-8") as stream:
         json.dump(manifest, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
     return {"status": "OVERVIEW_WRITTEN", "output": str(output), "index_bytes": len(page.encode("utf-8")),
-            "missing_sources": sorted(k for k, v in sources.items() if v == "NOT_FOUND")}
+            "figures": len(rendered), "missing_sources": sorted(k for k, v in sources.items() if v == "NOT_FOUND")}
 
 
 def main(argv=None):
