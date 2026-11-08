@@ -53,6 +53,32 @@ def test_live_config_applies_the_wheel_override_and_bias_with_arrival_timing(tmp
     assert len(live["provenance"]["hardware_setup"]["sha256"]) == 64
 
 
+def test_frozen_current_configuration_loads_like_a_cell_and_matches_the_reference(tmp_path, monkeypatch):
+    import hashlib
+    from wc_navigation.live import current_config
+    cell, setup, bias, _ = write_cell(tmp_path)
+    runtime = json.loads((cell / "runtime_config.json").read_text())
+    prior = json.loads((cell / "prior_config.json").read_text())
+    setup_text = setup.read_text()
+    runtime["hardware_setup_provenance"] = {"source_path": "config/local/project/hardware_setup.json",
+                                            "sha256": hashlib.sha256(setup_text.encode()).hexdigest()}
+    runtime["wheel_candidate"] = prior["wheel_candidate"]
+    resolved = {"root": str(tmp_path), "runtime": runtime, "prior": prior, "snapshots": {"hardware_setup.json": setup_text}}
+    monkeypatch.setattr(current_config, "resolve", lambda root, session, path: ({"mode": "left"}, resolved))
+    record = current_config.freeze(tmp_path / "frozen", tmp_path, "s1", compare_cell=cell, gyro_bias=bias)
+    checks = record["checks"]
+    assert checks["hardware_setup_from_local_override"] and checks["live_chain_loads_it"]
+    assert not checks["confirmed_gyro_bias_configured"]
+    same = checks["against_reference_cell"]
+    assert same["T_base_axle_max_abs_diff"] == 0.0 and same["lever_xy_max_abs_diff_m"] == 0.0 and same["cloud_filter_equal"]
+    written = json.loads((tmp_path / "frozen" / "frozen_configuration.json").read_text())
+    assert written["files_sha256"]["hardware_setup.json"] == runtime["hardware_setup_provenance"]["sha256"]
+    # a snapshot that does not match the resolved provenance is refused
+    runtime["hardware_setup_provenance"]["sha256"] = "0" * 64
+    with pytest.raises(current_config.FreezeError):
+        current_config.freeze(tmp_path / "frozen2", tmp_path, "s2")
+
+
 def test_live_config_rejects_other_imu_bias_and_non_left_frontends(tmp_path):
     cell, setup, bias, _ = write_cell(tmp_path, sensor="H30-OTHER")
     with pytest.raises(live_config.LiveConfigError, match="another IMU"):
@@ -223,20 +249,72 @@ def test_odometry_emits_a_fixed_grid_up_to_the_watermark_and_bounds_history():
 
 # -- relay, supervisor helpers and command line ------------------------------------------------------------
 def test_relay_configuration_guards_against_loops_and_unapproved_domains(monkeypatch):
-    from wc_navigation.live.relay_node import check_relay_config
+    from wc_navigation.live.relay_node import OUTPUT_PREFIX, check_relay_config
     monkeypatch.delenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", raising=False)
-    assert check_relay_config({"source_domain": 100, "source_prefix": "/relay_source"}, "100") == (100, "/relay_source")
+    assert check_relay_config({"source_domain": 100, "source_prefix": "/relay_source"}, "100") == (
+        100, "/relay_source", OUTPUT_PREFIX)
     with pytest.raises(ValueError, match="loop"):
         check_relay_config({"source_domain": 100}, "100")
+    with pytest.raises(ValueError, match="loop"):
+        check_relay_config({"source_domain": 100, "source_prefix": "/p", "output_prefix": "/p"}, "100")
     with pytest.raises(ValueError, match="APPROVED_BY_USER"):
         check_relay_config({"source_domain": 83}, "100")
     with pytest.raises(ValueError):
         check_relay_config({"source_domain": 100, "source_prefix": "relay"}, "100")
+    with pytest.raises(ValueError):
+        check_relay_config({"source_domain": 100, "source_prefix": "/p", "output_prefix": ""}, "100")
+    with pytest.raises(ValueError):
+        check_relay_config({"source_domain": 100, "source_prefix": "/p", "wait_for_panel_consumers": "yes"}, "100")
     monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "yes")
     with pytest.raises(ValueError, match="APPROVED_BY_USER"):
         check_relay_config({"source_domain": 83}, "100")
     monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261108")
-    assert check_relay_config({"source_domain": 83}, "100") == (83, "")
+    assert check_relay_config({"source_domain": 83}, "100") == (83, "", OUTPUT_PREFIX)
+
+
+def test_relay_reads_best_effort_volatile_keep_last_and_waits_for_the_panel_consumers(tmp_path, monkeypatch):
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
+    from wc_navigation.live import cli, relay_node
+    for topic, depth in ((relay_node.LEFT_FILTERED_TOPIC, 3), (relay_node.IMU_TOPIC, 100), (relay_node.WHEEL_TOPIC, 20)):
+        qos = relay_node.source_qos(topic)
+        assert (qos.reliability, qos.durability, qos.history, qos.depth) == (
+            ReliabilityPolicy.BEST_EFFORT, DurabilityPolicy.VOLATILE, HistoryPolicy.KEEP_LAST, depth)
+    # publishers and another subscriber on every topic, or the relay does not subscribe yet
+    ready = {topic: (1, 1) for topic in relay_node.RELAYED_TOPICS}
+    assert relay_node.panel_ready(ready)
+    assert not relay_node.panel_ready({**ready, relay_node.IMU_TOPIC: (1, 0)})
+    assert not relay_node.panel_ready({**ready, relay_node.LEFT_FILTERED_TOPIC: (0, 2)})
+    assert cli.OUTPUT_PREFIX == relay_node.OUTPUT_PREFIX
+
+
+def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topics(tmp_path, monkeypatch):
+    from wc_navigation.live import cli
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_run(self):
+        captured.update(self.config)
+        raise Stop()
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261108")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "100")
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+    from wc_navigation.live import config as live_config, supervisor
+    monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve", lambda self, value: tmp_path / "run")
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    argv = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--source", "vehicle", "--sensor-domain", "83", "--map", str(map_yaml), "--initial-pose", "0", "0", "0",
+            "--goal", "1", "2", "0"]
+    with pytest.raises(Stop):
+        cli.main(argv)
+    assert captured["relay"] == {"source_domain": 83, "source_prefix": "", "output_prefix": cli.OUTPUT_PREFIX,
+                                 "wait_for_panel_consumers": True}
+    assert captured["source_prefix"] == cli.OUTPUT_PREFIX and captured["lidar_time_offset_ms"] == 75.0
 
 
 def test_sim_time_is_set_everywhere_in_a_parameter_tree():
@@ -289,10 +367,13 @@ def test_lidar_time_offset_is_explicit_and_stamps_the_scan_earlier(tmp_path):
             scan_stamp_ns(1_000_000_000, bad)
     common = ["inputs", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
               "--bag", "x"]
-    assert arguments(common).lidar_time_offset_ms == 0.0
-    assert arguments(common + ["--lidar-time-offset-ms", "75"]).lidar_time_offset_ms == 75.0
+    assert arguments(common).lidar_time_offset_ms == 75.0              # live default since 2026-11-08
+    assert arguments(common + ["--lidar-time-offset-ms", "0"]).lidar_time_offset_ms == 0.0
     with pytest.raises(SystemExit):
         arguments(common + ["--lidar-time-offset-ms", "251"])
+    from wc_navigation.live.amcl_cross import arguments as replay_arguments
+    replay = ["--project-root", str(tmp_path), "--source-cell", "c", "--map", "m.yaml", "--alignment", "0", "1", "-85"]
+    assert replay_arguments(replay).lidar_time_offset_ms == 0.0         # replay tools keep 0
 
 
 def test_vehicle_mode_refuses_without_the_dated_user_approval(tmp_path, monkeypatch):

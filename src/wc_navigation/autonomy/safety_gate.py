@@ -111,6 +111,95 @@ class CorrectionMonitor:
         return True, ""
 
 
+COVARIANCE_REASONS = ("COVARIANCE_XY_TOO_LARGE", "COVARIANCE_YAW_TOO_LARGE")
+
+
+class StationaryRelocalization:
+    """When to ask AMCL for an in-place filter update while the gate holds the robot for its covariance.
+
+    AMCL updates its filter only after the robot has moved ``update_min_d`` or ``update_min_a``. Once the gate
+    stops the robot because the covariance is too large, nothing moves, the filter is never updated, the
+    covariance never shrinks and the gate never releases (window B, ZL1107 simulation, 2026-11-07); a start
+    pose given with too large an uncertainty never becomes trusted for the same reason. While the gate holds
+    for a covariance reason and the robot has stood still for ``settle_s``, this asks for one no-motion update
+    (AMCL's ``request_nomotion_update``: the next scan updates the filter without motion) every
+    ``interval_s``, at most ``max_requests`` times per stop. The budget renews once the robot has moved
+    ``renew_translation_m`` or ``renew_yaw_rad`` (AMCL's own update thresholds) from where the stop began.
+
+    The gate's conditions and limits are unchanged. If the current view cannot bring the covariance within the
+    limit, the robot stays stopped: without a budget the same view would be counted again and again and the
+    covariance would shrink without new evidence.
+    """
+
+    def __init__(self, enabled=True, settle_s=1.0, interval_s=1.0, max_requests=5, still_translation_m=0.01,
+                 still_yaw_rad=math.radians(0.5), renew_translation_m=0.10, renew_yaw_rad=0.10):
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        self.enabled = enabled
+        self.settle_s = _number(settle_s, "settle_s", positive=True)
+        self.interval_s = _number(interval_s, "interval_s", positive=True)
+        if isinstance(max_requests, bool) or not isinstance(max_requests, int) or not 0 <= max_requests <= 20:
+            raise ValueError("max_requests must be an integer within 0..20")
+        self.max_requests = max_requests
+        self.still_translation_m = _number(still_translation_m, "still_translation_m", positive=True)
+        self.still_yaw_rad = _number(still_yaw_rad, "still_yaw_rad", positive=True)
+        self.renew_translation_m = _number(renew_translation_m, "renew_translation_m", positive=True)
+        self.renew_yaw_rad = _number(renew_yaw_rad, "renew_yaw_rad", positive=True)
+        self._poses = []
+        self._anchor = None
+        self._last_request = -math.inf
+        self.requests_this_stop = 0
+        self.requests_total = 0
+        self.stops = 0
+        self.exhausted_stops = 0
+        self.service_unavailable = 0
+
+    def _moved(self, a, b, translation, yaw):
+        return (math.hypot(a[0] - b[0], a[1] - b[1]) >= translation
+                or abs(math.atan2(math.sin(a[2] - b[2]), math.cos(a[2] - b[2]))) >= yaw)
+
+    def update(self, now, holding_for_covariance, robot_in_odom, service_available=True):
+        """Feed one gate tick; True when one no-motion update should be requested now.
+
+        ``robot_in_odom`` is the robot's (x, y, yaw) in odom, or None when it is unknown (no request then).
+        """
+        if not self.enabled or robot_in_odom is None:
+            return False
+        now = float(now)
+        pose = tuple(float(v) for v in robot_in_odom[:3])
+        if self._anchor is not None and self._moved(pose, self._anchor, self.renew_translation_m, self.renew_yaw_rad):
+            self._anchor, self.requests_this_stop = None, 0
+        self._poses.append((now, pose))
+        while len(self._poses) > 1 and now - self._poses[1][0] >= self.settle_s:
+            self._poses.pop(0)
+        settled = (now - self._poses[0][0] >= self.settle_s and not any(
+            self._moved(pose, old, self.still_translation_m, self.still_yaw_rad) for _, old in self._poses))
+        if not (holding_for_covariance and settled):
+            return False
+        if self._anchor is None:
+            self._anchor = pose
+            self.stops += 1
+        if self.requests_this_stop >= self.max_requests or now - self._last_request < self.interval_s:
+            return False
+        if not service_available:
+            self.service_unavailable += 1
+            self._last_request = now
+            return False
+        self.requests_this_stop += 1
+        self.requests_total += 1
+        self._last_request = now
+        if self.requests_this_stop == self.max_requests:
+            self.exhausted_stops += 1
+        return True
+
+    def status(self):
+        return {"enabled": self.enabled, "requests_total": self.requests_total,
+                "requests_this_stop": self.requests_this_stop, "max_requests_per_stop": self.max_requests,
+                "budget_exhausted": self.enabled and self.requests_this_stop >= self.max_requests,
+                "stops": self.stops, "exhausted_stops": self.exhausted_stops,
+                "service_unavailable_ticks": self.service_unavailable}
+
+
 @dataclass(frozen=True)
 class GateDecision:
     linear: float

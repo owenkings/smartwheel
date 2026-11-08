@@ -182,3 +182,48 @@ def test_defaults_measure_at_the_robot_with_ten_degrees_and_half_metre_covarianc
     assert gate.check_covariance(covariance) == (True, "")
     covariance[7] = 0.51 ** 2
     assert gate.check_covariance(covariance) == (False, "COVARIANCE_XY_TOO_LARGE")
+
+
+def ticks(relocalization, start, end, pose, holding=True, available=True, dt=0.25):
+    """Gate ticks at exact binary times; returns the times at which a no-motion update was requested."""
+    requested = []
+    for k in range(int(round((end - start) / dt)) + 1):
+        t = start + k * dt
+        if relocalization.update(t, holding, pose(t) if callable(pose) else pose, available):
+            requested.append(t)
+    return requested
+
+
+def test_no_motion_updates_are_requested_only_for_a_covariance_hold_on_a_standing_robot():
+    from wc_navigation.autonomy.safety_gate import StationaryRelocalization
+    relocalization = StationaryRelocalization()
+    # settles for 1 s first, then one request per second, five per stop
+    assert ticks(relocalization, 0.0, 10.0, (2.0, 1.0, 0.3)) == [1.0, 2.0, 3.0, 4.0, 5.0]
+    status = relocalization.status()
+    assert status["requests_total"] == 5 and status["budget_exhausted"] and status["exhausted_stops"] == 1
+    # moving by AMCL's own update distance renews the budget for the next stop
+    assert ticks(relocalization, 10.25, 11.0, (2.12, 1.0, 0.3)) == []         # just moved: not settled yet
+    assert ticks(relocalization, 11.25, 13.5, (2.12, 1.0, 0.3)) == [11.25, 12.25, 13.25]
+    assert relocalization.status()["stops"] == 2
+
+
+def test_no_request_while_moving_or_without_a_covariance_hold():
+    from wc_navigation.autonomy.safety_gate import StationaryRelocalization
+    assert ticks(StationaryRelocalization(), 0.0, 5.0, lambda t: (0.1 * t, 0.0, 0.0)) == []   # 0.1 m/s
+    assert ticks(StationaryRelocalization(), 0.0, 5.0, (0.0, 0.0, 0.0), holding=False) == []
+    assert StationaryRelocalization().update(5.0, True, None) is False
+    assert ticks(StationaryRelocalization(enabled=False), 0.0, 5.0, (0.0, 0.0, 0.0)) == []
+    turning = StationaryRelocalization()
+    assert ticks(turning, 0.0, 0.5, (0.0, 0.0, 0.0)) == []
+    assert ticks(turning, 0.75, 1.5, (0.0, 0.0, 0.02)) == []                  # 1.1 deg of turning restarts the settle
+    assert ticks(turning, 1.75, 1.75, (0.0, 0.0, 0.02)) == [1.75]
+
+
+def test_an_unavailable_service_does_not_use_the_budget():
+    from wc_navigation.autonomy.safety_gate import StationaryRelocalization
+    relocalization = StationaryRelocalization(max_requests=2)
+    assert ticks(relocalization, 0.0, 3.0, (0.0, 0.0, 0.0), available=False) == []
+    assert relocalization.status()["requests_total"] == 0 and relocalization.status()["service_unavailable_ticks"] == 3
+    assert ticks(relocalization, 3.25, 6.0, (0.0, 0.0, 0.0)) == [4.0, 5.0]
+    with pytest.raises(ValueError):
+        StationaryRelocalization(max_requests=50)

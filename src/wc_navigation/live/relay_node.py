@@ -1,17 +1,22 @@
 """One-way relay of the raw sensor topics from a sensor domain into this (isolated) domain.
 
 The relay process holds two ROS contexts. In the sensor (source) domain it has
-one read-only node that subscribes, best effort and as serialized bytes, to
-exactly three topics: the left lidar host-filtered frames, the H30 frames and
-the wheel feedback records. In its own isolated domain a second node
-republishes those bytes unchanged, plus a status JSON on
-``/wc_live/relay_status``. Nothing is ever published in the source domain:
+one read-only node that subscribes, as serialized bytes, to exactly three
+topics: the left lidar host-filtered frames, the H30 frames and the wheel
+feedback records (best effort, volatile, keep last 3 / 100 / 20). In its own
+isolated domain a second node republishes those bytes unchanged under
+``/wc_live/relayed``, plus a status JSON on ``/wc_live/relay_status``. On the
+vehicle the subscriptions are created only once every topic already has a
+publisher and another subscriber (the panel's recorder or live mapping input):
+the drivers start publishing as soon as any subscriber exists, so the relay
+must not be the first one. Nothing is ever published in the source domain:
 
 * the source node's class cannot create publishers, services or clients; the
   ``/parameter_events`` publisher rclpy creates internally is replaced by a
   stand-in that never reaches DDS; rosout logging and parameter services are
   off and global ROS arguments (remaps) do not apply to it;
-* best-effort readers send no acknowledgements and cannot slow the panel's
+* best-effort readers send no acknowledgements, take no part in the drivers'
+  end-of-recording wait for all reliable readers and cannot slow the panel's
   publishers down;
 * after subscribing, the node checks its own graph entry: no publisher, no
   service, no client and exactly the three subscriptions, or the relay exits.
@@ -31,21 +36,47 @@ from .config import IMU_TOPIC, LEFT_FILTERED_TOPIC, WHEEL_TOPIC
 from .supervisor import VEHICLE_APPROVAL_ENV, require_live_domain, vehicle_approved
 
 RELAYED_TOPICS = (LEFT_FILTERED_TOPIC, IMU_TOPIC, WHEEL_TOPIC)
-DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50}
+# Source side (the panel's domain), per window A 2026-11-08: best effort, volatile, keep last. Best-effort readers
+# take no part in the drivers' end-of-recording acknowledgement wait, so the relay cannot make a recording PARTIAL.
+SOURCE_DEPTH = {LEFT_FILTERED_TOPIC: 3, IMU_TOPIC: 100, WHEEL_TOPIC: 20}
+TARGET_DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50}
+OUTPUT_PREFIX = "/wc_live/relayed"
+
+
+def source_qos(topic):
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+    return QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=SOURCE_DEPTH[topic],
+                      reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
 
 
 def check_relay_config(config, own_domain):
     source = int(config["source_domain"])
     prefix = config.get("source_prefix", "")
+    output = config.get("output_prefix", OUTPUT_PREFIX)
     if not 0 <= source <= 232:
         raise ValueError("source_domain must be a ROS domain id")
-    if str(source) == str(own_domain) and not prefix:
-        raise ValueError("a same-domain relay needs a source topic prefix (it would loop)")
+    if str(source) == str(own_domain) and (not prefix or prefix == output):
+        raise ValueError("a same-domain relay needs a source topic prefix other than the output prefix (it would loop)")
     if str(source) not in SIMULATION_DOMAINS and not vehicle_approved():
         raise ValueError("relaying from domain %d needs %s=APPROVED_BY_USER_<date>" % (source, VEHICLE_APPROVAL_ENV))
-    if prefix and not prefix.startswith("/"):
-        raise ValueError("source_prefix must start with /")
-    return source, prefix
+    if (prefix and not prefix.startswith("/")) or not output.startswith("/") or output == "/":
+        raise ValueError("source_prefix and output_prefix must start with / (output_prefix is required)")
+    if type(config.get("wait_for_panel_consumers", False)) is not bool:
+        raise ValueError("wait_for_panel_consumers must be a boolean")
+    return source, prefix, output
+
+
+def panel_ready(counts):
+    """Every relayed topic has a publisher and at least one subscriber that is not the relay.
+
+    The drivers start publishing once any subscriber exists; waiting for the panel's own consumer (recorder or
+    live mapping input) keeps the relay from being the one that releases them before the recorder has joined.
+    """
+    return all(publishers >= 1 and subscribers >= 1 for publishers, subscribers in counts.values())
+
+
+def source_counts(node, topics):
+    return {topic: (node.count_publishers(topic), node.count_subscribers(topic)) for topic in topics}
 
 
 def read_only_node_class():
@@ -105,7 +136,7 @@ def self_check(node, expected, timeout_s=3.0):
 
 
 class Relay:
-    def __init__(self, source_node, target_node, prefix):
+    def __init__(self, source_node, target_node, prefix, output_prefix):
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
         from wc_interfaces.msg import H30Frame, SourceFrame
@@ -113,11 +144,11 @@ class Relay:
         self.counts = {topic: 0 for topic in types}
         self.publishers = {}
         for topic, kind in types.items():
+            # Renamed in the shadow domain, so the relayed copies can never be mistaken for the panel's topics.
             self.publishers[topic] = target_node.create_publisher(
-                kind, topic, QoSProfile(depth=DEPTH[topic], reliability=ReliabilityPolicy.RELIABLE))
+                kind, output_prefix + topic, QoSProfile(depth=TARGET_DEPTH[topic], reliability=ReliabilityPolicy.RELIABLE))
             source_node.create_subscription(kind, prefix + topic, lambda data, t=topic: self.forward(t, data),
-                                            QoSProfile(depth=DEPTH[topic], reliability=ReliabilityPolicy.BEST_EFFORT),
-                                            raw=True)
+                                            source_qos(topic), raw=True)
 
     def forward(self, topic, data):
         self.publishers[topic].publish(data)
@@ -130,7 +161,8 @@ def main(argv=None):
     args, ros_args = parser.parse_known_args(argv)
     config = load_config(args.config)
     require_live_domain(config)
-    source, prefix = check_relay_config(config, os.environ["ROS_DOMAIN_ID"])
+    source, prefix, output_prefix = check_relay_config(config, os.environ["ROS_DOMAIN_ID"])
+    wait_for_panel = config.get("wait_for_panel_consumers", False)
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
@@ -145,16 +177,28 @@ def main(argv=None):
     executor = SingleThreadedExecutor(context=source_context)
     executor.add_node(source_node)
     code = 0
+    topics = [prefix + topic for topic in RELAYED_TOPICS]
+    base = {"source_domain": source, "source_prefix": prefix, "output_prefix": output_prefix,
+            "wait_for_panel_consumers": wait_for_panel, "publishes_in_source_domain": False}
     try:
-        relay = Relay(source_node, target_node, prefix)
-        check = self_check(source_node, [prefix + topic for topic in RELAYED_TOPICS])
+        # Vehicle: subscribe only once the panel's own consumers are there (graph queries create nothing).
+        waited = time.monotonic()
+        while wait_for_panel and rclpy.ok() and source_context.ok():
+            counts = source_counts(source_node, topics)
+            if panel_ready(counts):
+                break
+            status_pub.publish(json_message({**base, "state": "WAITING_FOR_PANEL_SOURCES",
+                                             "waited_s": round(time.monotonic() - waited, 1),
+                                             "publishers_subscribers": {t: list(c) for t, c in counts.items()}}))
+            rclpy.spin_once(target_node, timeout_sec=0.0)
+            time.sleep(1.0)
+        relay = Relay(source_node, target_node, prefix, output_prefix)
+        check = self_check(source_node, topics)
         state = "RUNNING" if check["status"] == "PASS" else "FAILED"
         last_status = 0.0
         while rclpy.ok() and source_context.ok():
             if time.monotonic() - last_status >= 1.0:
-                status_pub.publish(json_message({"state": state, "source_domain": source, "source_prefix": prefix,
-                                                 "self_check": check, "counts": relay.counts,
-                                                 "publishes_in_source_domain": False}))
+                status_pub.publish(json_message({**base, "state": state, "self_check": check, "counts": relay.counts}))
                 rclpy.spin_once(target_node, timeout_sec=0.0)
                 last_status = time.monotonic()
                 if state == "FAILED":

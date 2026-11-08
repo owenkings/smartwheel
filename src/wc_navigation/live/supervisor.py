@@ -30,6 +30,7 @@ from ..autonomy import nav2_config
 from ..autonomy.bringup import EXECUTABLES, PACKAGES, RunError, Supervisor, _parameter_value, _same
 from ..autonomy.ros_util import json_message, latched_qos, lookup_pose, require_isolated_domain, simulation_domain
 from .config import SOURCE_TOPICS
+from .scan_adapter import LIVE_LIDAR_TIME_OFFSET_MS
 
 VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
@@ -168,8 +169,12 @@ class LiveSupervisor(Supervisor):
         for role in INPUT_ROLES:
             self.launch_module("inputs_" + role, "wc_navigation.live.inputs_node", files["inputs_" + role])
         if cfg.get("relay"):
-            self.launch_module("relay", "wc_navigation.live.relay_node", files["relay"])
-            self.wait_for(monitor, lambda: monitor.state("/wc_live/relay_status") == "RUNNING", 30, "relay_ready")
+            # nice 10: the relay's loopback copy competes with the panel's recorder for CPU (window A).
+            self.launch("relay", ["nice", "-n", "10", sys.executable, "-B", "-s", "-m", "wc_navigation.live.relay_node",
+                                  "--config", files["relay"]])
+            # On the vehicle the relay first waits until the panel's own consumers are subscribed.
+            wait_s = 600 if cfg["relay"].get("wait_for_panel_consumers") else 30
+            self.wait_for(monitor, lambda: monitor.state("/wc_live/relay_status") == "RUNNING", wait_s, "relay_ready")
             self.report["relay_self_check"] = (monitor.status.get("/wc_live/relay_status") or {}).get("self_check")
         self.wait_for(monitor, lambda: all(monitor.state("/wc_live/inputs_status/" + role) is not None
                                            for role in INPUT_ROLES), 30, "inputs_ready")
@@ -257,7 +262,7 @@ class LiveSupervisor(Supervisor):
         files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
                      "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
                      "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
-                     "lidar_time_offset_ms": cfg.get("lidar_time_offset_ms", 0.0),
+                     "lidar_time_offset_ms": cfg.get("lidar_time_offset_ms", LIVE_LIDAR_TIME_OFFSET_MS),
                      "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {

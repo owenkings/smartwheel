@@ -119,9 +119,17 @@ def frozen_frontend(cell):
     return stamps, ranges, base_poses_from_lidar(lidar, lever), hashes
 
 
-def check_run(run_dir, cell, lidar_time_offset_ms=0.0):
-    """``lidar_time_offset_ms``: the run stamped its scans this much earlier than the lidar frames."""
+def check_run(run_dir, cell, lidar_time_offset_ms=None):
+    """``lidar_time_offset_ms``: the run stamped its scans this much earlier than the lidar frames.
+
+    None reads the value the run recorded in run_config.json (runs from before the option: 0).
+    """
+    import json
     run_dir = Path(run_dir)
+    if lidar_time_offset_ms is None:
+        recorded = run_dir / "run_config.json"
+        config = json.loads(recorded.read_text(encoding="utf-8")) if recorded.is_file() else {}
+        lidar_time_offset_ms = float(config.get("lidar_time_offset_ms", 0.0))
     stamps, ranges, axle, hashes = frozen_frontend(cell)
     live_stamps, live_ranges = read_live_scans(run_dir / "scans.csv")
     odometry = read_live_odometry(run_dir / "odom.csv")

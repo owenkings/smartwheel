@@ -64,7 +64,9 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 - `ros2 bag play --clock` 只回放左雷达 host_filtered 帧、H30 帧和轮速记录三个话题，按录包时间送进扫描和里程计两个进程；不启动驱动、面板或任何会打开设备的节点。整个运行在 `WC_AUTONOMY_ROS_DOMAIN` 的隔离域里，占用本检出该域的锁。
 - `--cell` 给外参、主机滤波、运动先验和设备编号；`--hardware-setup` 的 `wheel_odometry` 和 `--gyro-bias` 替换轮参数和零偏。ZL1107 系列录包冻结的是旧轮参数，必须给覆盖文件，否则和冻结前端对不上。
 - `--scan-rate-hz`（默认 10，0 为每帧都发）、`--bag-rate`（0.1–2）、`--relay-test`（录包放在 `/relay_source` 前缀下，经单向转发进程进来，检验转发）。
-- `--lidar-time-offset-ms MS`（`inputs` 和 `shadow` 都有，默认 0）：发布的 `/scan` 时间戳比雷达帧早 MS 毫秒，AMCL、代价地图和碰撞监控就在扫描实际采集的时刻取里程计。录包检验相应地在 stamp − MS 处找对应的冻结帧；`run_config.json` 和输入状态里记录所用的值。
+- `--lidar-time-offset-ms MS`（`inputs` 和 `shadow` 都有，默认 75，用户 2026-11-08 决定；0 为录包原样）：发布的 `/scan` 时间戳比雷达帧早 MS 毫秒，AMCL、代价地图和碰撞监控就在扫描实际采集的时刻取里程计。录包检验按运行记录的值在 stamp − MS 处找对应的冻结帧；`run_config.json` 和输入状态里记录所用的值。
+- `--compare-cell`（只 `inputs`）：比对用的冻结前端，默认就是 `--cell`；`--cell` 给的是 `freeze-config` 冻结的当前配置时，用它指定同一录包的前端。
+- 经转发时（`--relay-test` 或车上），扫描和里程计进程订阅改名后的 `/wc_live/relayed/...`。
 - 输出在 `reports/navigation_live_shadow/<时间>_inputs_<编号>/`：`scans.csv`（含 161 格距离）、`odom.csv`、`events.jsonl`、各进程日志和 `result.json`。`result.json` 的 `comparison` 给出与冻结前端逐帧的扫描比较（匹配帧、完全相同的帧、不同的格数）和里程计比较（第一帧对齐后的位置与航向差）。
 
 ## 实车影子运行
@@ -86,6 +88,18 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
-上车前检查单：`bash scripts/navigation_live_shadow checklist`（内容与命令里的相同，要点：用户同意并记录；确认域和面板状态；物理急停、没有任何进程订阅闸门输出或发布 `/cmd_vel`；传感器频率；标定输入与设备当前配置一致；起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差；目标；记录空间；运行后核对结果）。
+## 上车前冻结当前配置
+
+```bash
+WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow freeze-config --config-root /home/nvidia/wheelchair \
+  --compare-cell <同一台车最近的单左前端> --gyro-bias <零偏文件>
+```
+
+- 在子进程里用 `wc_runtime.mapping_controller.configuration()` 解析面板当前的实时配置（`--config` 默认 `config/mapping_live.json`），只读文件，不连设备、不起 ROS。
+- 输出 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`、`hardware_setup.json`（有零偏配置时还有零偏和依据文件）、`frozen_configuration.json`（每个文件的 sha256 和核对结果）。
+- 看核对结果：`hardware_setup_from_local_override` 必须是 true；轮参数是设备当前值；`confirmed_gyro_bias_configured` 为 false 时，影子命令必须用 `--gyro-bias` 显式给零偏；`against_reference_cell` 里外参、杆臂、主机滤波和设备编号应与最近的前端一致。
+- 影子命令用冻结目录作 `--cell`，其中的 `hardware_setup.json` 作 `--hardware-setup`（命令行打印的 `use` 一行）。
+
+上车前检查单：`bash scripts/navigation_live_shadow checklist`（内容与命令里的相同，要点：用户同意并记录；先在面板里开始录制并看到设备就绪，再启动影子命令，转发会等面板自己的订阅者到齐才订阅；物理急停、没有任何进程订阅闸门输出或发布 `/cmd_vel`；传感器频率；用 `freeze-config` 冻结并核对当前配置，零偏二选一；起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差；目标；记录空间；运行后核对结果，面板录包不是 PARTIAL）。
 
 返回[操作导航](README.md)。

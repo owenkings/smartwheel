@@ -17,7 +17,8 @@ import time
 from ..autonomy.ros_util import json_message, latched_qos, load_config, yaw_to_quaternion
 from .config import IMU_TOPIC, LEFT_FILTERED_TOPIC, WHEEL_TOPIC
 from .odometry_adapter import LiveOdometry, body_twist, odometry_message
-from .scan_adapter import ScanRejected, check_source, laser_scan_message, scan_from_source, scan_stamp_ns
+from .scan_adapter import (LIVE_LIDAR_TIME_OFFSET_MS, ScanRejected, check_source, laser_scan_message,
+                           scan_from_source, scan_stamp_ns)
 
 
 def _stamp_ns(stamp):
@@ -56,8 +57,8 @@ class LiveInputs:
         self.odometry = LiveOdometry(live["prior"], self.lever, float(config.get("odom_period_s", 0.02)))
         rate = float(config.get("scan_rate_hz", 10.0))
         self.scan_period_ns = int(1e9 / rate) if rate > 0 else 0
-        # Explicit lidar time offset, default 0 (recorded stamps); see scan_adapter.scan_stamp_ns.
-        self.lidar_time_offset_ms = float(config.get("lidar_time_offset_ms", 0.0))
+        # Lidar time offset (live default 75 ms since 2026-11-08); see scan_adapter.scan_stamp_ns.
+        self.lidar_time_offset_ms = float(config.get("lidar_time_offset_ms", LIVE_LIDAR_TIME_OFFSET_MS))
         scan_stamp_ns(0, self.lidar_time_offset_ms)
         self.stale_after_s = float(config.get("stale_after_s", 1.0))
         self.TransformStamped = TransformStamped

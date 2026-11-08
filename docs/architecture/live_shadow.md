@@ -97,7 +97,7 @@ flowchart LR
 
 - 扫描：`source_frame_filtered`（驱动的 host_filtered 帧）先过生产代码的主机滤波（`wc_runtime.mapping_filter.filter_cloud`：距离带、组织点云邻点支撑、离地高度），再按冻结外参旋到车轴轴向的雷达原点坐标系（与 `mapping_prior.prepare_cloud` 相同，包括写回 FLOAT32 的舍入），最后用 `amcl_replay.build_scan` 投影：±60°、0.75° 一格、每格取最近回波、0.30–8.0 m、高度带 −0.5..0.5 m，没有回波的格是 +inf。默认每帧都发（约 10 Hz，冻结前端是 5 Hz）。
 - 里程计：原样使用 `wc_runtime.mapping_prior.MotionPrior`（平面 EKF、robot_localization 工作进程）和实时建图节点相同的输入检查。轮速记录和 H30 帧按到达时间进入，位姿只输出到 IMU 与轮速共同水位线为止、不外推，每 20 ms 一个，输出后立即作为先验的检查点，历史保持有界。先验的时钟取消息里最新的主机单调时间，所以录包晚些回放时行为和录制时一样；输入停止由节点另外监视（状态话题报 STALE，里程计不再延伸，TF 变旧后闸门停车）。
-- 配置：外参、主机滤波、运动先验和设备编号取自同一台车的冻结前端（`--cell`）；轮参数取自 `--hardware-setup` 的 `wheel_odometry`，陀螺零偏取自 `--gyro-bias`，和前端命令的同名参数一样替换。ZL1107 系列录包冻结的是旧轮参数 0.172/0.61，回放时必须给覆盖文件（0.1646/0.599）和零偏文件。IMU 用到达时间；冻结前端用的设备相对时间模型只能离线拟合。
+- 配置：外参、主机滤波、运动先验和设备编号取自 `--cell`；轮参数取自 `--hardware-setup` 的 `wheel_odometry`，陀螺零偏取自 `--gyro-bias`，和前端命令的同名参数一样替换。录包检验用同一录包的冻结前端作 `--cell`；ZL1107 系列录包冻结的是旧轮参数 0.172/0.61，回放时必须给覆盖文件（0.1646/0.599）和零偏文件。上车时不用录包前端（它的轮参数来自覆盖文件，还带离线时间锚点和旧会话），而用 `freeze-config` 冻结的面板当前配置（见下面“上车配置”）。IMU 用到达时间；冻结前端用的设备相对时间模型只能离线拟合，A 确认实时第一步不需要设备时间。
 - 两个进程：扫描和里程计分开运行。放在一个进程时，点云处理会挡住轮速和 IMU 回调，里程计平均晚 0.27 s、最多 0.54 s；分开后平均 0.09 s、最多 0.17 s（主要是 10 Hz 轮速的水位线），扫描平均晚 0.06 s。
 - 上车时传感器话题在面板的域里。影子框架不进那个域发布；由单向转发进程（`relay_node`）只订阅这三个话题的序列化消息，原样在影子自己的隔离域里重发，细节见下面“实车影子模式的单向转发”。
 
@@ -109,14 +109,14 @@ flowchart LR
 
 wc_runtime 的实时建图链路（`mapping_input` → `mapping_prior` → RTAB-Map）由面板在域 83 的建图会话里启动，绑定会话目录和日志写入，不能单独当导航节点用，所以这里只调用其中不打开设备的纯函数和 `MotionPrior`，不改 wc_runtime。需要 A 配合的事写在状态文件的“请求”里。
 
-## 雷达时间偏移（候选，默认关闭）
+## 雷达时间偏移（实时链路默认 75 ms）
 
 A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU 到达时刻晚约 76 ms（建图包）、66 ms（验证包），轮速只差 1–6 ms（`R/reports/time_alignment/20261107_211500_ZL1107/`）。按 0 处理时，转弯中的扫描配的是稍后时刻的里程计位姿；验证包转弯帧角速度中位 0.74 rad/s，75 ms 就是约 3°。
 
-两处显式选项，默认 0（录包原样），行为不变：
+用户 2026-11-08 决定：实时链路默认补偿 75 ms，离线回放和评估工具默认仍是 0，需要时显式给。按 75 ms 重建的正式地图上做定位和评估时也用 75 ms。这个值按 IMU 到达时间估计，以后实时 IMU 改成设备时间要重估。
 
-- AMCL 回放：`navigation_amcl_replay cross --lidar-time-offset-ms MS`。扫描时间戳不变，每帧扫描配 stamp − MS 处的冻结里程计（前端相邻帧位姿间线性插值，和 A 的建图核对相同），等价于扫描提前 MS 打时间戳。MS = 0 时与以前的运行逐帧相同。
-- 实时链路：`navigation_live_shadow inputs|shadow --lidar-time-offset-ms MS`。发布的 `/scan` 时间戳比雷达帧早 MS，AMCL、代价地图和碰撞监控在这个时刻从 TF（50 Hz 里程计）取位姿。录包检验（MS = 75，`reports/navigation_live_shadow/20261107T161030Z_inputs_1f0e3e21`）：484/484 帧在 stamp − 75 ms 处找到对应扫描、逐格相同，里程计与不加偏移时相同。
+- AMCL 回放：`navigation_amcl_replay cross --lidar-time-offset-ms MS`（默认 0）。扫描时间戳不变，每帧扫描配 stamp − MS 处的冻结里程计（前端相邻帧位姿间线性插值，和 A 的建图核对相同），等价于扫描提前 MS 打时间戳。MS = 0 时与以前的运行逐帧相同。
+- 实时链路：`navigation_live_shadow inputs|shadow --lidar-time-offset-ms MS`（默认 75）。发布的 `/scan` 时间戳比雷达帧早 MS，AMCL、代价地图和碰撞监控在这个时刻从 TF（50 Hz 里程计）取位姿；`--lidar-time-offset-ms 0` 回到录包原样。录包检验按运行记录的偏移找对应的冻结帧（`reports/navigation_live_shadow/20261107T161030Z_inputs_1f0e3e21`，75 ms：484/484 帧逐格相同，里程计与不加偏移时相同）。
 
 回放对比在 `R/reports/navigation_amcl_cross/20261107T160057Z_lidar_time_offset_ZL1107/`（README 有完整表格）。验证包 + ZL1107 地图，AMCL 框架参数；中段 409 帧按录包原样的里程计分成转弯 73 帧（|角速度| ≥ 0.3 rad/s）、直行 249 帧和其他，各偏移比同一批帧。回放是确定的（同样输入两次结果逐字节相同），所以用 10 个起点微扰（±5 cm、±1°）当作 10 次 AMCL 实现；括号里是 10 次中比 0 ms 好的次数。
 
@@ -135,7 +135,21 @@ A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU �
 - 不用 AMCL、只用固定对齐时，转弯帧端点距离在 50–83 ms 最低（每 10 s 用直行帧重新对齐后 0.141 → 0.124 m），偏移取反（−75 ms）明显变差，说明符号和量级都对。
 - 闸门不可信时长没有一致的变化；20 个扰动起点 0 ms 收敛 19 个、75 ms 收敛 20 个；终点门内（地图空白）在全部运行里都被协方差条件拦住。
 
-是否在实时链路默认打开（以及 A 重建地图时是否同样减 75 ms）由用户决定，见 D 的状态文件。只用了一段 2 分钟录包和一张地图；回放里的里程计在 0.2–0.3 s 间隔的前端位姿之间插值，转弯起止处有插值误差。
+以上只用了一段 2 分钟录包和一张地图；回放里的里程计在 0.2–0.3 s 间隔的前端位姿之间插值，转弯起止处有插值误差。
+
+## 闸门：停车等待时请 AMCL 原地更新（2026-11-08）
+
+B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T174928Z_navigate_b1dcd005`、`…174523Z_navigate_35692f25`）：协方差超限后车停下；AMCL 只在车移动 0.1 m 或转 0.1 rad 后才更新，车不动它就不更新，协方差不会变小，闸门一直不放行。
+
+现在闸门节点在要求协方差时（有 AMCL 的运行）多做一件事：闸门因协方差（xy 或航向）停车、车在里程计里已静止 1 s，就调用 AMCL 的 `request_nomotion_update`，让它用下一帧扫描原地更新一次；每 1 s 最多一次，每次停车最多 5 次；车移动 0.10 m 或 0.10 rad（AMCL 自己的更新门限）后重新计数。闸门的判据和阈值都不变。5 次后仍超限就继续停车，`/wc_nav/gate_status` 的 `stationary_relocalization` 记下请求次数和“额度用完”。限额是因为同一个视野反复更新等于把同一份证据算很多次，协方差会在没有新信息时变小。
+
+仿真验证（v2 规划图，实测外形，smac_hybrid + shim_rpp，域 100）：
+
+- 在 B 卡住的位置（西侧直走廊入口，真值 (−3.83, −0.19)）以 0.6 m 的起点标准差启动（`20261108T052816Z_navigate_02d23df9`）：AMCL 对每次请求都做了更新；横向标准差 0.22 → 0.18 m，沿走廊方向保持 0.64–0.65 m，5 次后仍超过 0.50 m，车没有出发。
+- 在出发点以 0.8 m 启动（`20261108T053615Z_navigate_30723015`）：横向 0.35 → 0.24 m，沿走廊 0.70 → 0.68 m，同样没有出发。
+- B 的原场景（4 个目标）重跑一次（`20261108T053240Z_navigate_cf1006d5`）：4/4 到达，这一次闸门没有因协方差停过，原地更新没有触发。
+
+结论：卡死里“停下就不更新”的部分已经去掉；但在这条走廊里，沿走廊方向的不确定只有车动起来、看到新的纵向特征才会变小，原地更新不会让它变小。B 那两次卡住的位置正是这种情况，要解决得改判据（例如协方差只看横向和航向），属于安全阈值变更，由用户决定。离线估计（跨录包回放，框架参数，0.50 m、0.25 rad）：协方差条件对“定位错”的帧（扰动起点离未扰动运行超过 0.5 m 或 10°）现在拦 44%，只看横向拦 36%；对“定位对”的帧误拦 1.7% 降到 0.9%；地图空白的终点门内两种都 100% 拦住（航向标准差）。
 
 ## 实车影子启动器（任务 4，只准备，未上车）
 
@@ -151,21 +165,34 @@ A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU �
 
 | 话题（面板域） | 类型 | 约频率 | 订阅方式 |
 |---|---|---|---|
-| `/wc_mapping/lidar_left/source_frame_filtered` | `wc_interfaces/msg/SourceFrame` | 10 Hz，每帧约 150 KB | best effort，深度 5，序列化字节 |
-| `/wc_mapping/imu/source_frame` | `wc_interfaces/msg/H30Frame` | 200 Hz | best effort，深度 400，序列化字节 |
-| `/wc_mapping/wheel/feedback_raw` | `std_msgs/msg/String` | 10 Hz | best effort，深度 50，序列化字节 |
+| `/wc_mapping/lidar_left/source_frame_filtered` | `wc_interfaces/msg/SourceFrame` | 10 Hz，每帧约 150 KB | best effort、volatile、keep last 3，序列化字节 |
+| `/wc_mapping/imu/source_frame` | `wc_interfaces/msg/H30Frame` | 200 Hz | best effort、volatile、keep last 100，序列化字节 |
+| `/wc_mapping/wheel/feedback_raw` | `std_msgs/msg/String` | 10 Hz | best effort、volatile、keep last 20，序列化字节 |
 
-不订阅右雷达、相机、TF、面板状态或任何控制话题，也不调用面板的任何服务。
+不订阅右雷达、相机、TF、面板状态或任何控制话题，也不调用面板的任何服务。在影子域里，转发后的三个话题改名为 `/wc_live/relayed/...`，扫描和里程计进程订阅改名后的话题，不会和面板的话题混淆。
+
+和面板录制的关系（A 2026-11-08 读代码的结论）：面板录制时这三个源是 reliable 发布；驱动启动时等到“至少 1 个订阅者”才开始发，不管是谁；结束时等所有 reliable 读者确认，超时就把录包标成 PARTIAL。所以：
+
+- 转发的订阅全是 best effort、volatile、keep last，不参与结束时的确认等待，转发慢、卡住或进程退出都不会让录包变成 PARTIAL。
+- 车上模式下，转发先只查询面板域的图（不建任何端点），等三个话题都已有发布者和至少一个别的订阅者（面板自己的录制或实时建图输入）后才订阅，状态 `WAITING_FOR_PANEL_SOURCES`；这样转发不会先于录制器满足驱动的启动条件，录制不会漏掉开头的帧。监督进程最多等 600 s。操作上仍是先在面板里开始录制或建图、看到设备就绪，再启动影子命令。
+- 转发进程以 nice 10 运行；面板侧每多一个读者，发布方多发一份本机回环拷贝（雷达约 1.5 MB/s），录制器是单线程，CPU 紧时会受影响。
+- 影子域启动前的外来节点检查在转发的输出节点启动之前完成。
 
 只读的保证：
 
 1. 进程边界：只有转发进程的“入口节点”进入面板域。影子框架的其他进程（扫描、里程计、AMCL、Nav2、闸门、目标、记录器、监督）都在域 100，启动时由 `require_isolated_domain` 检查 `ROS_DOMAIN_ID` 和 `ROS_LOCALHOST_ONLY=1`。转发进程的第二个节点在域 100 里把字节原样重发，并发布 `/wc_live/relay_status`。
 2. 入口节点不能写：它的类（`read_only_node_class`）创建发布者、服务、客户端都会抛错；rclpy 在每个节点里自建的 `/parameter_events` 发布者被换成不进 DDS 的空对象（否则声明 `use_sim_time` 时会在面板域发一条参数事件）；rosout 日志和参数服务关闭；不接受全局 ROS 参数，重映射不会作用到它。
-3. 订阅都是 best effort：读者不向面板的发布者回送确认（ACK/NACK），也不会造成反压；消息不反序列化、不修改，原样转出。
+3. 订阅都是 best effort、volatile、keep last：读者不向面板的发布者回送确认（ACK/NACK），不参与结束录制时的确认等待，也不会造成反压；消息不反序列化、不修改，原样转出。
 4. 启动自检：入口节点建好订阅后，从本地图查询自己的条目，必须是 0 个发布者、0 个服务、0 个客户端、恰好这三个订阅；否则转发进程退出，影子运行随之停止。自检结果写进 `/wc_live/relay_status`、`result.json` 的 `supervisor.relay_self_check` 和 `events.jsonl`。
 5. 面板域里能看到的只有一个 DDS 参与者（发现报文）和它的三个读者，没有任何写者。面板侧每多一个读者，发布方多发一份数据（雷达约 1.5 MB/s，本机回环）。
 6. 转发非隔离域（96–101 以外）需要用户当次同意：`WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则进程拒绝启动；同域测试必须用话题前缀，防止回环。
 
-在同一个域里用前缀做的录包检验（`--relay-test`）里，自检通过，转发后的扫描和里程计与直接回放完全相同。还需要上车前在车上核实（评审时一起看）：面板域的参与者是否只在本机回环（决定入口节点能否发现它们）；用 `ros2 node info /wc_live_relay_in`（在面板域执行，只读查询）看到的发布者和服务是否为空；面板的录制和预览在多一个订阅者时是否照常。
+在同一个域里用前缀做的录包检验（`--relay-test`，录包放在 `/relay_source` 下，不等面板订阅者）里，自检通过，转发后的扫描和里程计与直接回放完全相同。还需要上车前在车上核实（评审时一起看）：面板域的参与者是否只在本机回环（决定入口节点能否发现它们）；用 `ros2 node info /wc_live_relay_in`（在面板域执行，只读查询）看到的发布者和服务是否为空；面板的录制和预览在多一个订阅者时是否照常，录包结束后不是 PARTIAL。
+
+## 上车配置（freeze-config）
+
+`navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`。
+
+核对项：`hardware_setup` 是否来自本机覆盖（否则会悄悄退回仓库基础值，例如轮半径 0.185 m）、轮参数、实时配置里有没有确认过的零偏、和给出的最近前端比外参、主机滤波和设备编号。2026-11-08 对主检出的一次冻结（`reports/navigation_live_shadow/20261108T053419Z_config_31995662`）：硬件配置来自 `config/local/project/hardware_setup.json`，轮参数 0.1646/0.599；`mapping_live.json` 没有配零偏，所以上车时 `--gyro-bias` 必须显式给（现场开头静止做一次 10+10+10，或先用 ZL1107 的零偏文件）；外参、杆臂、主机滤波和设备编号与验证包前端完全相同。先验和前端的差别只在离线字段（离线时间模型、bootstrap 记录、offline_experiment）和实时选项的显式默认值。
 
 返回[系统设计](README.md)。

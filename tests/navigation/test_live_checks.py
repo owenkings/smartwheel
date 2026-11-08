@@ -62,7 +62,10 @@ def test_run_check_expects_scans_stamped_earlier_by_the_lidar_time_offset(tmp_pa
     shifted = bag_check.check_run(tmp_path, "cell", 75.0)
     assert shifted["lidar_time_offset_ms"] == 75.0
     assert shifted["scans"]["matched_frames"] == 3 and shifted["scans"]["identical_frames"] == 3
-    assert bag_check.check_run(tmp_path, "cell")["scans"]["matched_frames"] == 0
+    assert bag_check.check_run(tmp_path, "cell")["scans"]["matched_frames"] == 0      # no run_config: 0
+    (tmp_path / "run_config.json").write_text('{"lidar_time_offset_ms": 75.0}')
+    recorded = bag_check.check_run(tmp_path, "cell")                                   # the run's own value
+    assert recorded["lidar_time_offset_ms"] == 75.0 and recorded["scans"]["matched_frames"] == 3
 
 
 def test_gate_time_is_split_by_state_and_reason():
