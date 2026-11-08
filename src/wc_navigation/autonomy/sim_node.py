@@ -5,7 +5,9 @@ Publishes ``/clock``, ``/odom`` + ``odom->base_link``, a static
 (frame ``wc_sim_world``). It accepts motion only from the safety gate output
 topic. There is no device access and no connection to the wheel owner.
 Collisions use the configured body: the assumed circle, or the convex outline
-of the navigation profile, checked along every step including turns.
+of the navigation profile, checked along every step including turns. With
+``map_to_odom_from_truth`` it also publishes ``map->odom`` from ground truth,
+so navigation can be judged without AMCL.
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ import numpy as np
 
 from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel
 from .nav2_config import CMD_GATED
-from .ros_util import json_message, latched_qos, load_config, require_isolated_domain, yaw_to_quaternion
+from .ros_util import (compose, inverse, json_message, latched_qos, load_config, require_isolated_domain,
+                       yaw_to_quaternion)
 from .world import LaserModel, load_world
 
 
@@ -86,6 +89,9 @@ class Simulator:
         self.static_tf = StaticTransformBroadcaster(node)
         self.static_tf.sendTransform(static)
         node.create_subscription(Twist, CMD_GATED, self.on_command, 10)
+        # Optional: map->odom from ground truth (navigation without AMCL, to judge planning and control alone).
+        truth = config.get("map_to_odom_from_truth")
+        self.map_T_world = None if not truth else inverse(tuple(float(v) for v in truth["world_T_map"]))
         self.wall_start = time.monotonic()
         node.create_timer(1.0 / self.physics_hz, self.tick)
 
@@ -141,14 +147,21 @@ class Simulator:
         b = self.base
         self.odom_pub.publish(self._odometry("odom", "base_link", b.odom_pose, b.odom_v, b.odom_w, stamp))
         self.truth_pub.publish(self._odometry("wc_sim_world", "wc_sim_truth", b.pose, b.v, b.w, stamp))
+        transforms = [self._transform("odom", "base_link", b.odom_pose, stamp)]
+        if self.map_T_world is not None:
+            map_T_odom = compose(compose(self.map_T_world, b.pose), inverse(b.odom_pose))
+            transforms.append(self._transform("map", "odom", map_T_odom, stamp))
+        self.tf.sendTransform(transforms)
+
+    def _transform(self, parent, child, pose, stamp):
         t = self.TransformStamped()
         t.header.stamp = stamp
-        t.header.frame_id, t.child_frame_id = "odom", "base_link"
-        t.transform.translation.x, t.transform.translation.y = b.odom_pose[0], b.odom_pose[1]
-        qx, qy, qz, qw = yaw_to_quaternion(b.odom_pose[2])
+        t.header.frame_id, t.child_frame_id = parent, child
+        t.transform.translation.x, t.transform.translation.y = pose[0], pose[1]
+        qx, qy, qz, qw = yaw_to_quaternion(pose[2])
         r = t.transform.rotation
         r.x, r.y, r.z, r.w = qx, qy, qz, qw
-        self.tf.sendTransform(t)
+        return t
 
     def publish_scan(self):
         ranges = self.world.scan(self.base.pose, self.laser, self.rng)

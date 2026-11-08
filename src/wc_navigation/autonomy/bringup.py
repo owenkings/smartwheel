@@ -61,6 +61,11 @@ def planning_choice(config):
     return PlanningChoice.from_dict(config.get("planning"))
 
 
+def truth_localization(config):
+    """Simulated navigation with map->odom from ground truth instead of AMCL (explicit option)."""
+    return config.get("mode") == "navigate" and config.get("localization") == "truth"
+
+
 @contextmanager
 def domain_lock(project_root):
     """Exclusive owner of this run's simulation domain (96-101) within this checkout.
@@ -363,19 +368,28 @@ class Supervisor:
             else:
                 files["mapping"] = self.write("mapper_config.json", nav2_config.odom_grid_mapper_config(
                     profile, scan_matching=self.mapper() == "odom_icp"))
+        elif truth_localization(cfg):
+            # map_server only: the simulator publishes map->odom from ground truth (no AMCL).
+            localization = nav2_config.localization_parameters(profile, cfg["map_yaml"])
+            manager = dict(localization["lifecycle_manager_localization"]["ros__parameters"], node_names=["map_server"])
+            files["mapping"] = self.write("map_server_params.yaml", {
+                "map_server": localization["map_server"], "lifecycle_manager_localization": {"ros__parameters": manager}})
         else:
             files["mapping"] = self.write("localization_params.yaml", nav2_config.localization_parameters(
                 profile, cfg["map_yaml"]))
         from ..planning.body import Body
-        files["sim"] = self.write("sim_config.json", {
+        sim = {
             "world": cfg["world"], "start_pose": cfg["start_pose_world"], "laser": cfg["laser"],
             "collision_radius_m": profile.radius_m,
             # Same body as the costmaps and the collision monitor: the circle or the profile outline.
             "collision_body": Body.from_profile(profile, source=cfg.get("body_model")).as_config(),
-            "odometry": cfg["odometry"], "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]})
+            "odometry": cfg["odometry"], "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]}
+        if mode == "navigate" and truth_localization(cfg):
+            sim["map_to_odom_from_truth"] = {"world_T_map": list(cfg["world_T_map"])}
+        files["sim"] = self.write("sim_config.json", sim)
         files["gate"] = self.write("gate_config.json", {"gate": {
             "max_linear": profile.max_linear, "max_angular": profile.max_angular,
-            "require_covariance": mode == "navigate"}})
+            "require_covariance": mode == "navigate" and not truth_localization(cfg)}})
         if mode == "explore":
             files["task"] = self.write("explorer_config.json", {
                 # Planning radius: the circle, or the outline's inscribed radius the planner passes with.
@@ -425,6 +439,15 @@ class Supervisor:
                     self.launch_python("mapper", "wc_navigation.autonomy.mapper_node", files["mapping"])
                 self.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
                               60, "map_and_tf")
+            elif truth_localization(cfg):
+                self.launch_ros("map_server", "map_server", files["mapping"])
+                self.launch_ros("lifecycle_manager_localization", "lifecycle_manager", files["mapping"],
+                                ["-r", "__node:=lifecycle_manager_localization"])
+                self.wait_for(recorder, lambda: recorder.trigger("/lifecycle_manager_localization/is_active") is True,
+                              60, "map_server_active")
+                self.wait_for(recorder, lambda: recorder.map_messages > 0 and recorder.estimate_world() is not None,
+                              30, "truth_map_to_odom")
+                self.report["initial_pose"] = {"localization": "GROUND_TRUTH_MAP_TO_ODOM_NO_AMCL"}
             else:
                 self.launch_ros("map_server", "map_server", files["mapping"])
                 self.launch_ros("amcl", "amcl", files["mapping"])

@@ -21,13 +21,13 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--planner` | `navfn`（默认）、`smac_2d`、`theta_star`、`smac_hybrid`（Hybrid-A*，只前进的 Dubins 运动，最小转弯半径 0.40 m）、`smac_lattice`（状态栅格，5 cm/0.5 m 差速原语，关倒车扩展） |
 | `--planner-param NAME=VALUE` | 覆盖 `GridBased` 规划器参数，值按 JSON 解析，可重复，例如 `minimum_turning_radius=0.6` |
 | `--planner-fallback 规划器` | 第二个规划器（插件名 `Fallback`），行为树只在 `--planner` 找不到路径时才问它，例如只前进的 `smac_hybrid` 后面接能原地转向的 `smac_lattice`；默认 `none` |
-| `--controller` | `rpp`（默认）、`shim_rpp`（新路线起点偏差超过 45° 时先原地转向并检查碰撞，之后 RPP 关闭行进中原地转向、沿曲率边走边转）、`mppi`（MPPI，差速模型，只前进 `vx_min=0`，代价评价按外形） |
+| `--controller` | `rpp`（默认）、`shim_rpp`（新路线起点偏差超过 45° 时先原地转向并检查碰撞，之后 RPP 关闭行进中原地转向、沿曲率边走边转；只配 `smac_hybrid` 或 `smac_lattice`，因为它不在终点原地对正朝向，而 NavFn 的路径不管朝向，组合会卡在目标附近）、`mppi`（MPPI，差速模型，只前进 `vx_min=0`，代价评价按外形） |
 | `--controller-param NAME=VALUE` | 覆盖 `FollowPath` 控制器参数，例如 `use_rotate_to_heading=false` |
 | `--checker-param NAME=VALUE` | 覆盖目标检查和进度检查参数，只限 `general_goal_checker.*`、`progress_checker.*`，例如 `general_goal_checker.xy_goal_tolerance=0.35` |
 | `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
 | `--global-costmap live\|static` | `live`（默认）：导航时全局代价地图也标记实时扫描；`static`：只按保存的地图规划，实时扫描仍进局部代价地图、控制器碰撞检查和碰撞监控 |
 
-- `smac_hybrid`、`smac_lattice` 在每个朝向上检查完整外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。
+- `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
 - 运行前照常读回参数：规划器插件类型、未知区设置、不倒车相关设置和每一个覆盖项都要与请求一致，否则不开始。
 - 影子运行的 `result.json` 在 `planner.plan_duration_s` 里给出每次规划从受理到结束的时长（仿真时钟，1 倍速时等于墙钟）；`log_counts` 另计 Smac 的起终点无效和迭代超限、MPPI 的优化失败、控制循环超时。
@@ -45,6 +45,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 
 `navigate --world 名称` 或 `--world-map 地图` 不需要先探索：真值世界本身就是导航地图（合成世界写到运行目录的 `world_map.yaml`，已保存地图直接使用；`--obstacle` 圆盘只在真值里、不进地图），世界坐标与地图坐标重合。这样比较规划和控制时不混入建图误差；AMCL 和闸门照常运行。起点要让车体（按外形）不与世界重叠。
 
+`--localization truth`（只对 navigate）：仿真按真值发布 `map→odom`，只启动 map_server、不启动 AMCL，闸门不要求 AMCL 协方差（其余闸门条件照常）。用来在走廊地图上只比较规划和控制；默认 `amcl` 不变。走廊里 AMCL 的修正和协方差会单独决定结果（见设计文档），系统级结论仍要用 `amcl` 跑。
+
 ## 规划台架：同一批请求比较各规划器
 
 ```bash
@@ -59,6 +61,18 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_planner_bench \
 评分用真实车体（不加余量）对地图占据格的精确间隙，路径朝向对 Hybrid-A* 和 State Lattice 用规划器给的朝向，其余用行进方向。每个请求先按司机自己的路线分类：`clear`（车体加余量处处放得下）、`tight`（车体放得下、余量放不下）、`conflict`（车体本身在司机路线上就与占据或未知格重叠，多半是地图里的临时物体或漂移，任何规划都不可能既成功又安全）。“安全成功”指路径上没有任何位姿让车体与占据或未知格重叠；“不安全成功”是规划器返回了、但真实车体跟不了的路径。
 
 输出在 `reports/navigation_planner_bench/<时间>_bench_<标签>_<编号>/`：`result.json`（按规划器和类别的成功率、安全成功、耗时、间隙、急弯、原地转向、倒车、与司机路线的偏差）、`answers.jsonl`（每个请求每个规划器的结果和路径）、`requests.json`、`preview.png`。没有录包时用 `--requests-file 文件.json`（`[{"start": [x, y, yaw], "goal": [x, y, yaw]}, ...]`）给出请求，例如合成世界导出的地图。
+
+## 推荐方案的命令行
+
+[设计文档](../architecture/planning_control.md#推荐方案待用户决定)里的推荐方案（待用户决定，默认值未改）在仿真和影子运行里这样打开：
+
+```bash
+--planner smac_hybrid --planner-fallback smac_lattice --controller shim_rpp \
+  --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 \
+  --footprint-source MEASURED_20261107
+```
+
+前提是规划用地图里，司机路线上没有伪占据格（例如 v2 那样把车开过的格清空）；路线旁还剩孤立伪点时，这个组合会把车带到伪点前停住。仿真里比较规划和控制时可以加 `--localization truth`；要得出系统级结论，就用默认的 AMCL 跑，设计文档里的 AMCL 结果都是在 D 的闸门新默认值下跑的。
 
 ## 跟随模式审查：原地转向、停车原因、窄处速度
 
