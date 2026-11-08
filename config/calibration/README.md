@@ -7,6 +7,7 @@
 - [imu_timing_20261008](imu_timing_20261008/README.md)：下一级职责说明。
 - [sources](sources/README.md)：下一级职责说明。
 - [legacy_hardware_setup_before_v7.json](legacy_hardware_setup_before_v7.json)
+- [lidar_time_offset.json](lidar_time_offset.json)：雷达时间戳相对轮速/IMU 的偏移，75 ms（2026-11-08 用户决定），用法、估计值和依据都在文件里。
 
 ## 添加与验证
 
