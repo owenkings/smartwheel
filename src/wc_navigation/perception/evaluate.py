@@ -25,8 +25,8 @@ import uuid
 import numpy as np
 
 from . import frontend_frames
-from .consensus import Witness, move, planar_relative
-from .obstacle_cloud import ObstacleFilter, body_outline, filter_points, grow_convex, inside_convex
+from .consensus import RecentFrames, Witness, move, planar_relative
+from .obstacle_cloud import ObstacleFilter, body_outline, filter_frame, grow_convex, inside_convex
 
 SCAN_ANGLE_MIN, SCAN_INCREMENT, SCAN_BINS = -math.pi / 3, math.pi / 240, 161
 
@@ -124,12 +124,16 @@ def evaluate(left_cell, right_cell=None, cfg=ObstacleFilter(), footprint=(), rad
     for side, side_frames in frames.items():
         lever = levers[side]
         other = "right" if side == "left" else "left"
+        history = (RecentFrames(cfg.persist_min_age_s, cfg.persist_max_age_s, cfg.cluster_voxel_m)
+                   if cfg.persist_min_age_s > 0 else None)
+        lead = cfg.persist_max_age_s if history is not None else 0.0
         for k, (stamp, pts, _) in enumerate(side_frames):
             t = (stamp - path.t0_ns) * 1e-9
             if t < path.t[0] - 0.5 or t > path.t[-1]:
                 continue
-            if window_s and not window_s[0] <= t <= window_s[1]:
+            if window_s and not window_s[0] - lead <= t <= window_s[1]:
                 continue
+            in_window = not window_s or t >= window_s[0]       # earlier frames only warm the history
             pose = path.at(t)[0]
             witness = None
             if consensus and other in frames:
@@ -138,8 +142,15 @@ def evaluate(left_cell, right_cell=None, cfg=ObstacleFilter(), footprint=(), rad
                     relative = planar_relative(path.at(side_times[other][j])[0], pose)
                     witness = Witness(move(frames[other][j][1].astype(float) + levers[other], relative),
                                       move(levers[other][None, :], relative)[0])
-            obstacles, stats = filter_points(pts, lever, cfg, body, witness=witness)
+            recent = history.recent(t, pose) if history is not None else None
+            result = filter_frame(pts, lever, cfg, body, witness, recent=recent)
+            obstacles, stats = result["points"], result["stats"]
+            if history is not None:
+                history.add(t, pose, result["candidates"])
+            if not in_window:
+                continue
             stats["witness"] = witness is not None
+            stats["recent"] = recent is not None
             base = obstacles.astype(float) + lever
             world = to_world(base[:, :2], pose)
             hit = swept_hits(world, path, t, outline, horizon_s)

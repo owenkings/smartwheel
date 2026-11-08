@@ -76,21 +76,23 @@ class NavProfile:
     controller_frequency_hz: float = 10.0
     # Optional convex body outline [(x, y), ...] in base_link (axle origin inside). Empty: the circle above.
     footprint: tuple = ()
-    # Local costmap / collision monitor obstacle input (perception.nav2_obstacles): "scan" keeps /scan only.
+    # Obstacle input (perception.nav2_obstacles): "scan"/"raw" keep /scan everywhere.
     obstacle_input: str = "scan"
     obstacle_clouds: tuple = ()
+    obstacle_scan: str = "raw"
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            if name not in ("footprint", "obstacle_input", "obstacle_clouds"):
+            if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan"):
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
         object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
         from ..perception.nav2_obstacles import check
-        obstacle_input, clouds = check(self.obstacle_input, self.obstacle_clouds)
+        obstacle_input, clouds, obstacle_scan = check(self.obstacle_input, self.obstacle_clouds, self.obstacle_scan)
         object.__setattr__(self, "obstacle_input", obstacle_input)
         object.__setattr__(self, "obstacle_clouds", clouds)
+        object.__setattr__(self, "obstacle_scan", obstacle_scan)
 
     @property
     def body_inscribed_m(self):
@@ -115,9 +117,10 @@ class NavProfile:
     def as_dict(self):
         values = {name: getattr(self, name) for name in self.__dataclass_fields__}
         values["footprint"] = [list(p) for p in self.footprint]
-        if self.obstacle_input == "scan":          # default runs keep their recorded profile unchanged
+        if self.obstacle_input == "scan" and self.obstacle_scan == "raw":   # default: recorded profile unchanged
             values.pop("obstacle_input")
             values.pop("obstacle_clouds")
+            values.pop("obstacle_scan")
         else:
             values["obstacle_clouds"] = list(self.obstacle_clouds)
         return values
@@ -209,7 +212,8 @@ def monitor_polygons(profile):
 
 
 def _scan_source(profile):
-    return {"topic": "/scan", "data_type": "LaserScan", "marking": True, "clearing": True,
+    from ..perception.nav2_obstacles import scan_topic
+    return {"topic": scan_topic(profile.obstacle_scan), "data_type": "LaserScan", "marking": True, "clearing": True,
             "max_obstacle_height": 2.0, "inf_is_valid": False,
             "obstacle_max_range": min(6.0, profile.sensor_range_m),
             "obstacle_min_range": 0.0,
@@ -571,6 +575,14 @@ def readback_expectations(profile, mode, planning=None):
     if planning is not None:
         from ..planning.stack import adjust_readback
         adjust_readback(expected, planning, profile, exploring=mode == "explore")
+    # A layer left out of a costmap (e.g. planning on the saved map only) declares no parameters;
+    # its "plugins" entry above already checks that it is absent.
+    for values in expected.values():
+        plugins = values.get("plugins")
+        if isinstance(plugins, list):
+            for key in [k for k in values if k.split(".", 1)[0].endswith("_layer")
+                        and "." in k and k.split(".", 1)[0] not in plugins]:
+                del values[key]
     return expected
 
 
@@ -591,6 +603,13 @@ def _readback_expectations(profile, mode):
         local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
         stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
                                                                                    profile.obstacle_clouds))
+    if profile.obstacle_scan != "raw":             # and so must the filtered scan
+        from ..perception import nav2_obstacles
+        topic = {"obstacle_layer.scan.topic": nav2_obstacles.scan_topic(profile.obstacle_scan)}
+        if mode != "explore":
+            global_body = dict(global_body, **topic)
+        if profile.obstacle_input != "cloud":
+            local_body = dict(local_body, **topic)
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,

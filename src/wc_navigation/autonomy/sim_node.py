@@ -7,7 +7,9 @@ topic. There is no device access and no connection to the wheel owner.
 Collisions use the configured body: the assumed circle, or the convex outline
 of the navigation profile, checked along every step including turns. With
 ``map_to_odom_from_truth`` it also publishes ``map->odom`` from ground truth,
-so navigation can be judged without AMCL.
+so navigation can be judged without AMCL. Actors (moving pedestrian discs,
+``actors.py``) in the world spec join the world before every physics step and
+are logged to ``actors.jsonl``.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import time
 
 import numpy as np
 
+from .actors import SimActors
 from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel
 from .nav2_config import CMD_GATED
 from .ros_util import (compose, inverse, json_message, latched_qos, load_config, require_isolated_domain,
@@ -52,6 +55,7 @@ class Simulator:
         self.world = load_world(config["world"])
         self.laser = LaserModel(**config.get("laser", {}))
         self.body = collision_body(config)
+        self.actors = SimActors.from_config(config, self.body, self.world)     # None without actors
         self.radius = self.body.radius_m
         start = tuple(float(v) for v in config["start_pose"])
         if self.world.body_collides(start, self.body):
@@ -97,11 +101,15 @@ class Simulator:
 
     def on_command(self, message):
         self.base.set_command(message.linear.x, message.angular.z, self.sim_time)
+        if self.actors is not None:
+            self.actors.on_command(message.linear.x, message.angular.z, self.sim_time)
 
     def _collides(self, a, b):
         return self.world.swept_body_collides(a, b, self.body)
 
     def tick(self):
+        if self.actors is not None:
+            self.actors.update(self.sim_time, self.dt, self.base, self.world)
         moved = self.base.step(self.dt, self.sim_time, self._collides)
         self.sim_time += self.dt
         if not moved and not self.contact:
