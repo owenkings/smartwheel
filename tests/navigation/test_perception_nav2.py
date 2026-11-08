@@ -111,6 +111,36 @@ def test_filtered_scan_feeds_the_costmap_obstacle_layers_only_when_asked():
             nav2_config.NavProfile(**bad)
 
 
+def test_monitor_can_read_the_clouds_while_the_costmaps_stay_two_dimensional():
+    def layer(p, which):
+        return p[which + "_costmap"][which + "_costmap"]["ros__parameters"]
+    profile = nav2_config.NavProfile(obstacle_input="scan", obstacle_clouds=("left", "right"),
+                                     obstacle_scan="filtered", obstacle_monitor="cloud", footprint=MEASURED)
+    assert profile.monitor_input == "cloud"
+    p, q = params(profile), params(nav2_config.NavProfile(footprint=MEASURED))
+    for which in ("local", "global"):
+        assert layer(p, which)["plugins"] == layer(q, which)["plugins"] and "voxel_layer" not in layer(p, which)
+        assert layer(p, which)["obstacle_layer"]["scan"]["topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+    assert monitor(p)["observation_sources"] == ["cloud_left", "cloud_right"] and "scan" not in monitor(p)
+    expected = nav2_config.readback_expectations(profile, "navigate")
+    assert expected["collision_monitor"]["observation_sources"] == ["cloud_left", "cloud_right"]
+    assert "plugins" not in expected["local_costmap/local_costmap"]
+    assert expected["local_costmap/local_costmap"]["obstacle_layer.scan.topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
+    assert profile.as_dict()["obstacle_monitor"] == "cloud" and nav2_config.NavProfile(**profile.as_dict()) == profile
+    # the monitor alone on clouds (raw scan in the costmaps) is allowed too
+    alone = nav2_config.NavProfile(obstacle_clouds=("left",), obstacle_monitor="scan_and_cloud")
+    assert monitor(params(alone))["observation_sources"] == ["scan", "cloud_left"]
+    # a monitor equal to the costmap input is the plain profile
+    same = nav2_config.NavProfile(obstacle_input="cloud", obstacle_clouds=("left",), obstacle_monitor="cloud")
+    assert same == nav2_config.NavProfile(obstacle_input="cloud", obstacle_clouds=("left",))
+    assert "obstacle_monitor" not in same.as_dict()
+    assert "obstacle_monitor" not in nav2_config.NavProfile().as_dict()
+    for bad in ({"obstacle_monitor": "lidar"}, {"obstacle_monitor": "cloud"},
+                {"obstacle_input": "scan", "obstacle_clouds": ("left", "right"), "obstacle_scan": "filtered"}):
+        with pytest.raises(ValueError):
+            nav2_config.NavProfile(**bad)
+
+
 def test_filtered_scan_alone_keeps_both_costmaps_two_dimensional():
     def layer(p, which):
         return p[which + "_costmap"][which + "_costmap"]["ros__parameters"]
@@ -207,6 +237,44 @@ def test_replay_scan_message_has_the_recorded_geometry():
     assert msg.angle_max == pytest.approx(math.pi / 3) and msg.ranges[80] == pytest.approx(1.25)
 
 
+def test_replay_stamps_lidar_messages_earlier_by_the_time_offset():
+    pytest.importorskip("sensor_msgs")
+    import functools
+    from types import SimpleNamespace
+    from sensor_msgs.msg import LaserScan
+    from wc_navigation.autonomy.replay_node import Replay
+    sent = []
+    fake = SimpleNamespace(LaserScan=LaserScan, angle_min=-math.pi / 3, angle_increment=math.pi / 240,
+                           range_min=0.3, range_max=8.0, ranges=np.ones((1, 161), dtype=np.float32),
+                           scan_pub=SimpleNamespace(publish=sent.append), lidar_offset_s=0.075)
+    fake.scan_message = functools.partial(Replay.scan_message, fake)
+    Replay.publish_scan(fake, 0, 120.0)
+    fake.lidar_offset_s = 0.0
+    Replay.publish_scan(fake, 0, 120.0)
+    stamps = [m.header.stamp.sec + m.header.stamp.nanosec * 1e-9 for m in sent]
+    assert stamps[0] == pytest.approx(119.925, abs=1e-6) and stamps[1] == pytest.approx(120.0, abs=1e-6)
+
+
+def test_prepare_places_frames_at_the_pose_of_stamp_minus_the_offset():
+    lever = [0.323, 0.22875, 0.5915]
+    runtime = {"mode": "left", "offline_source_selection": {"selected_sides": ["left"]},
+               "mounts": {"left": {"t_axle_lidar_m": lever}}}
+    # a real overhang seen from three frames while the chair drives 1 m/s; persistence on
+    edge = np.array([[2.0 + 0.02 * i, 0.02 * j - 0.2, 0.2] for i in range(10) for j in range(20)])
+    frames = [frame(10 ** 9 + k * 2 * 10 ** 8, 0.2 * k, edge - np.array([0.2 * k, 0.0, 0.0])) for k in range(8)]
+    cfg = ObstacleFilter(persist_min_age_s=0.4, persist_max_age_s=1.0)
+    plain = shadow_obstacles.prepare(frames, runtime, sides=("left",), consensus=False, cfg=cfg)
+    late = shadow_obstacles.prepare(frames, runtime, sides=("left",), consensus=False, cfg=cfg,
+                                    lidar_time_offset_s=0.075)
+    for out in (plain, late):
+        totals = shadow_obstacles.settings(dict(out))["totals"]["left"]
+        assert totals["removed_transient"] == 0          # world-fixed: confirmed by the earlier frames
+    assert shadow_obstacles.settings(dict(late))["lidar_time_offset_s"] == 0.075
+    assert late["obstacle_left_stamps_ns"].tolist() == plain["obstacle_left_stamps_ns"].tolist()
+    with pytest.raises(ValueError):
+        shadow_obstacles.prepare(frames, runtime, sides=("left",), lidar_time_offset_s=0.3)
+
+
 def test_symmetric_right_lever_mirrors_the_left_mount():
     assert shadow_obstacles.symmetric_right_lever([0.323, 0.22875, 0.5915]).tolist() == [0.323, -0.22875, 0.5915]
 
@@ -227,6 +295,19 @@ def test_cli_defaults_add_nothing():
     assert shadow_cli_options.prepare_kwargs(args) is None
     assert shadow_cli_options.profile_fields(args) == {}
     assert shadow_cli_options.config_entries(args, {}) == {}
+    assert shadow_cli_options.recording_entries(args) == {}
+
+
+def test_cli_lidar_time_offset_reaches_the_recording_and_the_obstacles(tmp_path):
+    args = parse(["--lidar-time-offset-ms", "75"])
+    assert shadow_cli_options.prepare_kwargs(args) is None              # /scan only: no clouds to prepare
+    assert shadow_cli_options.recording_entries(args)["lidar_time_offset_s"] == pytest.approx(0.075)
+    assert shadow_cli_options.config_entries(args, {}) == {"lidar_time_offset_ms": 75.0}
+    args = parse(["--obstacle-input", "cloud", "--lidar-time-offset-ms", "75"])
+    assert shadow_cli_options.prepare_kwargs(args)["lidar_time_offset_s"] == pytest.approx(0.075)
+    for bad in ("300", "nan"):
+        with pytest.raises(SystemExit):
+            parse(["--lidar-time-offset-ms", bad])
 
 
 def test_cli_cloud_options(tmp_path):
@@ -243,6 +324,12 @@ def test_cli_cloud_options(tmp_path):
     args = parse(["--obstacle-input", "cloud", "--obstacle-scan", "filtered"])
     assert shadow_cli_options.prepare_kwargs(args)["scan"] is True
     assert shadow_cli_options.profile_fields(args)["obstacle_scan"] == "filtered"
+    # 2D costmaps on the filtered scan, the monitor on both clouds
+    args = parse(["--obstacle-scan", "filtered", "--obstacle-monitor", "cloud", "--obstacle-right-cell", str(tmp_path)])
+    assert shadow_cli_options.prepare_kwargs(args)["sides"] == ("left", "right")
+    fields = shadow_cli_options.profile_fields(args)
+    assert fields["obstacle_monitor"] == "cloud" and fields["obstacle_input"] == "scan"
+    assert nav2_config.NavProfile(**fields).monitor_input == "cloud"
     # the filtered scan alone: only the left cloud is prepared (the right cell is its witness)
     args = parse(["--obstacle-scan", "filtered", "--obstacle-right-cell", str(tmp_path)])
     kwargs = shadow_cli_options.prepare_kwargs(args)

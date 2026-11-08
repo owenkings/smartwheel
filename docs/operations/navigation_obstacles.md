@@ -21,6 +21,8 @@ WC_AUTONOMY_ROS_DOMAIN=99 nice -n 10 bash scripts/navigation_nav2_shadow --mode 
 |---|---|
 | `--obstacle-input scan\|cloud\|scan_and_cloud` | 局部代价地图和碰撞监控用什么。`scan`（默认）与以前完全相同；`cloud` 用三维障碍点代替 /scan；`scan_and_cloud` 两者都用。 |
 | `--obstacle-scan raw\|filtered` | 代价地图里 ObstacleLayer 读的扫描（全局代价地图总有一个，`scan` 和 `scan_and_cloud` 时局部也有）：`raw`（默认）是 /scan；`filtered` 是 `/obstacles/left/scan`，左雷达过滤后的障碍点按 /scan 同样的 161 个方位格取最近距离（frame laser，8 m 内）。和 `--obstacle-input scan` 一起用时两个代价地图都还是二维 ObstacleLayer，只是换成过滤后的扫描，碰撞监控仍用 /scan，只准备左雷达点云（右前端只作见证）。和 B 的 `--global-costmap static` 一起用时，`cloud` 输入下没有代价地图读它，直接报错。 |
+| `--obstacle-monitor scan\|cloud\|scan_and_cloud` | 碰撞监控单独用什么（默认和 `--obstacle-input` 相同）。例如 `--obstacle-input scan --obstacle-scan filtered --obstacle-monitor cloud`：两个代价地图是二维过滤扫描，监控用两台雷达的当前帧点云，没有体素记忆。 |
+| `--lidar-time-offset-ms MS` | 雷达时间戳比轮速/IMU 晚 MS：每帧（/scan、两台雷达的障碍点、清除射线、过滤扫描）配 stamp − MS 处的录包位姿，回放时把这些消息的时间戳提前 MS 发出；语义和实时链路、AMCL 回放的同名选项一致。默认 0（按录包原样）；用 75 ms 重建的地图上要给 75。 |
 | `--obstacle-right-cell` | 同一录包的单右冻结前端。给了才有右雷达障碍点，也才有两台雷达互相见证。 |
 | `--obstacle-sides left right` | 发布哪几台的障碍点（默认：左，给了右前端时左右都发）。 |
 | `--obstacle-no-consensus` | 不用另一台雷达否决悬空小团，只按尺寸判别。 |
@@ -49,7 +51,7 @@ nice -n 10 bash scripts/navigation_obstacle_eval \
   --footprint-source MEASURED_20261107 --label ZL1107_map_cloud
 ```
 
-不启动 ROS 节点。对每帧过滤后的障碍点，检查它们是否落在车接下来 `--horizon`（默认 4 s）秒的录包路径扫过的外形里（外形内缩 3 cm）；静止障碍不可能在那里，所以这类点是伪点或走开的物体。同时对当前 /scan 做同样统计。输出在 `reports/navigation_obstacles/<时间>_<标签>_<编号>/`：`result.json`（汇总、参数、来源）、`frames.jsonl`（逐帧计数）、`swept_points.npz`（落进扫掠外形的点）。
+不启动 ROS 节点。对每帧过滤后的障碍点，检查它们是否落在车接下来 `--horizon`（默认 4 s）秒的录包路径扫过的外形里（外形内缩 3 cm）；静止障碍不可能在那里，所以这类点是伪点或走开的物体。同时对当前 /scan 做同样统计。车静止的帧没有未来路径可查，汇总里单独列在 `static` 下（建图包开头 0–33 s 和结尾 262.7–377.7 s 都是静止段）。`--lidar-time-offset-ms` 同上。输出在 `reports/navigation_obstacles/<时间>_<标签>_<编号>/`：`result.json`（汇总、参数、来源）、`frames.jsonl`（逐帧计数）、`swept_points.npz`（落进扫掠外形的点）。
 
 ## 仿真里的移动行人
 

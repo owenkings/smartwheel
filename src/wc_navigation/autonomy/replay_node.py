@@ -22,6 +22,11 @@ in frame ``lidar_<side>`` at its own capture time, with static
 first or last cloud like the scan. With ``--obstacle-scan filtered`` the left
 lidar's filtered 161-bin scan goes out on ``/obstacles/left/scan`` in ``laser``
 with each left cloud.
+
+With ``lidar_time_offset_s`` in the recording (``--lidar-time-offset-ms``) every
+lidar message (/scan, clouds, clearing rays, filtered scan) is stamped that much
+earlier than its frame, so tf pairs it with the recorded pose of stamp - offset;
+it still goes out when its frame is due. Odometry and tf are unchanged.
 """
 from __future__ import annotations
 
@@ -81,6 +86,9 @@ class Replay:
         self.angle_min = float(recording["angle_min"])
         self.angle_increment = float(recording["angle_increment"])
         self.range_min, self.range_max = (float(v) for v in recording["range_limits"])
+        # The lidar stamps are late by this against the odometry: every lidar message goes out stamped that
+        # much earlier, so tf pairs it with the recorded pose of stamp - offset (as the live chain does).
+        self.lidar_offset_s = float(recording.get("lidar_time_offset_s", 0.0))
         lever = [float(v) for v in recording["lever_xy"]]
         self.rtf = float(config.get("real_time_factor", 1.0))
         if not 0.1 <= self.rtf <= 2.0:
@@ -229,7 +237,7 @@ class Replay:
     def publish_cloud(self, side, k, stamp_s):
         cloud = self.clouds[side]
         frame = int(cloud["frames"][k])
-        stamp = _time_msg(stamp_s)
+        stamp = _time_msg(stamp_s - self.lidar_offset_s)
         points = shadow_obstacles.frame_points(self.recording, side, frame)
         cloud["publisher"].publish(pointcloud2(self.PointCloud2, self.PointField, points, CLOUD_FRAMES[side], stamp))
         rays = shadow_obstacles.frame_clearing(self.recording, side, frame)
@@ -273,7 +281,7 @@ class Replay:
         return message
 
     def publish_scan(self, k, stamp_s):
-        self.scan_pub.publish(self.scan_message(self.ranges[k], _time_msg(stamp_s)))
+        self.scan_pub.publish(self.scan_message(self.ranges[k], _time_msg(stamp_s - self.lidar_offset_s)))
 
     def publish_status(self):
         self.status_pub.publish(json_message({
@@ -285,6 +293,7 @@ class Replay:
             "hold_scans_republished": self.hold_scans, "real_time_factor": self.rtf,
             "obstacle_clouds_published": {side: c["published"] for side, c in self.clouds.items()},
             "filtered_scan_published": self.filtered_scan_pub is not None,
+            "lidar_time_offset_s": self.lidar_offset_s,
             "map_odom_published": self.publishes_map_odom,
             "localization": "IDENTITY_MAP_IS_RECORDING_ODOMETRY_FRAME" if self.publishes_map_odom
             else "MAP_TO_ODOM_FROM_ANOTHER_NODE",

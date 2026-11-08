@@ -1,7 +1,8 @@
-"""Shadow-run options for the obstacle clouds; keeps the wiring in autonomy/shadow_cli.py to single calls.
+"""Shadow-run options for the obstacle clouds and the lidar timing; keeps the wiring in autonomy/shadow_cli.py
+to single calls.
 
-Defaults leave a shadow run exactly as before (``--obstacle-input scan``): no extra
-arrays in the recording, no extra topics, unchanged Nav2 parameters and result.
+Defaults leave a shadow run exactly as before (``--obstacle-input scan``, ``--lidar-time-offset-ms 0``): no
+extra arrays in the recording, no extra topics, unchanged Nav2 parameters and result.
 """
 from __future__ import annotations
 
@@ -9,8 +10,13 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
+
 from .nav2_obstacles import OBSTACLE_INPUTS, OBSTACLE_SCANS, SIDES
 from .obstacle_cloud import ObstacleFilter
+
+# The same bound as the live chain and the AMCL replay (live.scan_adapter.MAX_LIDAR_TIME_OFFSET_MS).
+MAX_LIDAR_TIME_OFFSET_MS = 250.0
 
 
 def add_arguments(parser):
@@ -18,6 +24,9 @@ def add_arguments(parser):
     group.add_argument("--obstacle-input", choices=OBSTACLE_INPUTS, default="scan",
                        help="local costmap and collision monitor input: scan (default, unchanged), cloud "
                             "(filtered 3D obstacle points replace /scan there) or scan_and_cloud")
+    group.add_argument("--obstacle-monitor", choices=OBSTACLE_INPUTS,
+                       help="collision monitor input when it should differ from --obstacle-input, e.g. "
+                            "--obstacle-input scan --obstacle-scan filtered --obstacle-monitor cloud")
     group.add_argument("--obstacle-right-cell", type=Path,
                        help="frozen single-right frontend of the same recording (right cloud and witness)")
     group.add_argument("--obstacle-sides", nargs="+", choices=SIDES,
@@ -33,21 +42,34 @@ def add_arguments(parser):
                             "(default) or filtered (/obstacles/left/scan: the left lidar's filtered obstacle points "
                             "in the same 161 bins). With --obstacle-input scan both costmaps stay 2D on the filtered "
                             "scan and the collision monitor keeps /scan")
+    timing = parser.add_argument_group("lidar timing (window C)")
+    timing.add_argument("--lidar-time-offset-ms", type=float, default=0.0, metavar="MS",
+                        help="the lidar stamps are late by MS against the wheel/IMU odometry: every lidar frame "
+                             "(/scan, both obstacle clouds, their clearing rays and the filtered scan) is paired "
+                             "with the recorded pose of stamp - MS (default 0 = as recorded), as in the live chain "
+                             "and the AMCL replay")
+
+
+def _monitor(args):
+    return args.obstacle_monitor or args.obstacle_input
 
 
 def _off(args):
     """The default: no obstacle clouds prepared at all."""
-    return args.obstacle_input == "scan" and args.obstacle_scan == "raw"
+    return args.obstacle_input == "scan" and args.obstacle_scan == "raw" and _monitor(args) == "scan"
 
 
 def check_arguments(parser, args):
+    offset = args.lidar_time_offset_ms
+    if not math.isfinite(offset) or abs(offset) > MAX_LIDAR_TIME_OFFSET_MS:
+        parser.error("--lidar-time-offset-ms must be finite and within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
     if _off(args):
         if args.obstacle_right_cell or args.obstacle_sides:
-            parser.error("--obstacle-right-cell and --obstacle-sides need --obstacle-input cloud or scan_and_cloud, "
-                         "or --obstacle-scan filtered")
+            parser.error("--obstacle-right-cell and --obstacle-sides need a cloud input (--obstacle-input or "
+                         "--obstacle-monitor cloud|scan_and_cloud) or --obstacle-scan filtered")
         args.obstacle_filter_settings = None
         return
-    if args.obstacle_input == "scan":
+    if args.obstacle_input == "scan" and _monitor(args) == "scan":
         # only the left cloud is prepared, to build the filtered scan; the right cell is its witness
         if args.obstacle_sides and list(args.obstacle_sides) != ["left"]:
             parser.error("with --obstacle-input scan only the left cloud is used (for the filtered scan)")
@@ -90,21 +112,34 @@ def prepare_kwargs(args):
             "consensus": not args.obstacle_no_consensus,
             "right_lever": None if args.obstacle_right_lever == "frozen" else args.obstacle_right_lever,
             "window_s": list(args.window) if getattr(args, "window", None) else None,
-            "scan": args.obstacle_scan == "filtered"}
+            "scan": args.obstacle_scan == "filtered",
+            "lidar_time_offset_s": args.lidar_time_offset_ms * 1e-3}
+
+
+def recording_entries(args):
+    """Extra recording.npz arrays: the lidar time offset the replay applies to every lidar stamp ({} at 0)."""
+    if not args.lidar_time_offset_ms:
+        return {}
+    return {"lidar_time_offset_s": np.float64(args.lidar_time_offset_ms * 1e-3)}
 
 
 def profile_fields(args):
     if _off(args):
         return {}
+    monitor = _monitor(args)
     return {"obstacle_input": args.obstacle_input, "obstacle_clouds": _sides(args),
-            "obstacle_scan": args.obstacle_scan}
+            "obstacle_scan": args.obstacle_scan,
+            **({"obstacle_monitor": monitor} if monitor != args.obstacle_input else {})}
 
 
 def config_entries(args, recording):
+    entries = {}
+    if args.lidar_time_offset_ms:
+        entries["lidar_time_offset_ms"] = float(args.lidar_time_offset_ms)
     if _off(args):
-        return {}
+        return entries
     from .shadow_obstacles import settings
-    return {"obstacles": settings(recording)}
+    return {**entries, "obstacles": settings(recording)}
 
 
 def result_entries(recording, config, profile, window):

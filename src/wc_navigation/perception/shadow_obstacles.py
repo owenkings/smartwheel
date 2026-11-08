@@ -64,13 +64,21 @@ def symmetric_right_lever(left_lever):
 
 def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None, cfg=ObstacleFilter(),
             footprint=(), radius_m=None, consensus=True, right_lever=None, witness_max_age_s=0.2, hashes=None,
-            window_s=None, scan=False):
+            window_s=None, scan=False, lidar_time_offset_s=0.0):
     """Filtered obstacle clouds of the requested lidars, packed for recording.npz.
 
     ``window_s`` (recording seconds from the first left frame) limits the work to
     the frames a shadow run will publish, plus one second on each side. ``scan``
     also stores the left lidar's filtered 161-bin scan (``obstacle_left_scan_ranges``).
+    ``lidar_time_offset_s``: the lidar stamps are late by this against the odometry,
+    so every frame of both lidars is placed at the recorded pose of stamp - offset
+    (witness and persistence geometry; the replay stamps the messages that much
+    earlier). Stamps in the recording stay as recorded.
     """
+    offset_s = float(lidar_time_offset_s)
+    if not math.isfinite(offset_s) or abs(offset_s) > 0.25:
+        raise ValueError("lidar time offset must be finite and within +-0.25 s")
+    offset_ns = int(round(offset_s * 1e9))
     if scan and "left" not in sides:
         raise ValueError("the filtered scan comes from the left lidar")
     sides = tuple(s for s in SIDES if s in sides)
@@ -126,12 +134,12 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
             if consensus and other in frames:
                 j = int(np.argmin(np.abs(stamps_of[other] - stamp)))
                 if abs(int(stamps_of[other][j]) - stamp) <= witness_max_age_s * 1e9:
-                    relative = planar_relative(path.at(stamps_of[other][j]), path.at(stamp))
+                    relative = planar_relative(path.at(int(stamps_of[other][j]) - offset_ns), path.at(stamp - offset_ns))
                     witness = Witness(move(frames[other][j][1].astype(float) + levers[other], relative),
                                       move(levers[other][None, :], relative)[0])
             recent = None
             if history is not None:
-                pose, t_s = path.at(stamp), stamp * 1e-9
+                pose, t_s = path.at(stamp - offset_ns), (stamp - offset_ns) * 1e-9
                 recent = history.recent(t_s, pose)
             result = filter_frame(pts, levers[side], cfg, body, witness, clearing=True, scan=with_scan,
                                   recent=recent)
@@ -167,7 +175,8 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
                                                 else np.zeros((0, SCAN_BINS), dtype=np.float32))
         totals[side] = total
     settings = {"sides": list(sides), "filter": cfg.as_dict(), "consensus": bool(consensus),
-                "witness_max_age_s": witness_max_age_s, "levers": {s: levers[s].tolist() for s in levers},
+                "witness_max_age_s": witness_max_age_s, "lidar_time_offset_s": offset_s,
+                "levers": {s: levers[s].tolist() for s in levers},
                 "window_s": list(window_s) if window_s is not None else None,
                 "lever_basis": lever_basis, "right_cell": str(right_cell) if right_cell is not None else None,
                 "body": [list(p) for p in body], "body_source": "FOOTPRINT" if footprint else "ASSUMED_CIRCLE",
