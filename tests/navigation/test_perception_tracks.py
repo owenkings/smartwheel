@@ -65,6 +65,37 @@ def test_objects_riding_along_with_the_chair_or_sliding_along_a_wall_are_not_mov
     assert walled.current(2.8)[0]["class"] != "moving"
 
 
+def test_a_piece_of_a_large_object_hopping_away_is_not_moving():
+    tracker = Tracker()
+    # a large unmapped object (1.8 m x 0.6 m, one cluster) ...
+    block = np.array([(x, y, h) for x in np.arange(4.1, 5.9, 0.05) for y in np.arange(-0.3, 0.3, 0.05)
+                      for h in np.arange(0.05, 1.6, 0.25)])
+    for k in range(5):
+        out = tracker.update(0.2 * k, block)
+    assert len(out) == 1 and out[0]["radius_m"] > 0.9
+    ids, classes = set(), []
+    for k in range(5):                                   # ... of which only a piece stays visible, sliding away
+        out = tracker.update(1.0 + 0.2 * k, cylinder(5.3 + 0.3 * k, 0.0))
+        ids |= {tr["id"] for tr in out}
+        classes += [tr["class"] for tr in out]
+    assert ids == {1} and "moving" not in classes          # the block's track follows the piece, but is not moving
+    walker = Tracker()                                   # the same piece on its own does move
+    for k in range(10):
+        out = walker.update(1.0 + 0.2 * k, cylinder(5.3 + 0.3 * k, 0.0))
+    assert out[0]["class"] == "moving"
+
+
+def test_nothing_faster_than_a_running_person_is_moving():
+    tracker = Tracker()
+    x, step = 0.0, 0.3
+    seen = []
+    for k in range(14):                                  # a cluster that speeds up from 1.5 m/s to 6 m/s
+        out = tracker.update(0.2 * k, cylinder(x, 0.0))
+        seen += [(tr["class"], tr["speed"]) for tr in out]
+        x, step = x + step, min(step + 0.1, 1.2)
+    assert seen and all(speed <= TrackerConfig().max_speed_mps for cls, speed in seen if cls == "moving")
+
+
 def test_static_unmapped_objects_and_floating_artefacts_never_move():
     tracker = Tracker()
     box = np.array([(1.5 + 0.05 * i, -0.2 + 0.05 * j, 0.05 + 0.05 * k)

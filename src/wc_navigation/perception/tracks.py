@@ -14,11 +14,13 @@ Classes (a hint for the reaction, not the reaction itself):
 
 - ``moving``: in ``moving_confirm_updates`` consecutive updates the track was confirmed, had been seen
   standing on the floor (points below ``person_ground_m``), moved more than ``moving_displacement_m``
-  over the last ``moving_window_s`` with a filtered speed above ``moving_speed_mps``, was at most
-  ``moving_max_radius_m`` across and not elongated, kept ``moving_min_wall_gap_m`` from the map's walls,
-  and - when the chair's velocity is given - did not just ride along with the chair (relative speed of
-  at least ``ego_margin_mps``). Without these checks the visible part of a long or wall-side object
-  slides along with the chair's view and looks like it walks (ZL1107 mapping recording).
+  over the last ``moving_window_s`` with a filtered speed between ``moving_speed_mps`` and
+  ``max_speed_mps``, had a radius of at most ``moving_max_radius_m`` in every match of that window, was
+  not elongated, kept ``moving_min_wall_gap_m`` from the map's walls, and - when the chair's velocity is
+  given - did not just ride along with the chair (relative speed of at least ``ego_margin_mps``). Without
+  these checks the visible part of a long or wall-side object slides along with the chair's view, and
+  pieces of a large unmapped object hop from one to the next, and look like they walk (ZL1107 mapping
+  recording). The association gate grows with the track's speed only up to ``max_speed_mps``.
 - ``person_candidate``: not moving, but shaped like a standing person: ``person_diameter_m`` across,
   top at least ``person_top_m`` above the floor, points below ``person_ground_m`` (stands on the floor),
   at least ``person_wall_gap_m`` from the map's walls, and not elongated.
@@ -173,6 +175,8 @@ class TrackerConfig:
     moving_window_s: float = 1.0
     moving_confirm_updates: int = 3
     moving_max_radius_m: float = 0.50
+    # faster than a person runs in a corridor: caps the association gate's growth; such tracks are not moving
+    max_speed_mps: float = 2.5
     moving_min_wall_gap_m: float = 0.10
     ego_margin_mps: float = 0.50
     chair_moving_mps: float = 0.20
@@ -274,7 +278,8 @@ class Track:
         self.first_t = self.last_t = self.t = float(t)
         self.hits = 1
         self.cfg = cfg
-        self.history = [(float(t), float(self.x[0]), float(self.x[1]))]
+        # (t, x, y, cluster radius) of the matches within moving_window_s
+        self.history = [(float(t), float(self.x[0]), float(self.x[1]), float(cluster["radius_m"]))]
         self.shape = cluster
         self.sources = set()
         # seen standing on the floor at least once (a walking person's legs leave the view near the chair)
@@ -310,7 +315,7 @@ class Track:
         self.hits += 1
         self.shape = cluster
         self.grounded = self.grounded or cluster["height_m"][0] <= self.cfg.person_ground_m
-        self.history.append((float(t), float(self.x[0]), float(self.x[1])))
+        self.history.append((float(t), float(self.x[0]), float(self.x[1]), float(cluster["radius_m"])))
         self.history = [h for h in self.history if t - h[0] <= max(self.cfg.moving_window_s, 0.0) + 1e-9]
 
     def speed(self):
@@ -324,8 +329,8 @@ class Track:
     def is_moving(self, t):
         if self.state(t) != "confirmed" or len(self.history) < 2 or not self.grounded:
             return False
-        t0, x0, y0 = self.history[0]
-        t1, x1, y1 = self.history[-1]
+        t0, x0, y0 = self.history[0][:3]
+        t1, x1, y1 = self.history[-1][:3]
         if t1 - t0 < 0.5 * self.cfg.moving_window_s:
             return False
         return self.speed() > self.cfg.moving_speed_mps and math.hypot(x1 - x0, y1 - y0) > self.cfg.moving_displacement_m
@@ -374,7 +379,7 @@ class Tracker:
         # greedy nearest-neighbour association, closest pairs first
         pairs = []
         for i, track in enumerate(self.tracks):
-            gate = self.cfg.gate_m + track.speed() * max(0.0, t - track.last_t)
+            gate = self.cfg.gate_m + min(track.speed(), self.cfg.max_speed_mps) * max(0.0, t - track.last_t)
             for j, c in enumerate(found):
                 d = math.hypot(c["xy"][0] - track.x[0], c["xy"][1] - track.x[1])
                 if d <= gate:
@@ -409,8 +414,10 @@ class Tracker:
 
     def _moves(self, track, t, chair_velocity):
         """This update's evidence that ``track`` moves by itself (not a view effect of the chair's motion)."""
-        if not track.is_moving(t) or track.shape["radius_m"] > self.cfg.moving_max_radius_m:
+        if not track.is_moving(t) or track.speed() > self.cfg.max_speed_mps:
             return False
+        if max(h[3] for h in track.history) > self.cfg.moving_max_radius_m:
+            return False                          # was part of something larger: pieces of it hop as the view changes
         if track.shape["elongation"] >= self.cfg.elongated_ratio:
             return False                          # the visible part of a long object slides along with the view
         gap = self.wall_gap(track)
