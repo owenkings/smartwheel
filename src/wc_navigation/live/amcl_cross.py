@@ -16,8 +16,11 @@ There is no ground truth. Three read-only comparisons are reported:
   correction-jump conditions evaluated on the returned ``map -> odom``.
 
 Frames whose axle lies outside the mapped free space (the door at the start and
-end of the validation recording) are counted separately. Recordings and maps
-are never modified; no device, vehicle or control topic is used.
+end of the validation recording) are counted separately; the mapped frames are
+also split into turning / straight / stationary from the recorded odometry.
+``--lidar-time-offset-ms`` (default 0, as recorded) pairs every scan with the
+odometry of stamp - offset, to compare a lidar timestamp correction. Recordings
+and maps are never modified; no device, vehicle or control topic is used.
 """
 from __future__ import annotations
 
@@ -31,6 +34,8 @@ from pathlib import Path
 import uuid
 
 import numpy as np
+
+from .scan_adapter import MAX_LIDAR_TIME_OFFSET_MS
 
 CAP_M = 0.5
 SUPPORT_M = 0.15            # localization_coverage support band
@@ -47,6 +52,15 @@ JOIN_XY_M, JOIN_YAW_DEG, JOIN_SHARE = 0.25, 5.0, 0.9
 CONVERGED_XY_M, CONVERGED_YAW_DEG = 0.10, 2.0
 DIVERGED_XY_M, DIVERGED_YAW_DEG = 0.50, 10.0
 SCOPE = "CROSS_RECORDING_SAVED_MAP_ALIGNMENT_PRIOR_NOT_ABSOLUTE_TRUTH"
+# Motion classes from the recorded (unshifted) odometry, so every time offset is scored on the same frames. A
+# lidar stamp late by tau turns each scan by yaw_rate * tau: 1.3 degrees at 0.3 rad/s for 75 ms.
+MOTION_CLASSES = ("TURNING", "STRAIGHT", "STATIONARY", "OTHER")
+TURNING_MIN_RAD_S = 0.3
+STRAIGHT_MAX_RAD_S, STRAIGHT_MIN_M_S = 0.05, 0.2
+STATIONARY_MAX_RAD_S, STATIONARY_MAX_M_S = 0.05, 0.05
+TIME_OFFSET_METHOD = ("scan stamps as recorded; each scan is paired with the frozen odometry at stamp - offset "
+                      "(linear in x, y and unwrapped yaw between the per-frame poses; the first pose is held "
+                      "before the first stamp + offset); equivalent to stamping the scan earlier by the offset")
 # Body-frame start perturbations (forward m, left m, yaw deg) around the alignment start.
 DEFAULT_PERTURBATIONS = ([(0.0, 0.0, 0.0)]
                          + [(d, 0.0, 0.0) for d in (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0)]
@@ -103,6 +117,49 @@ def perturbed_start(start_axle, perturbation):
     """Move the axle start by (forward, left) in its own frame, then turn it about the axle."""
     forward, left, yaw_deg = (float(v) for v in perturbation)
     return start_axle @ se2(forward, left, math.radians(yaw_deg))
+
+
+# -- lidar time offset and motion classes ------------------------------------------------------------
+def planar_track(raw_frames):
+    """Seconds since the first frame and planar odometry poses (x, y, unwrapped yaw) of the frozen frames."""
+    t0 = raw_frames[0]["stamp_ns"]
+    times = np.array([(f["stamp_ns"] - t0) * 1e-9 for f in raw_frames], dtype=float)
+    poses = np.array([xyyaw(planar_from_rigid(f["odometry_T"])) for f in raw_frames], dtype=float)
+    poses[:, 2] = np.unwrap(poses[:, 2])
+    return times, poses
+
+
+def shifted_odometry(raw_frames, offset_ms):
+    """The frames with each odometry pose taken at stamp - ``offset_ms`` (the lidar stamp is late by it).
+
+    See TIME_OFFSET_METHOD. Stamps and points are unchanged; offset 0 returns the frames as they are.
+    """
+    offset = float(offset_ms)
+    if not math.isfinite(offset) or abs(offset) > MAX_LIDAR_TIME_OFFSET_MS:
+        raise ValueError("lidar time offset must be finite and within +-%g ms" % MAX_LIDAR_TIME_OFFSET_MS)
+    if offset == 0.0:
+        return list(raw_frames)
+    times, poses = planar_track(raw_frames)
+    query = times - offset * 1e-3
+    x, y, yaw = (np.interp(query, times, poses[:, k]) for k in range(3))
+    return [{**frame, "odometry_T": rigid_from_planar(se2(a, b, wrap(c)))}
+            for frame, a, b, c in zip(raw_frames, x, y, yaw)]
+
+
+def motion_classes(raw_frames, lever_xy):
+    """Per-frame class, yaw rate (rad/s) and axle speed (m/s) from the recorded odometry (central differences)."""
+    times, poses = planar_track(raw_frames)
+    lever = np.asarray(lever_xy, dtype=float)
+    c, s = np.cos(poses[:, 2]), np.sin(poses[:, 2])
+    axle_x = poses[:, 0] - (c * lever[0] - s * lever[1])
+    axle_y = poses[:, 1] - (s * lever[0] + c * lever[1])
+    rate = np.gradient(poses[:, 2], times)
+    speed = np.hypot(np.gradient(axle_x, times), np.gradient(axle_y, times))
+    labels = np.full(len(times), "OTHER", dtype=object)
+    labels[(np.abs(rate) < STRAIGHT_MAX_RAD_S) & (speed >= STRAIGHT_MIN_M_S)] = "STRAIGHT"
+    labels[(np.abs(rate) < STATIONARY_MAX_RAD_S) & (speed < STATIONARY_MAX_M_S)] = "STATIONARY"
+    labels[np.abs(rate) >= TURNING_MIN_RAD_S] = "TURNING"
+    return labels, rate, speed
 
 
 # -- map fit ---------------------------------------------------------------------------------------
@@ -277,6 +334,28 @@ def evaluate_run(result, frames, alignment, scorer, analyzer=None):
     return rows, {"correction_jump_events": {name: monitor.events for name, (_, monitor) in variants.items()}}
 
 
+MOTION_METRICS = (("fit", "fit_m"), ("support", "support_fraction"),
+                  ("change_2s_robot_xy", "change_2s_robot_xy_m"), ("change_2s_yaw", "change_2s_yaw_deg"),
+                  ("std_along", "std_along_m"), ("std_across", "std_across_m"), ("std_yaw", "std_yaw_deg"))
+
+
+def motion_breakdown(rows, frames):
+    """MIDDLE frames per motion class: map fit, correction change within 2 s, AMCL std and gate distrust."""
+    result = {}
+    for name in MOTION_CLASSES:
+        selected = [r for r, f in zip(rows, frames) if f["segment"] == "MIDDLE" and f.get("motion") == name]
+        entry = {"frames": len(selected)}
+        for key, label in MOTION_METRICS:
+            values = [r[key] for r in selected if r.get(key) is not None]
+            entry[label] = stats([math.degrees(abs(v)) for v in values] if label.endswith("_deg") else values)
+        for variant in GATE_VARIANTS:
+            entry[variant + "_untrusted_frames"] = int(sum(
+                1 for r in selected if r.get(variant + "_covariance_ok") is False
+                or r.get(variant + "_correction_ok") is False))
+        result[name] = entry
+    return result
+
+
 def summarize_run(rows, frames):
     times = np.array([f["t"] for f in frames])
     fit = np.array([r.get("fit", math.nan) for r in rows], dtype=float)
@@ -287,7 +366,8 @@ def summarize_run(rows, frames):
                "fit_windows_middle": window_medians(times, fit, labels == "MIDDLE"),
                "fit_by_segment": {name: stats(fit[labels == name]) for name in SEGMENTS},
                "fit_under_0_10_m_middle": (round(float(np.mean(fit[(labels == "MIDDLE") & np.isfinite(fit)] < 0.10)), 3)
-                                           if np.isfinite(fit[labels == "MIDDLE"]).any() else None)}
+                                           if np.isfinite(fit[labels == "MIDDLE"]).any() else None),
+               "by_motion_middle": motion_breakdown(rows, frames)}
     for key in ("std_x", "std_y", "std_yaw", "std_along", "std_across", "along_vs_fixed", "across_vs_fixed",
                 "yaw_vs_fixed", "change_2s_xy", "change_2s_robot_xy", "change_2s_yaw", "known", "support"):
         values = np.array([r.get(key, math.nan) for r in rows], dtype=float)
@@ -462,6 +542,9 @@ def arguments(argv=None):
                                                                        math.degrees(DEFAULT_INITIAL_STD[2])],
                         metavar=("XY_M", "YAW_DEG"))
     parser.add_argument("--timeout", type=_finite, default=600.0, help="wall seconds per AMCL run")
+    parser.add_argument("--lidar-time-offset-ms", type=_finite, default=0.0, metavar="MS",
+                        help="the lidar stamps are late by MS against the odometry: pair each scan with the "
+                             "odometry of stamp - MS (default 0 = as recorded; for comparisons only)")
     args = parser.parse_args(argv)
     args.profile = args.profile or ["framework", "replay_tool"]
     args.perturb_profile = args.perturb_profile or ["framework"]
@@ -474,6 +557,8 @@ def arguments(argv=None):
         parser.error("--initial-std needs 0 < XY <= 2 m and 0 < YAW <= 90 degrees")
     if not 10 <= args.timeout <= 900:
         parser.error("--timeout must be within 10..900 s")
+    if abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
+        parser.error("--lidar-time-offset-ms must be within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
     return args
 
 
@@ -542,7 +627,7 @@ CSV_FIELDS = ("stamp_ns", "t", "segment", "acknowledged", "filter_updated", "x",
 def write_rows(path, rows, frames, scorer, alignment):
     with Path(path).open("x", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow([*CSV_FIELDS, "fixed_x", "fixed_y", "fixed_yaw", "fixed_fit"])
+        writer.writerow([*CSV_FIELDS, "fixed_x", "fixed_y", "fixed_yaw", "fixed_fit", "motion", "yaw_rate"])
         for row, frame in zip(rows, frames):
             fixed = alignment @ frame["axle"]
             fx, fy, fyaw = xyyaw(fixed)
@@ -551,7 +636,8 @@ def write_rows(path, rows, frames, scorer, alignment):
                 value = row.get(key, "")
                 values.append(round(value, 5) if isinstance(value, float) and math.isfinite(value) else
                               ("" if isinstance(value, float) else value))
-            writer.writerow([*values, round(fx, 4), round(fy, 4), round(fyaw, 5), round(frame["fixed_fit"], 4)])
+            writer.writerow([*values, round(fx, 4), round(fy, 4), round(fyaw, 5), round(frame["fixed_fit"], 4),
+                             frame.get("motion", ""), round(float(frame.get("yaw_rate", math.nan)), 4)])
 
 
 def render(path, scorer, frames, alignment, references, cases):
@@ -647,18 +733,23 @@ def main(argv=None):
     base_from_lidar = np.eye(4)
     base_from_lidar[:2, 3] = lever
     t0 = raw_frames[0]["stamp_ns"]
+    # AMCL and the evaluation see the odometry at the scan's capture time; segments and motion classes come
+    # from the recorded odometry, so runs with different offsets are scored on the same frames.
+    replay_frames = shifted_odometry(raw_frames, args.lidar_time_offset_ms)
+    motion, yaw_rate, _ = motion_classes(raw_frames, lever)
     frames = []
     angles = -math.pi / 3 + (math.pi / 240) * np.arange(161)
-    for frame in raw_frames:
+    for frame, recorded in zip(replay_frames, raw_frames):
         lidar = planar_from_rigid(frame["odometry_T"])
         ranges, endpoints = scan_endpoints(frame["points"])
         frames.append({"stamp_ns": frame["stamp_ns"], "t": (frame["stamp_ns"] - t0) * 1e-9, "lidar": lidar,
                        "axle": lidar @ np.linalg.inv(lever_m), "endpoints": endpoints, "ranges": ranges,
-                       "angles": angles})
-    axle_xy = np.array([xyyaw(alignment @ f["axle"])[:2] for f in frames])
+                       "angles": angles,
+                       "recorded_axle": planar_from_rigid(recorded["odometry_T"]) @ np.linalg.inv(lever_m)})
+    axle_xy = np.array([xyyaw(alignment @ f["recorded_axle"])[:2] for f in frames])
     labels = door_segments(scorer.cell_values(axle_xy))
-    for frame, label in zip(frames, labels):
-        frame["segment"] = label
+    for frame, label, kind, rate in zip(frames, labels, motion, yaw_rate):
+        frame["segment"], frame["motion"], frame["yaw_rate"] = label, kind, float(rate)
         frame["fixed_fit"], frame["fixed_known"], frame["fixed_support"] = scorer.frame_fit_support(
             alignment @ frame["lidar"], frame["endpoints"])
     times = np.array([f["t"] for f in frames])
@@ -669,6 +760,15 @@ def main(argv=None):
         mask = labels == name
         segments[name] = {"frames": int(mask.sum()),
                           "t_s": [round(float(times[mask].min()), 2), round(float(times[mask].max()), 2)] if mask.any() else None}
+    motion_counts = {name: {"all": int(np.sum(motion == name)), "middle": int(np.sum((motion == name) & (labels == "MIDDLE")))}
+                     for name in MOTION_CLASSES}
+    time_offset = {"lidar_time_offset_ms": args.lidar_time_offset_ms, "method": TIME_OFFSET_METHOD,
+                   "applied": args.lidar_time_offset_ms != 0.0}
+    motion_rule = {"basis": "recorded odometry (no time offset), central differences over the frame stamps; "
+                            "axle speed from the frozen lever arm",
+                   "turning_min_rad_s": TURNING_MIN_RAD_S, "straight_max_rad_s": STRAIGHT_MAX_RAD_S,
+                   "straight_min_m_s": STRAIGHT_MIN_M_S, "stationary_max_rad_s": STATIONARY_MAX_RAD_S,
+                   "stationary_max_m_s": STATIONARY_MAX_M_S, "frames": motion_counts}
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8]
     output = storage.resolve("reports/navigation_amcl_cross/" + run_id)
     output.mkdir(parents=True, exist_ok=False)
@@ -680,7 +780,7 @@ def main(argv=None):
         "alignment_x_y_yaw_deg": [ax_, ay_, ayaw_deg], "alignment": alignment_info,
         "lever_xy_m": lever.tolist(), "frames": len(frames), "profiles": args.profile,
         "perturbations_forward_left_yawdeg": args.perturbation, "perturbed_profiles": args.perturb_profile,
-        "initial_std_xy_m_yaw_rad": list(initial_std), "evaluation_scope": SCOPE,
+        "initial_std_xy_m_yaw_rad": list(initial_std), "evaluation_scope": SCOPE, **time_offset,
         "ros_domain_id": 95, "hardware_started": False, "control_topics_published": False}))
     profiles = {}
     references = {}
@@ -697,7 +797,7 @@ def main(argv=None):
             start = perturbed_start(start_axle, perturbation)
             initial_lidar = rigid_from_planar(start @ lever_m)
             print("AMCL_CROSS", profile, name, flush=True)
-            result = run_amcl_replay(map_yaml, raw_frames, initial_lidar, profile_dir / name, args.timeout,
+            result = run_amcl_replay(map_yaml, replay_frames, initial_lidar, profile_dir / name, args.timeout,
                                      scan_height_m=SCAN_HEIGHT_M, base_from_lidar=base_from_lidar,
                                      laser_model=settings["laser_model"], evaluation_scope=SCOPE,
                                      amcl_overrides=settings["amcl_overrides"], initial_std=initial_std,
@@ -734,14 +834,17 @@ def main(argv=None):
             c["amcl_status"] == "AMCL_REPLAY_COMPLETE" for p in profiles.values() for c in p["cases"]) else "PARTIAL",
         "evaluation_scope": SCOPE, "output": str(output), "frames": len(frames),
         "recording_span_s": round(float(times[-1]), 2), "segments": segments,
-        "segment_rule": "axle position (fixed alignment) on a free map cell = MIDDLE; before the first / after the "
-                        "last such frame = START_DOOR / END_DOOR",
+        "segment_rule": "axle position (fixed alignment, recorded odometry) on a free map cell = MIDDLE; before "
+                        "the first / after the last such frame = START_DOOR / END_DOOR",
+        "lidar_time_offset": time_offset, "motion_classes": motion_rule,
         "fixed_alignment": {"x_y_yaw_deg": [ax_, ay_, ayaw_deg], **alignment_info,
                             "fit_windows_all_frames": window_medians(times, fixed_fit),
                             "fit_windows_middle": window_medians(times, fixed_fit, labels == "MIDDLE"),
                             "fit_by_segment": {name: stats(fixed_fit[labels == name]) for name in SEGMENTS},
                             "support_by_segment": {name: stats(fixed_support[labels == name]) for name in SEGMENTS},
-                            "fit_under_0_10_m_middle": round(float(np.mean(fixed_fit[labels == "MIDDLE"] < 0.10)), 3)},
+                            "fit_under_0_10_m_middle": round(float(np.mean(fixed_fit[labels == "MIDDLE"] < 0.10)), 3),
+                            "fit_by_motion_middle": {name: stats(fixed_fit[(labels == "MIDDLE") & (motion == name)])
+                                                     for name in MOTION_CLASSES}},
         "initial_std_xy_m_yaw_deg": [initial_std[0], round(math.degrees(initial_std[2]), 3)],
         "profiles": profiles, "convergence_counts": counts,
         "metric": "per-frame mean distance of the 161-bin scan endpoints to the nearest occupied cell of the map, "
@@ -760,6 +863,7 @@ def main(argv=None):
     storage.check()
     _write_json(output / "summary.json", _clean(summary))
     brief = {"status": summary["status"], "output": str(output), "segments": segments,
+             "lidar_time_offset_ms": args.lidar_time_offset_ms,
              "fixed_alignment_fit": summary["fixed_alignment"]["fit_windows_all_frames"],
              "amcl_fit": {p: v["cases"][0]["summary"]["fit_windows_all_frames"] for p, v in profiles.items()},
              "convergence_counts": counts, "sources_unchanged": unchanged}

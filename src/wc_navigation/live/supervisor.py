@@ -257,6 +257,7 @@ class LiveSupervisor(Supervisor):
         files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
                      "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
                      "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
+                     "lidar_time_offset_ms": cfg.get("lidar_time_offset_ms", 0.0),
                      "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {

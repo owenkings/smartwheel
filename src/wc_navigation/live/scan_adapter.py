@@ -21,6 +21,20 @@ ANGLE_MIN, ANGLE_INCREMENT, BINS = -math.pi / 3, math.pi / 240, 161
 RANGE_MIN, RANGE_MAX = 0.30, 8.0
 SCAN_HEIGHT_M = (-0.5, 0.5)
 REPRESENTATION = "representation=host_filtered"
+MAX_LIDAR_TIME_OFFSET_MS = 250.0
+
+
+def scan_stamp_ns(source_stamp_ns, lidar_time_offset_ms=0.0):
+    """Stamp of the published scan: the lidar frame's stamp minus an explicit lidar time offset.
+
+    A positive offset means the lidar stamps are late against the wheel/IMU odometry (window A, 2026-11-07:
+    left lidar about 75 ms). Stamping the scan earlier makes AMCL, the costmaps and the collision monitor read
+    the odometry at the scan's capture time. The default 0 keeps the recorded stamps.
+    """
+    offset = float(lidar_time_offset_ms)
+    if not math.isfinite(offset) or abs(offset) > MAX_LIDAR_TIME_OFFSET_MS:
+        raise ValueError("lidar time offset must be finite and within +-%g ms" % MAX_LIDAR_TIME_OFFSET_MS)
+    return int(source_stamp_ns) - int(round(offset * 1e6))
 
 
 class ScanRejected(ValueError):

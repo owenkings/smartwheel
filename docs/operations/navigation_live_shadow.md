@@ -16,6 +16,9 @@ bash scripts/navigation_amcl_replay cross \
 - 对齐用 `--alignment X Y YAW_DEG` 或 `--alignment-json`（读 `best_alignment`），表示被定位录包的里程计坐标系在地图里的位姿。
 - `--profile` 选参数集，可重复：`framework`（`nav2_config.localization_parameters`，按 AMCL 自身运动门限更新）、`framework_alpha_0_05`、`framework_sharp_laser`、`candidate`（前两项合并）、`replay_tool`（原回放工具参数，每帧强制更新）。默认 `framework` 和 `replay_tool`。
 - `--perturbation FORWARD_M LEFT_M YAW_DEG` 在起点车轴坐标系里加扰动，可重复，限 2 m、45°；不给时用 21 个默认扰动。只有 `--perturb-profile`（默认 `framework`）的参数集跑扰动，其余只跑对齐起点。`--initial-std XY_M YAW_DEG` 是起点标准差，默认 0.25 m、8.6°（与仿真导航相同）。
+- `--lidar-time-offset-ms MS`（默认 0，录包原样）：雷达时间戳比轮速/IMU 晚 MS 毫秒时，每帧扫描配 stamp − MS 处的冻结里程计（相邻帧位姿间线性插值），扫描时间戳不变；限 ±250。用于比较时间偏移，结论见设计说明“雷达时间偏移”一节。
+- 回放是确定的：同样的输入跑两次，结果逐字节相同。要看 AMCL 的离散，用几个很小的起点扰动（例如 ±5 cm、±1°）当作不同的实现，而不是重复运行。
+- 中段帧按录包原样的里程计分成转弯（|角速度| ≥ 0.3 rad/s）、直行（< 0.05 rad/s 且 ≥ 0.2 m/s）、静止和其他；每个运行的 `by_motion_middle` 和固定对齐的 `fit_by_motion_middle` 按这四类给出端点拟合、2 s 内修正变化、标准差和闸门不可信帧数。分类不随时间偏移变，不同偏移比的是同一批帧。
 
 结果在数据根 `reports/navigation_amcl_cross/<时间>_<编号>/`：
 
@@ -61,6 +64,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 - `ros2 bag play --clock` 只回放左雷达 host_filtered 帧、H30 帧和轮速记录三个话题，按录包时间送进扫描和里程计两个进程；不启动驱动、面板或任何会打开设备的节点。整个运行在 `WC_AUTONOMY_ROS_DOMAIN` 的隔离域里，占用本检出该域的锁。
 - `--cell` 给外参、主机滤波、运动先验和设备编号；`--hardware-setup` 的 `wheel_odometry` 和 `--gyro-bias` 替换轮参数和零偏。ZL1107 系列录包冻结的是旧轮参数，必须给覆盖文件，否则和冻结前端对不上。
 - `--scan-rate-hz`（默认 10，0 为每帧都发）、`--bag-rate`（0.1–2）、`--relay-test`（录包放在 `/relay_source` 前缀下，经单向转发进程进来，检验转发）。
+- `--lidar-time-offset-ms MS`（`inputs` 和 `shadow` 都有，默认 0）：发布的 `/scan` 时间戳比雷达帧早 MS 毫秒，AMCL、代价地图和碰撞监控就在扫描实际采集的时刻取里程计。录包检验相应地在 stamp − MS 处找对应的冻结帧；`run_config.json` 和输入状态里记录所用的值。
 - 输出在 `reports/navigation_live_shadow/<时间>_inputs_<编号>/`：`scans.csv`（含 161 格距离）、`odom.csv`、`events.jsonl`、各进程日志和 `result.json`。`result.json` 的 `comparison` 给出与冻结前端逐帧的扫描比较（匹配帧、完全相同的帧、不同的格数）和里程计比较（第一帧对齐后的位置与航向差）。
 
 ## 实车影子运行
