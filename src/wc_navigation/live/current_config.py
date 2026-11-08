@@ -12,6 +12,8 @@ the layout of a frontend cell, so ``navigation_live_shadow inputs|shadow --cell`
 * ``prior_config.json``: the session's prior template plus the fixed mount transforms
   (``mapping_input.mount_transforms`` without startup gravity), as the live input writes it at bootstrap;
 * ``hardware_setup.json`` and, when configured, ``confirmed_gyro_bias.json`` with its evidence (byte snapshots);
+* ``lidar_time_offset.json``: that checkout's approved lidar time offset (``config/calibration/``), which the
+  live chain then uses by default;
 * ``frozen_configuration.json``: source root, request, sha256 of every file and the checks.
 
 Checks: the hardware setup comes from the local override (otherwise the repository base values, e.g. wheel
@@ -29,6 +31,8 @@ import subprocess
 import sys
 
 import numpy as np
+
+from .scan_adapter import LIDAR_TIME_OFFSET_CONFIG, LIDAR_TIME_OFFSET_SNAPSHOT, load_lidar_time_offset
 
 REQUEST = {"mode": "left", "mapping_enabled": True, "cloud_source": "filtered", "estimator": "robot_localization",
            "live_scheme": "validated"}
@@ -118,6 +122,12 @@ def freeze(output, config_root, session_id, config_path=LIVE_CONFIG, compare_cel
              "prior_config.json": _write(output / "prior_config.json", _json(result["prior"]))}
     for name, text in result["snapshots"].items():
         files[name] = _write(output / name, text.encode("utf-8"))
+    # The approved lidar time offset of that checkout travels with the frozen configuration.
+    offset_file = Path(result["root"]) / LIDAR_TIME_OFFSET_CONFIG
+    lidar_offset = None
+    if offset_file.is_file():
+        files[LIDAR_TIME_OFFSET_SNAPSHOT] = _write(output / LIDAR_TIME_OFFSET_SNAPSHOT, offset_file.read_bytes())
+        lidar_offset = load_lidar_time_offset(output / LIDAR_TIME_OFFSET_SNAPSHOT)[0]
     runtime = result["runtime"]
     provenance = runtime.get("hardware_setup_provenance") or {}
     if provenance.get("sha256") != files.get("hardware_setup.json"):
@@ -130,7 +140,10 @@ def freeze(output, config_root, session_id, config_path=LIVE_CONFIG, compare_cel
               "confirmed_gyro_bias_configured": runtime.get("confirmed_gyro_bias") is not None,
               "gyro_bias_provenance": runtime.get("gyro_bias_provenance"),
               "imu_sensor_id": runtime.get("imu_sensor_id"), "lidar_left": (runtime.get("sensor_ids") or {}).get("left"),
-              "imu_time_source": "arrival (live; no device-time model, window A 2026-11-08)"}
+              "imu_time_source": "arrival (live; no device-time model, window A 2026-11-08)",
+              "lidar_time_offset_ms": lidar_offset,
+              "lidar_time_offset_note": None if lidar_offset is not None else
+              "no %s in that checkout: the live chain then needs --lidar-time-offset-ms" % LIDAR_TIME_OFFSET_CONFIG}
     bias = gyro_bias or (output / "confirmed_gyro_bias.json" if "confirmed_gyro_bias.json" in files else None)
     if bias is not None:
         live = load_live_config(output, output / "hardware_setup.json", bias)

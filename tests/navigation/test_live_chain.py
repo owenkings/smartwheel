@@ -65,9 +65,11 @@ def test_frozen_current_configuration_loads_like_a_cell_and_matches_the_referenc
     runtime["wheel_candidate"] = prior["wheel_candidate"]
     resolved = {"root": str(tmp_path), "runtime": runtime, "prior": prior, "snapshots": {"hardware_setup.json": setup_text}}
     monkeypatch.setattr(current_config, "resolve", lambda root, session, path: ({"mode": "left"}, resolved))
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
     record = current_config.freeze(tmp_path / "frozen", tmp_path, "s1", compare_cell=cell, gyro_bias=bias)
     checks = record["checks"]
     assert checks["hardware_setup_from_local_override"] and checks["live_chain_loads_it"]
+    assert checks["lidar_time_offset_ms"] == 75.0 and (tmp_path / "frozen/lidar_time_offset.json").is_file()
     assert not checks["confirmed_gyro_bias_configured"]
     same = checks["against_reference_cell"]
     assert same["T_base_axle_max_abs_diff"] == 0.0 and same["lever_xy_max_abs_diff_m"] == 0.0 and same["cloud_filter_equal"]
@@ -307,6 +309,7 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve", lambda self, value: tmp_path / "run")
     map_yaml = tmp_path / "m.yaml"
     map_yaml.write_text("image: m.pgm\n")
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
     argv = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
             "--source", "vehicle", "--sensor-domain", "83", "--map", str(map_yaml), "--initial-pose", "0", "0", "0",
             "--goal", "1", "2", "0"]
@@ -365,15 +368,37 @@ def test_lidar_time_offset_is_explicit_and_stamps_the_scan_earlier(tmp_path):
     for bad in (300.0, math.nan, math.inf):
         with pytest.raises(ValueError):
             scan_stamp_ns(1_000_000_000, bad)
-    common = ["inputs", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
-              "--bag", "x"]
-    assert arguments(common).lidar_time_offset_ms == 75.0              # live default since 2026-11-08
+    common = ["inputs", "--project-root", str(tmp_path), "--cell", str(tmp_path / "cell"), "--hardware-setup", "h",
+              "--gyro-bias", "b", "--bag", "x"]
     assert arguments(common + ["--lidar-time-offset-ms", "0"]).lidar_time_offset_ms == 0.0
     with pytest.raises(SystemExit):
         arguments(common + ["--lidar-time-offset-ms", "251"])
     from wc_navigation.live.amcl_cross import arguments as replay_arguments
     replay = ["--project-root", str(tmp_path), "--source-cell", "c", "--map", "m.yaml", "--alignment", "0", "1", "-85"]
     assert replay_arguments(replay).lidar_time_offset_ms == 0.0         # replay tools keep 0
+
+
+def write_offset(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1, "kind": "LIDAR_TIME_OFFSET", "status": "USER_APPROVED_20261108",
+                                "lidar_time_offset_ms": value}))
+
+
+def test_live_lidar_time_offset_comes_from_the_approved_configuration(tmp_path):
+    from wc_navigation.live.cli import arguments, resolve_lidar_time_offset
+    common = ["inputs", "--project-root", str(tmp_path), "--cell", str(tmp_path / "cell"), "--hardware-setup", "h",
+              "--gyro-bias", "b", "--bag", "x"]
+    with pytest.raises(SystemExit, match="lidar-time-offset-ms"):
+        resolve_lidar_time_offset(arguments(common))                    # nothing approved, nothing given
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
+    value, source = resolve_lidar_time_offset(arguments(common))
+    assert value == 75.0 and source["source"] == "CONFIGURATION" and len(source["sha256"]) == 64
+    write_offset(tmp_path / "cell/lidar_time_offset.json", 70.0)        # a frozen configuration's own copy wins
+    assert resolve_lidar_time_offset(arguments(common))[0] == 70.0
+    assert resolve_lidar_time_offset(arguments(common + ["--lidar-time-offset-ms", "0"])) == (0.0, {"source": "COMMAND_LINE"})
+    write_offset(tmp_path / "cell/lidar_time_offset.json", 400.0)
+    with pytest.raises(ValueError):
+        resolve_lidar_time_offset(arguments(common))
 
 
 def test_vehicle_mode_refuses_without_the_dated_user_approval(tmp_path, monkeypatch):

@@ -30,7 +30,6 @@ from ..autonomy import nav2_config
 from ..autonomy.bringup import EXECUTABLES, PACKAGES, RunError, Supervisor, _parameter_value, _same
 from ..autonomy.ros_util import json_message, latched_qos, lookup_pose, require_isolated_domain, simulation_domain
 from .config import SOURCE_TOPICS
-from .scan_adapter import LIVE_LIDAR_TIME_OFFSET_MS
 
 VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
@@ -262,7 +261,7 @@ class LiveSupervisor(Supervisor):
         files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
                      "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
                      "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
-                     "lidar_time_offset_ms": cfg.get("lidar_time_offset_ms", LIVE_LIDAR_TIME_OFFSET_MS),
+                     "lidar_time_offset_ms": cfg["lidar_time_offset_ms"],
                      "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {

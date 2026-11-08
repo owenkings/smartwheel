@@ -20,7 +20,7 @@ import uuid
 
 import numpy as np
 
-from .scan_adapter import LIVE_LIDAR_TIME_OFFSET_MS
+from .scan_adapter import LIDAR_TIME_OFFSET_CONFIG, LIDAR_TIME_OFFSET_SNAPSHOT, load_lidar_time_offset
 
 OUTPUT_PREFIX = "/wc_live/relayed"   # relay_node.OUTPUT_PREFIX (importing it here would pull in rclpy)
 VEHICLE_SHADOW_DOMAIN = "100"     # user decision 2026-11-07; localhost only
@@ -32,7 +32,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
  4. 物理急停可用、轮控所有者照常由面板管理；确认没有任何进程订阅 /wc_nav/cmd_vel_gated，也没有进程发布 /cmd_vel（ros2 topic info 检查）。
  5. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz（面板里看，或在影子域看转发后的 /wc_live/relayed/... 话题）。
  6. 配置：上车前运行 navigation_live_shadow freeze-config --config-root /home/nvidia/wheelchair --compare-cell <同一台车最近的单左前端> --gyro-bias <零偏文件>，冻结面板当前的实时配置并记 sha256。确认 hardware_setup 来自 config/local/project/hardware_setup.json（否则会退回仓库基础值）、轮参数是设备当前值（2026-11-07 20:19 起 0.1646/0.599）、外参和主机滤波与最近的前端一致。影子命令用冻结目录作 --cell、其中的 hardware_setup.json 作 --hardware-setup。
- 7. 陀螺零偏二选一：现场开头静止做一次 10+10+10 确认，或先用 ZL1107 的零偏文件（同一个 IMU H30-5B8E666933，温度和时间不同）；用 --gyro-bias 给出，IMU 编号必须一致。实时 IMU 用到达时间，暂不需要设备时间模型；雷达时间偏移默认补偿 75 ms（按到达时间估计，2026-11-08 用户决定）。
+ 7. 陀螺零偏二选一：现场开头静止做一次 10+10+10 确认，或先用 ZL1107 的零偏文件（同一个 IMU H30-5B8E666933，温度和时间不同）；用 --gyro-bias 给出，IMU 编号必须一致。实时 IMU 用到达时间，暂不需要设备时间模型。雷达时间偏移取冻结目录里的 lidar_time_offset.json（来自 config/calibration/，2026-11-08 用户批准 75 ms，按到达时间估计），freeze-config 的核对结果里应能看到这个值。
  8. 地图：--map 用要导航的那张地图的 map_nav.yaml；起点在地图覆盖范围内，雷达能看到已建图的墙（门内或地图空白处起步时，先推到走廊里再给初始位姿）。
  9. 初始位姿：在已知停靠点启动，或由操作员给 --initial-pose X Y YAW_DEG 和不小于 0.25 m、8.6 度的标准差；不能用零协方差。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
@@ -60,10 +60,24 @@ def _common(parser):
     parser.add_argument("--scan-rate-hz", type=_finite, default=10.0, help="0 keeps every lidar frame")
     parser.add_argument("--relay-test", action="store_true",
                         help="play the bag under a prefix and pass it through the one-way relay (same domain)")
-    parser.add_argument("--lidar-time-offset-ms", type=_finite, default=LIVE_LIDAR_TIME_OFFSET_MS, metavar="MS",
+    parser.add_argument("--lidar-time-offset-ms", type=_finite, metavar="MS",
                         help="stamp each scan MS earlier than its lidar frame, because the lidar stamps are late "
-                             "against the wheel/IMU odometry (default %g, user decision 2026-11-08; 0 = recorded "
-                             "stamps)" % LIVE_LIDAR_TIME_OFFSET_MS)
+                             "against the wheel/IMU odometry; 0 = recorded stamps. Default: the approved value, from "
+                             "the frozen configuration given as --cell, else " + LIDAR_TIME_OFFSET_CONFIG)
+
+
+def resolve_lidar_time_offset(args):
+    """(ms, provenance): explicit value, else the frozen configuration's snapshot, else the approved config file."""
+    if args.lidar_time_offset_ms is not None:
+        return float(args.lidar_time_offset_ms), {"source": "COMMAND_LINE"}
+    for candidate in (Path(args.cell).expanduser() / LIDAR_TIME_OFFSET_SNAPSHOT,
+                      Path(args.project_root) / LIDAR_TIME_OFFSET_CONFIG):
+        if candidate.is_file():
+            value, provenance = load_lidar_time_offset(candidate)
+            return value, {"source": "CONFIGURATION", **provenance}
+    raise SystemExit("no approved lidar time offset (%s, or %s in the frozen configuration): give "
+                     "--lidar-time-offset-ms explicitly (0 = recorded stamps)"
+                     % (LIDAR_TIME_OFFSET_CONFIG, LIDAR_TIME_OFFSET_SNAPSHOT))
 
 
 def arguments(argv=None):
@@ -133,7 +147,7 @@ def arguments(argv=None):
     if not 0.1 <= args.bag_rate <= 2.0:
         parser.error("--bag-rate must be within 0.1..2")
     from .scan_adapter import MAX_LIDAR_TIME_OFFSET_MS
-    if abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
+    if args.lidar_time_offset_ms is not None and abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
         parser.error("--lidar-time-offset-ms must be within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
     return args
 
@@ -190,13 +204,14 @@ def main(argv=None):
     storage = StoragePolicy(args.project_root)
     storage.check()
     live = load_live_config(args.cell, args.hardware_setup, args.gyro_bias)
+    lidar_offset_ms, lidar_offset_source = resolve_lidar_time_offset(args)
     run_id = (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + args.command + "_" + uuid.uuid4().hex[:8])
     output = storage.resolve("reports/navigation_live_shadow/" + run_id)
     bag = None if args.bag is None else args.bag.expanduser().resolve(strict=True)
     config = {"schema_version": 1, "kind": args.command, "source": "bag" if bag else "vehicle",
               "bag": None if bag is None else str(bag), "bag_rate": args.bag_rate,
               "use_sim_time": bag is not None, "scan_rate_hz": args.scan_rate_hz,
-              "lidar_time_offset_ms": args.lidar_time_offset_ms,
+              "lidar_time_offset_ms": lidar_offset_ms, "lidar_time_offset_source": lidar_offset_source,
               "live_config_file": str(output / "live_config.json"), "record_scan_ranges": args.command == "inputs",
               "hardware_control": False, "commands_sent": False, "open_loop": True}
     if args.relay_test:

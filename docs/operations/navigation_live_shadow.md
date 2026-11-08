@@ -8,9 +8,12 @@
 R=/media/nvidia/tiany-USB/wheelchair
 bash scripts/navigation_amcl_replay cross \
   --source-cell $R/data/analysis/20261107_190332_ZL1107_nav_single_left_gyrobias_wheel/robot_localization_hz5_filter_on \
-  --map $R/reports/navigation_replay_mapping/20261107T111004Z_3f0ae14a/odom_grid/map.yaml \
-  --alignment-json $R/dev_archive/20261104_104621_navigation_autonomy_framework_20261104/validation/commands_20261107_field/checks/align_wheel.json
+  --map $R/reports/navigation_replay_mapping/20261108T051511Z_fe74c4f4/odom_grid/map.yaml \
+  --alignment-json $R/dev_archive/20261104_104621_navigation_autonomy_framework_20261104/validation/commands_20261107_field/checks/align_wheel.json \
+  --lidar-time-offset-ms 75
 ```
+
+正式走廊地图 fe74c4f4 是按 75 ms 建的，在它上面定位要给 `--lidar-time-offset-ms 75`（BOARD 接口约定 5，结论注明）；旧图 3f0ae14a 按 0 ms 建，只作对比。
 
 - 在隔离域 95 里逐帧回放被定位录包的冻结扫描和里程计；map_server、AMCL 和本进程以外不能有节点。每次 AMCL 运行约 10 s。
 - 对齐用 `--alignment X Y YAW_DEG` 或 `--alignment-json`（读 `best_alignment`），表示被定位录包的里程计坐标系在地图里的位姿。
@@ -64,7 +67,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 - `ros2 bag play --clock` 只回放左雷达 host_filtered 帧、H30 帧和轮速记录三个话题，按录包时间送进扫描和里程计两个进程；不启动驱动、面板或任何会打开设备的节点。整个运行在 `WC_AUTONOMY_ROS_DOMAIN` 的隔离域里，占用本检出该域的锁。
 - `--cell` 给外参、主机滤波、运动先验和设备编号；`--hardware-setup` 的 `wheel_odometry` 和 `--gyro-bias` 替换轮参数和零偏。ZL1107 系列录包冻结的是旧轮参数，必须给覆盖文件，否则和冻结前端对不上。
 - `--scan-rate-hz`（默认 10，0 为每帧都发）、`--bag-rate`（0.1–2）、`--relay-test`（录包放在 `/relay_source` 前缀下，经单向转发进程进来，检验转发）。
-- `--lidar-time-offset-ms MS`（`inputs` 和 `shadow` 都有，默认 75，用户 2026-11-08 决定；0 为录包原样）：发布的 `/scan` 时间戳比雷达帧早 MS 毫秒，AMCL、代价地图和碰撞监控就在扫描实际采集的时刻取里程计。录包检验按运行记录的值在 stamp − MS 处找对应的冻结帧；`run_config.json` 和输入状态里记录所用的值。
+- `--lidar-time-offset-ms MS`（`inputs` 和 `shadow` 都有；0 为录包原样）：发布的 `/scan` 时间戳比雷达帧早 MS 毫秒，AMCL、代价地图和碰撞监控就在扫描实际采集的时刻取里程计。不给时取批准的值：冻结配置目录里的 `lidar_time_offset.json`，否则本检出的 `config/calibration/lidar_time_offset.json`（2026-11-08 用户批准 75 ms）；都没有就报错，要求显式给。录包检验按运行记录的值在 stamp − MS 处找对应的冻结帧；`run_config.json` 记下值和来源（文件路径和 sha256），输入状态里也有。
 - `--compare-cell`（只 `inputs`）：比对用的冻结前端，默认就是 `--cell`；`--cell` 给的是 `freeze-config` 冻结的当前配置时，用它指定同一录包的前端。
 - 经转发时（`--relay-test` 或车上），扫描和里程计进程订阅改名后的 `/wc_live/relayed/...`。
 - 输出在 `reports/navigation_live_shadow/<时间>_inputs_<编号>/`：`scans.csv`（含 161 格距离）、`odom.csv`、`events.jsonl`、各进程日志和 `result.json`。`result.json` 的 `comparison` 给出与冻结前端逐帧的扫描比较（匹配帧、完全相同的帧、不同的格数）和里程计比较（第一帧对齐后的位置与航向差）。
@@ -75,7 +78,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source bag \
   --cell $CELL --hardware-setup <同上> --gyro-bias <同上> \
   --bag $R/data/experiments/ZL21107corridor_nav_2026_1107_155149/bag \
-  --map $R/reports/navigation_replay_mapping/20261107T111004Z_3f0ae14a/odom_grid/map_nav.yaml \
+  --map $R/reports/navigation_replay_mapping/20261108T051511Z_fe74c4f4/odom_grid/map_nav.yaml \
   --initial-pose -0.331 1.902 -85.0 \
   --goals-along-cell $CELL --map-alignment-json <对齐结果> \
   --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107
@@ -96,7 +99,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow freeze-config --c
 ```
 
 - 在子进程里用 `wc_runtime.mapping_controller.configuration()` 解析面板当前的实时配置（`--config` 默认 `config/mapping_live.json`），只读文件，不连设备、不起 ROS。
-- 输出 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`、`hardware_setup.json`（有零偏配置时还有零偏和依据文件）、`frozen_configuration.json`（每个文件的 sha256 和核对结果）。
+- 输出 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`、`hardware_setup.json`（有零偏配置时还有零偏和依据文件）、`lidar_time_offset.json`（那个检出的批准时间偏移）、`frozen_configuration.json`（每个文件的 sha256 和核对结果）。
 - 看核对结果：`hardware_setup_from_local_override` 必须是 true；轮参数是设备当前值；`confirmed_gyro_bias_configured` 为 false 时，影子命令必须用 `--gyro-bias` 显式给零偏；`against_reference_cell` 里外参、杆臂、主机滤波和设备编号应与最近的前端一致。
 - 影子命令用冻结目录作 `--cell`，其中的 `hardware_setup.json` 作 `--hardware-setup`（命令行打印的 `use` 一行）。
 

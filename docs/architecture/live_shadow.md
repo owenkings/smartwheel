@@ -116,7 +116,7 @@ A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU �
 用户 2026-11-08 决定：实时链路默认补偿 75 ms，离线回放和评估工具默认仍是 0，需要时显式给。按 75 ms 重建的正式地图上做定位和评估时也用 75 ms。这个值按 IMU 到达时间估计，以后实时 IMU 改成设备时间要重估。
 
 - AMCL 回放：`navigation_amcl_replay cross --lidar-time-offset-ms MS`（默认 0）。扫描时间戳不变，每帧扫描配 stamp − MS 处的冻结里程计（前端相邻帧位姿间线性插值，和 A 的建图核对相同），等价于扫描提前 MS 打时间戳。MS = 0 时与以前的运行逐帧相同。
-- 实时链路：`navigation_live_shadow inputs|shadow --lidar-time-offset-ms MS`（默认 75）。发布的 `/scan` 时间戳比雷达帧早 MS，AMCL、代价地图和碰撞监控在这个时刻从 TF（50 Hz 里程计）取位姿；`--lidar-time-offset-ms 0` 回到录包原样。录包检验按运行记录的偏移找对应的冻结帧（`reports/navigation_live_shadow/20261107T161030Z_inputs_1f0e3e21`，75 ms：484/484 帧逐格相同，里程计与不加偏移时相同）。
+- 实时链路：`navigation_live_shadow inputs|shadow --lidar-time-offset-ms MS`。不给时取批准的值：`--cell` 是冻结的当前配置时用其中的 `lidar_time_offset.json`，否则用本检出的 `config/calibration/lidar_time_offset.json`（A 的正式参数文件，75 ms）；两处都没有就要求显式给，不另写常数。`run_config.json` 记下值和来源文件的 sha256。发布的 `/scan` 时间戳比雷达帧早 MS，AMCL、代价地图和碰撞监控在这个时刻从 TF（50 Hz 里程计）取位姿；`--lidar-time-offset-ms 0` 回到录包原样。录包检验按运行记录的偏移找对应的冻结帧（`reports/navigation_live_shadow/20261107T161030Z_inputs_1f0e3e21`，75 ms：484/484 帧逐格相同，里程计与不加偏移时相同）。
 
 回放对比在 `R/reports/navigation_amcl_cross/20261107T160057Z_lidar_time_offset_ZL1107/`（README 有完整表格）。验证包 + ZL1107 地图，AMCL 框架参数；中段 409 帧按录包原样的里程计分成转弯 73 帧（|角速度| ≥ 0.3 rad/s）、直行 249 帧和其他，各偏移比同一批帧。回放是确定的（同样输入两次结果逐字节相同），所以用 10 个起点微扰（±5 cm、±1°）当作 10 次 AMCL 实现；括号里是 10 次中比 0 ms 好的次数。
 
@@ -136,6 +136,8 @@ A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU �
 - 闸门不可信时长没有一致的变化；20 个扰动起点 0 ms 收敛 19 个、75 ms 收敛 20 个；终点门内（地图空白）在全部运行里都被协方差条件拦住。
 
 以上只用了一段 2 分钟录包和一张地图；回放里的里程计在 0.2–0.3 s 间隔的前端位姿之间插值，转弯起止处有插值误差。
+
+A 的正式走廊地图 fe74c4f4（建图包 33.0–262.6 s、75 ms）上用 75 ms 重跑了关键对比（`R/reports/navigation_amcl_cross/20261108T060300Z_official_map_fe74c4f4_75ms/`，README 有表格）。和旧图配 0 ms 比，10 个种子成对：直行帧端点距离中位 0.074 → 0.068 m（10/10），转弯帧 0.091 → 0.086 m（8/10），中段 2 s 航向修正变化中位 1.75° → 1.50°（10/10），闸门不可信的中段帧 29 → 18（6/10）；20 个扰动起点 20/20 收敛；终点门内仍全部被拦。中段端点距离 p90 从 0.197 升到 0.211 m，来自出发后的头 20 s：正式地图去掉了首尾静止段，起点附近只在静止时看到的东西少了。
 
 ## 闸门：停车等待时请 AMCL 原地更新（2026-11-08）
 
@@ -191,8 +193,8 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
 ## 上车配置（freeze-config）
 
-`navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`。
+`navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照、那个检出的 `config/calibration/lidar_time_offset.json` 副本，和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`，时间偏移也取其中的副本。
 
-核对项：`hardware_setup` 是否来自本机覆盖（否则会悄悄退回仓库基础值，例如轮半径 0.185 m）、轮参数、实时配置里有没有确认过的零偏、和给出的最近前端比外参、主机滤波和设备编号。2026-11-08 对主检出的一次冻结（`reports/navigation_live_shadow/20261108T053419Z_config_31995662`）：硬件配置来自 `config/local/project/hardware_setup.json`，轮参数 0.1646/0.599；`mapping_live.json` 没有配零偏，所以上车时 `--gyro-bias` 必须显式给（现场开头静止做一次 10+10+10，或先用 ZL1107 的零偏文件）；外参、杆臂、主机滤波和设备编号与验证包前端完全相同。先验和前端的差别只在离线字段（离线时间模型、bootstrap 记录、offline_experiment）和实时选项的显式默认值。
+核对项：`hardware_setup` 是否来自本机覆盖（否则会悄悄退回仓库基础值，例如轮半径 0.185 m）、轮参数、实时配置里有没有确认过的零偏、和给出的最近前端比外参、主机滤波和设备编号。2026-11-08 对主检出的一次冻结（`reports/navigation_live_shadow/20261108T053419Z_config_31995662`）：硬件配置来自 `config/local/project/hardware_setup.json`，轮参数 0.1646/0.599；`mapping_live.json` 没有配零偏，所以上车时 `--gyro-bias` 必须显式给（现场开头静止做一次 10+10+10，或先用 ZL1107 的零偏文件）；外参、杆臂、主机滤波和设备编号与验证包前端完全相同。先验和前端的差别只在离线字段（离线时间模型、bootstrap 记录、offline_experiment）和实时选项的显式默认值。带上时间偏移副本的一次冻结（`20261108T055023Z_config_0ec08885`，75 ms）作 `--cell` 跑验证包录包检验（`20261108T055103Z_inputs_ac76574c`）：偏移取自副本，484/484 帧扫描逐格相同，里程计与用前端配置时完全相同。
 
 返回[系统设计](README.md)。

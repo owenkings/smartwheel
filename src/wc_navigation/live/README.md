@@ -7,7 +7,7 @@
 | [amcl_cross.py](amcl_cross.py) | 跨录包定位检查：验证录包的冻结扫描和里程计，在另一段建图录包的地图上跑 map_server + AMCL（隔离域 95，经 `amcl_replay`）。初值来自两段里程计坐标系的刚体对齐和刻意扰动；与固定对齐（纯里程计）比较扫描端点到地图的距离，统计协方差、收敛与失败、沿车头方向的歧义，以及闸门条件在真实 AMCL 输出上的表现。起点和终点在地图空白区（门内）的帧单独统计，中段帧再按转弯、直行、静止分开；`--lidar-time-offset-ms`（默认 0）把每帧扫描配到 stamp − 偏移处的里程计，用来比较雷达时间偏移。 |
 | [config.py](config.py) | 实时链路配置：外参、主机滤波、运动先验和设备编号取自冻结前端，轮参数和陀螺零偏由显式标定文件替换，IMU 用到达时间。 |
 | [scan_adapter.py](scan_adapter.py)、[odometry_adapter.py](odometry_adapter.py) | 左雷达 host_filtered 帧经生产主机滤波、旋到 `mapping_reference` 后按离线 `build_scan` 投影成 161 格扫描；轮速记录和 H30 帧经原样使用的 `MotionPrior` 得到车轴里程计。 |
-| [inputs_node.py](inputs_node.py) | 扫描进程（`/scan`）和里程计进程（`/odom`、`odom→base_link`、静态 `base_link→laser`），状态在 `/wc_live/inputs_status/<role>`。雷达时间偏移（实时默认 75 ms）让 `/scan` 比雷达帧早打时间戳。 |
+| [inputs_node.py](inputs_node.py) | 扫描进程（`/scan`）和里程计进程（`/odom`、`odom→base_link`、静态 `base_link→laser`），状态在 `/wc_live/inputs_status/<role>`。雷达时间偏移（默认取 `config/calibration/lidar_time_offset.json` 的批准值，现为 75 ms）让 `/scan` 比雷达帧早打时间戳。 |
 | [relay_node.py](relay_node.py) | 三个传感器话题从传感器域到影子隔离域的单向原样转发（best effort、volatile、keep last；车上等面板自己的订阅者到齐才订阅；影子域里改名为 `/wc_live/relayed/...`）；转发非仿真域需要用户当次同意。 |
 | [current_config.py](current_config.py) | `freeze-config`：用 `wc_runtime.mapping_controller.configuration()` 解析面板当前的实时配置（只读文件），按前端目录格式冻结并记 sha256，和最近的前端核对；上车时作 `--cell`。 |
 | [recorder_node.py](recorder_node.py)、[goals_node.py](goals_node.py) | 记录器（四级指令、实际运动、定位、规划、状态，逐行落盘）和操作员目标序列。 |
