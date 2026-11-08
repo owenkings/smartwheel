@@ -4,7 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from wc_navigation.perception.tracks import SCHEMA, StaticMap, Tracker, TrackerConfig, clusters
+from wc_navigation.perception.tracks import (ENTRY_KEYS, SCHEMA, StaticMap, Tracker, TrackerConfig, check_message,
+                                             clusters, track_entry, tracks_message)
 
 
 def cylinder(x, y, r=0.2, h0=0.05, h1=1.6, step=0.05):
@@ -26,7 +27,8 @@ def wall_map(wall_y=1.0, size=12.0, resolution=0.05):
 
 
 def test_clusters_split_objects_and_drop_small_or_out_of_band_points():
-    pts = np.vstack([cylinder(0.0, 0.0), cylinder(2.0, 0.0), [[5.0, 5.0, 0.5]] * 3, cylinder(-2.0, 0.0, h0=1.9, h1=2.2)])
+    pts = np.vstack([cylinder(0.0, 0.0), cylinder(2.0, 0.0), [[5.0, 5.0, 0.5]] * 3,
+                     cylinder(-2.0, 0.0, h0=1.9, h1=2.2)])
     found = clusters(pts)
     centres = sorted(round(float(c["xy"][0]), 1) for c in found)
     assert centres == [0.0, 2.0]
@@ -44,6 +46,23 @@ def test_a_walking_person_becomes_one_moving_track_with_its_velocity():
     assert track["class"] == "moving" and track["state"] == "confirmed" and track["has_moved"]
     assert track["vx"] == pytest.approx(-1.0, abs=0.15) and track["vy"] == pytest.approx(0.3, abs=0.15)
     assert track["id"] == 1                               # no identity switch
+
+
+def test_objects_riding_along_with_the_chair_or_sliding_along_a_wall_are_not_moving():
+    walls = wall_map(wall_y=1.0)
+    plain, informed = Tracker(), Tracker()
+    walled = Tracker(static_map=walls)
+    for k in range(15):
+        t = 0.2 * k
+        # something on the floor that stays 2 m ahead of the chair driving 0.6 m/s along +x
+        rider = cylinder(2.0 + 0.6 * t, -2.0)
+        plain.update(t, rider)
+        informed.update(t, rider, chair_velocity=(0.6, 0.0))
+        # the visible part of an unmapped skirting board sliding along the wall's edge
+        walled.update(t, cylinder(0.6 * t, 0.85, r=0.15, h1=0.4), chair_velocity=(0.0, 0.0))
+    assert plain.current(2.8)[0]["class"] == "moving"
+    assert informed.current(2.8)[0]["class"] != "moving"
+    assert walled.current(2.8)[0]["class"] != "moving"
 
 
 def test_static_unmapped_objects_and_floating_artefacts_never_move():
@@ -84,21 +103,74 @@ def test_walls_and_door_frames_in_the_map_make_no_tracks_and_a_door_leaf_stays_s
 
 def test_track_states_and_message():
     tracker = Tracker()
-    tracker.update(0.0, cylinder(1.0, 0.0))
+    tracker.update(0.0, cylinder(1.0, 0.0), source="left")
     assert tracker.current(0.0) == []                     # tentative tracks are not reported
     for k in range(1, 4):
-        tracker.update(0.2 * k, cylinder(1.0, 0.0))
+        tracker.update(0.2 * k, cylinder(1.0, 0.0), source=("left", "right"))
     message = tracker.message(0.6)
-    assert message["schema"] == SCHEMA and message["frame"] == "odom" and len(message["tracks"]) == 1
-    keys = {"id", "x", "y", "vx", "vy", "speed", "speed_std", "radius_m", "height_m", "points", "age_s", "seen_by",
-            "state", "class", "wall_gap_m", "has_moved"}
-    assert set(message["tracks"][0]) == keys
+    assert message["schema"] == SCHEMA and message["frame"] == "odom" and message["source"] == "perception"
+    assert message["stamp"] == 0.6 and len(message["tracks"]) == 1
+    track = message["tracks"][0]
+    assert set(track) == set(ENTRY_KEYS) and track["seen_by"] == ["left", "right"]
+    assert track["last_seen_s"] == 0.0 and track["vx_std"] > 0 and track["vy_std"] > 0
+    assert track["speed_std"] == pytest.approx(math.hypot(track["vx_std"], track["vy_std"]), abs=0.002)
+    assert check_message(message) is message
     tracker.update(1.8, np.zeros((0, 3)))
     assert tracker.current(1.8)[0]["state"] == "lost"
     tracker.update(3.0, np.zeros((0, 3)))
     assert tracker.current(3.0) == []
     with pytest.raises(ValueError):
         tracker.update(2.0, np.zeros((0, 3)))
+
+
+def test_tentative_tracks_are_never_published_not_even_when_lost():
+    tracker = Tracker()
+    tracker.update(0.0, cylinder(1.0, 0.0))
+    tracker.update(0.2, cylinder(1.0, 0.0))               # two hits: still tentative
+    for t in (1.4, 1.8):
+        assert tracker.update(t, np.zeros((0, 3))) == []
+
+
+def test_a_lost_walker_keeps_its_class_and_last_velocity_until_dropped():
+    tracker = Tracker()
+    for k in range(15):                                  # 1.0 m/s along +x, then the walker leaves the view
+        tracker.update(0.2 * k, cylinder(1.0 + 0.2 * k, 0.0))
+    seen = tracker.current(2.8)[0]
+    assert seen["class"] == "moving" and seen["state"] == "confirmed"
+    tracker.update(3.0, np.zeros((0, 3)))
+    still = tracker.current(3.0)[0]
+    assert still["state"] == "confirmed" and still["last_seen_s"] == pytest.approx(0.2)
+    tracker.update(4.0, np.zeros((0, 3)))
+    lost = tracker.current(4.0)[0]
+    assert lost["state"] == "lost" and lost["class"] == "moving" and lost["has_moved"]
+    assert lost["last_seen_s"] == pytest.approx(1.2) and lost["age_s"] == pytest.approx(4.0)
+    assert (lost["vx"], lost["vy"]) == (seen["vx"], seen["vy"])          # constant-velocity extrapolation
+    assert lost["x"] - lost["vx"] * lost["last_seen_s"] == pytest.approx(seen["x"], abs=0.01)
+    assert lost["vx_std"] > seen["vx_std"] and lost["speed_std"] > seen["speed_std"]
+    tracker.update(4.9, np.zeros((0, 3)))
+    assert tracker.current(4.9) == []                     # dropped 2 s after the last match
+
+
+def test_the_message_builder_serves_truth_tracks_and_the_check_rejects_broken_messages():
+    truth = track_entry(1, 2.0, -0.5, -1.0, 0.0, 0.05, 0.05, 0.25, "moving", age_s=3.0, seen_by=["truth"])
+    assert set(truth) == set(ENTRY_KEYS) and truth["height_m"] is None and truth["points"] == 0
+    assert truth["has_moved"] and truth["speed"] == 1.0 and truth["speed_std"] == pytest.approx(0.071, abs=0.001)
+    message = tracks_message(12.3456, [truth], source="truth")
+    assert message["stamp"] == 12.346 and check_message(message) is message
+    extra = dict(truth, label="walker")                   # unknown keys are ignored by consumers
+    check_message(tracks_message(1.0, [extra], source="truth"))
+    broken = [dict(truth, **{"class": "person"}), dict(truth, state="tentative"), dict(truth, vx=float("nan")),
+              dict(truth, vx_std=-0.1), dict(truth, speed=3.0), dict(truth, last_seen_s=5.0),
+              dict(truth, height_m=[1.0]), dict(truth, id=0), {k: v for k, v in truth.items() if k != "vy_std"}]
+    for entry in broken:
+        with pytest.raises(ValueError):
+            check_message({"schema": SCHEMA, "stamp": 1.0, "frame": "odom", "source": "truth", "tracks": [entry]})
+    with pytest.raises(ValueError):
+        tracks_message(1.0, [truth, truth])               # duplicate ids
+    for bad in ({"schema": "other"}, {"schema": SCHEMA, "stamp": 1.0, "frame": "odom", "source": "x", "tracks": []},
+                {"schema": SCHEMA, "stamp": None, "frame": "odom", "source": "truth", "tracks": []}):
+        with pytest.raises(ValueError):
+            check_message(bad)
 
 
 @pytest.mark.parametrize("bad", [{"cell_m": 0.0}, {"lost_after_s": 3.0}, {"min_height_m": 2.0},

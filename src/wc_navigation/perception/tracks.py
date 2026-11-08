@@ -12,9 +12,13 @@ and tracks the clusters with a constant-velocity Kalman filter (nearest-neighbou
 
 Classes (a hint for the reaction, not the reaction itself):
 
-- ``moving``: confirmed, seen standing on the floor at least once (points below ``person_ground_m``),
-  and over the last ``moving_window_s`` both its filtered speed is above ``moving_speed_mps`` and it
-  moved more than ``moving_displacement_m``.
+- ``moving``: in ``moving_confirm_updates`` consecutive updates the track was confirmed, had been seen
+  standing on the floor (points below ``person_ground_m``), moved more than ``moving_displacement_m``
+  over the last ``moving_window_s`` with a filtered speed above ``moving_speed_mps``, was at most
+  ``moving_max_radius_m`` across and not elongated, kept ``moving_min_wall_gap_m`` from the map's walls,
+  and - when the chair's velocity is given - did not just ride along with the chair (relative speed of
+  at least ``ego_margin_mps``). Without these checks the visible part of a long or wall-side object
+  slides along with the chair's view and looks like it walks (ZL1107 mapping recording).
 - ``person_candidate``: not moving, but shaped like a standing person: ``person_diameter_m`` across,
   top at least ``person_top_m`` above the floor, points below ``person_ground_m`` (stands on the floor),
   at least ``person_wall_gap_m`` from the map's walls, and not elongated.
@@ -26,7 +30,16 @@ and is elongated, so it stays ``static_unknown``. A person standing still agains
 lidars report at the same place has no points near the floor, so it is neither a ``person_candidate``
 nor ``moving``, even when it moves along with the chair.
 
-``Tracker.message(t)`` gives the ``/obstacles/tracks`` JSON (schema ``wc_obstacle_tracks/1``).
+A track that is not matched any more is ``lost`` after ``lost_after_s`` and published until it is dropped
+after ``drop_after_s``: it keeps the class and the velocity of its last match, its position is extrapolated
+with that velocity (``x - vx * last_seen_s`` is the last measured position) and its standard deviations
+grow. Tentative tracks are never published, not even when they get lost.
+
+``Tracker.message(t)`` gives the ``/obstacles/tracks`` JSON (schema ``wc_obstacle_tracks/1``, layout in
+``tracks_message``). ``t`` is the measurement time of the points: the lidar frame's header stamp minus the
+lidar time offset (live: ``config/calibration/lidar_time_offset.json``; offline: ``--lidar-time-offset-ms``).
+``track_entry`` and ``tracks_message`` build the same message for other producers (window B's simulated
+truth tracks); ``check_message`` is the consumer's check.
 """
 from __future__ import annotations
 
@@ -37,6 +50,111 @@ import numpy as np
 
 SCHEMA = "wc_obstacle_tracks/1"
 CLASSES = ("moving", "person_candidate", "static_unknown")
+STATES = ("confirmed", "lost")
+SOURCES = ("perception", "truth")
+# keys every track of a message has; consumers ignore keys they do not know
+ENTRY_KEYS = ("id", "x", "y", "vx", "vy", "vx_std", "vy_std", "speed", "speed_std", "radius_m", "height_m",
+              "points", "age_s", "last_seen_s", "seen_by", "state", "class", "wall_gap_m", "elongation",
+              "has_moved")
+
+
+def _number(value, name, low=None):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError("track %s must be a finite number" % name)
+    if low is not None and float(value) < low:
+        raise ValueError("track %s must be at least %g" % (name, low))
+    return float(value)
+
+
+def track_entry(track_id, x, y, vx, vy, vx_std, vy_std, radius_m, cls, state="confirmed", *, age_s=0.0,
+                last_seen_s=0.0, height_m=None, points=0, seen_by=(), wall_gap_m=None, elongation=None,
+                has_moved=None):
+    """One track of the ``/obstacles/tracks`` message, checked and rounded.
+
+    Odom frame, metres, m/s, seconds. ``vx_std``/``vy_std``: standard deviations of the velocity along the
+    odom axes; ``speed_std`` is their root sum of squares. ``height_m`` ([low, top] above the floor),
+    ``wall_gap_m`` (clearance to the map's walls) and ``elongation`` (plan-view axis ratio) are None when the
+    producer does not know them (simulated truth); ``points`` is 0 then. ``has_moved`` defaults to
+    ``cls == "moving"``.
+    """
+    if isinstance(track_id, bool) or not isinstance(track_id, (int, np.integer)) or int(track_id) < 1:
+        raise ValueError("track id must be a positive integer")
+    if cls not in CLASSES:
+        raise ValueError("track class must be one of " + ", ".join(CLASSES))
+    if state not in STATES:
+        raise ValueError("track state must be one of " + ", ".join(STATES))
+    x, y, vx, vy = (_number(v, n) for v, n in ((x, "x"), (y, "y"), (vx, "vx"), (vy, "vy")))
+    vx_std, vy_std = _number(vx_std, "vx_std", 0.0), _number(vy_std, "vy_std", 0.0)
+    radius_m = _number(radius_m, "radius_m", 0.0)
+    age_s, last_seen_s = _number(age_s, "age_s", 0.0), _number(last_seen_s, "last_seen_s", 0.0)
+    if last_seen_s > age_s + 1e-6:
+        raise ValueError("track last_seen_s must not exceed age_s")
+    if height_m is not None:
+        low, top = (_number(v, "height_m") for v in height_m)
+        if low > top:
+            raise ValueError("track height_m must be [low, top]")
+        height_m = [round(low, 3), round(top, 3)]
+    if isinstance(points, bool) or not isinstance(points, (int, np.integer)) or int(points) < 0:
+        raise ValueError("track points must be a non-negative integer")
+    seen_by = sorted({str(s) for s in seen_by})
+    return {"id": int(track_id), "x": round(x, 3), "y": round(y, 3), "vx": round(vx, 3), "vy": round(vy, 3),
+            "vx_std": round(vx_std, 3), "vy_std": round(vy_std, 3), "speed": round(math.hypot(vx, vy), 3),
+            "speed_std": round(math.hypot(vx_std, vy_std), 3), "radius_m": round(radius_m, 3),
+            "height_m": height_m, "points": int(points), "age_s": round(age_s, 2),
+            "last_seen_s": round(last_seen_s, 2), "seen_by": seen_by, "state": state, "class": cls,
+            "wall_gap_m": None if wall_gap_m is None else round(_number(wall_gap_m, "wall_gap_m"), 3),
+            "elongation": None if elongation is None else round(_number(elongation, "elongation", 0.0), 2),
+            "has_moved": bool(cls == "moving" if has_moved is None else has_moved)}
+
+
+def tracks_message(stamp, entries, frame="odom", source="perception"):
+    """The ``/obstacles/tracks`` message (std_msgs/String JSON)::
+
+        {"schema": "wc_obstacle_tracks/1", "stamp": <measurement time, s>, "frame": "odom",
+         "source": "perception" | "truth", "tracks": [track_entry(...), ...]}
+
+    ``stamp`` is the time the points were measured (lidar header stamp minus the lidar time offset),
+    in the producer's clock (ROS time live and in simulation, recording seconds offline).
+    """
+    return check_message({"schema": SCHEMA, "stamp": round(float(stamp), 3), "frame": frame, "source": source,
+                          "tracks": list(entries)})
+
+
+def check_message(message):
+    """The message itself when it follows ``wc_obstacle_tracks/1``; ValueError naming the first problem."""
+    if not isinstance(message, dict) or message.get("schema") != SCHEMA:
+        raise ValueError("not a %s message" % SCHEMA)
+    _number(message.get("stamp"), "message stamp")
+    if not isinstance(message.get("frame"), str) or not message["frame"]:
+        raise ValueError("message frame must be a frame id")
+    if message.get("source") not in SOURCES:
+        raise ValueError("message source must be one of " + ", ".join(SOURCES))
+    tracks = message.get("tracks")
+    if not isinstance(tracks, list):
+        raise ValueError("message tracks must be a list")
+    ids = set()
+    for entry in tracks:
+        if not isinstance(entry, dict):
+            raise ValueError("each track must be an object")
+        missing = [k for k in ENTRY_KEYS if k not in entry]
+        if missing:
+            raise ValueError("track lacks " + ", ".join(missing))
+        if not isinstance(entry["seen_by"], list) or not isinstance(entry["has_moved"], bool):
+            raise ValueError("track seen_by must be a list and has_moved a boolean")
+        if entry["height_m"] is not None and (not isinstance(entry["height_m"], list) or len(entry["height_m"]) != 2):
+            raise ValueError("track height_m must be [low, top] or null")
+        rebuilt = track_entry(entry["id"], entry["x"], entry["y"], entry["vx"], entry["vy"], entry["vx_std"],
+                              entry["vy_std"], entry["radius_m"], entry["class"], entry["state"],
+                              age_s=entry["age_s"], last_seen_s=entry["last_seen_s"], height_m=entry["height_m"],
+                              points=entry["points"], seen_by=entry["seen_by"], wall_gap_m=entry["wall_gap_m"],
+                              elongation=entry["elongation"], has_moved=entry["has_moved"])
+        for key in ("speed", "speed_std"):
+            if abs(_number(entry[key], key) - rebuilt[key]) > 0.002:
+                raise ValueError("track %s does not match its components" % key)
+        if entry["id"] in ids:
+            raise ValueError("track ids must be unique within a message")
+        ids.add(entry["id"])
+    return message
 
 
 @dataclass(frozen=True)
@@ -53,6 +171,11 @@ class TrackerConfig:
     moving_speed_mps: float = 0.25
     moving_displacement_m: float = 0.30
     moving_window_s: float = 1.0
+    moving_confirm_updates: int = 3
+    moving_max_radius_m: float = 0.50
+    moving_min_wall_gap_m: float = 0.10
+    ego_margin_mps: float = 0.50
+    chair_moving_mps: float = 0.20
     accel_noise_mps2: float = 1.5
     measurement_noise_m: float = 0.05
     person_min_diameter_m: float = 0.20
@@ -60,7 +183,8 @@ class TrackerConfig:
     person_top_m: float = 1.00
     person_ground_m: float = 0.30
     person_wall_gap_m: float = 0.15
-    elongated_ratio: float = 3.0
+    # the visible front arc of a person is about 3:1 in plan view; a door leaf or a board along a wall 10:1 and more
+    elongated_ratio: float = 5.0
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
@@ -71,8 +195,9 @@ class TrackerConfig:
             raise ValueError("height window and person diameters must be increasing")
         if self.lost_after_s >= self.drop_after_s:
             raise ValueError("lost_after_s must be shorter than drop_after_s")
-        if int(self.confirm_hits) != self.confirm_hits or int(self.min_points) != self.min_points:
-            raise ValueError("confirm_hits and min_points must be integers")
+        for name in ("confirm_hits", "min_points", "moving_confirm_updates"):
+            if int(getattr(self, name)) != getattr(self, name):
+                raise ValueError(name + " must be an integer")
 
     def as_dict(self):
         return asdict(self)
@@ -154,6 +279,8 @@ class Track:
         self.sources = set()
         # seen standing on the floor at least once (a walking person's legs leave the view near the chair)
         self.grounded = cluster["height_m"][0] <= cfg.person_ground_m
+        self.moving_streak = 0                    # consecutive updates with evidence of its own motion
+        self.cls = "static_unknown"               # class at the last match; a lost track keeps it
 
     def predict(self, t):
         dt = float(t) - self.t
@@ -190,9 +317,9 @@ class Track:
         return float(math.hypot(self.x[2], self.x[3]))
 
     def state(self, t):
-        if t - self.last_t > self.cfg.lost_after_s:
-            return "lost"
-        return "confirmed" if self.hits >= self.cfg.confirm_hits else "tentative"
+        if self.hits < self.cfg.confirm_hits:
+            return "tentative"                    # also when unseen: never published
+        return "lost" if t - self.last_t > self.cfg.lost_after_s else "confirmed"
 
     def is_moving(self, t):
         if self.state(t) != "confirmed" or len(self.history) < 2 or not self.grounded:
@@ -230,12 +357,17 @@ class Tracker:
             return p
         return p[self.map.distance(self._to_map(p[:, :2])) > self.cfg.map_clearance_m]
 
-    def update(self, t, points, source="left"):
-        """One frame of (x, y, h) obstacle points in odom at time ``t``; returns the current tracks."""
+    def update(self, t, points, source="left", chair_velocity=None):
+        """One frame of (x, y, h) obstacle points in odom measured at ``t``; returns the current tracks.
+
+        ``source``: the lidar side(s) the points come from (a name or a sequence of names).
+        ``chair_velocity`` (vx, vy in odom), when known, rejects tracks that only ride along with the chair.
+        """
         t = float(t)
         if self.t is not None and t < self.t - 1e-9:
             raise ValueError("tracker updates must not go back in time")
         self.t = t
+        sources = {source} if isinstance(source, str) else set(source)
         found = clusters(self.candidate_points(points), self.cfg)
         for track in self.tracks:
             track.predict(t)
@@ -252,30 +384,52 @@ class Tracker:
             if i in used_tracks or j in used_clusters:
                 continue
             self.tracks[i].update(t, found[j])
-            self.tracks[i].sources.add(source)
+            self.tracks[i].sources.update(sources)
             used_tracks.add(i)
             used_clusters.add(j)
         for j, c in enumerate(found):
             if j not in used_clusters:
                 track = Track(self.next_id, t, c, self.cfg)
-                track.sources.add(source)
+                track.sources.update(sources)
                 self.tracks.append(track)
                 self.next_id += 1
         self.tracks = [tr for tr in self.tracks if t - tr.last_t <= self.cfg.drop_after_s]
         for tr in self.tracks:
-            if tr.is_moving(t):
+            if tr.last_t == t:                    # judged only when it was seen in this update
+                tr.moving_streak = tr.moving_streak + 1 if self._moves(tr, t, chair_velocity) else 0
+                tr.cls = self.classify(tr)
+            if tr.moving_streak >= self.cfg.moving_confirm_updates:
                 self.ever_moving.add(tr.id)
         return self.current(t)
 
-    def classify(self, track, t):
-        if track.is_moving(t):
+    def wall_gap(self, track):
+        if self.map is None:
+            return None
+        return float(self.map.distance(self._to_map(np.asarray(track.x[:2])[None, :]))[0]) - track.shape["radius_m"]
+
+    def _moves(self, track, t, chair_velocity):
+        """This update's evidence that ``track`` moves by itself (not a view effect of the chair's motion)."""
+        if not track.is_moving(t) or track.shape["radius_m"] > self.cfg.moving_max_radius_m:
+            return False
+        if track.shape["elongation"] >= self.cfg.elongated_ratio:
+            return False                          # the visible part of a long object slides along with the view
+        gap = self.wall_gap(track)
+        if gap is not None and gap < self.cfg.moving_min_wall_gap_m:
+            return False                          # clusters on the walls' edges slide the same way
+        if chair_velocity is not None and math.hypot(*chair_velocity) > self.cfg.chair_moving_mps:
+            relative = math.hypot(track.x[2] - chair_velocity[0], track.x[3] - chair_velocity[1])
+            if relative < self.cfg.ego_margin_mps:
+                return False                      # rides along with the chair: artefact or view effect
+        return True
+
+    def classify(self, track):
+        """Class of ``track`` from its latest match (``Track.cls`` keeps it while the track is lost)."""
+        if track.moving_streak >= self.cfg.moving_confirm_updates:
             return "moving"
         shape = track.shape
         diameter = 2.0 * shape["radius_m"]
         low, top = shape["height_m"]
-        gap = None
-        if self.map is not None:
-            gap = float(self.map.distance(self._to_map(np.asarray(track.x[:2])[None, :]))[0]) - shape["radius_m"]
+        gap = self.wall_gap(track)
         person = (self.cfg.person_min_diameter_m <= diameter <= self.cfg.person_max_diameter_m
                   and top >= self.cfg.person_top_m and low <= self.cfg.person_ground_m
                   and shape["elongation"] < self.cfg.elongated_ratio
@@ -283,24 +437,21 @@ class Tracker:
         return "person_candidate" if person else "static_unknown"
 
     def current(self, t):
+        """Published tracks (``track_entry`` dicts) as of the update at ``t``; tentative ones are left out."""
         out = []
         for tr in self.tracks:
             state = tr.state(t)
             if state == "tentative":
                 continue
-            gap = None
-            if self.map is not None:
-                gap = round(float(self.map.distance(self._to_map(tr.x[None, :2]))[0]) - tr.shape["radius_m"], 3)
-            speed_var = float(tr.P[2, 2] + tr.P[3, 3])
-            out.append({"id": tr.id, "x": round(float(tr.x[0]), 3), "y": round(float(tr.x[1]), 3),
-                        "vx": round(float(tr.x[2]), 3), "vy": round(float(tr.x[3]), 3),
-                        "speed": round(tr.speed(), 3), "speed_std": round(math.sqrt(max(speed_var, 0.0)), 3),
-                        "radius_m": round(float(tr.shape["radius_m"]), 3),
-                        "height_m": [round(v, 3) for v in tr.shape["height_m"]], "points": tr.shape["points"],
-                        "age_s": round(t - tr.first_t, 2), "seen_by": sorted(tr.sources), "state": state,
-                        "class": self.classify(tr, t), "wall_gap_m": gap,
-                        "has_moved": tr.id in self.ever_moving})
+            out.append(track_entry(
+                tr.id, tr.x[0], tr.x[1], tr.x[2], tr.x[3], math.sqrt(max(float(tr.P[2, 2]), 0.0)),
+                math.sqrt(max(float(tr.P[3, 3]), 0.0)), tr.shape["radius_m"], tr.cls, state,
+                age_s=max(0.0, t - tr.first_t), last_seen_s=max(0.0, t - tr.last_t),
+                height_m=tr.shape["height_m"], points=tr.shape["points"], seen_by=tr.sources,
+                wall_gap_m=self.wall_gap(tr),
+                elongation=tr.shape["elongation"], has_moved=tr.id in self.ever_moving))
         return out
 
     def message(self, t, frame="odom"):
-        return {"schema": SCHEMA, "stamp": round(float(t), 3), "frame": frame, "tracks": self.current(float(t))}
+        """``tracks_message`` of the update at ``t`` (the points' measurement time)."""
+        return tracks_message(t, self.current(float(t)), frame=frame, source="perception")

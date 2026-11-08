@@ -4,6 +4,8 @@ Both lidars are filtered as in the shadow runs (``shadow_obstacles.prepare``: wi
 persistence check, optional lidar time offset). At every left frame the left points and the right
 lidar's nearest frame (within 0.15 s), each placed at its own recorded pose, go into one
 ``tracks.Tracker`` update in the recording's odometry frame; the map removes walls and mapped furniture.
+The messages in ``tracks.jsonl`` carry the measurement time (left frame stamp minus the lidar time offset),
+as the live ``/obstacles/tracks`` will.
 
 On the ZL1107 recordings nobody should walk in front of the chair, so every ``moving`` track is a false
 alarm or somebody who was there; the summary lists them with times, places and shapes, per segment
@@ -32,8 +34,10 @@ def _planar(T):
 
 
 def run(left_cell, right_cell=None, map_yaml=None, cfg=ObstacleFilter(), tracker_cfg=TrackerConfig(),
-        footprint=(), radius_m=None, window_s=None, lidar_time_offset_s=0.0, hashes=None, pair_s=0.15):
-    """(per-update messages, track summaries, meta)."""
+        footprint=(), radius_m=None, window_s=None, lidar_time_offset_s=0.0, hashes=None, pair_s=0.15,
+        odom_to_map=None):
+    """(per-update messages, track summaries, meta). ``odom_to_map``: map pose (x, y, yaw) of the recording's
+    odometry frame when the map comes from another recording (as ``--map-alignment-json`` in the shadow runs)."""
     hashes = {} if hashes is None else hashes
     left_cell, left_runtime, _ = frontend_frames.load_runtime(left_cell)
     frames = [{"stamp_ns": int(s), "points": p, "odometry_T": T}
@@ -48,7 +52,7 @@ def run(left_cell, right_cell=None, map_yaml=None, cfg=ObstacleFilter(), tracker
     path = shadow_obstacles._Path(stamps, [_planar(f["odometry_T"]) for f in frames], left_lever[:2])
     offset_ns = int(round(float(lidar_time_offset_s) * 1e9))
     static_map = StaticMap.from_yaml(map_yaml) if map_yaml else None
-    tracker = Tracker(tracker_cfg, static_map)
+    tracker = Tracker(tracker_cfg, static_map, odom_to_map)
     times = {s: shadow_obstacles.relative_times(rec, s) for s in shadow_obstacles.cloud_sides(rec)}
     stamps_of = {s: rec["obstacle_%s_stamps_ns" % s] for s in times}
     levers = {s: np.asarray(rec["obstacle_%s_lever" % s], dtype=float) for s in times}
@@ -71,8 +75,13 @@ def run(left_cell, right_cell=None, map_yaml=None, cfg=ObstacleFilter(), tracker
             if abs(times["right"][j] - t) <= pair_s:
                 points.append(world("right", j))
                 seen.append("right")
-        tracker.update(float(t), np.concatenate(points), source="+".join(seen))
-        message = tracker.message(float(t))
+        stamp = int(stamps_of["left"][k]) - offset_ns
+        before, after = path.at(stamp - 250_000_000), path.at(stamp + 250_000_000)
+        chair_velocity = ((after[0] - before[0]) / 0.5, (after[1] - before[1]) / 0.5)
+        # tracks are stamped with the measurement time: recording time of the left frame minus the offset
+        measured = float(t) - offset_ns * 1e-9
+        tracker.update(measured, np.concatenate(points), source=seen, chair_velocity=chair_velocity)
+        message = tracker.message(measured)
         messages.append(message)
         for tr in message["tracks"]:
             h = history.setdefault(tr["id"], {"id": tr["id"], "first_s": round(float(t) - tr["age_s"], 2),
@@ -124,7 +133,11 @@ def arguments(argv=None):
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--left-cell", type=Path, required=True)
     parser.add_argument("--right-cell", type=Path)
-    parser.add_argument("--map", type=Path, help="trinary map YAML in the recording's odometry frame")
+    parser.add_argument("--map", type=Path, help="trinary map YAML (in the recording's odometry frame unless "
+                                                  "--map-alignment-json places the recording in it)")
+    parser.add_argument("--map-alignment-json", type=Path,
+                        help="alignment check result with best_alignment (dx_m, dy_m, yaw_deg): the map pose of the "
+                             "recording's odometry frame, as in the shadow runs' fixed localization")
     parser.add_argument("--footprint", nargs="+", type=float, metavar="X Y")
     parser.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     parser.add_argument("--assumed-radius", type=float, default=0.55)
@@ -156,9 +169,16 @@ def main(argv=None):
     storage = StoragePolicy(args.project_root)
     storage.check()
     hashes = {}
+    alignment = None
+    if args.map_alignment_json is not None:
+        raw = args.map_alignment_json.read_bytes()
+        best = json.loads(raw)["best_alignment"]
+        alignment = {"x_m": float(best["dx_m"]), "y_m": float(best["dy_m"]), "yaw_deg": float(best["yaw_deg"]),
+                     "source": str(args.map_alignment_json), "sha256": hashlib.sha256(raw).hexdigest()}
+    odom_to_map = (alignment["x_m"], alignment["y_m"], math.radians(alignment["yaw_deg"])) if alignment else None
     messages, history, meta = run(args.left_cell, args.right_cell, args.map, args.filter, args.tracker,
                                   args.footprint or (), None if args.footprint else args.assumed_radius,
-                                  args.window, args.lidar_time_offset_ms * 1e-3, hashes)
+                                  args.window, args.lidar_time_offset_ms * 1e-3, hashes, odom_to_map=odom_to_map)
     segments = []
     if args.static_before is not None:
         segments.append(("start_static", -1e9, args.static_before))
@@ -178,8 +198,12 @@ def main(argv=None):
     result = {"schema_version": 1, "kind": "OBSTACLE_TRACKS_OFFLINE", "left_cell": str(args.left_cell),
               "right_cell": str(args.right_cell) if args.right_cell else None,
               "map_yaml": str(args.map) if args.map else None, "map_yaml_sha256": map_sha,
+              "map_alignment": alignment,
               "filter": args.filter.as_dict(), "tracker": args.tracker.as_dict(),
               "lidar_time_offset_ms": args.lidar_time_offset_ms, "window_s": args.window,
+              "stamp_basis": "tracks.jsonl stamps: seconds after the first left frame's header stamp, minus the "
+                             "lidar time offset (measurement time); windows, segments and the summary use the "
+                             "recording time without the offset",
               "segments": [[n, a, b] for n, a, b in segments],
               "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
               "meta": {k: v for k, v in meta.items() if k != "obstacle_settings"}, "summary": summary,
