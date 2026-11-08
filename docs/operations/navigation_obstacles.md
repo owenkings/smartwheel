@@ -53,6 +53,25 @@ nice -n 10 bash scripts/navigation_obstacle_eval \
 
 不启动 ROS 节点。对每帧过滤后的障碍点，检查它们是否落在车接下来 `--horizon`（默认 4 s）秒的录包路径扫过的外形里（外形内缩 3 cm）；静止障碍不可能在那里，所以这类点是伪点或走开的物体。同时对当前 /scan 做同样统计。车静止的帧没有未来路径可查，汇总里单独列在 `static` 下（建图包开头 0–33 s 和结尾 262.7–377.7 s 都是静止段）。`--lidar-time-offset-ms` 同上。输出在 `reports/navigation_obstacles/<时间>_<标签>_<编号>/`：`result.json`（汇总、参数、来源）、`frames.jsonl`（逐帧计数）、`swept_points.npz`（落进扫掠外形的点）。
 
+## 障碍航迹（离线）
+
+```bash
+nice -n 10 bash scripts/navigation_obstacle_tracks \
+  --left-cell <单左前端> --right-cell <单右前端> \
+  --map $R/reports/navigation_replay_mapping/20261108T051511Z_fe74c4f4/odom_grid/map_nav.yaml \
+  --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 \
+  --footprint-source MEASURED_20261107 --filter '{"persist_min_age_s": 0.6}' \
+  --lidar-time-offset-ms 75 --static-before 33.0 --static-after 262.65 --label ZL1107_map_tracks
+```
+
+不启动 ROS 节点。两台雷达按影子运行的方式过滤，每个左雷达帧配右雷达最近的一帧（0.15 s 内），各自按采集位姿投到 odom，做一次 `tracks.Tracker` 更新；地图去掉墙和地图里的家具。
+- 验证包用 `--map-alignment-json align_wheel.json` 把录包放进地图。
+- `--tracker '{...}'` 可以改 TrackerConfig 的字段。
+- 输出在 `reports/navigation_obstacles/<时间>_<标签>_<编号>/`：
+  - `result.json`：各类航迹的条数和秒数，以及所有 moving 航迹的时间、位置、速度和高度，按开头静止 / 行驶 / 结尾静止分段。
+  - `tracks.jsonl`：每次更新一条 `/obstacles/tracks` 消息，stamp 是测量时刻（录包时间减偏移）。
+- 没人走动的录包上，moving 航迹都是误报或当时在场的人，要对照录包看。
+
 ## 仿真里的移动行人
 
 闭环仿真（[自主导航操作说明](navigation_autonomy.md)）加 `--actors 场景.json`：
