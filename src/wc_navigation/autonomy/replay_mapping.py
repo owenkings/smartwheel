@@ -71,6 +71,42 @@ def planar(transform):
     return float(t[0, 3]), float(t[1, 3]), math.atan2(t[1, 0], t[0, 0])
 
 
+MAX_LIDAR_TIME_OFFSET_MS = 250.0
+LIDAR_TIME_OFFSET_METHOD = ("scan stamps as recorded; each scan is paired with the frozen odometry at stamp - offset "
+                            "(linear in x, y and unwrapped yaw between the per-frame poses; the first pose is held "
+                            "before the first stamp + offset); equivalent to stamping the scan earlier by the offset")
+
+
+def shifted_poses(stamps_ns, transforms, offset_ms):
+    """Planar odometry pose at ``stamp - offset_ms`` for every frame of a frozen frontend track.
+
+    The lidar stamps are late against the wheel/IMU odometry by the offset (positive = late). Same arithmetic
+    as the AMCL replay and live chain of window D (``live/amcl_cross.shifted_odometry`` followed by ``planar``),
+    so the same track and offset give the same poses. Offset 0 returns ``planar`` of every transform.
+    """
+    offset = float(offset_ms)
+    if not math.isfinite(offset) or abs(offset) > MAX_LIDAR_TIME_OFFSET_MS:
+        raise ValueError("lidar time offset must be finite and within +-%g ms" % MAX_LIDAR_TIME_OFFSET_MS)
+    if offset == 0.0:
+        return [planar(t) for t in transforms]
+    t0 = stamps_ns[0]
+    times = np.array([(s - t0) * 1e-9 for s in stamps_ns], dtype=float)
+    track = []
+    for transform in transforms:
+        t = np.asarray(transform, dtype=float)
+        yaw = math.atan2(t[1, 0], t[0, 0])
+        track.append((float(t[0, 3]), float(t[1, 3]), math.atan2(math.sin(yaw), math.cos(yaw))))
+    track = np.array(track, dtype=float)
+    track[:, 2] = np.unwrap(track[:, 2])
+    query = times - offset * 1e-3
+    x, y, yaw = (np.interp(query, times, track[:, k]) for k in range(3))
+    poses = []
+    for a, b, c in zip(x, y, yaw):
+        wrapped = math.atan2(math.sin(c), math.cos(c))
+        poses.append((float(a), float(b), math.atan2(math.sin(wrapped), math.cos(wrapped))))
+    return poses
+
+
 def _stats(values):
     values = np.asarray(values, dtype=float)
     if not len(values):
@@ -193,9 +229,27 @@ def main(argv=None):
     parser.add_argument("--map-bin-deg", type=float, choices=BIN_CHOICES_DEG, default=0.75,
                         help="azimuth bin of the mapping scan; 0.75 is the AMCL replay scan, finer bins keep "
                              "more measured directions and leave fewer unobserved pinholes")
+    parser.add_argument("--window", nargs=2, type=float, metavar=("START_S", "END_S"),
+                        help="map only frontend frames this many seconds after the first frontend frame, for "
+                             "example to leave out a long standstill; default is the whole recording. The map "
+                             "frame stays the frontend odometry frame")
+    parser.add_argument("--lidar-time-offset-ms", type=float, default=0.0, metavar="MS",
+                        help="pair every scan with the frozen odometry at stamp - MS, because the lidar stamps are "
+                             "late against the wheel/IMU odometry (default 0 = recorded pairing; same semantics as "
+                             "the AMCL replay and live chain)")
     args = parser.parse_args(argv)
     if not 2 <= args.holdout_every <= 20:
         parser.error("--holdout-every must be within 2..20")
+    if args.window is not None and not (math.isfinite(args.window[0]) and math.isfinite(args.window[1])
+                                        and 0.0 <= args.window[0] < args.window[1]):
+        parser.error("--window needs 0 <= START_S < END_S")
+    if not math.isfinite(args.lidar_time_offset_ms) or abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
+        parser.error("--lidar-time-offset-ms must be finite and within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
+    window = tuple(args.window) if args.window is not None else (0.0, 1e7)
+    # With an offset the odometry track reaches past the window, so the first and last mapped scans
+    # are interpolated between real frames instead of holding the window's first or last pose.
+    margin = abs(args.lidar_time_offset_ms) * 1e-3 + 1.0 if args.lidar_time_offset_ms else 0.0
+    track_window = (max(0.0, window[0] - margin), window[1] + margin)
     from wc_runtime.storage_policy import StoragePolicy
     from ..amcl_replay import build_scan
     from ..rebuild import validate_frontend_row
@@ -214,15 +268,22 @@ def main(argv=None):
         raise ValueError("unique increasing source timestamps required")
     hashes = {str(source / "runtime_config.json"): hashlib.sha256(runtime_raw).hexdigest(),
               str(source / "frontend/index.jsonl"): hashlib.sha256(index_raw).hexdigest()}
-    frames, counts = checked_frames(source, select_rows(rows, stamps[0], (0.0, 1e7), 0.0), runtime, hashes)
+    track, counts = checked_frames(source, select_rows(rows, stamps[0], track_window, 0.0), runtime, hashes)
+    track_poses = shifted_poses([f["stamp_ns"] for f in track], [f["odometry_T"] for f in track],
+                                args.lidar_time_offset_ms)
+    selected = [(frame, pose) for frame, pose in zip(track, track_poses)
+                if window[0] <= (frame["stamp_ns"] - stamps[0]) * 1e-9 <= window[1]]
+    frames = [frame for frame, _ in selected]
+    if not frames:
+        raise ValueError("no frontend frames inside the requested window")
     scans, observed = [], []
-    for frame in frames:
+    for frame, pose in selected:
         if args.map_bin_deg == 0.75:
             ranges, _ = build_scan(frame["points"], *args.scan_height)   # exactly the AMCL replay scan
             ranges, angles = ranges.astype(float), ANGLES
         else:
             ranges, angles = bin_scan(frame["points"], args.scan_height, args.map_bin_deg)
-        scans.append((frame["stamp_ns"], planar(frame["odometry_T"]), ranges))
+        scans.append((frame["stamp_ns"], pose, ranges))
         observed.append(int(np.isfinite(ranges).sum()))
     output = policy.resolve("reports/navigation_replay_mapping/" + datetime.now(timezone.utc).strftime(
         "%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8])
@@ -256,7 +317,13 @@ def main(argv=None):
                          "occupied_cells": int((data == 100).sum()), "free_cells": int((data == 0).sum())}
     sources_unchanged = all(_digest(path) == digest for path, digest in hashes.items())
     report = {"schema_version": 1, "status": "COMPLETE" if sources_unchanged else "SOURCE_CHANGED",
-              "source_cell": str(source), "frames": len(frames), "observed_bins_median": float(np.median(observed)),
+              "source_cell": str(source), "frames": len(frames), "source_frames": len(rows),
+              "frame_window_s": list(args.window) if args.window is not None else None,
+              "lidar_time_offset": {"lidar_time_offset_ms": args.lidar_time_offset_ms,
+                                    "applied": args.lidar_time_offset_ms != 0.0, "method": LIDAR_TIME_OFFSET_METHOD,
+                                    "odometry_track_window_s": list(track_window) if args.lidar_time_offset_ms
+                                    else None},
+              "observed_bins_median": float(np.median(observed)),
               "scan": {"bins": len(angles), "bin_deg": args.map_bin_deg, "fov_deg": [-60, 60],
                        "range_m": [RANGE_MIN, RANGE_MAX], "height_band_m": args.scan_height,
                        "missing_bins_clear_space": False},

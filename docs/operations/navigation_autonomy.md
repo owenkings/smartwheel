@@ -62,7 +62,7 @@ bash scripts/navigation_replay_mapping \
   --compare-map /数据根/data/analysis/<原生重建>/native/left_height_ray_05/export/map_3d.yaml
 ```
 
-只读冻结前端（逐帧核对 CDR 哈希，结束再核对来源未变），不启动 ROS 节点或设备。用同一输入分别建纯里程计和扫描匹配两张图，每 `--holdout-every`（默认 5）帧留出 1 帧做自洽性评估；`--scan-height` 默认 −0.5..0.5 m（相对雷达）。输出在 `reports/navigation_replay_mapping/<时间>/`：每种方式一个目录，含 `map.yaml`、导航用的 `map_nav.yaml`、逐帧位姿与状态 `poses.csv`，以及 `result.json` 和对比图。缺测扇区不清空空间；结论是同一录包内的自洽性，不是真值。
+只读冻结前端（逐帧核对 CDR 哈希，结束再核对来源未变），不启动 ROS 节点或设备。用同一输入分别建纯里程计和扫描匹配两张图，每 `--holdout-every`（默认 5）帧留出 1 帧做自洽性评估；`--scan-height` 默认 −0.5..0.5 m（相对雷达）。输出在 `reports/navigation_replay_mapping/<时间>/`：每种方式一个目录，含 `map.yaml`、导航用的 `map_nav.yaml`、逐帧位姿与状态 `poses.csv`，以及 `result.json` 和对比图。缺测扇区不清空空间；结论是同一录包内的自洽性，不是真值。`--window 起 止`（秒，从前端第一帧算）只用这段时间里的帧建图，例如去掉开头或结尾的长时间静止；地图坐标系不变，仍是前端的里程计坐标系，`result.json` 记下 `frame_window_s`。`--lidar-time-offset-ms 75` 让每帧扫描配 stamp − 75 ms 处的冻结里程计（雷达时间戳比轮速/IMU 晚，和 AMCL 回放、实时链路的同名选项算法相同），默认 0。
 
 `map.yaml` 按对数几率阈值分三类。`map_nav.yaml` 另外把“看过至少 5 次、其中回波不超过 25%”的格记为空闲：这类格多数时候被射线穿过，是有人走过或零星回波留下的痕迹，不是没观测到。没观测到或观测不足 5 次的格仍是未知，占据阈值仍然优先。规划器把未知格当障碍并按包络膨胀（与离线规划的保守约定一致），所以一个 5 cm 的未知格就能封住 2.6 m 走廊；`result.json` 的 `unknown_pockets` 分别给出两张图里被已知格包围的小未知块（≤20 格）数量。`--map-bin-deg 0.5|0.25` 用更细的方位扇区建图，留出帧略好，但小未知块并没有减少，因为它们来自有冲突证据的格，而不是射线间隙。
 
