@@ -26,6 +26,7 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--checker-param NAME=VALUE` | 覆盖目标检查和进度检查参数，只限 `general_goal_checker.*`、`progress_checker.*`，例如 `general_goal_checker.xy_goal_tolerance=0.35` |
 | `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
 | `--global-costmap live\|static` | `live`（默认）：导航时全局代价地图也标记实时扫描；`static`：只按保存的地图规划，实时扫描仍进局部代价地图、控制器碰撞检查和碰撞监控 |
+| `--local-padding M` | 局部代价地图的外形余量，也就是 RPP 和 RotationShim 自己碰撞检查用的余量（默认 0，不变；最大 0.3 m）。设成和规划余量一样（0.10），控制器就不会把车开进规划器不接受的位姿；碰撞监控不受影响 |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
@@ -64,7 +65,7 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_planner_bench \
 
 ## 推荐方案的命令行
 
-[设计文档](../architecture/planning_control.md#推荐方案待用户决定)里的推荐方案（待用户决定，默认值未改）在仿真和影子运行里这样打开：
+[设计文档](../architecture/planning_control.md#推荐方案待复核)里的推荐方案（用户有条件同意，在新地图上复核通过后才改默认值）在仿真和影子运行里这样打开：
 
 ```bash
 --planner smac_hybrid --planner-fallback smac_lattice --controller shim_rpp \
