@@ -320,6 +320,7 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     assert captured["relay"] == {"source_domain": 83, "source_prefix": "", "output_prefix": cli.OUTPUT_PREFIX,
                                  "wait_for_panel_consumers": True}
     assert captured["source_prefix"] == cli.OUTPUT_PREFIX and captured["lidar_time_offset_ms"] == 75.0
+    assert captured["niceness"] == cli.VEHICLE_SHADOW_NICENESS == 10      # the panel's recording comes first
     # the gate's covariance mode is recorded: lateral by default since 2026-11-09, xy when asked
     assert {k: captured["gate_limits"][k] for k in ("covariance_mode", "slow_std_m", "slow_linear")} == {
         "covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
@@ -461,3 +462,155 @@ def test_vehicle_mode_also_requires_the_agreed_shadow_domain(tmp_path, monkeypat
             "--goal", "1", "2", "0"]
     with pytest.raises(SystemExit, match="domain 100"):
         cli.main(argv)
+
+
+# -- operator stop (Ctrl-C), priority and the read-only relay query ---------------------------------------------
+def test_first_signal_stops_the_run_and_later_signals_cannot_interrupt_the_shutdown(capsys):
+    import os
+    import signal
+    import time
+    from wc_navigation.live.supervisor import InterruptGuard
+    previous = signal.getsignal(signal.SIGINT)
+    guard = InterruptGuard().install()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(1.0)
+        assert guard.shutting_down
+        os.kill(os.getpid(), signal.SIGINT)        # pressed again during the shutdown: printed, not raised
+        time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0.05)
+        assert guard.received == ["SIGINT", "SIGINT", "SIGTERM"]
+        assert "收尾中" in capsys.readouterr().err
+    finally:
+        guard.restore()
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+def test_a_signal_while_a_process_starts_is_held_until_the_process_is_registered(tmp_path, monkeypatch):
+    import os
+    import signal
+    import subprocess
+    import time
+    from wc_navigation.live import supervisor
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+
+    class FakeProcess:
+        pid, returncode = 4242, None
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(args, **kwargs):
+        os.kill(os.getpid(), signal.SIGINT)       # Ctrl-C exactly while the child is being started
+        time.sleep(0.05)
+        return FakeProcess()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    (tmp_path / "logs").mkdir()
+    guard = supervisor.InterruptGuard().install()
+    run = supervisor.LiveSupervisor(tmp_path, tmp_path, {}, guard=guard)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run.launch("inputs_scan", ["true"])
+        assert [name for name, _ in run.processes] == ["inputs_scan"]     # registered, so it will be stopped
+        with pytest.raises(KeyboardInterrupt):
+            run.launch("amcl", ["true"])                                  # nothing new starts after a stop
+        assert len(run.processes) == 1
+    finally:
+        guard.restore()
+        for handle in run.handles:
+            handle.close()
+
+
+def test_stop_all_stops_every_own_process_even_if_one_stop_fails(tmp_path, monkeypatch):
+    import subprocess
+    from wc_navigation.live import supervisor
+    calls = []
+
+    class Process:
+        def __init__(self, name):
+            self.name, self.code = name, None
+
+        def poll(self):
+            return self.code
+
+    def fake_stop(process):
+        calls.append(process.name)
+        if process.name == "amcl":
+            raise subprocess.TimeoutExpired("amcl", 4.0)
+        process.code = -15
+    monkeypatch.setattr(supervisor, "_stop_owned", fake_stop)
+    run = supervisor.LiveSupervisor(tmp_path, tmp_path, {})
+    run.processes = [(name, Process(name)) for name in ("recorder", "amcl", "safety_gate")]
+    run.stop_all()
+    assert calls == ["safety_gate", "amcl", "recorder"]
+    assert run.report["process_exit_codes"] == {"safety_gate": -15, "amcl": None, "recorder": -15}
+    assert list(run.report["stop_errors"]) == ["amcl"]
+
+
+def test_result_json_is_written_after_an_operator_stop(tmp_path, monkeypatch):
+    from wc_navigation.live import cli, config as live_config, shadow_summary, supervisor
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261109")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "100")
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+    monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", lambda self: {
+        "stages": [], "process_exit_codes": {"amcl": -15}, "stopped": supervisor.INTERRUPTED, "signals": ["SIGINT"]})
+    summaries = iter([{"commands": {"count": 3}}, RuntimeError("bad csv"), {"commands": {"count": 3}}])
+
+    def fake_summary(config, output):
+        value = next(summaries)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    monkeypatch.setattr(shadow_summary, "summarize_shadow", fake_summary)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
+    runs = iter(range(10))
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve",
+                        lambda self, value: tmp_path / ("run%d" % next(runs)))
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    (tmp_path / "bag").mkdir()
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
+    common = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+              "--map", str(map_yaml), "--initial-pose", "0", "0", "0", "--goal", "1", "2", "0"]
+    vehicle = common + ["--source", "vehicle", "--sensor-domain", "83"]
+    assert cli.main(vehicle) == 0                    # Ctrl-C is how a vehicle run ends
+    result = json.loads((tmp_path / "run0" / "result.json").read_text())
+    assert result["status"] == "COMPLETE" and result["supervisor"]["stopped"] == "OPERATOR_INTERRUPT"
+    assert cli.main(vehicle) == 1                    # the summary failed: result.json is written anyway
+    result = json.loads((tmp_path / "run1" / "result.json").read_text())
+    assert result["status"] == "INCOMPLETE" and result["summary_error"] == "RuntimeError: bad csv"
+    assert cli.main(common + ["--source", "bag", "--bag", str(tmp_path / "bag")]) == 1   # bag stopped early
+    result = json.loads((tmp_path / "run2" / "result.json").read_text())
+    assert result["status"] == "INCOMPLETE" and result["commands"] == {"count": 3}
+
+
+def test_vehicle_priority_is_only_ever_lowered(monkeypatch):
+    import os
+    from wc_navigation.live import supervisor
+    state = {"nice": 3}
+
+    def fake_nice(increment):
+        state["nice"] += increment
+        return state["nice"]
+    monkeypatch.setattr(os, "nice", fake_nice)
+    assert supervisor.lower_priority(10) == 10 and state["nice"] == 10
+    assert supervisor.lower_priority(5) == 10 and state["nice"] == 10
+
+
+def test_relay_graph_query_needs_the_approval_localhost_only_and_a_valid_prefix(monkeypatch):
+    from wc_navigation.live import cli
+    monkeypatch.delenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", raising=False)
+    with pytest.raises(SystemExit, match="APPROVED_BY_USER"):
+        cli.main(["relay-graph", "--sensor-domain", "83"])
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261109")
+    monkeypatch.setenv("ROS_LOCALHOST_ONLY", "0")
+    with pytest.raises(SystemExit, match="LOCALHOST"):
+        cli.main(["relay-graph", "--sensor-domain", "83"])
+    for bad in (["--source-prefix", "relay"], ["--wait", "0.1"]):
+        with pytest.raises(SystemExit):
+            cli.arguments(["relay-graph", "--sensor-domain", "83", *bad])
+    with pytest.raises(SystemExit):
+        cli.arguments(["relay-graph", "--sensor-domain", "300"])

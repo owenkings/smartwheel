@@ -13,15 +13,19 @@ from the vehicle's sensor domain) is prepared but refuses to start without the
 explicit approval described in docs/operations/navigation_live_shadow.md.
 
 Every process runs in WC_AUTONOMY_ROS_DOMAIN (96-101, localhost only) under the
-checkout's domain lock; only processes started here are stopped.
+checkout's domain lock; only processes started here are stopped. The first
+Ctrl-C (or SIGTERM/SIGHUP) starts the shutdown; later ones cannot interrupt it
+(``InterruptGuard``).
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -29,10 +33,74 @@ import time
 from ..autonomy import nav2_config
 from ..autonomy.bringup import EXECUTABLES, PACKAGES, RunError, Supervisor, _parameter_value, _same
 from ..autonomy.ros_util import json_message, latched_qos, lookup_pose, require_isolated_domain, simulation_domain
+from ..nav2_planner import _stop_owned
 from .config import SOURCE_TOPICS
 
 VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
+INTERRUPTED = "OPERATOR_INTERRUPT"
+
+
+def _say(text):
+    """Operator message on stderr; a closed terminal (SIGHUP) must not break the shutdown."""
+    try:
+        print(text, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+class InterruptGuard:
+    """SIGINT, SIGTERM and SIGHUP of one live-chain command, in the main thread.
+
+    The first signal raises KeyboardInterrupt, which starts the shutdown. Inside a ``deferred()`` block (starting
+    a child process) it is held until the block ends, so a process that was just started is always registered
+    and stopped. Every later signal, and every signal after ``begin_shutdown()``, only prints that the shutdown
+    is running: a second Ctrl-C can no longer cut the stopping of this command's processes or the result file.
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def __init__(self):
+        self.received = []
+        self.shutting_down = False
+        self._depth = 0
+        self._pending = False
+        self._previous = {}
+
+    def install(self):
+        for number in self.SIGNALS:
+            self._previous[number] = signal.signal(number, self._handle)
+        return self
+
+    def restore(self):
+        for number, handler in self._previous.items():
+            signal.signal(number, handler)
+        self._previous = {}
+
+    def _handle(self, number, frame):
+        self.received.append(signal.Signals(number).name)
+        if self.shutting_down:
+            _say("收尾中：正在停本命令启动的进程并写 result.json，再按 Ctrl-C 不会打断")
+            return
+        self.shutting_down = True
+        if self._depth:
+            self._pending = True
+            return
+        raise KeyboardInterrupt
+
+    def begin_shutdown(self):
+        self.shutting_down = True
+
+    @contextlib.contextmanager
+    def deferred(self):
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+        if not self._depth and self._pending:
+            self._pending = False
+            raise KeyboardInterrupt
 
 
 def require_live_domain(config=None):
@@ -148,6 +216,40 @@ class LiveSupervisor(Supervisor):
     readback -> gate -> goals]. The bracketed steps are the shadow run; Nav2's costmaps only activate once
     sensor data, odometry TF and AMCL's map->odom exist."""
 
+    def __init__(self, project_root, output_dir, config, guard=None):
+        super().__init__(project_root, output_dir, config)
+        self.guard = guard
+
+    def launch(self, name, args):
+        if self.guard is None:
+            return super().launch(name, args)
+        with self.guard.deferred():
+            if self.guard.shutting_down:
+                raise KeyboardInterrupt   # a stop was asked for: start nothing new
+            return super().launch(name, args)
+
+    def stop_all(self):
+        """Stop this command's processes, newest first, each on its own: one failure does not skip the rest."""
+        errors = {}
+        running = sum(1 for _, process in self.processes if process.poll() is None)
+        if running:
+            _say("收尾：停本命令启动的 %d 个进程…" % running)
+        for name, process in reversed(self.processes):
+            try:
+                _stop_owned(process)
+            except Exception as exc:
+                errors[name] = type(exc).__name__ + ": " + str(exc)
+            self.report["process_exit_codes"][name] = process.poll()
+        for handle in self.handles:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        if errors:
+            self.report["stop_errors"] = errors
+        if running:
+            _say("收尾：进程已停" + ("，%d 个停止出错（见 result.json）" % len(errors) if errors else ""))
+
     def node_config(self, name, value):
         return self.write(name + ".json", value)
 
@@ -168,7 +270,8 @@ class LiveSupervisor(Supervisor):
         for role in INPUT_ROLES:
             self.launch_module("inputs_" + role, "wc_navigation.live.inputs_node", files["inputs_" + role])
         if cfg.get("relay"):
-            # nice 10: the relay's loopback copy competes with the panel's recorder for CPU (window A).
+            # +10 on the command's niceness (vehicle: 10 -> 19): the relay's loopback copy competes with the
+            # panel's recorder for CPU (window A).
             self.launch("relay", ["nice", "-n", "10", sys.executable, "-B", "-s", "-m", "wc_navigation.live.relay_node",
                                   "--config", files["relay"]])
             # On the vehicle the relay first waits until the panel's own consumers are subscribed.
@@ -252,8 +355,29 @@ class LiveSupervisor(Supervisor):
                                        "messages_sent": published["count"]}
 
     def run(self):
+        """Run until the source ends, the duration limit or the operator's stop; always returns the report."""
+        self.t0 = time.monotonic()
+        try:
+            self._run()
+        except KeyboardInterrupt:
+            # interrupted before the processes' try block, or (without a guard) during its clean-up
+            if self.guard is not None:
+                self.guard.begin_shutdown()
+            self.report["stopped"] = INTERRUPTED
+            self.stop_all()
+        if self.guard is not None:
+            self.report["signals"] = list(self.guard.received)
+        self.report["logs"] = self.logs
+        self.report["process_args"] = self.commands
+        self.report["wall_s"] = round(time.monotonic() - self.t0, 2)
+        return self.report
+
+    def _run(self):
         require_live_domain()
         cfg = self.config
+        if cfg.get("niceness") is not None:
+            # vehicle: the panel's recording comes first (2026-11-09); every child inherits this niceness
+            self.report["niceness"] = lower_priority(int(cfg["niceness"]))
         self.report["ros_domain_id"] = int(simulation_domain())
         versions = subprocess.run(["dpkg-query", "-W", "-f=${Package} ${Version}\n", *PACKAGES],
                                   capture_output=True, text=True, timeout=10.0)
@@ -282,7 +406,6 @@ class LiveSupervisor(Supervisor):
         context = Context()
         rclpy.init(args=[], context=context)
         monitor = None
-        self.t0 = time.monotonic()
         try:
             monitor = LiveMonitor(context, cfg["use_sim_time"])
             monitor.spin(2.0)
@@ -311,9 +434,16 @@ class LiveSupervisor(Supervisor):
             monitor.enabled = False
             monitor.spin(2.0)
             self.report["final_status"] = dict(monitor.status)
+        except KeyboardInterrupt:
+            self.report["stopped"] = INTERRUPTED
+            _say("收到停止信号，开始收尾（再按 Ctrl-C 不会打断）")
+            if monitor is not None:
+                self.report["final_status"] = dict(monitor.status)
         except Exception as exc:
             self.report["error"] = type(exc).__name__ + ": " + str(exc)
         finally:
+            if self.guard is not None:
+                self.guard.begin_shutdown()
             if monitor is not None:
                 monitor.enabled = False
                 try:
@@ -321,14 +451,21 @@ class LiveSupervisor(Supervisor):
                 except Exception:
                     pass
             self.stop_all()
-            if monitor is not None:
-                monitor.close()
-            if context.ok():
-                context.shutdown()
-        self.report["logs"] = self.logs
-        self.report["process_args"] = self.commands
-        self.report["wall_s"] = round(time.monotonic() - self.t0, 2)
-        return self.report
+            try:
+                if monitor is not None:
+                    monitor.close()
+                if context.ok():
+                    context.shutdown()
+            except Exception as exc:
+                self.report["close_error"] = type(exc).__name__ + ": " + str(exc)
+
+
+def lower_priority(target):
+    """Raise this process's niceness to at least ``target`` (children inherit it); never raises the priority."""
+    current = os.nice(0)
+    if current < target:
+        current = os.nice(target - current)
+    return current
 
 
 def vehicle_approved():

@@ -6,7 +6,9 @@
              ``--source bag`` (recorded time) runs now; ``--source vehicle`` is prepared and refuses to start
              without the user's dated approval (see docs/operations/navigation_live_shadow.md).
 ``checklist`` prints the pre-flight checklist for a vehicle shadow run.
-Outputs go to reports/navigation_live_shadow/; nothing commands the wheelchair.
+``relay-graph`` read-only query of the relay's entry node in the sensor domain (creates no endpoint there).
+Outputs go to reports/navigation_live_shadow/; nothing commands the wheelchair. The first Ctrl-C stops a run;
+later ones cannot interrupt the shutdown, and result.json is written either way.
 """
 from __future__ import annotations
 
@@ -24,19 +26,23 @@ from .scan_adapter import LIDAR_TIME_OFFSET_CONFIG, LIDAR_TIME_OFFSET_SNAPSHOT, 
 
 OUTPUT_PREFIX = "/wc_live/relayed"   # relay_node.OUTPUT_PREFIX (importing it here would pull in rclpy)
 VEHICLE_SHADOW_DOMAIN = "100"     # user decision 2026-11-07; localhost only
+VEHICLE_SHADOW_NICENESS = 10      # 2026-11-09 field result: the panel's recording comes first, the relay ends at 19
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
  0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
  2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；面板域（现为 83）用 --sensor-domain 给出。影子框架只经单向转发读三个传感器话题（best effort、volatile、keep last，不参与驱动结束录制时的确认等待），从不在面板域发布。
  3. 先在面板里开始录制或实时建图，等面板显示所有设备就绪、数据在走，再启动影子命令。转发会等到三个话题都已有面板自己的订阅者才订阅（状态 WAITING_FOR_PANEL_SOURCES），自检通过才继续：驱动见到第一个订阅者就开始发，转发不能先于面板的录制连上。
- 4. 物理急停可用、轮控所有者照常由面板管理；确认没有任何进程订阅 /wc_nav/cmd_vel_gated，也没有进程发布 /cmd_vel（ros2 topic info 检查）。
+    优先级：面板的录制优先。车上模式整个影子命令以 nice 10 运行，命令自己会把 nice 调到不低于 10，转发再降到 19（2026-11-09 第二次这样跑：录包 COMPLETE，里程计落后最大 0.43 s）。result.json 的 supervisor.niceness 记实际值。
+    转发 RUNNING 后，另开终端，用同样的环境变量运行 navigation_live_shadow relay-graph --sensor-domain <面板域>。status 应为 PASS：入口节点只有三个订阅，都是 best effort、volatile；没有发布者、服务、客户端；查询节点自己也没有端点。不要在面板域用 ros2 命令（ros2 node info、ros2 topic list 等），它们会在面板域起 ros2 daemon，那是一个有发布者和服务的节点。
+ 4. 物理急停可用、轮控所有者照常由面板管理；在影子域（100）里用 ros2 topic info 确认没有任何进程订阅 /wc_nav/cmd_vel_gated，也没有进程发布 /cmd_vel。
  5. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz（面板里看，或在影子域看转发后的 /wc_live/relayed/... 话题）。
  6. 配置：上车前运行 navigation_live_shadow freeze-config --config-root /home/nvidia/wheelchair --compare-cell <同一台车最近的单左前端> --gyro-bias <零偏文件>，冻结面板当前的实时配置并记 sha256。确认 hardware_setup 来自 config/local/project/hardware_setup.json（否则会退回仓库基础值）、轮参数是设备当前值（2026-11-07 20:19 起 0.1646/0.599）、外参和主机滤波与最近的前端一致。影子命令用冻结目录作 --cell、其中的 hardware_setup.json 作 --hardware-setup。
  7. 陀螺零偏二选一：现场开头静止做一次 10+10+10 确认，或先用 ZL1107 的零偏文件（同一个 IMU H30-5B8E666933，温度和时间不同）；用 --gyro-bias 给出，IMU 编号必须一致。实时 IMU 用到达时间，暂不需要设备时间模型。雷达时间偏移取冻结目录里的 lidar_time_offset.json（来自 config/calibration/，2026-11-08 用户批准 75 ms，按到达时间估计），freeze-config 的核对结果里应能看到这个值。
  8. 地图：--map 用要导航的那张地图的 map_nav.yaml；起点在地图覆盖范围内，雷达能看到已建图的墙（门内或地图空白处起步时，先推到走廊里再给初始位姿）。
  9. 初始位姿：在已知停靠点启动，或由操作员给 --initial-pose X Y YAW_DEG 和不小于 0.25 m、8.6 度的标准差；不能用零协方差。
+    车头朝向必须和 YAW_DEG 一致：ZL1107 地图的起点 (−0.323, −0.229, 0°) 是车头朝东，也就是朝第一个目标、朝大厅。2026-11-09 两次都是车头朝西：走廊两边对称，AMCL 和闸门在前 4–5 m 都看不出来。起步前在 RViz 里看扫描和地图的墙是否重合，不重合就不要推。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
-11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）；结束时 Ctrl-C 停止本命令，只会停掉本命令启动的进程。
+11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）。结束时按一次 Ctrl-C 停止本命令：只停本命令启动的进程；收尾期间再按 Ctrl-C 不会打断，收尾完写出 result.json（supervisor.stopped = OPERATOR_INTERRUPT；车上模式这样结束是正常结束）。
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
 """
 
@@ -117,6 +123,11 @@ def arguments(argv=None):
     shadow.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     shadow.add_argument("--max-duration", type=finite, default=900.0, help="wall seconds")
     sub.add_parser("checklist", help="print the pre-flight checklist")
+    graph = sub.add_parser("relay-graph", help="read-only query of the relay's entry node in the sensor domain")
+    graph.add_argument("--sensor-domain", type=int, required=True, help="domain the relay reads from (panel: 83)")
+    graph.add_argument("--source-prefix", default="", help="prefix of the relayed topics there (bag test: /relay_source)")
+    graph.add_argument("--wait", type=_finite, default=3.0, help="seconds to wait for discovery (1..30)")
+    graph.add_argument("--project-root", type=Path, help=argparse.SUPPRESS)   # added by the wrapper; not used
     freeze = sub.add_parser("freeze-config", help="freeze the panel's current live configuration (files only)")
     freeze.add_argument("--project-root", type=Path, required=True)
     freeze.add_argument("--config-root", type=Path, required=True,
@@ -125,7 +136,12 @@ def arguments(argv=None):
     freeze.add_argument("--compare-cell", type=Path, help="recent single-left frontend cell to compare the mounts with")
     freeze.add_argument("--gyro-bias", type=Path, help="bias file to use when the live configuration names none")
     args = parser.parse_args(argv)
-    if args.command in ("checklist", "freeze-config"):
+    if args.command == "relay-graph":
+        if not 0 <= args.sensor_domain <= 232 or not 1.0 <= args.wait <= 30.0:
+            parser.error("--sensor-domain must be a ROS domain id and --wait within 1..30 s")
+        if args.source_prefix and not args.source_prefix.startswith("/"):
+            parser.error("--source-prefix must start with /")
+    if args.command in ("checklist", "freeze-config", "relay-graph"):
         return args
     if args.command == "inputs" and args.bag is None:
         parser.error("inputs needs --bag")
@@ -182,6 +198,8 @@ def main(argv=None):
     if args.command == "checklist":
         print(CHECKLIST)
         return 0
+    if args.command == "relay-graph":
+        return relay_graph_command(args)
     from wc_runtime.storage_policy import StoragePolicy
     if args.command == "freeze-config":
         from .current_config import freeze
@@ -195,11 +213,50 @@ def main(argv=None):
         print(json.dumps({"status": "FROZEN", "output": str(output), "checks": record["checks"], "use": record["use"]},
                          ensure_ascii=False, indent=1, default=str), flush=True)
         return 0
+    from .supervisor import InterruptGuard
+    # From here on the first Ctrl-C (SIGTERM, SIGHUP) stops the run and later ones cannot cut the shutdown.
+    guard = InterruptGuard().install()
+    try:
+        return run_command(args, guard)
+    except KeyboardInterrupt:      # before the run directory existed: nothing was started
+        _report_line("stopped before the run started; no process was started")
+        return 130
+    finally:
+        guard.restore()
+
+
+def relay_graph_command(args):
+    """Print the relay entry node's graph in the sensor domain; creates no endpoint there (see entry_graph)."""
+    import os
+    from ..autonomy.ros_util import SIMULATION_DOMAINS
+    from .supervisor import VEHICLE_APPROVAL_ENV, vehicle_approved
+    if str(args.sensor_domain) not in SIMULATION_DOMAINS and not vehicle_approved():
+        raise SystemExit("joining domain %d needs the user present and %s=APPROVED_BY_USER_<date>, as for the relay"
+                         % (args.sensor_domain, VEHICLE_APPROVAL_ENV))
+    if os.environ.get("ROS_LOCALHOST_ONLY", "1") != "1":
+        raise SystemExit("ROS_LOCALHOST_ONLY must be 1: the panel's domain and the relay are localhost only")
+    os.environ["ROS_LOCALHOST_ONLY"] = "1"
+    from .relay_node import entry_graph
+    report = entry_graph(args.sensor_domain, args.source_prefix, args.wait)
+    print(json.dumps(report, ensure_ascii=False, indent=1), flush=True)
+    return 0 if report["status"] == "PASS" else 1
+
+
+def _report_line(text):
+    try:
+        print(text, flush=True)
+    except (OSError, ValueError):   # the terminal may be gone (SIGHUP); result.json is already written
+        pass
+
+
+def run_command(args, guard):
+    """inputs / shadow: one supervised run and its result.json, also after an operator stop."""
+    from wc_runtime.storage_policy import StoragePolicy
     from ..autonomy import nav2_config
     from ..autonomy.bringup import domain_lock
     from .bag_check import check_run
     from .config import load_live_config
-    from .supervisor import LiveSupervisor, VEHICLE_APPROVAL_ENV, vehicle_approved
+    from .supervisor import INTERRUPTED, LiveSupervisor, VEHICLE_APPROVAL_ENV, vehicle_approved
     if args.command == "shadow" and args.source == "vehicle":
         import os
         if not vehicle_approved():
@@ -252,38 +309,55 @@ def main(argv=None):
             config["relay"] = {"source_domain": args.sensor_domain, "source_prefix": "", "output_prefix": OUTPUT_PREFIX,
                                "wait_for_panel_consumers": True}
             config["source_prefix"] = OUTPUT_PREFIX
+            config["niceness"] = VEHICLE_SHADOW_NICENESS
     with domain_lock(args.project_root):
         output.mkdir(parents=True, exist_ok=False)
-        if config.get("relay") is not None and config["relay"]["source_domain"] is None:
-            import os
-            config["relay"]["source_domain"] = int(os.environ["ROS_DOMAIN_ID"])
-        (output / "live_config.json").write_text(json.dumps(live, ensure_ascii=False, indent=1), encoding="utf-8")
-        (output / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        report = LiveSupervisor(args.project_root, output, config).run()
+        try:
+            if config.get("relay") is not None and config["relay"]["source_domain"] is None:
+                import os
+                config["relay"]["source_domain"] = int(os.environ["ROS_DOMAIN_ID"])
+            (output / "live_config.json").write_text(json.dumps(live, ensure_ascii=False, indent=1), encoding="utf-8")
+            (output / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+            report = LiveSupervisor(args.project_root, output, config, guard=guard).run()
+        except KeyboardInterrupt:  # stopped before the supervisor ran: nothing was started
+            guard.begin_shutdown()
+            report = {"stages": [], "process_exit_codes": {}, "stopped": INTERRUPTED, "signals": list(guard.received)}
+    guard.begin_shutdown()         # the summary and result.json are written even if Ctrl-C is pressed again
     storage.check()
+    interrupted = report.get("stopped") == INTERRUPTED
     result = {"schema_version": 1, "kind": args.command, "status": "INCOMPLETE", "config": config,
               "live_provenance": live["provenance"], "supervisor": report,
               "hardware_control": False, "commands_sent": False, "physical_navigation_validated": False}
     if args.command == "inputs":
-        result["comparison"] = check_run(output, args.compare_cell or args.cell, config["lidar_time_offset_ms"])
-        scans = result["comparison"]["scans"]
-        odometry = result["comparison"]["odometry"]
-        result["status"] = ("COMPLETE" if "error" not in report and scans["matched_frames"] > 0
-                            and odometry.get("status") == "COMPARED" else "INCOMPLETE")
+        try:
+            result["comparison"] = check_run(output, args.compare_cell or args.cell, config["lidar_time_offset_ms"])
+            scans = result["comparison"]["scans"]
+            odometry = result["comparison"]["odometry"]
+            # a bag check stopped by the operator covers only part of the recording
+            result["status"] = ("COMPLETE" if "error" not in report and not interrupted and scans["matched_frames"] > 0
+                                and odometry.get("status") == "COMPARED" else "INCOMPLETE")
+        except Exception as exc:
+            result["summary_error"] = type(exc).__name__ + ": " + str(exc)
     else:
         from .shadow_summary import summarize_shadow
-        result.update(summarize_shadow(config, output))
-        result["status"] = "COMPLETE" if "error" not in report and result.get("commands") else "INCOMPLETE"
+        try:
+            result.update(summarize_shadow(config, output))
+            # the vehicle run ends with Ctrl-C by design; a bag run stopped early did not see the whole recording
+            complete = "error" not in report and result.get("commands") and not (interrupted and config["source"] == "bag")
+            result["status"] = "COMPLETE" if complete else "INCOMPLETE"
+        except Exception as exc:
+            result["summary_error"] = type(exc).__name__ + ": " + str(exc)
     with (output / "result.json").open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False, default=float)
-    brief = {"status": result["status"], "output": str(output), "error": report.get("error")}
-    if args.command == "inputs":
+    brief = {"status": result["status"], "output": str(output), "error": report.get("error"),
+             "stopped": report.get("stopped"), "summary_error": result.get("summary_error")}
+    if "comparison" in result:
         brief["scans"] = {k: result["comparison"]["scans"][k] for k in ("matched_frames", "identical_frames",
                                                                          "differing_bins_total", "unmatched_frames")}
         brief["odometry"] = result["comparison"]["odometry"]
-    else:
+    elif args.command == "shadow":
         brief.update({k: result.get(k) for k in ("outcomes_while_moving", "gate_untrusted_s", "localization")})
-    print(json.dumps(brief, ensure_ascii=True, default=float), flush=True)
+    _report_line(json.dumps(brief, ensure_ascii=True, default=float))
     return 0 if result["status"] == "COMPLETE" else 1
 
 

@@ -91,6 +91,27 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
+停止、优先级和面板域查询（2026-11-09 实车影子之后）：
+- 停止：`inputs` 和 `shadow` 收到第一次 Ctrl-C（或 SIGTERM、SIGHUP）就开始收尾。
+  - 逐个停本命令启动的进程，一个停失败记进 `supervisor.stop_errors`，接着停下一个。
+  - 收尾期间再收到信号只打印"收尾中"，不再打断。要强停只能用 SIGKILL，那样会留下进程。
+  - 收尾后照常汇总并写 `result.json`：`supervisor.stopped` 为 `OPERATOR_INTERRUPT`，`supervisor.signals` 是收到的信号。汇总出错时记 `summary_error`，文件照样写。
+  - 车上模式就是这样结束的，没有错误就是 `COMPLETE`；录包运行被打断记 `INCOMPLETE`。
+- 优先级：车上模式整个命令以 nice 10 运行，命令自己会把 nice 调到不低于 10，转发进程再降 10（到 19），面板的录制优先。实际值记在 `supervisor.niceness`。
+  - 依据：2026-11-09 第二次这样跑，面板录包 COMPLETE。实时里程计落后中位 0.13 s、最大 0.43 s，超过 0.3 s 的 9.4%，主要在开头 Nav2 启动时。
+  - 第 5 级闭环前再评估，那时里程计落后对闸门 TF 时效更要紧。
+- 面板域里转发入口节点的查询：转发 RUNNING 后，另开终端，用同样的环境变量运行下面的命令。
+
+  ```bash
+  WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期> \
+    bash scripts/navigation_live_shadow relay-graph --sensor-domain 83
+  ```
+
+  - 它只在面板域建一个没有任何端点的只读节点（和转发入口同一个类），读发现缓存，打印后退出。
+  - `status` 为 `PASS` 的条件：入口节点没有发布者、服务、客户端，正好三个订阅，都是 best effort、volatile；查询节点自己也没有端点。
+  - 不要在面板域用 `ros2 node info`、`ros2 topic list` 这类 ros2 命令：它们会在面板域起 ros2 daemon，那是一个有发布者和服务、命令结束后还留着的节点。
+- 初始位姿的朝向：车头朝向必须和 `--initial-pose` 的 YAW_DEG 一致。2026-11-09 两次实车影子车头都朝西，给的却是 0°（朝东）。走廊两边对称，AMCL 和闸门在前 4–5 m 都没发现；分析见 `reports/navigation_live_shadow/20261109T152258Z_vehicle_shadow_start_heading/`。起步前在 RViz 里看扫描和地图的墙是否重合。
+
 ## 闸门协方差判据：默认只看横向（2026-11-09）
 
 用户 2026-11-08 决定先做成显式选项试，2026-11-09 决定改成默认。仿真导航（`navigation_autonomy_sim navigate`，默认的 `--localization amcl`）、录包影子运行（`navigation_nav2_shadow --localization amcl`）和实时影子（`navigation_live_shadow shadow`）不给选项时都用 lateral。这三处都有这两个选项：
@@ -124,6 +145,15 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow freeze-config --c
 - 看核对结果：`hardware_setup_from_local_override` 必须是 true；轮参数是设备当前值；`confirmed_gyro_bias_configured` 为 false 时，影子命令必须用 `--gyro-bias` 显式给零偏；`against_reference_cell` 里外参、杆臂、主机滤波和设备编号应与最近的前端一致。
 - 影子命令用冻结目录作 `--cell`，其中的 `hardware_setup.json` 作 `--hardware-setup`（命令行打印的 `use` 一行）。
 
-上车前检查单：`bash scripts/navigation_live_shadow checklist`（内容与命令里的相同，要点：用户同意并记录；先在面板里开始录制并看到设备就绪，再启动影子命令，转发会等面板自己的订阅者到齐才订阅；物理急停、没有任何进程订阅闸门输出或发布 `/cmd_vel`；传感器频率；用 `freeze-config` 冻结并核对当前配置，零偏二选一；起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差；目标；记录空间；运行后核对结果，面板录包不是 PARTIAL）。
+上车前检查单：`bash scripts/navigation_live_shadow checklist`。内容与命令里的相同，要点：
+- 用户同意并记录。
+- 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。
+- 整个命令以 nice 10 运行；转发 RUNNING 后用 `relay-graph` 查入口节点。
+- 物理急停可用；在影子域确认没有任何进程订阅闸门输出或发布 `/cmd_vel`。
+- 传感器频率。
+- 用 `freeze-config` 冻结并核对当前配置，零偏二选一。
+- 起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差，车头朝向和给定航向一致。
+- 目标；记录空间。
+- 按一次 Ctrl-C 结束；运行后核对结果，面板录包不是 PARTIAL。
 
 返回[操作导航](README.md)。
