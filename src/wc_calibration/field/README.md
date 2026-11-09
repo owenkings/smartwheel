@@ -9,6 +9,7 @@
 - [motion.py](motion.py)：单雷达逐帧 ICP 里程计（复用 `wc_runtime.icp_shadow`），以及雷达与轮速轨迹的平面手眼（求偏航）。
 - [checks.py](checks.py)：现场三类录制的合格判断，包括墙面、推向墙、房间多处停顿。
 - [check_cli.py](check_cli.py)：现场工具，录一项后当场分析并显示进度。入口是 `scripts/lidar_field_check`。
+- [site_checks.py](site_checks.py)：走廊现场补录的分析，直接读面板录包：墙面定距、卷尺对外参、推墙时间偏移、单/双雷达悬空点、开头零偏。入口是 `scripts/lidar_site_checks`，步骤见[现场补录](../../../docs/operations/field_site_checks.md)。
 - [solve.py](solve.py)：离线联合求解，用独立录包验证，输出候选文件。入口是 `scripts/lidar_field_solve`。
 - [camera.py](camera.py)：前方相机检查。内参用手持棋盘格；相机到雷达外参用贴在木板上的棋盘格，多姿态平面对应求解，平移带机械名义值弱先验。
 - [checkerboard.py](checkerboard.py)：生成 A4 棋盘格 PDF（9×6 内角点、25 mm，带 100 mm 比例尺）：`python3 -m wc_calibration.field.checkerboard 输出.pdf`。

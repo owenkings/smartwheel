@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# ZL1107 走廊现场补录的分析：录完直接读原始录包出结果（只读，不打开设备，不改配置）。
+set -eo pipefail
+SITE_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "${WHEELCHAIR_ROS_SETUP:-/opt/ros/humble/setup.bash}"
+source "$SITE_PROJECT/install/main/setup.bash"
+set -u
+export PYTHONPATH="$SITE_PROJECT/src:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export WHEELCHAIR_PROJECT_ROOT="$SITE_PROJECT"
+export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2
+cd "$SITE_PROJECT"
+exec nice -n 10 /usr/bin/python3 -B -s -m wc_calibration.field.site_checks --project-root "$SITE_PROJECT" "$@"
