@@ -83,6 +83,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_planner_bench \
   --footprint-source MEASURED_20261107
 ```
 
+仿真 navigate 的任务再加 `--goal-heading turn_at_goal`：复核里只前进的 Hybrid-A* 为终点朝向在小房间里绕弯是失败原因之一，见设计文档。影子运行的目标由录包给出，不用这个选项。
+
 前提是规划用地图里，司机路线上没有伪占据格（例如 v2 那样把车开过的格清空）；路线旁还剩孤立伪点时，这个组合会把车带到伪点前停住。仿真里比较规划和控制时可以加 `--localization truth`；要得出系统级结论，就用默认的 AMCL 跑，设计文档里的 AMCL 结果都是在 D 的闸门新默认值下跑的。
 
 ## 跟随模式审查：原地转向、停车原因、窄处速度
