@@ -81,11 +81,18 @@ class NavProfile:
     obstacle_clouds: tuple = ()
     obstacle_scan: str = "raw"
     obstacle_monitor: str = ""          # collision monitor input; empty: the same as obstacle_input
+    # Collision monitor base_shift_correction (Humble): move each source's points by odom->base_link from their
+    # stamp to now. False uses the static source->base_link transform only: no wait for the live odometry, which
+    # does not extrapolate (window C, status/C.md 11-09 21:50).
+    monitor_base_shift: bool = True
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan", "obstacle_monitor"):
+            if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan", "obstacle_monitor",
+                            "monitor_base_shift"):
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
+        if not isinstance(self.monitor_base_shift, bool):
+            raise ValueError("monitor_base_shift must be a boolean")
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
         object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
@@ -132,6 +139,8 @@ class NavProfile:
             values["obstacle_clouds"] = list(self.obstacle_clouds)
             if not self.obstacle_monitor:
                 values.pop("obstacle_monitor")      # profiles recorded before the option stay identical
+        if self.monitor_base_shift:
+            values.pop("monitor_base_shift")        # the default: recorded profile unchanged
         return values
 
 
@@ -469,7 +478,7 @@ def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_p
         "collision_monitor": _p({
             "use_sim_time": True, "base_frame_id": "base_link", "odom_frame_id": "odom",
             "cmd_vel_in_topic": CMD_SMOOTHED, "cmd_vel_out_topic": CMD_MONITORED,
-            "transform_tolerance": 0.3, "source_timeout": 1.0, "base_shift_correction": True,
+            "transform_tolerance": 0.3, "source_timeout": 1.0, "base_shift_correction": profile.monitor_base_shift,
             "stop_pub_timeout": 2.0,
             "polygons": list(zones), **zones, **sources}),
         "lifecycle_manager_navigation": _p({
@@ -621,6 +630,8 @@ def _readback_expectations(profile, mode):
             global_body = dict(global_body, **topic)
         if profile.obstacle_input != "cloud":
             local_body = dict(local_body, **topic)
+    if not profile.monitor_base_shift:
+        stop = dict(stop, base_shift_correction=False)
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,

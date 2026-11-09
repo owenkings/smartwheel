@@ -21,9 +21,16 @@ from pathlib import Path
 import numpy as np
 
 LEFT_FILTERED_TOPIC = "/wc_mapping/lidar_left/source_frame_filtered"
+# Read only by the 3D obstacle input (window C, perception/live_obstacles.py), which is off by default.
+RIGHT_FILTERED_TOPIC = "/wc_mapping/lidar_right/source_frame_filtered"
 IMU_TOPIC = "/wc_mapping/imu/source_frame"
 WHEEL_TOPIC = "/wc_mapping/wheel/feedback_raw"
 SOURCE_TOPICS = (LEFT_FILTERED_TOPIC, IMU_TOPIC, WHEEL_TOPIC)
+
+
+def source_topics(obstacles=False):
+    """Sensor topics a run reads: the three of the live chain, plus the right lidar with the 3D obstacle input."""
+    return SOURCE_TOPICS + ((RIGHT_FILTERED_TOPIC,) if obstacles else ())
 # Wheel fields the hardware setup may replace; signs and gap limits stay as frozen for the device.
 WHEEL_OVERRIDE_KEYS = ("wheel_radius_m", "track_width_m", "register_to_wheel_rpm", "max_wheel_speed_m_s",
                        "left_sign", "right_sign", "max_gap_s", "provenance", "state", "schema",

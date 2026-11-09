@@ -109,6 +109,12 @@ flowchart LR
 
 wc_runtime 的实时建图链路（`mapping_input` → `mapping_prior` → RTAB-Map）由面板在域 83 的建图会话里启动，绑定会话目录和日志写入，不能单独当导航节点用，所以这里只调用其中不打开设备的纯函数和 `MotionPrior`，不改 wc_runtime。需要 A 配合的事写在状态文件的“请求”里。
 
+三维障碍输入（窗口 C，默认不开）：给了 `--obstacle-input`、`--obstacle-scan filtered` 或 `--obstacle-monitor` 时，多一个 obstacles 进程。
+- 它读两台雷达的 host_filtered 帧和 /odom，按影子运行的过滤规则发 `/obstacles/<left|right>/points`（坐标系 `obstacles_lidar_<side>`），需要时也发 `/obstacles/left/scan`。
+- 右雷达用自己的外参和设备编号（`--cell` 的 runtime_config 里 `mounts.right`、`sensor_ids.right`）。时间偏移就是上面给 /scan 解析出的那一个。
+- 录包回放多放右雷达这一个话题。实车上转发要多一个话题，用户和总管重新同意之前，`--source vehicle` 拒绝开障碍输入。
+- 设计、检验和用法见[障碍感知与避障](obstacle_avoidance.md)和[障碍感知操作说明](../operations/navigation_obstacles.md#实时链路的三维障碍输入)。
+
 ## 雷达时间偏移（实时链路默认 75 ms）
 
 A 用雷达帧间 ICP 和陀螺做互相关，得到左雷达时间戳比 IMU 到达时刻晚约 76 ms（建图包）、66 ms（验证包），轮速只差 1–6 ms（`R/reports/time_alignment/20261107_211500_ZL1107/`）。按 0 处理时，转弯中的扫描配的是稍后时刻的里程计位姿；验证包转弯帧角速度中位 0.74 rad/s，75 ms 就是约 3°。

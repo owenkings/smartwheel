@@ -71,6 +71,11 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 - `--compare-cell`（只 `inputs`）：比对用的冻结前端，默认就是 `--cell`；`--cell` 给的是 `freeze-config` 冻结的当前配置时，用它指定同一录包的前端。
 - 经转发时（`--relay-test` 或车上），扫描和里程计进程订阅改名后的 `/wc_live/relayed/...`。
 - 输出在 `reports/navigation_live_shadow/<时间>_inputs_<编号>/`：`scans.csv`（含 161 格距离）、`odom.csv`、`events.jsonl`、各进程日志和 `result.json`。`result.json` 的 `comparison` 给出与冻结前端逐帧的扫描比较（匹配帧、完全相同的帧、不同的格数）和里程计比较（第一帧对齐后的位置与航向差）。
+- 三维障碍输入（窗口 C，默认不开）：`inputs` 和 `shadow` 都可以加 `--obstacle-input`、`--obstacle-scan filtered`、`--obstacle-monitor` 等选项。
+  - 这时录包多放右雷达的 host_filtered 帧，多起一个 obstacles 进程。
+  - `inputs` 的 `result.json` 多一节 `obstacles`，这一节通过才算 COMPLETE；`--compare-right-cell` 给出右雷达的冻结前端。
+  - `shadow` 另有 `--monitor-base-shift on|off`（碰撞监控是否按里程计移动点，默认 on）。
+  - 用法见[障碍感知操作说明](navigation_obstacles.md#实时链路的三维障碍输入)。
 
 ## 实车影子运行
 

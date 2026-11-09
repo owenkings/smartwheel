@@ -13,7 +13,7 @@ float16 clearing-ray ends, lidar frame), optionally ``obstacle_left_scan_ranges`
 (n x 161 float32, the filtered scan), ``obstacle_settings`` (JSON text).
 
 ``replay_node`` publishes them on ``/obstacles/<side>/points`` and
-``/obstacles/<side>/clearing`` in ``lidar_<side>``, and the filtered scan on
+``/obstacles/<side>/clearing`` in ``obstacles_lidar_<side>``, and the filtered scan on
 ``/obstacles/left/scan`` in ``laser``.
 """
 from __future__ import annotations
