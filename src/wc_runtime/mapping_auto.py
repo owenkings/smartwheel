@@ -17,6 +17,10 @@ While automatic control is active (or stopping) the manual state machine of ``Ma
 packets are intercepted here, where any key, Space or hand-push request ends automatic control, and
 ``MappingWheel.step`` returns right after the feedback read. Every change of control source passes through a written
 zero and a confirmed standstill. Nothing here releases the servo for hand pushing.
+
+The gate is one source for the whole automatic run: a different ``gate_id`` (the gate restarted) or a gate ``seq``
+that does not increase ends automatic control. Its decision must report ``allow_reverse`` false and limits not
+above the approved ones; the linear velocity must stay under its current ``linear_ceiling``.
 """
 import datetime
 import math
@@ -115,6 +119,7 @@ class AutoDrive:
         self.last_decision_sequence = 0
         self.bridge_connected, self.bridge_id = False, None
         self.entry_generation = None
+        self.entry_gate_id = None   # gate process that the current automatic run follows
         self.command, self.last_words, self.last_write = (0.0, 0.0), (0, 0), None
         self.immediate, self.zero_reached, self.zero_since = False, None, None
         self.init_step, self.next_init = 0, 0.0
@@ -149,9 +154,16 @@ class AutoDrive:
         except ProtocolError:
             self.counters['decisions_rejected'] += 1
             raise
+        previous = self.decision
         self.last_decision_sequence = decision['sequence']
         self.decision, self.decision_time = decision, self.owner.clock()
         self.counters['decisions'] += 1
+        if self.state in ('INITIALIZING', 'AUTO'):
+            if decision['gate_id'] != self.entry_gate_id:
+                self._begin_stop('GATE_RESTARTED', immediate=False)
+            elif previous is not None and previous['gate_id'] == decision['gate_id'] and \
+                    decision['gate_seq'] <= previous['gate_seq']:
+                self._begin_stop('GATE_SEQ_NOT_INCREASING', immediate=False)
 
     # ---------------------------------------------------------------- manual side (MappingWheel.command)
     def intercept(self, value):
@@ -273,6 +285,7 @@ class AutoDrive:
                 return
         owner = self.owner
         self.entry_generation = owner.arm_generation
+        self.entry_gate_id = self.decision['gate_id']
         self.command, self.last_write, self.zero_since = (0.0, 0.0), None, None
         self.immediate, self.zero_reached = False, None
         owner.hybrid_release_inhibited = True
@@ -305,8 +318,8 @@ class AutoDrive:
             out.append('BRIDGE_DISCONNECTED')
         elif self._decision_age(now) > DECISION_STALE_S:
             out.append('DECISION_STALE')
-        elif not self._gate_limits_ok():
-            out.append('GATE_LIMITS_ABOVE_APPROVED')
+        elif self._gate_limits_problem():
+            out.append(self._gate_limits_problem())
         if self.stationary < ENTRY_STATIONARY_SAMPLES or not self._feedback_fresh(now):
             out.append('NOT_STATIONARY')
         if self.readback is None:
@@ -352,8 +365,9 @@ class AutoDrive:
         decision = self.decision
         if decision['state'] == GATE_ESTOP:
             return 'GATE_ESTOP_LATCHED'
-        if not self._gate_limits_ok():
-            return 'GATE_LIMITS_ABOVE_APPROVED'
+        problem = self._gate_limits_problem()
+        if problem:
+            return problem
         violation = self._violation(decision)
         if violation:
             return violation
@@ -372,6 +386,8 @@ class AutoDrive:
             reason = 'NEGATIVE_LINEAR'
         elif linear > self.limits['max_linear_m_s'] + LINEAR_TOLERANCE_M_S:
             reason = 'LINEAR_ABOVE_LIMIT'
+        elif linear > decision['limits']['linear_ceiling'] + LINEAR_TOLERANCE_M_S:
+            reason = 'LINEAR_ABOVE_CEILING'
         elif abs(angular) > self.limits['max_angular_rad_s'] + ANGULAR_TOLERANCE_RAD_S:
             reason = 'ANGULAR_ABOVE_LIMIT'
         if reason:
@@ -383,7 +399,8 @@ class AutoDrive:
         if decision['state'] != GATE_ACTIVE:
             return 0.0, 0.0
         limit = self.limits['max_angular_rad_s']
-        return min(decision['linear'], self.limits['max_linear_m_s']), max(-limit, min(limit, decision['angular']))
+        linear = min(decision['linear'], decision['limits']['linear_ceiling'], self.limits['max_linear_m_s'])
+        return linear, max(-limit, min(limit, decision['angular']))
 
     def _drive(self, now, target):
         if self.last_write is not None and now - self.last_write < CONTROL_PERIOD_S - 1e-9:
@@ -477,7 +494,8 @@ class AutoDrive:
         scale = wheel['register_to_wheel_rpm'] * 2 * math.pi * wheel['wheel_radius_m'] / 60
         signed = [value - 65536 if value >= 32768 else value for value in words]
         left, right = signed[0] * scale * wheel['left_sign'], signed[1] * scale * wheel['right_sign']
-        self.feedback = {'left_m_s': left, 'right_m_s': right, 'linear_m_s': (left + right) / 2, 'stamp': stamp}
+        self.feedback = {'left_m_s': left, 'right_m_s': right, 'linear_m_s': (left + right) / 2, 'stamp': stamp,
+                         'sequence': owner.sequence - 1}
         if self.feedback['linear_m_s'] < BACKWARD_M_S:
             self.backward_since = stamp if self.backward_since is None else self.backward_since
         else:
@@ -490,10 +508,14 @@ class AutoDrive:
     def _decision_age(self, now):
         return math.inf if self.decision_time is None else now - self.decision_time
 
-    def _gate_limits_ok(self):
+    def _gate_limits_problem(self):
         limits = self.decision['limits']
-        return limits['max_linear'] <= self.limits['max_linear_m_s'] + 1e-9 and \
-            limits['max_angular'] <= self.limits['max_angular_rad_s'] + 1e-9
+        if limits['allow_reverse']:
+            return 'GATE_ALLOWS_REVERSE'
+        if limits['max_linear'] > self.limits['max_linear_m_s'] + 1e-9 or \
+                limits['max_angular'] > self.limits['max_angular_rad_s'] + 1e-9:
+            return 'GATE_LIMITS_ABOVE_APPROVED'
+        return None
 
     def _switch_values(self, now):
         if self.switches is None:
@@ -544,6 +566,8 @@ class AutoDrive:
         if self.feedback is not None:
             feedback = {key: value for key, value in self.feedback.items() if key != 'stamp'}
             feedback['age_s'] = max(0.0, now - self.feedback['stamp'])
+            # Owner clock (CLOCK_MONOTONIC) when the response was read: comparable with mono_ns on this machine.
+            feedback['stamp_mono_ns'] = int(round(self.feedback['stamp'] * 1e9))
         return {'type': 'status', 'schema': STATUS_SCHEMA, 'session_id': owner.session_id, 'source': source,
                 'auto_state': self.state, 'reason': self.reason, 'limits': dict(self.limits),
                 'command': {'linear': self.command[0], 'angular': self.command[1], 'words': list(self.last_words)},
@@ -555,6 +579,7 @@ class AutoDrive:
                 'decision_age_s': None if decision is None else round(self._decision_age(now), 3),
                 'gate_state': None if decision is None else decision['state'],
                 'gate_seq': None if decision is None else decision['gate_seq'],
+                'gate_id': None if decision is None else decision['gate_id'], 'entry_gate_id': self.entry_gate_id,
                 'takeover_latched': self.takeover_latch, 'manual_state': owner.state, 'push_mode': owner.push_mode,
                 'evidence_stage': self.evidence.get('stage'), 'evidence_sha256': self.evidence.get('evidence_sha256'),
                 'counters': dict(self.counters), 'physical_stop_confirmed': False}

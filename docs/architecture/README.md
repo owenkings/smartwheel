@@ -8,6 +8,7 @@
 - [navigation-and-obstacles.md](navigation-and-obstacles.md)：定位、地图朝向、超声波与激光雷达的职责及后续导航接入条件。
 - [autonomy_framework.md](autonomy_framework.md)：自主建图、路径规划、自动驾驶的分层结构、安全约束及仿真与实车的对应。
 - [velocity_channel.md](velocity_channel.md)：导航到电机的速度通道：手动和自动的切换、各层速度上限、出事时怎么停、急停硬件和接通前的证据（设计，用户 2026-11-09 同意）。
+- [velocity_channel_review.md](velocity_channel_review.md)：速度通道第 0 级代码的一页说明，给用户审。
 
 ## 添加与验证
 

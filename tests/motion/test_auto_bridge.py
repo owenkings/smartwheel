@@ -1,4 +1,4 @@
-"""Base bridge without ROS: socket forwarding, staleness, status and the end-to-end path into a fake wheel owner."""
+"""Base bridge without ROS: socket forwarding, faults, enable/estop outputs, base status and the end-to-end path."""
 import datetime
 import json
 from pathlib import Path
@@ -25,9 +25,9 @@ def short_tmp():
 
 
 def gate_text(clock, **change):
-    value = {'schema': p.GATE_COMMAND_SCHEMA, 'seq': 1, 'stamp_ns': 1, 'mono_ns': clock(), 'state': 'ACTIVE',
-             'reasons': [], 'linear': 0.05, 'angular': 0.0, 'limits': {'max_linear': 0.1, 'max_angular': 0.3},
-             'config_sha256': None}
+    value = {'schema': p.GATE_COMMAND_SCHEMA, 'gate_id': 'gate_1', 'seq': 1, 'stamp_ns': 1, 'mono_ns': clock(),
+             'state': 'ACTIVE', 'reasons': [], 'linear': 0.05, 'angular': 0.0, 'config_sha256': None,
+             'limits': {'max_linear': 0.1, 'max_angular': 0.3, 'linear_ceiling': 0.1, 'allow_reverse': False}}
     value.update(change)
     return json.dumps(value)
 
@@ -49,62 +49,127 @@ def read_lines(conn, count):
     return [p.decode_line(line) for line in data.split(b'\n') if line]
 
 
-def test_bridge_sends_hello_then_one_decision_per_fresh_gate_command(short_tmp):
+def connected(short_tmp, clock):
     server = served(short_tmp/'auto.sock')
-    clock = ClockNs()
     core = b.BridgeCore('session_a', 'bridge_1', clock_ns=clock)
     core.connect(short_tmp/'auto.sock')
     conn, _ = server.accept()
+    return server, core, conn
+
+
+def owner_status(**change):
+    value = {'type': 'status', 'schema': p.STATUS_SCHEMA, 'session_id': 'session_a', 'source': 'AUTO',
+             'auto_state': 'AUTO', 'dead_man': True, 'estop': False,
+             'feedback': {'sequence': 41, 'stamp_mono_ns': 4_990_000_000, 'age_s': 0.01, 'linear_m_s': 0.05}}
+    value.update(change)
+    return value
+
+
+def deliver(core, conn, status):
+    conn.sendall(p.encode_line(status))
+    before = core.counters['status'] + core.counters['status_rejected']
+    for _ in range(50):
+        core.pump()
+        if core.counters['status'] + core.counters['status_rejected'] > before:
+            return
+
+
+def test_bridge_sends_hello_then_one_decision_per_fresh_gate_command(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
     assert core.on_gate_command(gate_text(clock)) is True
     assert core.on_gate_command(gate_text(clock, seq=2, linear=0.07)) is True
     hello, first, second = read_lines(conn, 3)
     assert p.check_hello(hello, 'session_a') == 'bridge_1'
     assert [first['sequence'], second['sequence']] == [1, 2] and second['linear'] == 0.07
-    assert p.parse_decision(second, 'session_a', 1)['gate_seq'] == 2
+    decision = p.parse_decision(second, 'session_a', 1)
+    assert decision['gate_seq'] == 2 and decision['gate_id'] == 'gate_1' and decision['limits']['allow_reverse'] is False
     core.close(); conn.close(); server.close()
 
 
-def test_stale_future_or_malformed_gate_commands_are_dropped(short_tmp):
-    server = served(short_tmp/'auto.sock')
+def test_stale_gate_commands_are_dropped(short_tmp):
     clock = ClockNs()
-    core = b.BridgeCore('session_a', 'bridge_1', clock_ns=clock)
-    core.connect(short_tmp/'auto.sock')
-    conn, _ = server.accept()
+    server, core, conn = connected(short_tmp, clock)
     old = gate_text(clock)
     clock.advance(0.31)
     assert core.on_gate_command(old) is False                                       # older than 0.3 s
-    assert core.on_gate_command(gate_text(clock, mono_ns=clock()+100_000_000)) is False   # from the future
-    assert core.on_gate_command('{"schema": "wc_gate_command_v1"}') is False
-    assert core.on_gate_command(gate_text(clock, linear=float('nan'))) is False          # json.dumps writes NaN
-    assert core.counters['gate_stale'] == 2 and core.counters['gate_rejected'] == 2 and core.sequence == 0
+    assert core.counters['gate_stale'] == 1 and core.sequence == 0
     assert len(read_lines(conn, 1)) == 1                                            # only the hello
     core.close(); conn.close(); server.close()
 
 
-def test_status_enable_and_estop_follow_a_fresh_owner_status(short_tmp):
-    server = served(short_tmp/'auto.sock')
+@pytest.mark.parametrize('text', [
+    '{"schema": "wc_gate_command_v1"}', 'not json', '[]',
+    'NAN', 'FUTURE', 'NO_GATE_ID', 'TWO_LIMITS'])
+def test_malformed_or_future_gate_commands_stop_the_bridge(short_tmp, text):
     clock = ClockNs()
-    core = b.BridgeCore('session_a', 'bridge_1', clock_ns=clock)
-    core.connect(short_tmp/'auto.sock')
-    conn, _ = server.accept()
-    status = {'type': 'status', 'schema': p.STATUS_SCHEMA, 'session_id': 'session_a', 'source': 'AUTO',
-              'dead_man': True, 'estop': False}
-    conn.sendall(p.encode_line(status) + b'{"type": "status"}\n')
+    server, core, conn = connected(short_tmp, clock)
+    if text == 'NAN':
+        text = gate_text(clock, linear=float('nan'))                               # json.dumps writes NaN
+    elif text == 'FUTURE':
+        text = gate_text(clock, mono_ns=clock() + 100_000_000)
+    elif text == 'NO_GATE_ID':
+        text = json.dumps({k: v for k, v in json.loads(gate_text(clock)).items() if k != 'gate_id'})
+    elif text == 'TWO_LIMITS':
+        text = gate_text(clock, limits={'max_linear': 0.1, 'max_angular': 0.3})
+    with pytest.raises(b.BridgeError):
+        core.on_gate_command(text)
+    assert core.sequence == 0 and len(read_lines(conn, 1)) == 1                     # nothing forwarded
+    core.close(); conn.close(); server.close()
+
+
+def test_enable_heartbeat_release_and_estop_outputs(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    assert core.switch_outputs(True) == []                     # no owner status yet: nothing at all
+    deliver(core, conn, owner_status(dead_man=True, estop=False))
+    assert core.switch_outputs(False) == [('enable', True), ('estop', False)]   # first known state, at once
+    assert core.switch_outputs(False) == []                    # between heartbeats
+    assert core.switch_outputs(True) == [('enable', True)]     # 10 Hz heartbeat
+    deliver(core, conn, owner_status(dead_man=False))
+    assert core.switch_outputs(False) == [('enable', False)]   # released: one false at once
+    assert core.switch_outputs(True) == [] and core.switch_outputs(True) == []
+    deliver(core, conn, owner_status(dead_man=True))
+    assert core.switch_outputs(False) == [('enable', True)]
+    deliver(core, conn, owner_status(estop=True))
+    assert core.switch_outputs(False) == [('enable', False), ('estop', True)]
+    assert core.switch_outputs(True) == [('estop', True)]      # repeated while pressed
+    assert core.switch_outputs(False) == []
+    deliver(core, conn, owner_status(estop=False, dead_man=False))
+    assert core.switch_outputs(False) == [('estop', False)]    # released: one false, enable stays silent
+    deliver(core, conn, owner_status(dead_man=True))
+    clock.advance(0.31)                                        # owner status stale: unknown, publish nothing
+    assert core.switch_outputs(True) == [] and core.enable() is False
+    core.close(); conn.close(); server.close()
+
+
+def test_missing_switch_input_publishes_nothing(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    deliver(core, conn, owner_status(dead_man=None, estop=None, auto_state='UNAVAILABLE', source='NONE'))
+    assert core.switch_outputs(True) == [] and core.enable() is False
+    core.close(); conn.close(); server.close()
+
+
+def test_base_status_reasons_feedback_and_staleness(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    first = core.base_status()
+    assert first['base_auto'] is False and first['reason'] == 'BASE_STATUS_STALE' and first['owner_status_stale']
+    conn.sendall(p.encode_line(owner_status()) + b'{"type": "status"}\n')
     for _ in range(50):
         core.pump()
-        if core.status is not None:
+        if core.status is not None and core.counters['status_rejected']:
             break
-    assert core.enable() is True and core.estop() is False and core.counters['status_rejected'] == 1
-    assert core.base_status()['owner']['source'] == 'AUTO' and core.base_status()['reason'] is None
+    status = core.base_status()
+    assert status['base_auto'] is True and status['reason'] is None and core.counters['status_rejected'] == 1
+    assert status['feedback'] == owner_status()['feedback'] and status['stamp_mono_ns'] == clock()
+    json.dumps(status, allow_nan=False)
+    deliver(core, conn, owner_status(auto_state='NONE', source='MANUAL'))
+    assert core.base_status()['base_auto'] is False and core.base_status()['reason'] == 'BASE_NOT_AUTO'
     clock.advance(0.31)
-    assert core.enable() is False and core.estop() is None and core.base_status()['owner_status_stale']
-    assert core.base_status()['reason'] == 'BASE_STATUS_STALE'
-    conn.sendall(p.encode_line({**status, 'dead_man': False}))
-    for _ in range(50):
-        core.pump()
-        if core.status['dead_man'] is False:
-            break
-    assert core.enable() is False
+    stale = core.base_status()
+    assert stale['reason'] == 'BASE_STATUS_STALE' and stale['feedback'] is None and stale['auto_state'] is None
     conn.close()
     with pytest.raises(b.BridgeError):
         for _ in range(50):
@@ -141,13 +206,15 @@ def test_bridge_into_the_owner_socket_end_to_end(short_tmp):
     assert core.on_gate_command(gate_text(clock, linear=0.04))
     for _ in range(5):
         sock.pump()
-    assert env.auto.decision['linear'] == 0.04 and env.auto.decision['sequence'] == 1
+    assert env.auto.decision['linear'] == 0.04 and env.auto.decision['gate_id'] == 'gate_1'
     env.clock.advance(0.2)
     for _ in range(5):
         sock.pump(); core.pump()
     assert core.status is not None and core.status['session_id'] == env.owner.session_id
     assert core.status['bridge_connected'] is True and core.status['gate_state'] == 'ACTIVE'
     assert core.enable() is True                              # fake switches: hold-to-run held, no estop
+    relay = core.base_status()
+    assert relay['base_auto'] is False and relay['reason'] == 'BASE_NOT_AUTO'   # owner is not in AUTO
     core.close()
     for _ in range(5):
         sock.pump()

@@ -80,7 +80,8 @@ def make(*, unavailable=None, readback_value=7, switches=True):
     clock, channel, records = Clock(), FakeChannel(), []
     owner = m.MappingWheel(config(), channel, records.append, clock=clock, wall_ns=clock.wall, mono_ns=clock.ns)
     env = NS(owner=owner, clock=clock, channel=channel, records=records, reads=[], seq=0, ui=True, gate=True,
-             linear=0.0, angular=0.0, state='ACTIVE', gate_limits=(0.10, 0.30), tick=0)
+             linear=0.0, angular=0.0, state='ACTIVE', gate_limits=(0.10, 0.30), ceiling=None, reverse=False,
+             gate_id='gate_test', tick=0)
     env.switches = Switches(clock) if switches else None
 
     def readback(request):
@@ -101,13 +102,19 @@ def keys(env, pressed, foreground=True):
                'arm_generation': o.arm_generation, 'keys': pressed, 'foreground': foreground})
 
 
-def decision(env):
+def gate_limits(env):
+    ceiling = env.gate_limits[0] if env.ceiling is None else env.ceiling
+    return {'max_linear': env.gate_limits[0], 'max_angular': env.gate_limits[1], 'linear_ceiling': ceiling,
+            'allow_reverse': env.reverse}
+
+
+def decision(env, gate_seq=None):
     env.seq += 1
     env.auto.on_decision({'type': 'decision', 'session_id': env.owner.session_id, 'sequence': env.seq,
-                          'received_mono_ns': env.clock.ns(), 'gate_seq': env.seq, 'gate_mono_ns': env.clock.ns(),
+                          'received_mono_ns': env.clock.ns(), 'gate_id': env.gate_id,
+                          'gate_seq': env.seq if gate_seq is None else gate_seq, 'gate_mono_ns': env.clock.ns(),
                           'state': env.state, 'reasons': [], 'linear': env.linear, 'angular': env.angular,
-                          'limits': {'max_linear': env.gate_limits[0], 'max_angular': env.gate_limits[1]},
-                          'config_sha256': None})
+                          'limits': gate_limits(env), 'config_sha256': None})
 
 
 def run(env, seconds, held=None, dt=0.01):
@@ -173,7 +180,7 @@ def test_unavailable_source_refuses_and_never_writes_speed():
     ('bridge', 'BRIDGE_DISCONNECTED'), ('stale', 'DECISION_STALE'), ('limits', 'GATE_LIMITS_ABOVE_APPROVED'),
     ('dead_man', 'DEAD_MAN_NOT_HELD'), ('estop', 'ESTOP'), ('switch_stale', 'SWITCH_INPUT_STALE'),
     ('keys', 'MANUAL_STATE_ARMED'), ('moving', 'NOT_STATIONARY'), ('readback', 'DRIVER_READBACK_MISMATCH'),
-    ('ui', 'UI_NOT_FRESH'), ('generation', 'STALE_UI_GENERATION')])
+    ('ui', 'UI_NOT_FRESH'), ('generation', 'STALE_UI_GENERATION'), ('reverse', 'GATE_ALLOWS_REVERSE')])
 def test_entry_is_refused_until_every_condition_holds(cause, reason):
     env = make(readback_value=8 if cause == 'readback' else 7)
     run(env, 1.0)
@@ -184,6 +191,8 @@ def test_entry_is_refused_until_every_condition_holds(cause, reason):
         env.gate = False; run(env, 0.5)
     elif cause == 'limits':
         env.gate_limits = (0.30, 0.50); run(env, 0.1)
+    elif cause == 'reverse':
+        env.reverse = True; run(env, 0.1)
     elif cause == 'dead_man':
         env.switches.dead_man = False
     elif cause == 'estop':
@@ -236,7 +245,8 @@ def test_start_initializes_released_servo_then_ramps_within_limits():
 
 @pytest.mark.parametrize('change, reason', [
     (dict(linear=0.2), 'LINEAR_ABOVE_LIMIT'), (dict(linear=-0.05), 'NEGATIVE_LINEAR'),
-    (dict(angular=0.5), 'ANGULAR_ABOVE_LIMIT'), (dict(state='LOCALIZATION_UNTRUSTED'), 'GATE_NONZERO_WHILE_NOT_ACTIVE')])
+    (dict(angular=0.5), 'ANGULAR_ABOVE_LIMIT'), (dict(state='LOCALIZATION_UNTRUSTED'), 'GATE_NONZERO_WHILE_NOT_ACTIVE'),
+    (dict(ceiling=0.05), 'LINEAR_ABOVE_CEILING')])
 def test_violations_end_auto_with_a_controlled_stop(change, reason):
     env = driving(make())
     start = len(env.channel.requests)
@@ -250,6 +260,47 @@ def test_violations_end_auto_with_a_controlled_stop(change, reason):
     written = [chassis(w, env) for w in speeds(env, start)]
     assert all(v <= LIMITS['max_linear_m_s'] + 1e-9 and abs(w) <= LIMITS['max_angular_rad_s'] + 1e-3 for v, w in written)
     assert written[-1] == (0.0, 0.0) and env.auto.counters['violations'] >= 1
+
+
+@pytest.mark.parametrize('change, reason', [(dict(reverse=True), 'GATE_ALLOWS_REVERSE'),
+                                            (dict(gate_limits=(0.30, 0.30)), 'GATE_LIMITS_ABOVE_APPROVED')])
+def test_gate_limits_changing_during_auto_end_it_with_a_controlled_stop(change, reason):
+    env = driving(make())
+    start = len(env.channel.requests)
+    for key, value in change.items():
+        setattr(env, key, value)
+    run(env, 0.1)
+    assert env.auto.reason == reason and env.auto.state == 'STOPPING' and not env.auto.immediate
+    run(env, 1.0)
+    assert env.auto.state == 'NONE'
+    profile = [chassis(w, env)[0] for w in speeds(env, start)]
+    assert profile[-1] == 0.0 and max(profile) <= LIMITS['max_linear_m_s'] + 1e-9
+
+
+def test_target_is_held_under_the_gate_ceiling_within_tolerance():
+    env = driving(make())
+    env.ceiling = 0.097                            # gate output 0.10 is 3 mm/s above its own ceiling: tolerated
+    start = len(env.channel.requests)
+    run(env, 1.0)
+    assert env.auto.state == 'AUTO', env.auto.reason
+    assert max(chassis(w, env)[0] for w in speeds(env, start)) <= 0.097 + 1e-9
+
+
+@pytest.mark.parametrize('change, reason', [('restart', 'GATE_RESTARTED'), ('repeat', 'GATE_SEQ_NOT_INCREASING')])
+def test_a_new_gate_source_ends_auto_with_a_controlled_stop(change, reason):
+    env = driving(make())
+    start = len(env.channel.requests)
+    if change == 'restart':
+        env.gate_id = 'gate_restarted'             # seq starts again after a restart; the new id alone is enough
+        decision(env, gate_seq=1)
+    else:
+        decision(env, gate_seq=env.seq - 3)        # the bridge sequence still increases
+    assert env.auto.state == 'STOPPING' and env.auto.reason == reason and not env.auto.immediate
+    run(env, 1.5)
+    assert env.auto.state == 'NONE'
+    profile = [chassis(w, env)[0] for w in speeds(env, start)]
+    assert profile[0] > 0 and profile[-1] == 0.0
+    assert min(b - a for a, b in zip(profile, profile[1:])) >= -LIMITS['max_linear_decel_m_s2']*0.05 - 2e-3
 
 
 def test_takeover_key_only_stops_and_manual_drive_needs_a_new_press():
@@ -390,6 +441,10 @@ def test_status_is_json_and_never_claims_a_physical_stop():
     json.dumps(status, allow_nan=False)
     assert status['physical_stop_confirmed'] is False and status['dead_man'] is True and status['estop'] is False
     assert status['limits'] == LIMITS and status['gate_state'] == 'ACTIVE'
+    assert status['gate_id'] == status['entry_gate_id'] == 'gate_test'
+    feedback = status['feedback']
+    assert feedback['sequence'] == env.owner.sequence - 1 and 0 <= feedback['age_s'] <= m.FEEDBACK_FRESH_S
+    assert abs(feedback['stamp_mono_ns'] - env.clock.ns()) <= feedback['age_s'] * 1e9 + 1
 
 
 # ---------------------------------------------------------------- attach_auto and the socket
@@ -474,8 +529,9 @@ def test_socket_hello_decisions_and_status(short_tmp):
     client.sendall(p.encode_line(p.hello_packet(owner.session_id, 'bridge_test')))
     sock.pump(); sock.pump()
     assert owner.auto.bridge_connected and owner.auto.bridge_id == 'bridge_test'
-    gate = {'seq': 1, 'stamp_ns': 1, 'mono_ns': 5, 'state': 'ACTIVE', 'reasons': [], 'linear': 0.05, 'angular': 0.0,
-            'limits': {'max_linear': 0.1, 'max_angular': 0.3}, 'config_sha256': None}
+    gate = {'gate_id': 'gate_test', 'seq': 1, 'stamp_ns': 1, 'mono_ns': 5, 'state': 'ACTIVE', 'reasons': [],
+            'linear': 0.05, 'angular': 0.0, 'config_sha256': None,
+            'limits': {'max_linear': 0.1, 'max_angular': 0.3, 'linear_ceiling': 0.1, 'allow_reverse': False}}
     client.sendall(p.encode_line(p.decision_packet(gate, owner.session_id, 1, 10)))
     sock.pump()
     assert owner.auto.decision['linear'] == 0.05 and owner.auto.counters['decisions'] == 1
