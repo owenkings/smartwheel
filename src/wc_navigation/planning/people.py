@@ -31,9 +31,11 @@ Speed limit, decided by the person that is worst off:
   (0.12 m/s); below ``slow_far_m`` (2 m): ``slow_far_mps`` (0.2 m/s);
 - otherwise no limit (None).
 
-A yield ends after the condition has been clear for ``release_s``. A yield that lasts ``max_wait_s`` (20 s) is
-not held further: the people it waits for are treated as standing (the smaller clearance, no prediction), so
-the planner can go around them where there is room and the goal fails where there is not. They are treated
+A yield ends after the condition has been clear for ``release_s``. Yields that follow each other within
+``wait_reset_s`` count as one wait (a person crossing back and forth in front of the chair, 11-09 simulation).
+A wait that lasts ``max_wait_s`` (20 s) is not held further: the people it waits for are treated as standing
+(the smaller clearance, no prediction), so the planner can go around them where there is room and the goal
+fails where there is not. They are treated
 normally again once they are farther than ``slow_far_m``. The chair never reverses or spins to get out of the
 way: with an oncoming person who does not stop either, the chair stands still before the gap is below the
 clearance, and what happens next is up to the person.
@@ -74,6 +76,7 @@ class PeopleConfig:
     growth_sigma: float = 2.0
     max_wait_s: float = 20.0
     release_s: float = 1.0
+    wait_reset_s: float = 5.0           # yields less than this apart count as one wait (see Reaction)
     mask_horizon_s: float = 1.5
     stale_after_s: float = 1.0
     range_lag_s: float = 0.07           # filtered lidar ranges lag the stamp (see the module docstring)
@@ -212,6 +215,8 @@ class Reaction:
         self.cfg = cfg
         self.yield_since = None
         self.clear_since = None
+        self.wait_since = None          # start of the current wait (yields less than wait_reset_s apart)
+        self.last_yield = None
         self.demoted = set()
 
     def update(self, now, people, chair_pose, chair_velocity, body):
@@ -222,15 +227,20 @@ class Reaction:
         far = {a["id"] for a in assessments if min(a["gap_now_m"], a["gap_horizon_m"]) > cfg.slow_far_m}
         self.demoted -= far | (self.demoted - {p.id for p in people})
         limit, state, who = speed_decision(assessments, cfg)
+        if state != "YIELD" and self.last_yield is not None and now - self.last_yield >= cfg.wait_reset_s:
+            self.wait_since = None
         if state == "YIELD":
             self.clear_since = None
+            self.last_yield = now
             if self.yield_since is None:
                 self.yield_since = now
-            elif now - self.yield_since >= cfg.max_wait_s:
+            if self.wait_since is None:
+                self.wait_since = now
+            elif now - self.wait_since >= cfg.max_wait_s:
                 waited = {a["id"] for a in assessments if a["gap_yield_m"] < a["clearance_m"] and a["moving"]}
                 if waited:
                     self.demoted |= waited
-                    self.yield_since = None
+                    self.yield_since = self.wait_since = None
                     return self.update(now, people, chair_pose, chair_velocity, body)
         elif self.yield_since is not None:
             if self.clear_since is None:
@@ -240,7 +250,7 @@ class Reaction:
             else:
                 self.yield_since = self.clear_since = None
         return {"limit_mps": limit, "state": state, "deciding": who,
-                "yield_s": None if self.yield_since is None else round(now - self.yield_since, 2),
+                "yield_s": None if self.wait_since is None else round(now - self.wait_since, 2),
                 "treated_as_standing": sorted(self.demoted), "people": len(people)}
 
 

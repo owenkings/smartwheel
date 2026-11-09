@@ -88,6 +88,12 @@ def add_planning_arguments(parser):
                              "gated: it ramps from rest after the gate or the collision monitor stopped the chair "
                              "(planning/velocity_feedback.py); odom: Nav2's closed loop on /odom, comparison only "
                              "(crawls through the monitor's slowdown zones)")
+    parser.add_argument("--people-reaction", action="store_true",
+                        help="react to people in the obstacle tracks (planning/people_node.py): slow down near them "
+                             "and yield (speed limit); default off. Simulation only, with --tracks truth")
+    parser.add_argument("--people-keepout", action="store_true",
+                        help="with --people-reaction: also a keepout zone in both costmaps around people standing "
+                             "still for 3 s (off by default: in the corridor it closes the way and the goal fails)")
 
 
 def resolve_planning_arguments(parser, args):
@@ -101,10 +107,13 @@ def resolve_planning_arguments(parser, args):
                                        recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
                                        global_live_scans=args.global_costmap == "live",
                                        fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback,
-                                       local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback)
+                                       local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback,
+                                       people_reaction=args.people_reaction, people_keepout=args.people_keepout)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    if args.people_reaction and getattr(args, "tracks", "none") != "truth":
+        parser.error("--people-reaction needs --tracks truth (simulated navigate runs; live tracks are not wired yet)")
     fixed_controller = ("plugin", "primary_controller", "allow_reversing", "vx_min", "motion_model")
     fixed_planner = ("plugin", "allow_unknown", "allow_reverse_expansion", "motion_model_for_search")
     if any(key in fixed_controller for key, _ in args.planning.controller_params) or \

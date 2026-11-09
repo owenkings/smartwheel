@@ -27,6 +27,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
 | `--global-costmap live\|static` | `live`（默认）：导航时全局代价地图也标记实时扫描；`static`：只按保存的地图规划，实时扫描仍进局部代价地图、控制器碰撞检查和碰撞监控 |
 | `--local-padding M` | 局部代价地图的外形余量，也就是 RPP 和 RotationShim 自己碰撞检查用的余量（默认 0，不变；最大 0.3 m）。设成和规划余量一样（0.10），控制器就不会把车开进规划器不接受的位姿；碰撞监控不受影响 |
+| `--people-reaction` | 对航迹里的人做反应（减速、让行，靠速度上限），默认不开；只能和仿真的 `--tracks truth` 一起用，见下面“仿真”一节 |
+| `--people-keepout` | 和 `--people-reaction` 一起用：站着不动满 3 s 的人在两个代价地图里另加禁行区，默认不开 |
 | `--smoother-feedback open_loop\|gated\|odom` | 速度平滑器以为的当前速度。`open_loop`（默认，不变）：自己上一次的输出。`gated`：同上，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
@@ -48,6 +50,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 `navigate --world 名称` 或 `--world-map 地图` 不需要先探索：真值世界本身就是导航地图（合成世界写到运行目录的 `world_map.yaml`，已保存地图直接使用；`--obstacle` 圆盘只在真值里、不进地图），世界坐标与地图坐标重合。这样比较规划和控制时不混入建图误差；AMCL 和闸门照常运行。起点要让车体（按外形）不与世界重叠。
 
 `--localization truth`（只对 navigate）：仿真按真值发布 `map→odom`，只启动 map_server、不启动 AMCL，闸门不要求 AMCL 协方差（其余闸门条件照常）。用来在走廊地图上只比较规划和控制；默认 `amcl` 不变。走廊里 AMCL 的修正和协方差会单独决定结果（见设计文档），系统级结论仍要用 `amcl` 跑。
+
+`--tracks truth --people-reaction`（只对 navigate，默认都不开）：仿真把行人（`--actors`）按 C 的航迹格式发到 `/obstacles/tracks`（来源和 seen_by 都是 truth），planning/people_node.py 按 people.py 决定速度上限，发到 `/speed_limit`（控制器服务器自己会用）。相隔不到 5 s 的几次让行算一次等待，等满 20 s 后这些人按站着处理（间隙 0.3 m、不预测）。再加 `--people-keepout` 时，站着不动满 3 s 的人在两个代价地图的 KeepoutFilter 里另画禁行区，半径是人的半径加 0.3 m 再加距离滞后余量；走动的人（包括走一下停一下的人）不画。默认不开禁行区：11-09 仿真里，人站在走廊车道上时禁行区把路堵死，Nav2 规划失败，约 10 s 后放弃目标；把走动的人预测的位置画进去，人来回横穿时走廊一直是堵的。运行目录里记 `people.jsonl`（每次决定）和 `people_costmaps.npz`（每秒一张局部代价地图和全局代价地图车附近 10 m 的截图，用来查旧位置残留）。实时链路还没有接。
 
 `--enable-pause AFTER_S DURATION_S`（只对 navigate，验证用，默认不开）：任务开始后 AFTER_S 仿真秒，监督进程的使能心跳改发 false，持续 DURATION_S（最多 30 s），闸门停车一次再放行，用来看放行后怎么起步（配合 `--smoother-feedback`）。时间窗写在 `result.json` 的 `supervisor.enable_pause_sim_s`。
 

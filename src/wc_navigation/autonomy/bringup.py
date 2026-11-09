@@ -392,7 +392,14 @@ class Supervisor:
             "odometry": cfg["odometry"], "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]}
         if mode == "navigate" and truth_localization(cfg):
             sim["map_to_odom_from_truth"] = {"world_T_map": list(cfg["world_T_map"])}
+        if cfg.get("tracks"):                                   # window B: --tracks truth (actors as tracks)
+            sim["tracks"] = dict(cfg["tracks"])
         files["sim"] = self.write("sim_config.json", sim)
+        if planning_choice(cfg).people_reaction:                # window B: --people-reaction
+            from ..planning.people_node import node_config as people_config
+            files["people"] = self.write("people_config.json", people_config(
+                nav2, profile, Body.from_profile(profile, source=cfg.get("body_model")), planning_choice(cfg),
+                self.output))
         files["gate"] = self.write("gate_config.json", {"gate": {
             "max_linear": profile.max_linear, "max_angular": profile.max_angular,
             "require_covariance": mode == "navigate" and not truth_localization(cfg),
@@ -504,6 +511,11 @@ class Supervisor:
                 self.launch_python("velocity_feedback", "wc_navigation.planning.velocity_feedback", files["feedback"])
                 self.wait_for(recorder, lambda: recorder.node.count_publishers(FEEDBACK_TOPIC) > 0, 30,
                               "velocity_feedback_ready")
+            if "people" in files:                               # window B: --people-reaction
+                from ..planning.people_node import SPEED_LIMIT_TOPIC
+                self.launch_python("people", "wc_navigation.planning.people_node", files["people"])
+                self.wait_for(recorder, lambda: recorder.node.count_publishers(SPEED_LIMIT_TOPIC) > 0, 30,
+                              "people_reaction_ready")
             self.launch_python("safety_gate", "wc_navigation.autonomy.gate_node", files["gate"])
             recorder.enabled = True
             ready_states = ("COMMAND_STALE", "ACTIVE")
