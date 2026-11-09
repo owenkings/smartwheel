@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "LIDAR_TIME_OFFSET",
+  "status": "USER_APPROVED_20261108",
+  "lidar_time_offset_ms": 75.0,
+  "meaning": "For the same motion, the header stamps of the lidar frames are this much later than the wheel/IMU odometry. Positive means the lidar is late.",
+  "how_to_apply": "Pair each lidar frame with the wheel/IMU odometry at stamp - lidar_time_offset_ms, i.e. stamp the scan earlier by the offset. Interpolate the odometry linearly in x, y and unwrapped yaw; hold the end poses. Same arithmetic as wc_navigation.live.amcl_cross.shifted_odometry (window D) and wc_navigation.autonomy.replay_mapping.shifted_poses.",
+  "defaults": {
+    "live_chain": "use lidar_time_offset_ms from this file (user decision 2026-11-08 11:30), including the 3D obstacle input",
+    "offline_replay_and_evaluation": "0 unless --lidar-time-offset-ms is given explicitly; results built or evaluated with 75 ms must say so"
+  },
+  "applies_to": {
+    "sides": ["left", "right"],
+    "time_basis": "host arrival stamps of the lidar frames and of the IMU/wheel samples",
+    "assembly_revision": "V7_20261002",
+    "lidar_sensor_ids": {"left": "XTM60B20250324000151", "right": "XTM60B20250324000134"},
+    "imu_sensor_id": "H30-5B8E666933"
+  },
+  "estimates_ms": {
+    "method": "lidar ICP yaw rate against gyro z (bias removed), cross-correlation over -100..+200 ms in 1 ms steps; uncertainty is the standard deviation of a 20-block bootstrap",
+    "ZL1107capture_2026_1107_154018": {"left": [76.0, 3.5], "right": [79.8, 7.8], "note": "most turning, the most reliable"},
+    "ZL21107corridor_nav_2026_1107_155149": {"left": [65.8, 9.8], "right": [75.4, 13.0]},
+    "ZL1107_abcapture_2026_1107_181747": {"left": [136.6, 16.3], "right": [121.3, 11.3], "note": "almost only three in-place turnarounds; not used"},
+    "wheel_against_imu": "1-6 ms, not corrected"
+  },
+  "evidence": [
+    {"what": "time offset estimate (window A)", "path": "reports/time_alignment/20261107_211500_ZL1107/time_offset.json",
+     "sha256": "44ea9bb88e77b54218d9cec95fde82908dc0f209fc22a12682dc66dfd30d7d02"},
+    {"what": "mapping consistency against a pose time shift (window A)", "path": "reports/time_alignment/20261107_211500_ZL1107/shift_map.json",
+     "sha256": "52fa2f760e38acdfadc5ee11cb9df9d1c5d88b2ada5ef80611c77336a77ca977"},
+    {"what": "AMCL replay with 0/50/66/75 ms (window D)", "path": "reports/navigation_amcl_cross/20261107T160057Z_lidar_time_offset_ZL1107/amcl_comparison.json",
+     "sha256": "f991a630fe05a17a827376a8e068ee802ca962d0a9bd8e1ba15570f0a8d5c6f0"},
+    {"what": "summary of the AMCL replay comparison (window D)", "path": "reports/navigation_amcl_cross/20261107T160057Z_lidar_time_offset_ZL1107/README.md",
+     "sha256": "c3521d85a387e4002c6f656d7ae8099e48de92907f0579ba064d92ad32345d37"}
+  ],
+  "evidence_root": "data root (config/storage.local.json); the paths above are relative to it",
+  "decision": {"by": "user", "at": "2026-11-08T11:30+08:00", "record": "coordination board, user decision record of 2026-11-08 11:30"},
+  "limits": [
+    "One value for both lidars: the mapping recording gave left 76 ms and right 80 ms, and recordings scatter by about +-10-20 ms.",
+    "Estimated on host arrival time of the IMU. If a consumer moves the IMU to device time, re-estimate on that basis.",
+    "Re-estimate after changes to the lidars, the driver, the host or the network path."
+  ]
+}

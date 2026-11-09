@@ -21,6 +21,7 @@
 - [cli.py](cli.py)
 - [imu_timing_config.py](imu_timing_config.py)：选择本机时序配置；录制冻结后不再读取机器覆盖。
 - [mapping_app.py](mapping_app.py)：建图命令入口与单次会话的停止保存流程。
+- [mapping_auto.py](mapping_auto.py)：轮控所有者的自动控制源；会话配置里没有 `auto_controls` 就不挂接（[速度通道设计](../../docs/architecture/velocity_channel.md)）。
 - [mapping_interactive.py](mapping_interactive.py)：同一窗口的预览、建图切换和独立保存进程编排。
 - [mapping_interactive_control.py](mapping_interactive_control.py)：本机窗口所有者、命令确认和状态代次，元数据存入内部运行目录。
 - [mapping_interactive_worker.py](mapping_interactive_worker.py)：处理已正常停止的旧地图，不启动设备。

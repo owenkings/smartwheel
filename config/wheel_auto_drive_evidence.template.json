@@ -1,0 +1,32 @@
+{
+  "schema": "wc_auto_drive_evidence_v1",
+  "state": "UNVALIDATED",
+  "stage": null,
+  "device_id": "ZLAC8030D-0000000014",
+  "firmware_id": null,
+  "reviewer": null,
+  "reviewed_at": null,
+  "approved_limits": {
+    "max_linear_m_s": null,
+    "max_angular_rad_s": null,
+    "max_wheel_rpm": null,
+    "max_linear_accel_m_s2": null,
+    "max_linear_decel_m_s2": null,
+    "max_angular_accel_rad_s2": null
+  },
+  "driver_readback": [],
+  "stop_tests": {
+    "estop": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "dead_man": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "owner_killed": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "usb_unplugged": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "orin_power_cut": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "software_zero": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []},
+    "auto_stand_checks": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []}
+  },
+  "braking": [],
+  "readback_schema": {"purpose": "communication_timeout | acceleration_time | ...", "request_hex": "slave 1 FC03 frame with CRC", "word_index": null, "mask": null, "equals": null},
+  "braking_schema": {"path": "software_zero | communication_loss | estop | dead_man", "speed_m_s": null, "distances_m": [], "max_heading_change_deg": null, "sources": []},
+  "source_schema": {"kind": "recording | video | tape_sheet | manual", "path": "checkout-relative or data-root path", "sha256": null},
+  "note": "docs/architecture/velocity_channel.md section 8. stage: STAND_TEST (wheels off the ground, at most 0.10 m/s and 0.30 rad/s; needs estop, dead_man, owner_killed, usb_unplugged, orin_power_cut), GROUND_TEST (adds software_zero and auto_stand_checks), SUPERVISED_CLOSED_LOOP (adds braking rows at the approved top speed for every path: software_zero <= 0.18 m, the others <= 0.30 m, at least 5 trials, scatter <= 20 %, heading change <= 5 deg). Register addresses and expected values stay empty until the ZLAC8030D manual is checked; this template must be rejected."
+}
