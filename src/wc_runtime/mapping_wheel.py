@@ -282,6 +282,7 @@ class MappingWheel:
         self.servo_release_acknowledged = False
         self.published_feedback_count = self.publication_failures = 0
         self.closed = self.closing = False
+        self.auto = None  # optional automatic control source (mapping_auto); None keeps manual-only behaviour
 
     def _log(self, record, *, required=True):
         try:
@@ -350,6 +351,8 @@ class MappingWheel:
     def fault(self, reason):
         self.failure = self.failure or str(reason)
         self.state = 'FAULT'
+        if self.auto is not None:
+            self.auto.on_fault(self.failure)
         self.disarm(self.failure)
         self._log({'event': 'manual_fault', 'reason': self.failure}, required=False)
 
@@ -357,6 +360,8 @@ class MappingWheel:
         """Mutate intent only. Socket servicing during an RTU guard is safe."""
         if not isinstance(value, dict) or value.get('session_id') != self.session_id:
             raise FeedbackError('manual packet session identity mismatch')
+        if self.auto is not None and self.auto.intercept(value):
+            return
         kind = value.get('type')
         if kind in ('disarm', 'close'):
             self.disarm('USER_DISARM' if kind == 'disarm' else 'USER_CLOSE')
@@ -588,6 +593,8 @@ class MappingWheel:
                 self.next_feedback = now+FEEDBACK_PERIOD_S
                 self.sample()
             now = self.clock()
+            if self.auto is not None and self.auto.step(now):
+                return
             if self.stop_deadline is not None and self.target() == (0., 0.):
                 self._release()
             if self.cancelled():
@@ -646,7 +653,7 @@ class MappingWheel:
 
     def status(self):
         linear, angular = self.target() if self.state == 'ARMED' else (0., 0.)
-        return {'type': 'status', 'schema': 'wc_mapping_manual_status_v1', 'session_id': self.session_id,
+        status = {'type': 'status', 'schema': 'wc_mapping_manual_status_v1', 'session_id': self.session_id,
                 'state': self.state, 'reason': self.reason, 'arm_allowed': self.control['arm_allowed'],
                 'arm_block_reason': None if self.control['arm_allowed'] else self.control['reason'],
                 'arm_generation': self.arm_generation, 'keys': sorted(self.keys),
@@ -674,6 +681,9 @@ class MappingWheel:
                 'hardware_watchdog_verified': False, 'hardware_watchdog_timeout_s': None,
                 'firmware_id': None, 'physical_stop_confirmed': False,
                 'operation_evidence': self.control.get('operation_evidence'), 'failure': self.failure}
+        if self.auto is not None:
+            status['auto'] = self.auto.status()
+        return status
 
     def close(self):
         if self.closed:
@@ -977,7 +987,7 @@ def main(argv=None):
         signal.signal(signum, stop)
     lease = FeedbackSerialLease(hardware, RUN)
     journal = create_journal(raw_path, asynchronous=True, close_timeout_s=args.close_timeout_s)
-    owner = output = control_socket = None
+    owner = output = control_socket = auto_socket = None
     result, failure = 0, None
     recorder_discovered = False
     ready_written = False
@@ -998,11 +1008,20 @@ def main(argv=None):
         owner = MappingWheel(config, channel, journal, publish=output.publish, cancelled=lambda: stopped[0])
         control_socket = ManualSocket(socket_path, owner)
         owner.before_control = control_socket.pump
+        if config.get('auto_controls') is not None:
+            # Optional automatic control source (velocity_channel.md); absent from every generated configuration.
+            from .mapping_auto import attach_auto
+            auto_socket = attach_auto(config, owner, ROOT, directory)
+            if auto_socket is not None:
+                owner.before_control = lambda: (control_socket.pump(), auto_socket.pump())
         last_status = 0.
         # The mapping supervisor alone owns the session duration. Keep feedback
         # available until its stop signal; source and key deadlines stay active.
         while not stopped[0] and owner.failure is None:
-            control_socket.pump(); owner.step()
+            control_socket.pump()
+            if auto_socket is not None:
+                auto_socket.pump()
+            owner.step()
             if (args.require_recorder and not ready_written and owner.failure is None and owner.sequence >= 1
                     and owner.publication_failures == 0 and output.raw_publish_count >= 1):
                 from .source_archive import atomic_json
@@ -1026,6 +1045,8 @@ def main(argv=None):
         if owner is not None:
             owner.fault(failure)
     finally:
+        if auto_socket is not None:
+            auto_socket.close()
         if control_socket is not None:
             control_socket.close()
         if owner is not None:

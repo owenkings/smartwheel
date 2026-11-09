@@ -210,4 +210,12 @@ flowchart LR
 - 改动范围：`wc_runtime/mapping_wheel.py` 加自动控制源和 `auto.sock`，默认不建；新的底盘桥进程；`hardware_setup.json` 加默认关闭的 `auto_controls`；新的证据文件格式；接口约定改一条。手动驾驶、手推和录包的现有行为不变。
 - 顺序：第 0 级代码和测试 → 用户审代码 → 硬件到位 → 第 1–3 级 → 用户同意后第 4 级。
 
+第 0 级的实现（2026-11-09，A；只用假串口测过，没连驱动器）：
+- 自动控制源在新文件 [mapping_auto.py](../../src/wc_runtime/mapping_auto.py)。[mapping_wheel.py](../../src/wc_runtime/mapping_wheel.py) 只加挂接（+24/−3 行）：没有挂接时手动驾驶、手推和录包的行为不变。会话冻结配置里没有 `auto_controls` 就不挂接。现在没有配置生成器写它，`hardware_setup.json` 也没加，等第 1 级做完开关读入和参数回读再定。
+- 写了 `auto_controls` 也要下面几条全满足才建 `auto.sock`：`allowed` 为 true；有当天的 `WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>`；证据文件通过；上限自洽；有使能开关和急停的读入；能回读驱动器参数。车上现在没有后两样，所以自动控制在车上跑不起来。
+- 消息格式在 [auto_protocol.py](../../src/wc_motion/auto_protocol.py)。桥只接受 `wc_gate_command_v1`，字段正好是 9.2 第 1 条那些，多一个、少一个都拒绝：`limits` 写成 `{"max_linear": …, "max_angular": …}`；`seq`、`stamp_ns` 是非负整数，`mono_ns` 是正整数；`state` 以大写字母开头，只含大写字母、数字和下划线，至多 48 个字符；`reasons` 是至多 16 条的短字符串列表；`config_sha256` 是 64 位小写十六进制或 null。只有 `ACTIVE` 可以带非零速度；其他状态带非零速度、负线速度、超过批准上限 0.005 m/s 或 0.01 rad/s 以上，都按软件减速上限停车并退出自动，不截断了照走。
+- 证据格式在 [auto_evidence.py](../../src/wc_motion/auto_evidence.py)，模板 [wheel_auto_drive_evidence.template.json](../../config/wheel_auto_drive_evidence.template.json) 总被拒绝。分三个阶段：`STAND_TEST`（架空，上限不超过 0.10 m/s、0.30 rad/s，要第 2 级 a–d 的停车记录：急停、松开使能、杀轮控所有者、拔 USB、断 Orin 电源）、`GROUND_TEST`（再加 e 软件零速和 f–g 自动通道架空检查）、`SUPERVISED_CLOSED_LOOP`（再加批准最高速度下四种停车方式的制动记录，每种至少 5 次，过 8.1 的通过线）。来源文件记路径和 sha256，只能在本检出或数据根里。第 3 级按 0.10、0.20、0.30 m/s 逐级和第一次闭环用 0.10 m/s、0.30 rad/s，靠用户审证据里的 `approved_limits`，代码不分档。
+- 底盘桥在 [auto_bridge.py](../../src/wc_motion/auto_bridge.py)：只在 `ROS_DOMAIN_ID=100`、`ROS_LOCALHOST_ONLY=1` 且有当天同意时启动；丢掉超过 0.3 s 或来自未来 50 ms 以上的闸门决定；`auto.sock` 断了就退出，不重连；`/wc_nav/enable` 只在轮控所有者 0.3 s 内的状态报"使能开关按住、没有急停"时按 4 Hz 发。
+- 还没做：RViz 面板的"开始自动""停止自动"和状态显示（C++ 面板要重编，等用户审完代码再做）；开关读入和驱动器参数回读（第 1 级以后）。
+
 返回[系统设计](README.md)。

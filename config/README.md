@@ -19,6 +19,7 @@
 - [quality_experimental.json](quality_experimental.json)
 - [storage.json](storage.json)
 - `storage.local.json`：本机数据根目录与可移除介质身份，不随仓库提供。
+- [wheel_auto_drive_evidence.template.json](wheel_auto_drive_evidence.template.json)：自动速度通道的证据模板，加载时总被拒绝；格式见[速度通道设计](../docs/architecture/velocity_channel.md)第 8、11 节。
 - 其余同类文件遵守本目录的职责和命名规则。
 
 ## 本机覆盖和任务冻结
