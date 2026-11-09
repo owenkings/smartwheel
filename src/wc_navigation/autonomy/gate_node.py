@@ -2,15 +2,22 @@
 
 Publishes an explicit zero twist whenever the gate is not ACTIVE, at a fixed
 rate, so the base watchdog always sees a fresh decision. Status JSON goes to
-``/wc_nav/gate_status`` at 2 Hz and on every state change.
+``/wc_nav/gate_status`` at 2 Hz and on every state change. With AMCL (the
+covariance condition on), a robot held for its covariance gets a bounded number
+of AMCL no-motion updates (``StationaryRelocalization``); the gate's own
+conditions and limits do not change. The covariance condition's mode
+(``GateConfig.covariance_mode``: lateral by default since 2026-11-09, xy on request) is assessed
+on every AMCL pose with its heading.
 """
 from __future__ import annotations
 
 import argparse
 
 from .nav2_config import CMD_GATED, CMD_MONITORED
-from .ros_util import json_message, latched_qos, load_config, lookup_pose, require_isolated_domain
-from .safety_gate import CorrectionMonitor, GateConfig, SafetyGate
+from .ros_util import json_message, latched_qos, load_config, lookup_pose, quaternion_to_yaw, require_isolated_domain
+from .safety_gate import COVARIANCE_REASONS, CorrectionMonitor, GateConfig, SafetyGate, StationaryRelocalization
+
+NOMOTION_SERVICE = "/request_nomotion_update"
 
 
 class GateNode:
@@ -21,6 +28,16 @@ class GateNode:
         self.node = node
         self.gate = SafetyGate(GateConfig(**config.get("gate", {})))
         self.correction = CorrectionMonitor(**config.get("correction_monitor", {}))
+        # With AMCL (covariance required) the gate asks for in-place filter updates while it holds a standing
+        # robot for its covariance; see StationaryRelocalization. Off without AMCL.
+        relocalization = dict(config.get("stationary_relocalization", {}))
+        service = relocalization.pop("service", NOMOTION_SERVICE)
+        self.relocalization = None
+        if self.gate.config.require_covariance:
+            self.relocalization = StationaryRelocalization(**relocalization)
+            from std_srvs.srv import Empty
+            self.Empty = Empty
+            self.nomotion = node.create_client(Empty, service)
         self.Twist = Twist
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, node)
@@ -44,7 +61,9 @@ class GateNode:
         self.gate.on_command(message.linear.x, message.angular.z, self.now())
 
     def on_pose(self, message):
-        self.covariance_ok, self.covariance_reason = self.gate.check_covariance(message.pose.covariance)
+        # The heading is used by the lateral covariance mode only; the xy mode ignores it.
+        self.covariance_ok, self.covariance_reason = self.gate.on_covariance(
+            message.pose.covariance, quaternion_to_yaw(message.pose.pose.orientation))
 
     def tick(self):
         now = self.now()
@@ -52,10 +71,10 @@ class GateNode:
             return  # no simulated clock yet
         found = lookup_pose(self.buffer, "map", "base_link")
         correction = lookup_pose(self.buffer, "map", "odom")
+        robot = lookup_pose(self.buffer, "odom", "base_link")
         correction_ok, correction_reason = (True, "")
         if correction is not None:
             if self.correction.reference == "robot":
-                robot = lookup_pose(self.buffer, "odom", "base_link")
                 if robot is None:
                     correction_ok, correction_reason = False, "ODOM_TO_BASE_TF_UNAVAILABLE"
                 else:
@@ -78,15 +97,26 @@ class GateNode:
         message = self.Twist()
         message.linear.x, message.angular.z = decision.linear, decision.angular
         self.out.publish(message)
+        if self.relocalization is not None:
+            holding = decision.state == "LOCALIZATION_UNTRUSTED" and any(r in COVARIANCE_REASONS for r in decision.reasons)
+            if self.relocalization.update(now, holding, None if robot is None else robot[0],
+                                          self.nomotion.service_is_ready()):
+                self.nomotion.call_async(self.Empty.Request())
+                self.node.get_logger().info("covariance hold on a standing robot: AMCL no-motion update %d/%d" % (
+                    self.relocalization.requests_this_stop, self.relocalization.max_requests))
         self.counts[decision.state] = self.counts.get(decision.state, 0) + 1
         for reason in decision.reasons:
             self.counts[reason] = self.counts.get(reason, 0) + 1
         if decision.state != self.last_state or now - self.last_status >= 0.5:
-            self.status.publish(json_message({
-                "time_s": round(now, 3), "state": decision.state, "reasons": list(decision.reasons),
-                "previous_state": self.last_state, "counts": self.counts,
-                "map_correction_events": self.correction.events,
-                "linear": decision.linear, "angular": decision.angular}))
+            status = {"time_s": round(now, 3), "state": decision.state, "reasons": list(decision.reasons),
+                      "previous_state": self.last_state, "counts": self.counts,
+                      "map_correction_events": self.correction.events,
+                      "linear": decision.linear, "angular": decision.angular}
+            if self.relocalization is not None:
+                status["stationary_relocalization"] = self.relocalization.status()
+            if self.gate.config.require_covariance:
+                status["covariance"] = self.gate.covariance_status()
+            self.status.publish(json_message(status))
             self.last_state, self.last_status = decision.state, now
 
 

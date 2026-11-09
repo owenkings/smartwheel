@@ -56,8 +56,9 @@ class LiveInputs:
         self.odometry = LiveOdometry(live["prior"], self.lever, float(config.get("odom_period_s", 0.02)))
         rate = float(config.get("scan_rate_hz", 10.0))
         self.scan_period_ns = int(1e9 / rate) if rate > 0 else 0
-        # Explicit lidar time offset, default 0 (recorded stamps); see scan_adapter.scan_stamp_ns.
-        self.lidar_time_offset_ms = float(config.get("lidar_time_offset_ms", 0.0))
+        # Lidar time offset, resolved by the command line (approved configuration or explicit); see
+        # scan_adapter.scan_stamp_ns.
+        self.lidar_time_offset_ms = float(config["lidar_time_offset_ms"])
         scan_stamp_ns(0, self.lidar_time_offset_ms)
         self.stale_after_s = float(config.get("stale_after_s", 1.0))
         self.TransformStamped = TransformStamped

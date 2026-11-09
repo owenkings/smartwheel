@@ -168,8 +168,12 @@ class LiveSupervisor(Supervisor):
         for role in INPUT_ROLES:
             self.launch_module("inputs_" + role, "wc_navigation.live.inputs_node", files["inputs_" + role])
         if cfg.get("relay"):
-            self.launch_module("relay", "wc_navigation.live.relay_node", files["relay"])
-            self.wait_for(monitor, lambda: monitor.state("/wc_live/relay_status") == "RUNNING", 30, "relay_ready")
+            # nice 10: the relay's loopback copy competes with the panel's recorder for CPU (window A).
+            self.launch("relay", ["nice", "-n", "10", sys.executable, "-B", "-s", "-m", "wc_navigation.live.relay_node",
+                                  "--config", files["relay"]])
+            # On the vehicle the relay first waits until the panel's own consumers are subscribed.
+            wait_s = 600 if cfg["relay"].get("wait_for_panel_consumers") else 30
+            self.wait_for(monitor, lambda: monitor.state("/wc_live/relay_status") == "RUNNING", wait_s, "relay_ready")
             self.report["relay_self_check"] = (monitor.status.get("/wc_live/relay_status") or {}).get("self_check")
         self.wait_for(monitor, lambda: all(monitor.state("/wc_live/inputs_status/" + role) is not None
                                            for role in INPUT_ROLES), 30, "inputs_ready")
@@ -191,11 +195,12 @@ class LiveSupervisor(Supervisor):
         monitor = {"window_s": 2.0, "max_translation_m": limits["correction_translation_m"],
                    "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": 3.0,
                    "reference": limits["correction_reference"]}
+        covariance = {k: limits[k] for k in ("covariance_mode", "slow_std_m", "slow_linear") if k in limits}
         files["gate"] = self.node_config("gate_config", {
             "use_sim_time": sim, "correction_monitor": monitor,
             "gate": {"max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": True,
                      "covariance_xy_std_max_m": limits["covariance_xy_std_m"],
-                     "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"])}})
+                     "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"]), **covariance}})
         files["goals"] = self.node_config("goals_config", {
             "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"]})
         return files
@@ -257,7 +262,7 @@ class LiveSupervisor(Supervisor):
         files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
                      "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
                      "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
-                     "lidar_time_offset_ms": cfg.get("lidar_time_offset_ms", 0.0),
+                     "lidar_time_offset_ms": cfg["lidar_time_offset_ms"],
                      "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {

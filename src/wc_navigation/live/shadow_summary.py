@@ -43,6 +43,20 @@ def gate_untrusted(events, start, end):
     return states, reasons
 
 
+def gate_slow_seconds(events, start, end):
+    """Seconds within [start, end] in which the gate passed commands under its localization slow-down."""
+    changes = [e for e in events if e.get("topic") == "/wc_nav/gate_status"]
+    total = 0.0
+    for k, event in enumerate(changes):
+        a = float(event["time_s"])
+        b = float(changes[k + 1]["time_s"]) if k + 1 < len(changes) else end
+        overlap = min(b, end) - max(a, start)
+        value = event["value"]
+        if overlap > 0 and value.get("state") == "ACTIVE" and "LOCALIZATION_SLOW" in (value.get("reasons") or ()):
+            total += overlap
+    return round(total, 2)
+
+
 def summarize_shadow(config, output):
     from ..autonomy.shadow import STAGES, evaluate
     output = Path(output)
@@ -72,7 +86,8 @@ def summarize_shadow(config, output):
     stds = [math.sqrt(max(float(r["cov_xx"]), float(r["cov_yy"]))) for r in poses]
     result = {
         "commands": summary, "outcomes_while_moving": summary["outcome_fractions_while_recording_moves"],
-        "gate_state_s": states, "gate_untrusted_s": reasons, "window_s": list(window),
+        "gate_state_s": states, "gate_untrusted_s": reasons, "gate_slow_s": gate_slow_seconds(events, *window),
+        "window_s": list(window),
         "inputs_states": sorted({v.get("state") for v in inputs if v.get("state")}),
         "inputs_failure": next((v.get("failure") for v in inputs if v.get("failure")), None),
         "localization": {"amcl_poses": len(poses),

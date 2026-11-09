@@ -15,6 +15,33 @@ from ..geometry import _number
 
 STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "LOCALIZATION_UNTRUSTED",
           "COMMAND_STALE", "ACTIVE")
+# "lateral" (default since 2026-11-09, user decision): only the deviation across the heading and the heading
+# deviation stop the robot; a large deviation in another direction (in a corridor: along it) slows it instead,
+# see GateConfig. "xy" (the default until 2026-11-09, still selectable): the larger of the map-axis position
+# standard deviations stops it.
+COVARIANCE_MODES = ("xy", "lateral")
+
+
+def covariance_spread(covariance, yaw=None):
+    """Position and heading standard deviations of a row-major 6x6 pose covariance, or None if it is invalid.
+
+    ``x``/``y`` along the map axes, ``major``/``minor`` the axes of the position error ellipse, ``yaw`` the
+    heading deviation (rad); with ``yaw`` also ``along``/``across`` the heading.
+    """
+    try:
+        xx, xy, yy, tt = (float(covariance[k]) for k in (0, 1, 7, 35))
+    except (TypeError, IndexError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (xx, xy, yy, tt)) or min(xx, yy, tt) < 0:
+        return None
+    half_trace, root = (xx + yy) / 2.0, math.hypot((xx - yy) / 2.0, xy)
+    spread = {"x": math.sqrt(xx), "y": math.sqrt(yy), "major": math.sqrt(max(half_trace + root, 0.0)),
+              "minor": math.sqrt(max(half_trace - root, 0.0)), "yaw": math.sqrt(tt)}
+    if yaw is not None:
+        c, s = math.cos(float(yaw)), math.sin(float(yaw))
+        spread["along"] = math.sqrt(max(c * c * xx + 2 * c * s * xy + s * s * yy, 0.0))
+        spread["across"] = math.sqrt(max(s * s * xx - 2 * c * s * xy + c * c * yy, 0.0))
+    return spread
 
 
 @dataclass(frozen=True)
@@ -28,20 +55,72 @@ class GateConfig:
     require_covariance: bool = False
     # 0.50 m since 2026-11-07 (user decision; was 0.30 m): with the navigation AMCL parameters on the ZL1107
     # corridor, 0.30 m stopped 35% of the mapped stretch while the blank-map stretch stays above 0.50 m
-    # (docs/architecture/live_shadow.md).
+    # (docs/architecture/live_shadow.md). In the lateral mode the same limit applies across the heading.
     covariance_xy_std_max_m: float = 0.50
     covariance_yaw_std_max_rad: float = 0.25
+    # Covariance mode (see COVARIANCE_MODES): lateral since 2026-11-09 (user decision; was xy). In the ZL1107
+    # corridor the deviation along it stays above the limit while the robot stands, so xy stopped it for good at
+    # the corridor entrance (docs/architecture/live_shadow.md). Lateral only: above slow_std_m on the error
+    # ellipse's major axis the robot is slowed to slow_linear until the axis is back at
+    # slow_std_m - slow_hysteresis_m; the speed ceiling moves at slow_decel / slow_accel (the velocity smoother's
+    # limits), linear and angular speed scale together.
+    covariance_mode: str = "lateral"
+    slow_std_m: float = 0.50
+    slow_hysteresis_m: float = 0.05
+    slow_linear: float = 0.15
+    slow_decel: float = 0.6
+    slow_accel: float = 0.3
 
     def __post_init__(self):
         for name in ("max_linear", "max_angular", "command_timeout_s", "enable_timeout_s",
-                     "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad"):
+                     "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad",
+                     "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel"):
             object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         for name in ("allow_reverse", "require_covariance"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(name + " must be a boolean")
+        if self.covariance_mode not in COVARIANCE_MODES:
+            raise ValueError("covariance_mode must be one of " + ", ".join(COVARIANCE_MODES))
+        if self.slow_hysteresis_m >= self.slow_std_m:
+            raise ValueError("slow_hysteresis_m must be smaller than slow_std_m")
+        if self.slow_linear > self.max_linear:
+            raise ValueError("slow_linear must not exceed max_linear")
 
     def as_dict(self):
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+SLOW_LIMITS_DEFAULT = (GateConfig.slow_std_m, GateConfig.slow_linear)
+
+
+def add_covariance_mode_arguments(parser):
+    """Options of the gate's covariance condition (simulation, recorded and live shadow runs)."""
+    parser.add_argument("--gate-covariance-mode", choices=COVARIANCE_MODES,
+                        help="covariance condition of the gate: lateral (default since 2026-11-09: the deviation "
+                             "across the heading and the heading deviation stop, a large deviation along the "
+                             "heading slows instead) or xy (the earlier condition: the larger map-axis deviation "
+                             "stops)")
+    parser.add_argument("--gate-slow-limits", nargs=2, type=float, metavar=("STD_M", "SPEED_M_S"),
+                        help="lateral: slow to SPEED_M_S while the error ellipse's major axis is above STD_M "
+                             "(default %g m, %g m/s)" % SLOW_LIMITS_DEFAULT)
+
+
+def covariance_mode_settings(mode=None, slow_limits=None, max_linear=GateConfig.max_linear):
+    """GateConfig keyword arguments of the covariance mode options, always explicit: the mode and, for lateral,
+    the slow-down limits. ``mode=None`` is the gate's default mode (raises ValueError)."""
+    mode = GateConfig.covariance_mode if mode is None else mode
+    if mode not in COVARIANCE_MODES:
+        raise ValueError("unknown gate covariance mode: " + str(mode))
+    if mode == "xy":
+        if slow_limits is not None:
+            raise ValueError("--gate-slow-limits applies to the lateral covariance mode only")
+        return {"covariance_mode": "xy"}
+    std, speed = (float(v) for v in (slow_limits or SLOW_LIMITS_DEFAULT))
+    if not (math.isfinite(std) and GateConfig.slow_hysteresis_m < std <= 2.0):
+        raise ValueError("the slow-down deviation must be within %g..2 m" % GateConfig.slow_hysteresis_m)
+    if not (math.isfinite(speed) and 0 < speed <= max_linear):
+        raise ValueError("the slow speed must be within 0..%g m/s" % max_linear)
+    return {"covariance_mode": "lateral", "slow_std_m": std, "slow_linear": speed}
 
 
 class CorrectionMonitor:
@@ -111,6 +190,95 @@ class CorrectionMonitor:
         return True, ""
 
 
+COVARIANCE_REASONS = ("COVARIANCE_XY_TOO_LARGE", "COVARIANCE_YAW_TOO_LARGE", "COVARIANCE_ACROSS_HEADING_TOO_LARGE")
+
+
+class StationaryRelocalization:
+    """When to ask AMCL for an in-place filter update while the gate holds the robot for its covariance.
+
+    AMCL updates its filter only after the robot has moved ``update_min_d`` or ``update_min_a``. Once the gate
+    stops the robot because the covariance is too large, nothing moves, the filter is never updated, the
+    covariance never shrinks and the gate never releases (window B, ZL1107 simulation, 2026-11-07); a start
+    pose given with too large an uncertainty never becomes trusted for the same reason. While the gate holds
+    for a covariance reason and the robot has stood still for ``settle_s``, this asks for one no-motion update
+    (AMCL's ``request_nomotion_update``: the next scan updates the filter without motion) every
+    ``interval_s``, at most ``max_requests`` times per stop. The budget renews once the robot has moved
+    ``renew_translation_m`` or ``renew_yaw_rad`` (AMCL's own update thresholds) from where the stop began.
+
+    The gate's conditions and limits are unchanged. If the current view cannot bring the covariance within the
+    limit, the robot stays stopped: without a budget the same view would be counted again and again and the
+    covariance would shrink without new evidence.
+    """
+
+    def __init__(self, enabled=True, settle_s=1.0, interval_s=1.0, max_requests=5, still_translation_m=0.01,
+                 still_yaw_rad=math.radians(0.5), renew_translation_m=0.10, renew_yaw_rad=0.10):
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        self.enabled = enabled
+        self.settle_s = _number(settle_s, "settle_s", positive=True)
+        self.interval_s = _number(interval_s, "interval_s", positive=True)
+        if isinstance(max_requests, bool) or not isinstance(max_requests, int) or not 0 <= max_requests <= 20:
+            raise ValueError("max_requests must be an integer within 0..20")
+        self.max_requests = max_requests
+        self.still_translation_m = _number(still_translation_m, "still_translation_m", positive=True)
+        self.still_yaw_rad = _number(still_yaw_rad, "still_yaw_rad", positive=True)
+        self.renew_translation_m = _number(renew_translation_m, "renew_translation_m", positive=True)
+        self.renew_yaw_rad = _number(renew_yaw_rad, "renew_yaw_rad", positive=True)
+        self._poses = []
+        self._anchor = None
+        self._last_request = -math.inf
+        self.requests_this_stop = 0
+        self.requests_total = 0
+        self.stops = 0
+        self.exhausted_stops = 0
+        self.service_unavailable = 0
+
+    def _moved(self, a, b, translation, yaw):
+        return (math.hypot(a[0] - b[0], a[1] - b[1]) >= translation
+                or abs(math.atan2(math.sin(a[2] - b[2]), math.cos(a[2] - b[2]))) >= yaw)
+
+    def update(self, now, holding_for_covariance, robot_in_odom, service_available=True):
+        """Feed one gate tick; True when one no-motion update should be requested now.
+
+        ``robot_in_odom`` is the robot's (x, y, yaw) in odom, or None when it is unknown (no request then).
+        """
+        if not self.enabled or robot_in_odom is None:
+            return False
+        now = float(now)
+        pose = tuple(float(v) for v in robot_in_odom[:3])
+        if self._anchor is not None and self._moved(pose, self._anchor, self.renew_translation_m, self.renew_yaw_rad):
+            self._anchor, self.requests_this_stop = None, 0
+        self._poses.append((now, pose))
+        while len(self._poses) > 1 and now - self._poses[1][0] >= self.settle_s:
+            self._poses.pop(0)
+        settled = (now - self._poses[0][0] >= self.settle_s and not any(
+            self._moved(pose, old, self.still_translation_m, self.still_yaw_rad) for _, old in self._poses))
+        if not (holding_for_covariance and settled):
+            return False
+        if self._anchor is None:
+            self._anchor = pose
+            self.stops += 1
+        if self.requests_this_stop >= self.max_requests or now - self._last_request < self.interval_s:
+            return False
+        if not service_available:
+            self.service_unavailable += 1
+            self._last_request = now
+            return False
+        self.requests_this_stop += 1
+        self.requests_total += 1
+        self._last_request = now
+        if self.requests_this_stop == self.max_requests:
+            self.exhausted_stops += 1
+        return True
+
+    def status(self):
+        return {"enabled": self.enabled, "requests_total": self.requests_total,
+                "requests_this_stop": self.requests_this_stop, "max_requests_per_stop": self.max_requests,
+                "budget_exhausted": self.enabled and self.requests_this_stop >= self.max_requests,
+                "stops": self.stops, "exhausted_stops": self.exhausted_stops,
+                "service_unavailable_ticks": self.service_unavailable}
+
+
 @dataclass(frozen=True)
 class GateDecision:
     linear: float
@@ -132,6 +300,16 @@ class SafetyGate:
         self._latched = False
         self._localization_ok = False
         self._localization_reason = "NO_LOCALIZATION_INPUT"
+        # lateral covariance mode: slow-down state, last assessed spread and the ramped speed ceiling
+        self._slow = False
+        self._spread = None
+        self._ceiling = None
+        self._last_active = None
+
+    @property
+    def slow(self):
+        """Whether the lateral covariance mode currently slows the robot (False in the xy mode)."""
+        return self.config.covariance_mode == "lateral" and self._slow
 
     def on_command(self, linear, angular, now):
         self._command = (linear, angular)
@@ -155,9 +333,23 @@ class SafetyGate:
         self._localization_ok = bool(ok)
         self._localization_reason = str(reason) if not ok else ""
 
-    def check_covariance(self, covariance):
-        """Necessary-only covariance condition; small values never prove trust."""
+    def check_covariance(self, covariance, yaw=None):
+        """Necessary-only covariance condition; small values never prove trust.
+
+        The lateral mode needs the estimated heading ``yaw`` (rad, same frame as the covariance).
+        """
         cfg = self.config
+        if cfg.covariance_mode == "lateral":
+            spread = covariance_spread(covariance, yaw)
+            if spread is None:
+                return False, "COVARIANCE_INVALID"
+            if "across" not in spread:
+                return False, "COVARIANCE_HEADING_UNKNOWN"
+            if spread["across"] > cfg.covariance_xy_std_max_m:
+                return False, "COVARIANCE_ACROSS_HEADING_TOO_LARGE"
+            if spread["yaw"] > cfg.covariance_yaw_std_max_rad:
+                return False, "COVARIANCE_YAW_TOO_LARGE"
+            return True, ""
         try:
             xx, yy, tt = float(covariance[0]), float(covariance[7]), float(covariance[35])
         except (TypeError, IndexError, ValueError):
@@ -169,6 +361,44 @@ class SafetyGate:
         if math.sqrt(tt) > cfg.covariance_yaw_std_max_rad:
             return False, "COVARIANCE_YAW_TOO_LARGE"
         return True, ""
+
+    def on_covariance(self, covariance, yaw=None):
+        """Assess one localization estimate in time order: (ok, reason) as check_covariance, and in the lateral
+        mode the slow-down state (major axis above slow_std_m; released at slow_std_m - slow_hysteresis_m)."""
+        cfg = self.config
+        ok, reason = self.check_covariance(covariance, yaw)
+        if cfg.covariance_mode == "lateral":
+            spread = covariance_spread(covariance, yaw)
+            self._spread = spread
+            if spread is None or spread["major"] > cfg.slow_std_m:
+                self._slow = True
+            elif spread["major"] <= cfg.slow_std_m - cfg.slow_hysteresis_m:
+                self._slow = False
+        return ok, reason
+
+    def covariance_status(self):
+        """Mode, last assessed deviations (lateral mode) and the slow-down state, for the status topic."""
+        status = {"mode": self.config.covariance_mode}
+        if self.config.covariance_mode == "lateral":
+            spread = self._spread or {}
+            status.update({("std_%s_m" % k if k != "yaw" else "std_yaw_rad"): round(v, 4)
+                           for k, v in spread.items()})
+            status.update(slow=self.slow, slow_std_m=self.config.slow_std_m, slow_linear=self.config.slow_linear,
+                          speed_ceiling=None if self._ceiling is None else round(self._ceiling, 4))
+        return status
+
+    def _speed_ceiling(self, now):
+        """Linear speed ceiling of the lateral mode's slow-down, ramped while commands pass."""
+        cfg = self.config
+        target = cfg.slow_linear if self.slow else cfg.max_linear
+        if self._ceiling is None or self._last_active is None or not 0 <= now - self._last_active <= 0.25:
+            self._ceiling = target              # the output was zero (or the clock jumped): no step to smooth
+        elif self._ceiling > target:
+            self._ceiling = max(target, self._ceiling - cfg.slow_decel * (now - self._last_active))
+        else:
+            self._ceiling = min(target, self._ceiling + cfg.slow_accel * (now - self._last_active))
+        self._last_active = float(now)
+        return self._ceiling
 
     def evaluate(self, now):
         cfg = self.config
@@ -192,6 +422,14 @@ class SafetyGate:
         if linear < 0 and not cfg.allow_reverse:
             linear = 0.0
             reasons.append("REVERSE_BLOCKED")
+        if cfg.covariance_mode == "lateral":
+            ceiling = self._speed_ceiling(now)
+            if ceiling < cfg.max_linear:
+                reasons.append("LOCALIZATION_SLOW")
+                if abs(linear) > ceiling:
+                    # same factor for both: the robot keeps the commanded curvature, only slower
+                    scale = ceiling / abs(linear)
+                    linear, angular = linear * scale, angular * scale
         if abs(linear) > cfg.max_linear:
             linear = math.copysign(cfg.max_linear, linear)
             reasons.append("LINEAR_CLAMPED")

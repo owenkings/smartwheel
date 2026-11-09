@@ -390,7 +390,8 @@ class Supervisor:
         files["sim"] = self.write("sim_config.json", sim)
         files["gate"] = self.write("gate_config.json", {"gate": {
             "max_linear": profile.max_linear, "max_angular": profile.max_angular,
-            "require_covariance": mode == "navigate" and not truth_localization(cfg)}})
+            "require_covariance": mode == "navigate" and not truth_localization(cfg),
+            **cfg.get("gate_options", {})}})
         if mode == "explore":
             files["task"] = self.write("explorer_config.json", {
                 # Planning radius: the circle, or the outline's inscribed radius the planner passes with.

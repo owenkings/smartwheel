@@ -78,10 +78,13 @@ def add_arguments(parser):
     group.add_argument("--gate-correction-limits", nargs=2, type=float, metavar=("TRANSLATION_M", "YAW_DEG"),
                        help="amcl: correction change within 2 s that stops the gate (default 0.25 m, 10 deg)")
     group.add_argument("--gate-covariance-limits", nargs=2, type=float, metavar=("XY_STD_M", "YAW_STD_DEG"),
-                       help="amcl: largest AMCL standard deviations the gate accepts (default 0.50 m, 14.3 deg)")
+                       help="amcl: largest AMCL standard deviations the gate accepts (default 0.50 m, 14.3 deg; "
+                            "in the lateral covariance mode the position limit applies across the heading)")
     group.add_argument("--gate-correction-reference", choices=("odom_origin", "robot"),
                        help="amcl: measure the correction change as the move of the robot's map position "
                             "(robot, default) or as map->odom itself (odom_origin, the earlier measure)")
+    from .safety_gate import add_covariance_mode_arguments
+    add_covariance_mode_arguments(group)
 
 
 def check_arguments(parser, args):
@@ -90,7 +93,8 @@ def check_arguments(parser, args):
     amcl_only = {"--initial-pose-offset": args.initial_pose_offset, "--initial-pose-std": args.initial_pose_std,
                  "--amcl-params": args.amcl_params, "--gate-correction-limits": args.gate_correction_limits,
                  "--gate-covariance-limits": args.gate_covariance_limits,
-                 "--gate-correction-reference": args.gate_correction_reference}
+                 "--gate-correction-reference": args.gate_correction_reference,
+                 "--gate-covariance-mode": args.gate_covariance_mode, "--gate-slow-limits": args.gate_slow_limits}
     if mode == "identity":
         given = [k for k, v in {**specific, **amcl_only}.items() if v is not None]
         if given:
@@ -115,6 +119,11 @@ def check_arguments(parser, args):
         value = getattr(args, name)
         if value is not None and not all(v > 0 for v in value):
             parser.error("--" + name.replace("_", "-") + " must be positive")
+    from .safety_gate import covariance_mode_settings
+    try:
+        covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def alignment_from_args(args):
@@ -180,7 +189,12 @@ def config_section(args, output, recording, window):
                                   "covariance_yaw_std_rad": math.radians(float(cov_yaw_deg)),
                                   "defaults": bool(args.gate_correction_limits is None
                                                    and args.gate_covariance_limits is None
-                                                   and args.gate_correction_reference is None)}
+                                                   and args.gate_correction_reference is None
+                                                   and args.gate_covariance_mode is None
+                                                   and args.gate_slow_limits is None)}
+        from .safety_gate import covariance_mode_settings
+        # the covariance mode as run (lateral by default since 2026-11-09), recorded explicitly
+        section["gate_limits"].update(covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits))
     return section
 
 
@@ -216,6 +230,7 @@ def gate_config(profile, config):
     limits = config["gate_limits"]
     gate.update(require_covariance=True, covariance_xy_std_max_m=limits["covariance_xy_std_m"],
                 covariance_yaw_std_max_rad=limits["covariance_yaw_std_rad"])
+    gate.update({k: limits[k] for k in ("covariance_mode", "slow_std_m", "slow_linear") if k in limits})
     monitor = {"window_s": limits["correction_window_s"], "max_translation_m": limits["correction_translation_m"],
                "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": limits["correction_hold_s"],
                "reference": limits.get("correction_reference", GATE_REFERENCE)}

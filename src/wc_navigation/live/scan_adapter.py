@@ -22,6 +22,27 @@ RANGE_MIN, RANGE_MAX = 0.30, 8.0
 SCAN_HEIGHT_M = (-0.5, 0.5)
 REPRESENTATION = "representation=host_filtered"
 MAX_LIDAR_TIME_OFFSET_MS = 250.0
+# The live chain's offset is the approved value in window A's configuration (user decision 2026-11-08: 75 ms,
+# on IMU arrival time); offline replay and evaluation tools keep 0 unless it is given explicitly.
+LIDAR_TIME_OFFSET_CONFIG = "config/calibration/lidar_time_offset.json"
+LIDAR_TIME_OFFSET_SNAPSHOT = "lidar_time_offset.json"     # copy kept in a frozen live configuration
+
+
+def load_lidar_time_offset(path):
+    """Approved lidar time offset (ms) and its provenance from a LIDAR_TIME_OFFSET file."""
+    import hashlib
+    import json
+    from pathlib import Path
+    path = Path(path).expanduser().resolve(strict=True)
+    raw = path.read_bytes()
+    value = json.loads(raw)
+    if not isinstance(value, dict) or value.get("kind") != "LIDAR_TIME_OFFSET" or value.get("schema_version") != 1:
+        raise ValueError("not a lidar time offset file: " + str(path))
+    offset = value.get("lidar_time_offset_ms")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+        raise ValueError("lidar_time_offset_ms must be a number: " + str(path))
+    scan_stamp_ns(0, offset)
+    return float(offset), {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "status": value.get("status")}
 
 
 def scan_stamp_ns(source_stamp_ns, lidar_time_offset_ms=0.0):
@@ -29,7 +50,7 @@ def scan_stamp_ns(source_stamp_ns, lidar_time_offset_ms=0.0):
 
     A positive offset means the lidar stamps are late against the wheel/IMU odometry (window A, 2026-11-07:
     left lidar about 75 ms). Stamping the scan earlier makes AMCL, the costmaps and the collision monitor read
-    the odometry at the scan's capture time. The default 0 keeps the recorded stamps.
+    the odometry at the scan's capture time. Offset 0 keeps the recorded stamps.
     """
     offset = float(lidar_time_offset_ms)
     if not math.isfinite(offset) or abs(offset) > MAX_LIDAR_TIME_OFFSET_MS:
