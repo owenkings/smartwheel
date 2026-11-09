@@ -34,10 +34,28 @@ def test_people_are_moving_or_person_shaped_tracks_brought_to_now():
     people, age = pp.people_from_message(m, 10.2, CFG)
     assert age == pytest.approx(0.2) and [p.id for p in people] == [1, 2, 4]
     walker = people[0]
-    assert walker.moving and walker.x == pytest.approx(2.8) and walker.radius_m > 0.25
+    # brought forward over the age (0.2 s) plus the range lag of the filtered lidar frames (0.07 s)
+    assert walker.moving and walker.x == pytest.approx(3.0 - 0.27) and walker.radius_m > 0.25
     assert walker.growth_mps == pytest.approx(max(CFG.min_growth_mps, CFG.growth_sigma * 0.071))
     assert not people[1].moving and (people[1].vx, people[1].vy) == (0.0, 0.0)
     assert pp.people_from_message(m, 11.5, CFG)[0] == []             # stale message: nobody
+
+
+def test_range_lag_brings_an_oncoming_person_9_cm_closer():
+    """Filtered ranges lag about 70 ms: 1 m/s against 0.3 m/s is (1.0 + 0.3) x 0.07 = 0.091 m less margin."""
+    b = body()
+    chair = ((0.0, 0.0, 0.0), (0.3, 0.0))
+    m = message(10.0, [track(1, 4.0, 0.0, vx=-1.0, std=0.0)])
+    margins = []
+    for lag in (0.0, 0.07):
+        cfg = pp.PeopleConfig(range_lag_s=lag, min_growth_mps=0.0, growth_sigma=0.0)
+        people, _ = pp.people_from_message(m, 10.0, cfg)
+        a = pp.assess(people, *chair, b, cfg)[0]
+        margins.append(a["gap_now_m"] - a["clearance_m"])
+    assert margins[0] - margins[1] == pytest.approx((1.0 + 0.3) * 0.07)
+    assert pp.lag_margin((0.3, 0.2), CFG) == pytest.approx(0.021) and pp.lag_margin((-0.2, 0.0), CFG) == pytest.approx(0.014)
+    with pytest.raises(ValueError):
+        pp.PeopleConfig(range_lag_s=0.6)
 
 
 def test_chair_arc_and_frames():
@@ -119,7 +137,12 @@ def test_keepout_mask_is_lethal_near_people_and_repeats_the_inflation_curve():
     assert int(flat[int((0.95 - origin[1]) // res), int((1.0 - origin[0]) // res)]) == 100
     standing = pp.keepout_mask(shape, res, origin, [walker.as_standing()], CFG, inscribed_m=0.355,
                                circumscribed_m=0.946, cost_scaling_factor=3.0)
-    assert int(standing[int((0.0 - origin[1]) // res), int((1.6 - origin[0]) // res)]) == 99  # 0.25 + 0.3 only
+    # cell centre (1.575, 0.025) is 0.576 m from the person: outside the standing zone 0.25 + 0.3 m ...
+    assert int(standing[int((0.01 - origin[1]) // res), int((1.59 - origin[0]) // res)]) == 99
+    wider = pp.keepout_mask(shape, res, origin, [walker.as_standing()], CFG, inscribed_m=0.355,
+                            circumscribed_m=0.946, cost_scaling_factor=3.0, extra_m=0.06)
+    # ... and inside it once the zone is 0.06 m wider
+    assert int(wider[int((0.01 - origin[1]) // res), int((1.59 - origin[0]) // res)]) == 100
 
 
 def test_config_is_checked():

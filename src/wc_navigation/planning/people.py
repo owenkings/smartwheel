@@ -15,6 +15,13 @@ uncertainty (``growth_sigma`` x speed_std per second, at least ``min_growth_mps`
 disc. The chair moves along its current arc (linear and angular speed). Gaps are measured from the body
 outline to the person's disc.
 
+Range lag: the lidar SDK filters the ranges of the frames the tracks come from, and a range follows the true
+distance about 70 ms late (A, 11-08: filtered against raw frames of the same recording, 67-70 ms on both lidars).
+The message stamp (lidar header minus the lidar time offset) does not include it. Over ``range_lag_s`` an
+oncoming person comes ``speed x lag`` closer than reported and the chair's own advance shortens the distance by
+``chair speed x lag`` more (1 m/s against 0.3 m/s: 9 cm). So moving people are extrapolated over the message age
+plus ``range_lag_s``, and every clearance grows by ``range_lag_s`` x the chair's speed.
+
 Speed limit, decided by the person that is worst off:
 
 - yield (stop): within ``yield_horizon_s`` the predicted gap falls below the person's clearance
@@ -69,12 +76,15 @@ class PeopleConfig:
     release_s: float = 1.0
     mask_horizon_s: float = 1.5
     stale_after_s: float = 1.0
+    range_lag_s: float = 0.07           # filtered lidar ranges lag the stamp (see the module docstring)
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError("people config %s must be a non-negative finite number" % name)
+        if self.range_lag_s > 0.5:
+            raise ValueError("people config range_lag_s must be at most 0.5 s")
         if not (0.0 < self.step_s <= self.yield_horizon_s <= self.horizon_s and self.mask_horizon_s <= self.horizon_s):
             raise ValueError("people config needs 0 < step <= yield horizon <= horizon and mask horizon <= horizon")
         if not (self.slow_near_m <= self.slow_far_m and 0.0 < self.stop_limit_mps < self.slow_near_mps <= self.slow_far_mps):
@@ -110,12 +120,13 @@ class Person:
 def people_from_message(message, now, cfg=PeopleConfig()):
     """(people, age_s) of a checked ``wc_obstacle_tracks/1`` message, extrapolated from its stamp to ``now``.
 
-    A message older than ``stale_after_s`` gives no people (the age tells the caller why).
+    Moving people are extrapolated over the age plus ``range_lag_s``. A message older than ``stale_after_s``
+    gives no people (the age tells the caller why).
     """
     age = float(now) - float(message["stamp"])
     if age > cfg.stale_after_s:
         return [], age
-    dt = max(0.0, age)
+    dt = max(0.0, age) + cfg.range_lag_s
     people = []
     for e in message["tracks"]:
         if e["class"] not in PERSON_CLASSES and not e["has_moved"]:
@@ -156,16 +167,23 @@ def body_gap(body, pose, x, y, radius):
     return float(point_polygon_distance((x, y), body.outline_at(pose))[0]) - radius
 
 
+def lag_margin(chair_velocity, cfg=PeopleConfig()):
+    """Extra clearance for the chair's own advance during the range lag (m)."""
+    return cfg.range_lag_s * abs(float(chair_velocity[0]))
+
+
 def assess(people, chair_pose, chair_velocity, body, cfg=PeopleConfig()):
-    """Per person: clearance, current gap, smallest predicted gap within the yield horizon and the horizon."""
+    """Per person: clearance (with the lag margin), current gap, smallest predicted gap within the yield horizon
+    and the horizon."""
     times = np.arange(0.0, cfg.horizon_s + 1e-9, cfg.step_s)
     poses = [chair_at(chair_pose, chair_velocity[0], chair_velocity[1], t) for t in times]
+    extra = lag_margin(chair_velocity, cfg)
     out = []
     for p in people:
         gaps = np.array([body_gap(body, q, *p.at(t)) for q, t in zip(poses, times)])
         within = times <= cfg.yield_horizon_s + 1e-9
         k = int(np.argmin(gaps))
-        out.append({"id": p.id, "moving": p.moving, "clearance_m": p.clearance(cfg), "gap_now_m": float(gaps[0]),
+        out.append({"id": p.id, "moving": p.moving, "clearance_m": p.clearance(cfg) + extra, "gap_now_m": float(gaps[0]),
                     "gap_yield_m": float(gaps[within].min()), "gap_horizon_m": float(gaps.min()),
                     "t_closest_s": float(times[k])})
     return out
@@ -236,12 +254,13 @@ def inflation_cost(distance_m, inscribed_m, cost_scaling_factor):
 
 
 def keepout_mask(shape, resolution, origin, people, cfg=PeopleConfig(), *, inscribed_m, circumscribed_m,
-                 cost_scaling_factor, center_point=False):
+                 cost_scaling_factor, center_point=False, extra_m=0.0):
     """int8 KeepoutFilter mask (rows y, columns x) of ``shape`` cells at ``resolution`` from ``origin`` (x, y).
 
     ``inscribed_m``/``circumscribed_m``/``cost_scaling_factor``: the costmap's own footprint radii (padding
     included) and inflation factor. ``center_point``: the costmap's planner checks only the centre cell
-    (NavFn, Smac 2D, Theta*), so the inscribed ring is lethal too.
+    (NavFn, Smac 2D, Theta*), so the inscribed ring is lethal too. ``extra_m`` widens every person's zone,
+    e.g. ``lag_margin`` of the chair's current velocity.
     """
     height, width = (int(v) for v in shape)
     res = float(resolution)
@@ -252,7 +271,7 @@ def keepout_mask(shape, resolution, origin, people, cfg=PeopleConfig(), *, inscr
     for p in people:
         for t in (mask_times if p.moving else (0.0,)):
             cx, cy, r = p.at(t)
-            zone = r + p.clearance(cfg)
+            zone = r + p.clearance(cfg) + float(extra_m)
             c0 = max(0, int(math.floor((cx - zone - reach - ox) / res)))
             c1 = min(width, int(math.ceil((cx + zone + reach - ox) / res)) + 1)
             r0 = max(0, int(math.floor((cy - zone - reach - oy) / res)))
