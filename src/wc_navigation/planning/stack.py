@@ -22,6 +22,9 @@ Planners (Humble 1.1.20 packages installed on the Orin):
 Controllers (see ``controller_plugin``): ``rpp`` (default Regulated Pure
 Pursuit), ``shim_rpp`` (rotation shim + RPP that turns while driving) and
 ``mppi`` (forward-only MPPI with the outline in its cost critic).
+
+Velocity smoother feedback (see ``smoother_feedback_parameters``): ``open_loop``
+(default), ``gated`` (restart from rest after a stop) and ``odom`` (comparison).
 """
 from __future__ import annotations
 
@@ -56,6 +59,11 @@ DEFAULT_RECOVERY_RETRIES = 4                             # nav2_config.behavior_
 DEFAULT_RECOVERY_WAIT_S = 3.0
 SERVER_SECTIONS = ("general_goal_checker.", "progress_checker.")
 MAX_LOCAL_PADDING_M = 0.3
+# Velocity smoother's idea of the current speed (see smoother_feedback_parameters); open_loop is the stack as it is.
+SMOOTHER_FEEDBACK = ("open_loop", "odom", "gated")
+DEFAULT_SMOOTHER_FEEDBACK = "open_loop"
+FEEDBACK_TOPIC = "/wc_nav/smoother_feedback"     # planning/velocity_feedback.py, --smoother-feedback gated
+FEEDBACK_DURATION_S = 0.02                        # only the latest relay message counts (one per smoother output)
 _SMOOTHER = {"max_iterations": 1000, "w_smooth": 0.3, "w_data": 0.2, "tolerance": 1.0e-10, "do_refinement": True}
 
 
@@ -96,6 +104,9 @@ class PlanningChoice:
     # Footprint padding of the local costmap (m), i.e. of the controller's own collision checks (RPP, rotation
     # shim). 0 keeps the stack as it is; the planning margin of the global costmap is the profile's margin_m.
     local_padding_m: float = 0.0
+    # open_loop keeps the smoother as it is; gated adds planning/velocity_feedback.py (restart from rest after a
+    # gate or monitor stop); odom is Nav2's own closed loop on /odom, for comparison only.
+    smoother_feedback: str = DEFAULT_SMOOTHER_FEEDBACK
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
@@ -120,13 +131,16 @@ class PlanningChoice:
         if not 0.0 <= padding <= MAX_LOCAL_PADDING_M:
             raise ValueError("local padding must be 0..%g m" % MAX_LOCAL_PADDING_M)
         object.__setattr__(self, "local_padding_m", padding)
+        if self.smoother_feedback not in SMOOTHER_FEEDBACK:
+            raise ValueError("smoother feedback must be one of " + ", ".join(SMOOTHER_FEEDBACK))
 
     @property
     def is_default(self):
         return (self.planner == DEFAULT_PLANNER and self.controller == DEFAULT_CONTROLLER
                 and not self.planner_params and not self.controller_params and not self.server_params
                 and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S
-                and self.global_live_scans and not self.fallback_planner and not self.local_padding_m)
+                and self.global_live_scans and not self.fallback_planner and not self.local_padding_m
+                and self.smoother_feedback == DEFAULT_SMOOTHER_FEEDBACK)
 
     def as_dict(self):
         value = {"planner": self.planner, "controller": self.controller,
@@ -137,6 +151,8 @@ class PlanningChoice:
                  "global_live_scans": self.global_live_scans, "fallback_planner": self.fallback_planner}
         if self.local_padding_m:                         # runs without it keep their recorded config unchanged
             value["local_padding_m"] = self.local_padding_m
+        if self.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
+            value["smoother_feedback"] = self.smoother_feedback
         return value
 
     def behavior_tree_options(self):
@@ -156,7 +172,8 @@ class PlanningChoice:
                    recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)),
                    global_live_scans=bool(value.get("global_live_scans", True)),
                    fallback_planner=str(value.get("fallback_planner", "")),
-                   local_padding_m=float(value.get("local_padding_m", 0.0)))
+                   local_padding_m=float(value.get("local_padding_m", 0.0)),
+                   smoother_feedback=str(value.get("smoother_feedback", DEFAULT_SMOOTHER_FEEDBACK)))
 
 
 def _set(section, dotted, value):
@@ -242,6 +259,30 @@ def controller_plugin(name, rpp, profile):
     raise ValueError("unknown controller: " + str(name))
 
 
+def smoother_feedback_parameters(mode):
+    """``velocity_smoother`` parameters of one feedback mode.
+
+    - ``open_loop`` (the stack as it is): the smoother ramps from its own last
+      output, which stays at the commanded speed while the gate or the collision
+      monitor holds the chair, so a release jumps to that speed in one step.
+    - ``gated``: CLOSED_LOOP on ``FEEDBACK_TOPIC`` from planning/velocity_feedback.py
+      (its own last output, or zero while the gate's output is zero), so after a
+      stop it ramps from rest. Slowdown zones behave as in open_loop.
+    - ``odom``: Nav2's CLOSED_LOOP on /odom. Comparison only: behind the collision
+      monitor's slowdown ratio r the measured speed is r times the smoother's
+      output, so that output settles near accel/rate/(1 - r) (0.025 m/s at
+      0.3 m/s^2, 20 Hz, r = 0.4) and the chair crawls through slowdown zones at
+      r times that.
+    """
+    if mode == "open_loop":
+        return {"feedback": "OPEN_LOOP"}
+    if mode == "gated":
+        return {"feedback": "CLOSED_LOOP", "odom_topic": FEEDBACK_TOPIC, "odom_duration": FEEDBACK_DURATION_S}
+    if mode == "odom":
+        return {"feedback": "CLOSED_LOOP", "odom_topic": "odom", "odom_duration": 0.1}
+    raise ValueError("unknown smoother feedback: " + str(mode))
+
+
 def apply(params, profile, choice, *, exploring):
     """Replace planner and controller plugins in a ``navigation_parameters`` result, in place."""
     if choice.is_default:
@@ -264,6 +305,8 @@ def apply(params, profile, choice, *, exploring):
         costmap["plugins"] = [p for p in costmap["plugins"] if p != "obstacle_layer"]
     if choice.local_padding_m:
         params["local_costmap"]["local_costmap"]["ros__parameters"]["footprint_padding"] = choice.local_padding_m
+    if choice.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
+        params["velocity_smoother"]["ros__parameters"].update(smoother_feedback_parameters(choice.smoother_feedback))
     return params
 
 
@@ -317,6 +360,8 @@ def adjust_readback(expected, choice, profile, *, exploring):
         expected["global_costmap/global_costmap"]["plugins"] = [p for p in plugins if p != "obstacle_layer"]
     if choice.local_padding_m:
         expected.setdefault("local_costmap/local_costmap", {})["footprint_padding"] = choice.local_padding_m
+    if choice.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
+        expected.setdefault("velocity_smoother", {}).update(smoother_feedback_parameters(choice.smoother_feedback))
     return expected
 
 

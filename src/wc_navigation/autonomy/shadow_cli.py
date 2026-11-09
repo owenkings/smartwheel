@@ -306,6 +306,9 @@ class ShadowSupervisor(Supervisor):
         files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
             planning=planning_choice(cfg)))
+        if planning_choice(cfg).smoother_feedback == "gated":   # window B: smoother feedback relay (explicit option)
+            from ..planning.velocity_feedback import node_config
+            files["feedback"] = self.write("velocity_feedback_config.json", node_config(self.output))
         if shadow_localization.active(cfg):
             files.update(shadow_localization.write_files(self, profile, cfg))
         else:
@@ -381,6 +384,11 @@ class ShadowSupervisor(Supervisor):
                 if bad:
                     raise RunError(f"parameter readback mismatch on {node_name}: {bad} -> {actual}")
             self.report["parameter_readback"] = readback
+            if "feedback" in files:                             # window B: --smoother-feedback gated
+                from ..planning.stack import FEEDBACK_TOPIC
+                self.launch_python("velocity_feedback", "wc_navigation.planning.velocity_feedback", files["feedback"])
+                self.wait_for(recorder, lambda: recorder.node.count_publishers(FEEDBACK_TOPIC) > 0, 30,
+                              "velocity_feedback_ready")
             self.launch_python("safety_gate", "wc_navigation.autonomy.gate_node", files["gate"])
             recorder.enabled = True
             self.wait_for(recorder, lambda: (recorder.gate_status or {}).get("state") in ("COMMAND_STALE", "ACTIVE"),
