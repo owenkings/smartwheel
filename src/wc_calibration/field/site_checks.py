@@ -1,10 +1,11 @@
 """ZL1107 走廊现场补录的分析：录完直接读原始录包出结果，不用先跑前端。
 
   scripts/lidar_site_checks bias       --dataset 录包 --operator-statement "用户确认开头 35 s 车没人碰" [--dry-run]
-  scripts/lidar_site_checks wall       --dataset 录包 --tape 4.0 2.0 1.0 0.5 0.3 0.1
+  scripts/lidar_site_checks wall       --dataset 录包 --tape 4.0 2.0 1.0 0.5 0.3 0.1 4.0
   scripts/lidar_site_checks tape       --front-cm 8.9 --height-cm 3.9 [--lateral-cm 46.2] [--dataset 录包]
   scripts/lidar_site_checks push       --dataset 录包
   scripts/lidar_site_checks isolation  --both 录包 --left-only 录包 --right-only 录包
+  scripts/lidar_site_checks nearby     --with 车前站人的录包 --without 同一摆放没人的录包
 
 - bias：开头 30 s 静止的 10+10+10 零偏确认。写用户的物理静止声明，再调 wc_runtime.mapping_bias_confirm。
 - wall：车头正对平墙，按卷尺距离依次停车。量两台雷达到墙的距离、和卷尺的差、左右差、测距比例、墙面俯仰。
@@ -12,6 +13,7 @@
 - push：车头朝走廊尽头墙推近、拉远，三种速度。量每趟速度、左右墙面差，以及雷达相对轮速的时间偏移和比例
   （正前方尽头墙的距离对轮速积分的位移；比例取每趟前后的静止端点）。
 - isolation：只开左、只开右、两台都开的静止录包，比较悬空点和地面上翘点的比例，判断是不是两台互相干扰。
+- nearby：车前站人和同一摆放没人的静止录包，比较没被挡住的远处像素距离，判断近处亮物会不会把远处拉近。
 
 点云默认用录包里的 filtered 源帧（建图用的），按录包冻结的 hardware_setup（或 --hardware-setup 覆盖）换到车轴系。
 filtered 带 SDK 主机滤波（含 Kalman 时间滤波），移动时正对的面距离会滞后，所以 push 的时间偏移用 raw 帧（同一帧滤波前），
@@ -332,6 +334,16 @@ def wall_checks(rows, sides):
             yaw = float(np.median([row[side]['wall_yaw_deg'] for row in good]))
             out.append(check('车和墙的夹角（%s雷达，中位）' % name, 'PASS' if abs(yaw) <= 2.0 else 'WARN', r(yaw, 2), 2.0,
                              '车头没摆正；距离按垂直距离算，影响小，但卷尺读数会偏'))
+        repeated = {}
+        for row in good:                       # good 按停车先后排列
+            repeated.setdefault(round(row['tape_m'], 3), []).append(row[side]['error_vs_tape_m'])
+        for tape, values in sorted(repeated.items()):
+            if len(values) >= 2:
+                drift = values[-1] - values[0]
+                out.append(check('%s雷达卷尺 %.2f m 首末两次停车之差（后 − 前）' % (name, tape),
+                                 'PASS' if abs(drift) <= 0.01 else 'WARN', r(drift), 0.01,
+                                 '这段录包里的测距漂移，含两次摆车和量卷尺的误差；超过 1 cm 时 A 修正绝对距离和测距比例，'
+                                 '左右差不受影响'))
     return out
 
 
@@ -751,6 +763,45 @@ def analyze_isolation(recs, window=None, stride=2):
     return info, out
 
 
+# ------------------------------------------------------------------ nearby
+def analyze_nearby(with_rec, without_rec, with_window=None, without_window=None, stride=2):
+    """车前站人（with）和同一摆放没人（without）比：没被人挡住的远处像素距离变了多少，以及悬空点、地面上翘点。"""
+    info = {'with': str(with_rec.dir), 'without': str(without_rec.dir), 'with_window_s': with_window,
+            'without_window_s': without_window, 'frame_stride': stride,
+            'same_recording': with_rec.dir == without_rec.dir}
+    out = []
+    for side in [s for s in with_rec.sides if s in without_rec.sides]:
+        name = SIDE_NAMES[side]
+        a = static_rates(without_rec, side, without_window, stride)
+        b = static_rates(with_rec, side, with_window, stride)
+        if not a or not b:
+            out.append(check('%s雷达帧' % name, 'FAIL', None, None, '有一段录包（或时间窗）里没有这台雷达的帧'))
+            continue
+        ra, rb = a['_median_range'], b['_median_range']
+        valid = np.isfinite(ra) & np.isfinite(rb)
+        diff = np.where(valid, rb - ra, np.nan)
+        blocked = valid & (diff < -0.30)                        # 被人挡住、变近 30 cm 以上的像素
+        far = valid & (ra >= 2.4) & (np.abs(diff) < 0.30)       # 远处、没被挡住的像素
+        shift = float(np.median(diff[far])) if far.sum() >= 500 else None
+        row = {'without': {k: (r(v, 5) if isinstance(v, float) else v) for k, v in a.items() if not k.startswith('_')},
+               'with': {k: (r(v, 5) if isinstance(v, float) else v) for k, v in b.items() if not k.startswith('_')},
+               'blocked_pixels': int(blocked.sum()), 'far_pixels': int(far.sum()), 'far_shift_m': r(shift)}
+        if far.any():
+            row['far_shift_p10_p90_m'] = [r(float(np.percentile(diff[far], q))) for q in (10, 90)]
+        info[side] = row
+        out.append(check('%s雷达看到车前的人（被挡住的像素）' % name, 'PASS' if blocked.sum() >= 200 else 'FAIL',
+                         int(blocked.sum()), 200, '人站在脚踏前 0.5 m、正对车头、40 s 不动；不够说明人不在视野里，重录'))
+        status = ('INFO' if shift is None else 'PASS' if abs(shift) <= 0.01 else 'WARN' if shift <= -0.02 else 'INFO')
+        out.append(check('%s雷达远处没被挡的像素：有人 − 没人（中位，负值=变近）' % name, status, r(shift),
+                         '≤1 cm 不受影响；≤ −2 cm 受影响',
+                         '近处有亮物时远处被拉近；两段不是同一段录包时含约 ±1 cm 的温漂，中间值说不清'))
+        for key, label in (('floating_per_frame_median', '悬空点'), ('curl_per_frame_median', '地面上翘点')):
+            ratio = b[key] / a[key] if a[key] > 0 else None
+            out.append(check('%s雷达%s每帧：有人 / 没人' % (name, label), 'INFO', r(ratio, 2), None,
+                             '有人：%s，没人：%s；人挡住了身后的地面，比值只作参考' % (r(b[key], 1), r(a[key], 1))))
+    return info, out
+
+
 # ------------------------------------------------------------------ bias
 def run_bias(project, dataset, statement, max_norm=None, dry_run=False):
     from wc_runtime.mapping_bias_confirm import capture_calibration_rows
@@ -895,8 +946,8 @@ def main(argv=None):
         p = sub.add_parser(name)
         p.add_argument('--dataset', type=Path, required=True)
         p.add_argument('--hardware-setup', type=Path, help='覆盖录包冻结的 hardware_setup（例如旧录包的轮参数）')
-    sub.choices['wall'].add_argument('--tape', type=float, nargs='+', default=[4.0, 2.0, 1.0, 0.5, 0.3, 0.1],
-                                     help='车头最前点到墙的卷尺距离（m），按停车先后顺序')
+    sub.choices['wall'].add_argument('--tape', type=float, nargs='+', default=[4.0, 2.0, 1.0, 0.5, 0.3, 0.1, 4.0],
+                                     help='车头最前点到墙的卷尺距离（m），按停车先后顺序；同一距离停两次时给出两次之差')
     sub.choices['wall'].add_argument('--segments', type=int, nargs='+', help='静止段序号，和 --tape 一一对应')
     sub.choices['push'].add_argument('--max-range', type=float, default=7.5, help='尽头墙最远距离（m）')
     tape = sub.add_parser('tape')
@@ -911,6 +962,12 @@ def main(argv=None):
     iso.add_argument('--window', type=float, nargs=2, metavar=('START_S', 'END_S'),
                      help='只用每段录包这段时间（秒，从采集窗起点算）；默认整段')
     iso.add_argument('--stride', type=int, default=2, help='每隔几帧取一帧（默认 2，即 5 Hz）')
+    near = sub.add_parser('nearby', help='车前站人和同一摆放没人比：远处像素距离、悬空点')
+    near.add_argument('--with', dest='with_dataset', type=Path, required=True, help='车前站人的录包')
+    near.add_argument('--without', dest='without_dataset', type=Path, required=True, help='同一摆放、车前没人的录包')
+    near.add_argument('--with-window', type=float, nargs=2, metavar=('START_S', 'END_S'), help='只用这段时间（秒）')
+    near.add_argument('--without-window', type=float, nargs=2, metavar=('START_S', 'END_S'), help='只用这段时间（秒）')
+    near.add_argument('--stride', type=int, default=2, help='每隔几帧取一帧（默认 2，即 5 Hz）')
     args = parser.parse_args(argv)
     project = args.project_root.resolve()
     if args.command == 'bias':
@@ -940,6 +997,14 @@ def main(argv=None):
         out = write_result(project, 'isolation', recs['both'].dir.name, {'kind': 'isolation', 'info': info, 'checks': checks})
         show('isolation', out, checks, info)
         return 0
+    if args.command == 'nearby':
+        with_rec = Recording(args.with_dataset)
+        without_rec = with_rec if args.without_dataset.resolve() == with_rec.dir else Recording(args.without_dataset)
+        info, checks = analyze_nearby(with_rec, without_rec, tuple(args.with_window) if args.with_window else None,
+                                      tuple(args.without_window) if args.without_window else None, max(1, args.stride))
+        out = write_result(project, 'nearby', with_rec.dir.name, {'kind': 'nearby', 'info': info, 'checks': checks})
+        show('nearby', out, checks, info)
+        return 0 if not any(row['status'] == 'FAIL' for row in checks) else 1
     rec = Recording(args.dataset, args.hardware_setup)
     if not rec.complete():
         print('注意：录包状态不是 COMPLETE，结果只作诊断', flush=True)

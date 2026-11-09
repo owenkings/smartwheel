@@ -1,7 +1,7 @@
-# 走廊现场补录：窗口 A 的五项
-给 A 负责的五个现场项准备的录法和分析。每项录完在 Orin 上跑一条命令（1–3 分钟），屏幕逐行显示 PASS / WARN / FAIL / INFO 和门限，完整结果写到数据根 `reports/field_site_checks/<UTC 时间>_<项目>_<录包名>/result.json`。分析入口是 `scripts/lidar_site_checks`（实现在 [site_checks.py](../../src/wc_calibration/field/site_checks.py)），只读录包，不打开设备，不改配置。门限是经验值，不是精度证书。FAIL 按提示重录；WARN 是要交给 A 看的数，不一定重录。
+# 走廊现场补录：窗口 A 的五项和三条对照
+给 A 负责的五个现场项，以及用户 2026-11-09 加的三条对照（1a 近墙单/双雷达、第 1 项末尾回 4.0 m、4a 车前站人）准备的录法和分析。每项录完在 Orin 上跑一条命令（1–3 分钟），屏幕逐行显示 PASS / WARN / FAIL / INFO 和门限，完整结果写到数据根 `reports/field_site_checks/<UTC 时间>_<项目>_<录包名>/result.json`。分析入口是 `scripts/lidar_site_checks`（实现在 [site_checks.py](../../src/wc_calibration/field/site_checks.py)），只读录包，不打开设备，不改配置。门限是经验值，不是精度证书。FAIL 按提示重录；WARN 是要交给 A 看的数，不一定重录。
 ## 通用做法
-- 面板"数据录制"（常规录制）：左边填前缀（每项下面给了），后缀 YYYY、MMDD、HHMMSS 都勾上，文件夹名是 `前缀_2026_1108_HHMMSS`，在数据根 `data/experiments/` 下。雷达选"双雷达"，只有第 4 项选"单雷达"。
+- 面板"数据录制"（常规录制）：左边填前缀（每项下面给了），后缀 YYYY、MMDD、HHMMSS 都勾上，文件夹名是 `前缀_YYYY_MMDD_HHMMSS`（现场当天的日期和时间），在数据根 `data/experiments/` 下。前缀里的 1108 只是名字，不用改成当天日期。雷达选"双雷达"，只有第 4 项和 1a 的只开左、只开右四段选"单雷达"。
 - 常规录制会启用人工驾驶通道。和 11-07 一样全程手推，不用手动驾驶。
 - 每段点开始后车静止 ≥ 35 s，谁都不碰车、不靠车，35 s 后再动。这一段就是第 5 项的零偏静止，第 1、3 项还兼做第一档。
 - 结束点"结束录制"，等"录制已完成"再录下一段。
@@ -11,7 +11,7 @@
 cd ~/wheelchair
 E=/media/nvidia/tiany-USB/wheelchair/data/experiments
 ```
-- 建议顺序（约 40 分钟）：第 4 项（建图起点，三段）→ 第 1 项（平墙）→ 第 2 项（车留在墙前量）→ 第 3 项（走廊尽头墙）。第 5 项用各段开头。
+- 建议顺序（约 45 分钟）：第 4 项三段和 4a 车前站人（建图起点，车不动）→ 第 1 项（平墙，末尾回 4.0 m）→ 1a 近墙对照三段（车停在 0.5 m）→ 第 2 项（车不动，原处量）→ 第 3 项（走廊尽头墙）。第 5 项用各段开头。
 ## 1. 左雷达近距离测距：正对平墙定距
 背景：11-07 录包里左雷达 1.2 m 以内比右雷达近 4–7 cm，2.4 m 以外两台一致。这一项在平墙上用卷尺把它定下来。
 
@@ -19,14 +19,15 @@ E=/media/nvidia/tiany-USB/wheelchair/data/experiments
 
 摆放：车头正对墙，两侧脚踏前沿到墙的卷尺读数差 ≤ 1 cm 就算摆正。卷尺从脚踏前沿（车头最前点）量到墙，和墙垂直。
 
-录包：前缀 `ZL1108wall`，双雷达，约 3 分钟。
-1. 脚踏离墙 4.0 m 摆正，开始录制，静止 ≥ 35 s（兼做 4.0 m 这一档）。
+录包：前缀 `ZL1108wall`，双雷达，约 4 分钟。
+1. 脚踏离墙 4.0 m 摆正，在两个后轮外侧地上贴胶带标记，开始录制，静止 ≥ 35 s（兼做 4.0 m 这一档）。
 2. 依次推到 2.0、1.0、0.5、0.3、0.1 m。每档推到位先量卷尺、记读数，人退到车后，再静止 ≥ 10 s。工具只用每段静止的最后 8 s。
-3. 0.1 m 那档静止够了再结束。中途别的地方不要停 ≥ 9 s，多出来的静止段要用 `--segments` 指定。
+3. 0.1 m 那档静止够了，把车拉回 4.0 m 的胶带标记，摆正、量卷尺记读数，人退到车后，静止 ≥ 10 s 再结束。两次 4.0 m 之差就是这段录包里的测距漂移（用户 2026-11-09 加）。
+4. 中途别的地方不要停 ≥ 9 s，多出来的静止段要用 `--segments` 指定。
 
-分析（`--tape` 填实际读数，单位米，按停车顺序）：
+分析（`--tape` 填实际读数，单位米，按停车顺序，共 7 个，最后一个是第二次 4.0 m 的读数）：
 ```bash
-scripts/lidar_site_checks wall --dataset "$E/ZL1108wall_2026_1108_HHMMSS" --tape 4.0 2.0 1.0 0.5 0.3 0.1
+scripts/lidar_site_checks wall --dataset "$E/ZL1108wall_YYYY_MMDD_HHMMSS" --tape 4.0 2.0 1.0 0.5 0.3 0.1 4.0
 ```
 | 输出行 | 合格线 | 超出说明 |
 |---|---|---|
@@ -39,15 +40,42 @@ scripts/lidar_site_checks wall --dataset "$E/ZL1108wall_2026_1108_HHMMSS" --tape
 | 近处左右差（卷尺 ≤0.5 m，负值是左雷达偏近） | ≤ 3 cm | 左雷达近距离偏差确实存在，A 按各档的差做距离修正表 |
 | 左/右雷达和卷尺的差（≤0.5 m 各档） | 只记录 | 近处是哪台偏、偏多少（含卷尺量法误差） |
 | 近处左右差（raw 帧）、filtered − raw、近处俯仰差 | 只记录 | raw 也差说明偏差来自雷达本身；只有 filtered 差说明来自主机滤波 |
+| 左/右雷达卷尺 4.00 m 首末两次停车之差（后 − 前） | ≤ 1 cm | 这段录包里的测距漂移，含两次摆车和量卷尺的误差；超过时 A 修正绝对距离和测距比例，左右差不受影响 |
+## 1a. 近墙单/双雷达对照：近处偏差是不是另一台的光
+第 1 项量出近处哪台偏、偏多少；这一项看偏差是不是两台互相干扰造成的（用户 2026-11-09 加）。两台帧周期几乎一样，大部分时间同时曝光，残余干扰只能这样排除。
+
+摆放：第 1 项录完，把车推到脚踏离墙 0.5 m，摆正（两侧脚踏读数差 ≤ 1 cm），量卷尺记读数，在两个后轮外侧地上贴胶带标记。三段之间车不动，只在面板上切换雷达，人在车后，不碰车。
+
+录包：各 40 s，全程静止。
+1. `ZL1108near_both`：双雷达。
+2. `ZL1108near_left`：单雷达选左。右雷达前窗用不透光的哑光卡纸挡住（不碰玻璃），防止它还在发光。
+3. `ZL1108near_right`：单雷达选右，挡左雷达。
+4. 三段录完再量一次卷尺：和开始的读数差 ≤ 0.5 cm；超过说明车动了，三段重录。
+
+分析（每段一条，`--tape` 都填开始时 0.5 m 那次的实际读数）：
+```bash
+scripts/lidar_site_checks wall --dataset "$E/ZL1108near_both_YYYY_MMDD_HHMMSS" --tape 0.50
+scripts/lidar_site_checks wall --dataset "$E/ZL1108near_left_YYYY_MMDD_HHMMSS" --tape 0.50
+scripts/lidar_site_checks wall --dataset "$E/ZL1108near_right_YYYY_MMDD_HHMMSS" --tape 0.50
+```
+比较三次输出里的"左/右雷达和卷尺的差（≤0.5 m 各档）"和"车和墙的夹角"。单雷达那两段只有开着的那台的行。
+| 比较 | 合格线 | 说明 |
+|---|---|---|
+| 左雷达：near_left 减 near_both | 绝对值 ≤ 1 cm 排除互扰；≥ 2 cm 有互扰，交给 A；中间说不清 | 只开左时右雷达不发光 |
+| 右雷达：near_right 减 near_both | 同上 | |
+| 同一台雷达三段的"车和墙的夹角" | 相差 ≤ 0.3° | 超过说明车动过，比较不可靠，重录 |
+| near_both 的近处左右差和第 1 项 0.5 m 那档 | 只记录 | 两次摆车的重复性 |
+
+两段之间雷达开关会带来几毫米的温漂，所以 1–2 cm 之间不下结论。
 ## 2. 卷尺量两台雷达外壳的前后差和高度差
-不录包。第 1 项录完后车留在墙前（脚踏离墙 0.1 m 那档）。两台量同一个位置，各量两次取平均。
+不录包。1a 录完后车留在原处（脚踏离墙 0.5 m）。两台量同一个位置，各量两次取平均。
 - 前后差：两台雷达前窗中心各自到墙的水平距离，左减右，就是右雷达比左雷达靠前多少（cm，靠前为正）。
 - 高度差：两台前窗中心离地高度，左减右（cm，左高为正）。
 - 左右间距（可选）：两台前窗中心的水平距离（cm）。
 
 分析（数字换成实测，`--dataset` 取这段录包冻结的外参）：
 ```bash
-scripts/lidar_site_checks tape --front-cm 8.9 --height-cm 3.9 --lateral-cm 46.2 --dataset "$E/ZL1108wall_2026_1108_HHMMSS"
+scripts/lidar_site_checks tape --front-cm 8.9 --height-cm 3.9 --lateral-cm 46.2 --dataset "$E/ZL1108wall_YYYY_MMDD_HHMMSS"
 ```
 合格线：前后差、高度差和外参相差 ≤ 2 cm，左右间距 ≤ 1 cm。11-07 录包冻结的外参是右比左靠前 8.87 cm、左比右高 3.89 cm、间距 46.21 cm，和看起来对称的外壳布局对不上，这一项就是确认它。超出先复量一次，再交给 A。
 ## 3. 推墙三速：时间偏移和两台墙面差
@@ -66,7 +94,7 @@ scripts/lidar_site_checks tape --front-cm 8.9 --height-cm 3.9 --lateral-cm 46.2 
 
 分析：
 ```bash
-scripts/lidar_site_checks push --dataset "$E/ZL1108push_2026_1108_HHMMSS"
+scripts/lidar_site_checks push --dataset "$E/ZL1108push_YYYY_MMDD_HHMMSS"
 ```
 | 输出行 | 合格线 | 超出说明 |
 |---|---|---|
@@ -89,8 +117,8 @@ scripts/lidar_site_checks push --dataset "$E/ZL1108push_2026_1108_HHMMSS"
 
 分析（2–3 分钟）：
 ```bash
-scripts/lidar_site_checks isolation --both "$E/ZL1108iso_both_2026_1108_HHMMSS" \
-  --left-only "$E/ZL1108iso_left_2026_1108_HHMMSS" --right-only "$E/ZL1108iso_right_2026_1108_HHMMSS"
+scripts/lidar_site_checks isolation --both "$E/ZL1108iso_both_YYYY_MMDD_HHMMSS" \
+  --left-only "$E/ZL1108iso_left_YYYY_MMDD_HHMMSS" --right-only "$E/ZL1108iso_right_YYYY_MMDD_HHMMSS"
 ```
 | 输出行 | 合格线 |
 |---|---|
@@ -98,10 +126,30 @@ scripts/lidar_site_checks isolation --both "$E/ZL1108iso_both_2026_1108_HHMMSS" 
 | 悬空点、地面上翘点：两台都开 / 只开这台 | ≥ 3 是互相干扰（WARN）；≤ 1.5 和另一台无关（PASS）；中间说不清（INFO） |
 
 悬空点用 C 的定义：离地 0.45–1.4 m、4 m 以内、下方空 ≥ 0.30 m。地面上翘点是 2 m 外离地 0.28–0.45 m 的点。都只算车前 0.5–4.5 m、左右 1.5 m 以内。
+
+录完把这三段和下面 4a 的文件夹名，连同命令输出一起交给总管，转给 A 和 C（C 要用这几段查悬空点）。
+## 4a. 车前站人：近处亮物会不会把远处拉近
+11-07 盲区录包里，SDK 报近处有目标的那段结束后 5 s 内，两台远处像素一起变长 2–4 cm，车身没动（IMU 倾角变化 ≤ 0.02°）。这一项用人当近处物体，看远处有没有被拉近（用户 2026-11-09 加）。
+
+摆放：第 4 项三段录完，车不动。一个人站在脚踏正前方 0.5 m（卷尺从脚踏前沿量到人的小腿），面对车，双手垂在身侧，录包全程不动、不碰车。其他人在车后、视野外。
+
+录包：`ZL1108iso_person`，双雷达，40 s，全程静止。
+
+分析（和第 4 项的 iso_both 比，那段摆放相同、车前没人）：
+```bash
+scripts/lidar_site_checks nearby --with "$E/ZL1108iso_person_YYYY_MMDD_HHMMSS" --without "$E/ZL1108iso_both_YYYY_MMDD_HHMMSS"
+```
+| 输出行 | 合格线 | 说明 |
+|---|---|---|
+| 左/右雷达看到车前的人（被挡住的像素） | ≥ 200，少于是 FAIL | 人不在视野里，重录 |
+| 左/右雷达远处没被挡的像素：有人 − 没人（中位） | 绝对值 ≤ 1 cm 不受影响（PASS）；≤ −2 cm 被拉近（WARN，交给 A、C）；中间说不清（INFO） | 两段录包之间有约 1 cm 量级的温漂，所以中间值不下结论 |
+| 左/右雷达悬空点、地面上翘点每帧：有人 / 没人 | 只记录 | 人挡住了身后的地面，比值只作参考 |
+
+"远处"是没人时距离 ≥ 2.4 m、有人时变化不到 30 cm 的像素；变近 30 cm 以上的算被人挡住。
 ## 5. 开头 10+10+10 零偏静止
 每段开头静止 ≥ 35 s 就是这一项。每段都能分析，至少做当天第一段。`--operator-statement` 写用户自己的确认原话；先加 `--dry-run` 看声明区间和命令，不写文件。
 ```bash
-scripts/lidar_site_checks bias --dataset "$E/ZL1108iso_both_2026_1108_HHMMSS" \
+scripts/lidar_site_checks bias --dataset "$E/ZL1108iso_both_YYYY_MMDD_HHMMSS" \
   --operator-statement "用户确认：开头 35 s 车停在平地上，没人碰"
 ```
 工具先写静止声明 `data/calibration/gyro_bias/<录包名>_stationary_declaration.json`，再调 `wc_runtime.mapping_bias_confirm` 做 10+10+10 确认，通过才保存 `<录包名>_gyro_bias.json`。同一段录包的声明已经存在时，内容完全相同就沿用，不同就报错（找 A）。
@@ -112,5 +160,6 @@ scripts/lidar_site_checks bias --dataset "$E/ZL1108iso_both_2026_1108_HHMMSS" \
 ## 工具检查情况
 - 用 11-07 录包冒烟：卷尺项用建图录包冻结外参自检 PASS；推墙项在 A→B 上能用的趟数为 0（起点看不到尽头墙，符合预期），同一帧 filtered 比 raw 晚 70 ms；悬空项的比值用同一段代替跑通；零偏只试了 `--dry-run`，沿用声明和拒绝原因的判断只在临时目录里试过，没有真的写过零偏文件。
 - 合成推墙数据（已知时间偏移 75 / 150 ms、比例 0.98 / 1.02、一阶时间滤波）：时间偏移误差 ≤ 2 ms，比例误差 ≤ 0.0005，滤波滞后 65 ms（理论 67 ms）。
+- 三条对照（2026-11-09）：首末两次 4.0 m 的漂移行和单雷达录包的输出用合成数据试过；`nearby` 在盲区录包同一段里比 300–330 s（SDK 报近处有目标）和 334–362 s（没有）跑通，远处像素左 −1.4 cm、右 −2.0 cm。那段车边的人一直在动，只说明工具能用，不作结论。
 
 返回[功能操作手册](README.md)；方法背景见[现场外参与轮速标定](field_extrinsics.md)。
