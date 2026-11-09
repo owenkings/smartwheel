@@ -79,6 +79,9 @@ def add_planning_arguments(parser):
     parser.add_argument("--global-costmap", choices=["live", "static"], default="live",
                         help="live (default): the global costmap also marks live scans; static: plan on the saved "
                              "map only, live scans stay in the local costmap, the controller check and the monitor")
+    parser.add_argument("--local-padding", type=float, default=0.0, metavar="M",
+                        help="footprint padding of the local costmap, i.e. of the controller's collision checks "
+                             "(default 0, unchanged); e.g. 0.10 keeps the planning margin while driving too")
 
 
 def resolve_planning_arguments(parser, args):
@@ -91,7 +94,8 @@ def resolve_planning_arguments(parser, args):
                                        server_params=parse_overrides(args.checker_param),
                                        recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
                                        global_live_scans=args.global_costmap == "live",
-                                       fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback)
+                                       fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback,
+                                       local_padding_m=args.local_padding)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))

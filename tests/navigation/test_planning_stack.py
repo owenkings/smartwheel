@@ -321,3 +321,31 @@ def test_recommended_scheme_builds_a_forward_only_stack_that_reads_back(tmp_path
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),
                                  "--map", str(tmp_path / "m.yaml"), *RECOMMENDED])
     assert args.planning == choice
+
+
+def test_local_padding_pads_only_the_controller_checks():
+    from wc_navigation.autonomy import cli
+    profile = nav2_config.NavProfile(footprint=OUTLINE)
+    base = params(None, footprint=OUTLINE)
+    choice = stack.PlanningChoice(local_padding_m=0.10)
+    p = params(choice, footprint=OUTLINE)
+    local = p["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert local["footprint_padding"] == pytest.approx(0.10)
+    assert local["footprint"] == base["local_costmap"]["local_costmap"]["ros__parameters"]["footprint"]
+    assert p["global_costmap"] == base["global_costmap"] and p["collision_monitor"] == base["collision_monitor"]
+    expected = nav2_config.readback_expectations(profile, "navigate", planning=choice)
+    assert expected["local_costmap/local_costmap"]["footprint_padding"] == pytest.approx(0.10)
+    for node, values in expected.items():
+        for dotted, value in values.items():
+            assert _same(_lookup(p, node, dotted), value), (node, dotted)
+    assert stack.PlanningChoice.from_dict(choice.as_dict()) == choice
+    assert "local_padding_m" not in stack.PlanningChoice().as_dict() and stack.PlanningChoice().is_default
+    for bad in (-0.01, 0.5, float("nan")):
+        with pytest.raises(ValueError):
+            stack.PlanningChoice(local_padding_m=bad)
+    args = cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                          "--goal", "8.0", "1.4", "0.0", "--local-padding", "0.1"])
+    assert args.planning.local_padding_m == pytest.approx(0.1)
+    with pytest.raises(SystemExit):
+        cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                       "--goal", "8.0", "1.4", "0.0", "--local-padding", "0.4"])

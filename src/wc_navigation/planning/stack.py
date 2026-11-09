@@ -55,6 +55,7 @@ GOAL_TOLERANCE_M = 0.25                                  # same as NavFn's GridB
 DEFAULT_RECOVERY_RETRIES = 4                             # nav2_config.behavior_tree_xml defaults
 DEFAULT_RECOVERY_WAIT_S = 3.0
 SERVER_SECTIONS = ("general_goal_checker.", "progress_checker.")
+MAX_LOCAL_PADDING_M = 0.3
 _SMOOTHER = {"max_iterations": 1000, "w_smooth": 0.3, "w_data": 0.2, "tolerance": 1.0e-10, "do_refinement": True}
 
 
@@ -92,6 +93,9 @@ class PlanningChoice:
     global_live_scans: bool = True
     # Second planner plugin ("Fallback"), asked by the behaviour tree only when GridBased finds no path.
     fallback_planner: str = ""
+    # Footprint padding of the local costmap (m), i.e. of the controller's own collision checks (RPP, rotation
+    # shim). 0 keeps the stack as it is; the planning margin of the global costmap is the profile's margin_m.
+    local_padding_m: float = 0.0
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
@@ -112,21 +116,28 @@ class PlanningChoice:
             raise ValueError("global_live_scans must be true or false")
         if self.fallback_planner not in ("", *PLANNERS) or self.fallback_planner == self.planner:
             raise ValueError("fallback planner must be another one of " + ", ".join(PLANNERS))
+        padding = float(self.local_padding_m)
+        if not 0.0 <= padding <= MAX_LOCAL_PADDING_M:
+            raise ValueError("local padding must be 0..%g m" % MAX_LOCAL_PADDING_M)
+        object.__setattr__(self, "local_padding_m", padding)
 
     @property
     def is_default(self):
         return (self.planner == DEFAULT_PLANNER and self.controller == DEFAULT_CONTROLLER
                 and not self.planner_params and not self.controller_params and not self.server_params
                 and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S
-                and self.global_live_scans and not self.fallback_planner)
+                and self.global_live_scans and not self.fallback_planner and not self.local_padding_m)
 
     def as_dict(self):
-        return {"planner": self.planner, "controller": self.controller,
-                "planner_params": [list(p) for p in self.planner_params],
-                "controller_params": [list(p) for p in self.controller_params],
-                "server_params": [list(p) for p in self.server_params],
-                "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s,
-                "global_live_scans": self.global_live_scans, "fallback_planner": self.fallback_planner}
+        value = {"planner": self.planner, "controller": self.controller,
+                 "planner_params": [list(p) for p in self.planner_params],
+                 "controller_params": [list(p) for p in self.controller_params],
+                 "server_params": [list(p) for p in self.server_params],
+                 "recovery_retries": self.recovery_retries, "recovery_wait_s": self.recovery_wait_s,
+                 "global_live_scans": self.global_live_scans, "fallback_planner": self.fallback_planner}
+        if self.local_padding_m:                         # runs without it keep their recorded config unchanged
+            value["local_padding_m"] = self.local_padding_m
+        return value
 
     def behavior_tree_options(self):
         options = {"recovery_retries": self.recovery_retries, "wait_s": self.recovery_wait_s}
@@ -144,7 +155,8 @@ class PlanningChoice:
                    recovery_retries=int(value.get("recovery_retries", DEFAULT_RECOVERY_RETRIES)),
                    recovery_wait_s=float(value.get("recovery_wait_s", DEFAULT_RECOVERY_WAIT_S)),
                    global_live_scans=bool(value.get("global_live_scans", True)),
-                   fallback_planner=str(value.get("fallback_planner", "")))
+                   fallback_planner=str(value.get("fallback_planner", "")),
+                   local_padding_m=float(value.get("local_padding_m", 0.0)))
 
 
 def _set(section, dotted, value):
@@ -250,6 +262,8 @@ def apply(params, profile, choice, *, exploring):
     if not choice.global_live_scans:
         costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
         costmap["plugins"] = [p for p in costmap["plugins"] if p != "obstacle_layer"]
+    if choice.local_padding_m:
+        params["local_costmap"]["local_costmap"]["ros__parameters"]["footprint_padding"] = choice.local_padding_m
     return params
 
 
@@ -301,6 +315,8 @@ def adjust_readback(expected, choice, profile, *, exploring):
     if not choice.global_live_scans:
         plugins = expected["global_costmap/global_costmap"]["plugins"]
         expected["global_costmap/global_costmap"]["plugins"] = [p for p in plugins if p != "obstacle_layer"]
+    if choice.local_padding_m:
+        expected.setdefault("local_costmap/local_costmap", {})["footprint_padding"] = choice.local_padding_m
     return expected
 
 
