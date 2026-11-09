@@ -195,12 +195,12 @@ class LiveSupervisor(Supervisor):
         monitor = {"window_s": 2.0, "max_translation_m": limits["correction_translation_m"],
                    "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": 3.0,
                    "reference": limits["correction_reference"]}
-        trial = {k: limits[k] for k in ("covariance_mode", "slow_std_m", "slow_linear") if k in limits}
+        covariance = {k: limits[k] for k in ("covariance_mode", "slow_std_m", "slow_linear") if k in limits}
         files["gate"] = self.node_config("gate_config", {
             "use_sim_time": sim, "correction_monitor": monitor,
             "gate": {"max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": True,
                      "covariance_xy_std_max_m": limits["covariance_xy_std_m"],
-                     "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"]), **trial}})
+                     "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"]), **covariance}})
         files["goals"] = self.node_config("goals_config", {
             "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"]})
         return files

@@ -42,24 +42,29 @@ SUPPORT_M = 0.15            # localization_coverage support band
 SCAN_HEIGHT_M = (-0.5, 0.5)
 WINDOWS = (("first_40s", -math.inf, 40.0), ("40_80s", 40.0, 80.0), ("after_80s", 80.0, math.inf))
 SEGMENTS = ("START_DOOR", "MIDDLE", "END_DOOR")
-# The gate's localization conditions, evaluated explicitly on every run: the defaults before and after the
-# 2026-11-07 decision (safety_gate.GateConfig / CorrectionMonitor).
+# The gate's localization conditions, evaluated explicitly on every run (safety_gate.GateConfig /
+# CorrectionMonitor), named by content: the default until 2026-11-07, the xy covariance condition (default
+# 2026-11-07..09; "gate_default" in earlier runs) and the lateral one (default since 2026-11-09, user decision:
+# covariance stops only across the heading and in the heading, a major axis above slow_std_m slows the robot to
+# slow_linear_m_s; "gate_lateral_trial" in earlier runs). DEFAULT_GATE_VARIANT is the gate's current default.
 GATE_VARIANTS = {
-    "gate_until_20261107": {"reference": "odom_origin", "translation_m": 0.25, "yaw_deg": 5.0, "cov_xy_m": 0.30},
-    "gate_default": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50},
-    # Trial of 2026-11-09 (not a default): covariance stops only across the heading and in the heading; a major
-    # axis above slow_std_m slows the robot to slow_linear_m_s (safety_gate.GateConfig covariance_mode lateral).
-    "gate_lateral_trial": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50,
-                           "covariance_mode": "lateral", "slow_std_m": 0.50, "slow_linear_m_s": 0.15},
+    "gate_until_20261107": {"reference": "odom_origin", "translation_m": 0.25, "yaw_deg": 5.0, "cov_xy_m": 0.30,
+                            "covariance_mode": "xy"},
+    "gate_xy": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50,
+                "covariance_mode": "xy"},
+    "gate_lateral": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50,
+                     "covariance_mode": "lateral", "slow_std_m": 0.50, "slow_linear_m_s": 0.15},
 }
+DEFAULT_GATE_VARIANT = "gate_lateral"
 
 
 def gate_variant_config(settings):
     """GateConfig of a GATE_VARIANTS entry (covariance required)."""
     from ..autonomy.safety_gate import GateConfig, covariance_mode_settings
-    trial = covariance_mode_settings(settings.get("covariance_mode"), (
-        settings["slow_std_m"], settings["slow_linear_m_s"]) if settings.get("covariance_mode") == "lateral" else None)
-    return GateConfig(require_covariance=True, covariance_xy_std_max_m=settings["cov_xy_m"], **trial)
+    mode = settings["covariance_mode"]
+    covariance = covariance_mode_settings(mode, (settings["slow_std_m"], settings["slow_linear_m_s"])
+                                          if mode == "lateral" else None)
+    return GateConfig(require_covariance=True, covariance_xy_std_max_m=settings["cov_xy_m"], **covariance)
 JOIN_XY_M, JOIN_YAW_DEG, JOIN_SHARE = 0.25, 5.0, 0.9
 CONVERGED_XY_M, CONVERGED_YAW_DEG = 0.10, 2.0
 DIVERGED_XY_M, DIVERGED_YAW_DEG = 0.50, 10.0
@@ -412,7 +417,7 @@ def summarize_run(rows, frames):
             "either_untrusted_frames": {name: int(sum(1 for r in rows if (r.get(covariance) is False
                                                                           or r.get(correction) is False)
                                                       and r["segment"] == name)) for name in SEGMENTS},
-            # passing frames (both conditions evaluated and true) that the lateral trial slows down; 0 otherwise
+            # passing frames (both conditions evaluated and true) that the lateral mode slows down; 0 otherwise
             "slow_frames": {name: int(sum(1 for r in rows if r.get(covariance) is True and r.get(correction) is True
                                           and r.get(variant + "_slow") and r["segment"] == name)) for name in SEGMENTS},
             "full_speed_frames": {name: int(sum(1 for r in rows if r.get(covariance) is True
@@ -420,6 +425,7 @@ def summarize_run(rows, frames):
                                                 and r["segment"] == name)) for name in SEGMENTS},
             "covariance_reasons": sorted({r[variant + "_covariance_reason"] for r in rows
                                           if r.get(variant + "_covariance_reason")})}
+    summary["default_gate_variant"] = DEFAULT_GATE_VARIANT
     ambiguous = [r for r in rows if r.get("along_heading_ambiguity") and r["segment"] == "MIDDLE"]
     if any("along_heading_ambiguity" in r for r in rows):
         clear = [r for r in rows if r.get("along_heading_ambiguity") is False and r["segment"] == "MIDDLE"

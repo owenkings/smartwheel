@@ -139,14 +139,16 @@ def test_arguments_bound_perturbations_and_keep_the_reference_case(tmp_path):
 
 def test_gate_variants_are_explicit_and_the_default_one_matches_the_gate():
     from wc_navigation.autonomy.safety_gate import CorrectionMonitor, GateConfig
-    from wc_navigation.live.amcl_cross import GATE_VARIANTS
-    current = GATE_VARIANTS["gate_default"]
-    monitor, config = CorrectionMonitor(), GateConfig()
+    from wc_navigation.live.amcl_cross import DEFAULT_GATE_VARIANT, GATE_VARIANTS, gate_variant_config
+    current = GATE_VARIANTS[DEFAULT_GATE_VARIANT]
+    monitor = CorrectionMonitor()
     assert current["reference"] == monitor.reference and current["translation_m"] == monitor.max_translation_m
     assert math.radians(current["yaw_deg"]) == pytest.approx(monitor.max_yaw_rad)
-    assert current["cov_xy_m"] == config.covariance_xy_std_max_m
+    assert gate_variant_config(current) == GateConfig(require_covariance=True)
+    assert DEFAULT_GATE_VARIANT == "gate_lateral"
+    assert gate_variant_config(GATE_VARIANTS["gate_xy"]) == GateConfig(require_covariance=True, covariance_mode="xy")
     assert GATE_VARIANTS["gate_until_20261107"] == {"reference": "odom_origin", "translation_m": 0.25,
-                                                    "yaw_deg": 5.0, "cov_xy_m": 0.30}
+                                                    "yaw_deg": 5.0, "cov_xy_m": 0.30, "covariance_mode": "xy"}
 
 
 def test_evaluate_run_flags_each_gate_variant_on_a_heading_correction_far_from_the_origin():
@@ -174,9 +176,10 @@ def test_evaluate_run_flags_each_gate_variant_on_a_heading_correction_far_from_t
     table, extra = evaluate_run(result, frames, np.eye(3), scorer)
     after = table[6]
     assert after["change_2s_xy"] == pytest.approx(math.hypot(*shifted)) and after["change_2s_robot_xy"] < 1e-9
-    assert after["gate_until_20261107_correction_ok"] is False and after["gate_default_correction_ok"] is True
-    assert after["gate_until_20261107_covariance_ok"] is False and after["gate_default_covariance_ok"] is True
-    assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_default": 0, "gate_lateral_trial": 0}
+    assert after["gate_until_20261107_correction_ok"] is False and after["gate_xy_correction_ok"] is True
+    assert after["gate_until_20261107_covariance_ok"] is False and after["gate_xy_covariance_ok"] is True
+    assert after["gate_lateral_correction_ok"] is True and after["gate_lateral_covariance_ok"] is True
+    assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_xy": 0, "gate_lateral": 0}
 
 
 def track(lidar_poses, dt=0.3):
@@ -218,15 +221,15 @@ def test_motion_classes_come_from_the_recorded_axle_motion():
 def test_motion_breakdown_counts_mapped_frames_per_class():
     frames = [{"segment": s, "motion": m} for s, m in (("MIDDLE", "TURNING"), ("MIDDLE", "TURNING"),
                                                        ("MIDDLE", "STRAIGHT"), ("END_DOOR", "TURNING"))]
-    rows = [{"fit": 0.1, "change_2s_yaw": math.radians(2.0), "gate_default_correction_ok": False},
-            {"fit": 0.3, "change_2s_yaw": math.radians(-4.0), "gate_default_covariance_ok": True},
+    rows = [{"fit": 0.1, "change_2s_yaw": math.radians(2.0), "gate_xy_correction_ok": False},
+            {"fit": 0.3, "change_2s_yaw": math.radians(-4.0), "gate_xy_covariance_ok": True},
             {"fit": 0.05},
-            {"fit": 0.5, "gate_default_correction_ok": False}]
+            {"fit": 0.5, "gate_xy_correction_ok": False}]
     result = motion_breakdown(rows, frames)
     assert [result[name]["frames"] for name in ("TURNING", "STRAIGHT", "STATIONARY", "OTHER")] == [2, 1, 0, 0]
     assert result["TURNING"]["fit_m"]["median"] == pytest.approx(0.2)
     assert result["TURNING"]["change_2s_yaw_deg"]["max"] == pytest.approx(4.0)
-    assert result["TURNING"]["gate_default_untrusted_frames"] == 1
+    assert result["TURNING"]["gate_xy_untrusted_frames"] == 1
     assert result["TURNING"]["gate_until_20261107_untrusted_frames"] == 0
     assert result["STATIONARY"]["fit_m"] is None
 
@@ -239,10 +242,10 @@ def test_lidar_time_offset_argument_is_explicit_and_bounded(tmp_path):
         arguments(base + ["--lidar-time-offset-ms", "300"])
 
 
-def test_lateral_trial_variant_passes_and_slows_where_the_default_stops():
+def test_lateral_variant_passes_and_slows_where_the_xy_one_stops():
     from wc_navigation.live.amcl_cross import GATE_VARIANTS, CSV_FIELDS, evaluate_run, summarize_run
-    assert GATE_VARIANTS["gate_lateral_trial"]["covariance_mode"] == "lateral"
-    assert "gate_lateral_trial_slow" in CSV_FIELDS and "gate_default_slow" not in CSV_FIELDS
+    assert GATE_VARIANTS["gate_lateral"]["covariance_mode"] == "lateral"
+    assert "gate_lateral_slow" in CSV_FIELDS and "gate_xy_slow" not in CSV_FIELDS
     scorer = EndpointScorer(corridor_grid(), 0.1, (0.0, 0.0, 0.0))
     frames, trajectory, rows = [], [], []
     covariance = [0.0] * 36
@@ -255,9 +258,11 @@ def test_lateral_trial_variant_passes_and_slows_where_the_default_stops():
         rows.append({"stamp_ns": stamp, "x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0, "filter_updated": True})
         trajectory.append({"stamp_ns": stamp, "covariance": covariance, "yaw_rad": 0.0})
     table, _ = evaluate_run({"map_odom_trajectory": rows, "trajectory": trajectory}, frames, np.eye(3), scorer)
-    assert all(r["gate_default_covariance_ok"] is False for r in table)
-    assert all(r["gate_lateral_trial_covariance_ok"] is True and r["gate_lateral_trial_slow"] is True for r in table)
-    gate = summarize_run(table, frames)["gate"]
-    assert gate["gate_lateral_trial"]["slow_frames"]["MIDDLE"] == 8
-    assert gate["gate_lateral_trial"]["full_speed_frames"]["MIDDLE"] == 0
-    assert gate["gate_default"]["slow_frames"]["MIDDLE"] == 0 and gate["gate_default"]["either_untrusted_frames"]["MIDDLE"] == 8
+    assert all(r["gate_xy_covariance_ok"] is False for r in table)
+    assert all(r["gate_lateral_covariance_ok"] is True and r["gate_lateral_slow"] is True for r in table)
+    summary = summarize_run(table, frames)
+    gate = summary["gate"]
+    assert summary["default_gate_variant"] == "gate_lateral"
+    assert gate["gate_lateral"]["slow_frames"]["MIDDLE"] == 8
+    assert gate["gate_lateral"]["full_speed_frames"]["MIDDLE"] == 0
+    assert gate["gate_xy"]["slow_frames"]["MIDDLE"] == 0 and gate["gate_xy"]["either_untrusted_frames"]["MIDDLE"] == 8

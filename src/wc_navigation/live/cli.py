@@ -37,7 +37,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
  9. 初始位姿：在已知停靠点启动，或由操作员给 --initial-pose X Y YAW_DEG 和不小于 0.25 m、8.6 度的标准差；不能用零协方差。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
 11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）；结束时 Ctrl-C 停止本命令，只会停掉本命令启动的进程。
-12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
+12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
 """
 
 
@@ -104,7 +104,8 @@ def arguments(argv=None):
     shadow.add_argument("--goal-spacing", type=finite, default=8.0)
     shadow.add_argument("--advance-radius", type=finite, default=1.0)
     shadow.add_argument("--amcl-params", default="framework")
-    # Defaults are the safety gate's own (2026-11-07): 0.25 m or 10 deg at the robot within 2 s, std <= 0.50 m.
+    # Defaults are the safety gate's own: 0.25 m or 10 deg at the robot within 2 s, std <= 0.50 m (2026-11-07),
+    # the position limit across the heading with a slow-down along it (lateral covariance mode, 2026-11-09).
     shadow.add_argument("--gate-correction-limits", nargs=2, type=finite, default=[0.25, 10.0],
                         metavar=("TRANSLATION_M", "YAW_DEG"))
     shadow.add_argument("--gate-covariance-limits", nargs=2, type=finite, default=[0.50, math.degrees(0.25)],
@@ -142,7 +143,7 @@ def arguments(argv=None):
             parser.error("--amcl-params must be framework or one of " + ", ".join(CANDIDATES))
         from ..autonomy.safety_gate import covariance_mode_settings
         try:
-            args.gate_trial = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+            args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
         except ValueError as exc:
             parser.error(str(exc))
         if args.footprint is not None:
@@ -243,7 +244,7 @@ def main(argv=None):
                                    "correction_reference": args.gate_correction_reference,
                                    "covariance_xy_std_m": args.gate_covariance_limits[0],
                                    "covariance_yaw_std_deg": args.gate_covariance_limits[1],
-                                   **args.gate_trial},
+                                   **args.gate_covariance},
                       initial_pose=[args.initial_pose[0], args.initial_pose[1], math.radians(args.initial_pose[2])],
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)

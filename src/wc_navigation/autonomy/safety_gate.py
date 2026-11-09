@@ -15,9 +15,10 @@ from ..geometry import _number
 
 STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "LOCALIZATION_UNTRUSTED",
           "COMMAND_STALE", "ACTIVE")
-# "xy" (default): the larger of the map-axis position standard deviations stops the robot. "lateral" (trial,
-# 2026-11-09, not a default): only the deviation across the heading and the heading deviation stop it; a large
-# deviation in another direction (in a corridor: along it) slows it instead, see GateConfig.
+# "lateral" (default since 2026-11-09, user decision): only the deviation across the heading and the heading
+# deviation stop the robot; a large deviation in another direction (in a corridor: along it) slows it instead,
+# see GateConfig. "xy" (the default until 2026-11-09, still selectable): the larger of the map-axis position
+# standard deviations stops it.
 COVARIANCE_MODES = ("xy", "lateral")
 
 
@@ -57,10 +58,13 @@ class GateConfig:
     # (docs/architecture/live_shadow.md). In the lateral mode the same limit applies across the heading.
     covariance_xy_std_max_m: float = 0.50
     covariance_yaw_std_max_rad: float = 0.25
-    # Lateral mode only (see COVARIANCE_MODES): above slow_std_m on the error ellipse's major axis the robot is
-    # slowed to slow_linear until the axis is back at slow_std_m - slow_hysteresis_m; the speed ceiling moves at
-    # slow_decel / slow_accel (the velocity smoother's limits), linear and angular speed scale together.
-    covariance_mode: str = "xy"
+    # Covariance mode (see COVARIANCE_MODES): lateral since 2026-11-09 (user decision; was xy). In the ZL1107
+    # corridor the deviation along it stays above the limit while the robot stands, so xy stopped it for good at
+    # the corridor entrance (docs/architecture/live_shadow.md). Lateral only: above slow_std_m on the error
+    # ellipse's major axis the robot is slowed to slow_linear until the axis is back at
+    # slow_std_m - slow_hysteresis_m; the speed ceiling moves at slow_decel / slow_accel (the velocity smoother's
+    # limits), linear and angular speed scale together.
+    covariance_mode: str = "lateral"
     slow_std_m: float = 0.50
     slow_hysteresis_m: float = 0.05
     slow_linear: float = 0.15
@@ -90,24 +94,27 @@ SLOW_LIMITS_DEFAULT = (GateConfig.slow_std_m, GateConfig.slow_linear)
 
 
 def add_covariance_mode_arguments(parser):
-    """The trial options of the gate's covariance condition (simulation, recorded and live shadow runs)."""
+    """Options of the gate's covariance condition (simulation, recorded and live shadow runs)."""
     parser.add_argument("--gate-covariance-mode", choices=COVARIANCE_MODES,
-                        help="covariance condition of the gate: xy (default, the larger map-axis deviation stops) "
-                             "or lateral (trial: the deviation across the heading and the heading deviation stop; "
-                             "a large deviation along the heading slows instead)")
+                        help="covariance condition of the gate: lateral (default since 2026-11-09: the deviation "
+                             "across the heading and the heading deviation stop, a large deviation along the "
+                             "heading slows instead) or xy (the earlier condition: the larger map-axis deviation "
+                             "stops)")
     parser.add_argument("--gate-slow-limits", nargs=2, type=float, metavar=("STD_M", "SPEED_M_S"),
-                        help="lateral only: slow to SPEED_M_S while the error ellipse's major axis is above STD_M "
+                        help="lateral: slow to SPEED_M_S while the error ellipse's major axis is above STD_M "
                              "(default %g m, %g m/s)" % SLOW_LIMITS_DEFAULT)
 
 
-def covariance_mode_settings(mode, slow_limits=None, max_linear=GateConfig.max_linear):
-    """GateConfig keyword arguments of the trial options; empty for the default xy mode (raises ValueError)."""
-    if slow_limits is not None and mode != "lateral":
-        raise ValueError("--gate-slow-limits needs --gate-covariance-mode lateral")
-    if mode in (None, "xy"):
-        return {}
-    if mode != "lateral":
+def covariance_mode_settings(mode=None, slow_limits=None, max_linear=GateConfig.max_linear):
+    """GateConfig keyword arguments of the covariance mode options, always explicit: the mode and, for lateral,
+    the slow-down limits. ``mode=None`` is the gate's default mode (raises ValueError)."""
+    mode = GateConfig.covariance_mode if mode is None else mode
+    if mode not in COVARIANCE_MODES:
         raise ValueError("unknown gate covariance mode: " + str(mode))
+    if mode == "xy":
+        if slow_limits is not None:
+            raise ValueError("--gate-slow-limits applies to the lateral covariance mode only")
+        return {"covariance_mode": "xy"}
     std, speed = (float(v) for v in (slow_limits or SLOW_LIMITS_DEFAULT))
     if not (math.isfinite(std) and GateConfig.slow_hysteresis_m < std <= 2.0):
         raise ValueError("the slow-down deviation must be within %g..2 m" % GateConfig.slow_hysteresis_m)

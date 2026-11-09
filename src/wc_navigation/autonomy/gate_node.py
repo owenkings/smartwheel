@@ -6,7 +6,7 @@ rate, so the base watchdog always sees a fresh decision. Status JSON goes to
 covariance condition on), a robot held for its covariance gets a bounded number
 of AMCL no-motion updates (``StationaryRelocalization``); the gate's own
 conditions and limits do not change. The covariance condition's mode
-(``GateConfig.covariance_mode``: xy by default, lateral as a trial) is assessed
+(``GateConfig.covariance_mode``: lateral by default since 2026-11-09, xy on request) is assessed
 on every AMCL pose with its heading.
 """
 from __future__ import annotations

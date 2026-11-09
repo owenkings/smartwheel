@@ -320,12 +320,13 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     assert captured["relay"] == {"source_domain": 83, "source_prefix": "", "output_prefix": cli.OUTPUT_PREFIX,
                                  "wait_for_panel_consumers": True}
     assert captured["source_prefix"] == cli.OUTPUT_PREFIX and captured["lidar_time_offset_ms"] == 75.0
-    assert "covariance_mode" not in captured["gate_limits"]                  # gate trial only when asked
-    captured.clear()
-    with pytest.raises(Stop):
-        cli.main(argv + ["--gate-covariance-mode", "lateral"])
+    # the gate's covariance mode is recorded: lateral by default since 2026-11-09, xy when asked
     assert {k: captured["gate_limits"][k] for k in ("covariance_mode", "slow_std_m", "slow_linear")} == {
         "covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
+    captured.clear()
+    with pytest.raises(Stop):
+        cli.main(argv + ["--gate-covariance-mode", "xy"])
+    assert captured["gate_limits"]["covariance_mode"] == "xy" and "slow_std_m" not in captured["gate_limits"]
 
 
 def test_sim_time_is_set_everywhere_in_a_parameter_tree():

@@ -90,19 +90,21 @@ def test_nonfinite_or_invalid_command_is_zeroed(value):
     assert decision.linear == 0.0 and decision.angular == 0.0
 
 
-def test_covariance_is_necessary_only():
-    gate = SafetyGate(GateConfig(require_covariance=True))
+@pytest.mark.parametrize("mode,position_reason", [("xy", "COVARIANCE_XY_TOO_LARGE"),
+                                                  ("lateral", "COVARIANCE_ACROSS_HEADING_TOO_LARGE")])
+def test_covariance_is_necessary_only(mode, position_reason):
+    gate = SafetyGate(GateConfig(require_covariance=True, covariance_mode=mode))
     small = [0.0] * 36
     small[0] = small[7] = 0.01
     small[35] = 0.01
-    assert gate.check_covariance(small) == (True, "")
+    assert gate.check_covariance(small, 0.0) == (True, "")
     large = list(small)
-    large[0] = 0.36                       # 0.6 m standard deviation
-    assert gate.check_covariance(large) == (False, "COVARIANCE_XY_TOO_LARGE")
+    large[7] = 0.36                       # 0.6 m standard deviation across a heading along map x
+    assert gate.check_covariance(large, 0.0) == (False, position_reason)
     yaw = list(small)
     yaw[35] = 0.2
-    assert gate.check_covariance(yaw) == (False, "COVARIANCE_YAW_TOO_LARGE")
-    assert gate.check_covariance([math.nan] * 36) == (False, "COVARIANCE_INVALID")
+    assert gate.check_covariance(yaw, 0.0) == (False, "COVARIANCE_YAW_TOO_LARGE")
+    assert gate.check_covariance([math.nan] * 36, 0.0) == (False, "COVARIANCE_INVALID")
 
 
 def test_slow_map_correction_is_trusted():
@@ -177,12 +179,16 @@ def test_defaults_measure_at_the_robot_with_ten_degrees_and_half_metre_covarianc
         default.update(1.1, (0.0, 0.0, 0.0))
     config = GateConfig()
     assert config.covariance_xy_std_max_m == 0.50 and config.covariance_yaw_std_max_rad == 0.25
+    # lateral covariance mode since 2026-11-09 (user decision): 0.50 m across the heading, slowed above 0.50 m
+    assert (config.covariance_mode, config.slow_std_m, config.slow_hysteresis_m, config.slow_linear) == (
+        "lateral", 0.50, 0.05, 0.15)
     gate = SafetyGate(GateConfig(require_covariance=True))
     covariance = [0.0] * 36
-    covariance[0], covariance[7], covariance[35] = 0.49 ** 2, 0.1, 0.01
-    assert gate.check_covariance(covariance) == (True, "")
+    covariance[0], covariance[7], covariance[35] = 0.6 ** 2, 0.49 ** 2, 0.01     # heading along map x
+    assert gate.on_covariance(covariance, 0.0) == (True, "") and gate.slow       # long along it: slowed
     covariance[7] = 0.51 ** 2
-    assert gate.check_covariance(covariance) == (False, "COVARIANCE_XY_TOO_LARGE")
+    assert gate.check_covariance(covariance, 0.0) == (False, "COVARIANCE_ACROSS_HEADING_TOO_LARGE")
+    assert gate.check_covariance(covariance) == (False, "COVARIANCE_HEADING_UNKNOWN")   # needs the heading
 
 
 def ticks(relocalization, start, end, pose, holding=True, available=True, dt=0.25):
@@ -230,7 +236,7 @@ def test_an_unavailable_service_does_not_use_the_budget():
         StationaryRelocalization(max_requests=50)
 
 
-# -- lateral covariance mode (trial of 2026-11-09, not a default) ---------------------------------------------
+# -- covariance modes (lateral: trial of 2026-11-09, the default since the user's decision the same day) -------
 def ellipse(major, minor, angle, yaw_std=0.05):
     """Row-major 6x6 pose covariance with a position error ellipse at ``angle`` (rad) in the map."""
     c, s = math.cos(angle), math.sin(angle)
@@ -265,9 +271,11 @@ def test_lateral_mode_stops_only_for_the_uncertainty_across_the_heading_or_in_th
     assert gate.check_covariance(ellipse(0.3, 0.2, 0.0, yaw_std=0.3), 0.0) == (False, "COVARIANCE_YAW_TOO_LARGE")
     assert gate.check_covariance(corridor) == (False, "COVARIANCE_HEADING_UNKNOWN")
     assert gate.check_covariance([float("nan")] * 36, 0.0) == (False, "COVARIANCE_INVALID")
-    # the default xy mode is unchanged: the same corridor ellipse stops, the heading is ignored
-    assert active_gate(require_covariance=True).check_covariance(corridor, 0.0) == (False, "COVARIANCE_XY_TOO_LARGE")
-    assert SafetyGate().check_covariance(corridor) == (False, "COVARIANCE_XY_TOO_LARGE")
+    # the xy mode (explicit since 2026-11-09): the same corridor ellipse stops, the heading is ignored
+    xy = active_gate(require_covariance=True, covariance_mode="xy")
+    assert xy.check_covariance(corridor, 0.0) == (False, "COVARIANCE_XY_TOO_LARGE")
+    assert xy.check_covariance(corridor) == (False, "COVARIANCE_XY_TOO_LARGE")
+    assert SafetyGate().config.covariance_mode == "lateral"
 
 
 def drive(gate, start, end, linear=0.3, angular=0.1, dt=0.05):
@@ -317,19 +325,23 @@ def test_lateral_slow_down_starts_without_a_ramp_after_a_stop():
 
 
 def test_the_xy_mode_never_slows():
-    gate = active_gate(require_covariance=True)
+    gate = active_gate(require_covariance=True, covariance_mode="xy")
     gate.on_covariance(ellipse(0.45, 0.1, math.radians(45)), 0.0)        # passes in xy (std_x = std_y = 0.33)
     decisions = drive(gate, 0.0, 1.0)
     assert not gate.slow and all((d.linear, d.angular, d.reasons) == (0.3, 0.1, ()) for d in decisions)
     assert gate.covariance_status() == {"mode": "xy"}
 
 
-def test_covariance_mode_settings_and_config_checks():
+LATERAL_DEFAULT = {"covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
+
+
+def test_covariance_mode_settings_are_explicit_and_lateral_by_default():
     from wc_navigation.autonomy.safety_gate import covariance_mode_settings
-    assert covariance_mode_settings(None) == {} and covariance_mode_settings("xy") == {}
-    assert covariance_mode_settings("lateral") == {"covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
-    assert covariance_mode_settings("lateral", (0.4, 0.1))["slow_linear"] == 0.1
-    for bad in ((None, (0.5, 0.15)), ("lateral", (0.5, 0.4)), ("lateral", (0.02, 0.1)), ("lateral", (0.5, -1)),
+    assert covariance_mode_settings() == LATERAL_DEFAULT and covariance_mode_settings("lateral") == LATERAL_DEFAULT
+    assert covariance_mode_settings("xy") == {"covariance_mode": "xy"}
+    assert covariance_mode_settings(None, (0.4, 0.1)) == {"covariance_mode": "lateral", "slow_std_m": 0.4,
+                                                          "slow_linear": 0.1}
+    for bad in (("xy", (0.5, 0.15)), ("lateral", (0.5, 0.4)), ("lateral", (0.02, 0.1)), ("lateral", (0.5, -1)),
                 ("other", None)):
         with pytest.raises(ValueError):
             covariance_mode_settings(*bad)
@@ -337,26 +349,31 @@ def test_covariance_mode_settings_and_config_checks():
         GateConfig(covariance_mode="map")
     with pytest.raises(ValueError):
         GateConfig(covariance_mode="lateral", slow_linear=0.5)
-    assert GateConfig().covariance_mode == "xy"
+    assert GateConfig().covariance_mode == "lateral"
+    assert GateConfig(**LATERAL_DEFAULT) == GateConfig()          # the explicit record is the default gate
 
 
-def test_simulation_navigate_writes_the_trial_into_the_gate_config_only_when_asked(tmp_path):
+def test_simulation_navigate_records_the_covariance_mode_of_amcl_runs(tmp_path):
     from pathlib import Path
     from wc_navigation.autonomy import cli
     from wc_navigation.autonomy.bringup import Supervisor
     project = Path(__file__).resolve().parents[2]
     base = ["--project-root", str(project), "navigate", "--world", "two_rooms", "--goal", "8.0", "1.4", "0.0"]
-    for extra, expected in (([], None), (["--gate-covariance-mode", "lateral", "--gate-slow-limits", "0.4", "0.12"],
-                                         {"covariance_mode": "lateral", "slow_std_m": 0.4, "slow_linear": 0.12})):
+    cases = (([], LATERAL_DEFAULT), (["--gate-covariance-mode", "xy"], {"covariance_mode": "xy"}),
+             (["--gate-slow-limits", "0.4", "0.12"], {"covariance_mode": "lateral", "slow_std_m": 0.4,
+                                                      "slow_linear": 0.12}),
+             (["--localization", "truth"], {}))                  # truth runs do not check covariance
+    for k, (extra, expected) in enumerate(cases):
         config = cli.build_config(cli.arguments(base + extra))
-        assert config.get("gate_options") == expected
-        output = tmp_path / ("run%d" % len(extra))
+        assert config.get("gate_options", {}) == expected
+        output = tmp_path / ("run%d" % k)
         output.mkdir()
         cli.write_world_map(config, output)
         _, files = Supervisor(project, output, config).prepare()
         gate = json.loads(Path(files["gate"]).read_text(encoding="utf-8"))["gate"]
-        assert gate == {"max_linear": 0.3, "max_angular": 0.5, "require_covariance": True, **(expected or {})}
-    with pytest.raises(SystemExit):
-        cli.arguments(base + ["--gate-covariance-mode", "lateral", "--localization", "truth"])
-    with pytest.raises(SystemExit):
-        cli.arguments(base + ["--gate-slow-limits", "0.5", "0.15"])
+        assert gate == {"max_linear": 0.3, "max_angular": 0.5, "require_covariance": bool(expected), **expected}
+    for bad in (["--gate-covariance-mode", "lateral", "--localization", "truth"],
+                ["--gate-slow-limits", "0.5", "0.15", "--localization", "truth"],
+                ["--gate-covariance-mode", "xy", "--gate-slow-limits", "0.5", "0.15"]):
+        with pytest.raises(SystemExit):
+            cli.arguments(base + bad)

@@ -84,7 +84,7 @@ def arguments(argv=None):
     navigate.add_argument("--initial-pose-std", nargs=2, type=_positive, default=[0.25, 0.15],
                           metavar=("XY_M", "YAW_RAD"), help="uncertainty sent with the initial pose")
     from .safety_gate import add_covariance_mode_arguments, covariance_mode_settings
-    add_covariance_mode_arguments(navigate)        # window D's gate trial; default unchanged
+    add_covariance_mode_arguments(navigate)        # window D's gate covariance options (default lateral)
     navigate.add_argument("--localization", choices=["amcl", "truth"], default="amcl",
                           help="amcl (default): map_server + AMCL from the approximate initial pose; truth: the "
                                "simulator publishes map->odom from ground truth and the gate does not require an "
@@ -92,12 +92,14 @@ def arguments(argv=None):
     args = parser.parse_args(argv)
     if args.mode == "navigate":
         try:
-            args.gate_options = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits,
-                                                         args.max_linear)
+            covariance = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits, args.max_linear)
         except ValueError as exc:
             parser.error(str(exc))
-        if args.gate_options and args.localization == "truth":
-            parser.error("--gate-covariance-mode needs --localization amcl")
+        if args.localization == "truth" and (args.gate_covariance_mode is not None
+                                             or args.gate_slow_limits is not None):
+            parser.error("--gate-covariance-mode and --gate-slow-limits need --localization amcl")
+        # the covariance condition as run, recorded explicitly; truth runs do not check covariance
+        args.gate_options = covariance if args.localization == "amcl" else {}
     from ..planning.options import resolve_body_arguments, resolve_planning_arguments
     resolve_body_arguments(parser, args)
     resolve_planning_arguments(parser, args)
@@ -176,7 +178,7 @@ def build_config(args):
               "real_time_factor": args.real_time_factor, "max_duration_s": args.max_duration,
               "seed": args.seed, "simulation_only": True, "hardware_control": False}
     if getattr(args, "gate_options", None):
-        config["gate_options"] = dict(args.gate_options)   # GateConfig fields of the gate trial (window D)
+        config["gate_options"] = dict(args.gate_options)   # GateConfig fields of the covariance mode (window D)
     if args.mode == "explore":
         if args.world:
             world, default_start = synthetic_world(args.world, obstacles)

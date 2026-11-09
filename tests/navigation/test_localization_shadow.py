@@ -101,6 +101,9 @@ def test_gate_config_is_unchanged_without_amcl_and_requires_covariance_with_it(t
     assert defaults["covariance_xy_std_m"] == GateConfig().covariance_xy_std_max_m
     assert math.radians(defaults["correction_yaw_deg"]) == pytest.approx(CorrectionMonitor().max_yaw_rad)
     assert defaults["correction_reference"] == CorrectionMonitor().reference
+    assert (defaults["covariance_mode"], defaults["slow_std_m"], defaults["slow_linear"]) == (
+        GateConfig().covariance_mode, GateConfig().slow_std_m, GateConfig().slow_linear)
+    assert defaults["defaults"] is True
 
 
 class FakeSupervisor:
@@ -176,21 +179,22 @@ def test_compose_poses_matches_planar_composition():
     np.testing.assert_allclose(sl.compose_poses(transform, poses), expected, atol=1e-12)
 
 
-def test_lateral_gate_trial_is_explicit_and_amcl_only(tmp_path):
+def test_gate_covariance_mode_is_lateral_by_default_recorded_and_amcl_only(tmp_path):
     base = ["--localization", "amcl", "--map-alignment", "0", "0", "0"]
-    section = sl.config_section(parse(tmp_path, base + ["--gate-covariance-mode", "lateral"]), tmp_path,
-                                recording(), [0.0, 10.0])
-    assert section["gate_limits"]["defaults"] is False
-    gate = sl.gate_config(nav2_config.NavProfile(), section)["gate"]
+
+    def gate_of(extra):
+        section = sl.config_section(parse(tmp_path, base + extra), tmp_path, recording(), [0.0, 10.0])
+        return section["gate_limits"], sl.gate_config(nav2_config.NavProfile(), section)["gate"]
+
+    limits, gate = gate_of([])
+    assert limits["defaults"] is True and limits["covariance_mode"] == "lateral"
     assert (gate["covariance_mode"], gate["slow_std_m"], gate["slow_linear"]) == ("lateral", 0.5, 0.15)
-    custom = sl.config_section(parse(tmp_path, base + ["--gate-covariance-mode", "lateral", "--gate-slow-limits",
-                                                       "0.4", "0.1"]), tmp_path, recording(), [0.0, 10.0])
-    assert sl.gate_config(nav2_config.NavProfile(), custom)["gate"]["slow_linear"] == 0.1
-    default = sl.gate_config(nav2_config.NavProfile(), sl.config_section(parse(tmp_path, base), tmp_path,
-                                                                        recording(), [0.0, 10.0]))["gate"]
-    assert "covariance_mode" not in default
-    for bad in (["--gate-slow-limits", "0.5", "0.15"], ["--gate-covariance-mode", "lateral", "--gate-slow-limits",
-                                                         "0.5", "0.9"]):
+    limits, gate = gate_of(["--gate-covariance-mode", "xy"])
+    assert limits["defaults"] is False and gate["covariance_mode"] == "xy" and "slow_std_m" not in gate
+    limits, gate = gate_of(["--gate-slow-limits", "0.4", "0.1"])
+    assert limits["defaults"] is False and (gate["covariance_mode"], gate["slow_linear"]) == ("lateral", 0.1)
+    for bad in (["--gate-covariance-mode", "xy", "--gate-slow-limits", "0.5", "0.15"],
+                ["--gate-slow-limits", "0.5", "0.9"]):
         with pytest.raises(SystemExit):
             parse(tmp_path, base + bad)
     with pytest.raises(SystemExit):
