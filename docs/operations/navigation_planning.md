@@ -48,6 +48,16 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 
 `--localization truth`（只对 navigate）：仿真按真值发布 `map→odom`，只启动 map_server、不启动 AMCL，闸门不要求 AMCL 协方差（其余闸门条件照常）。用来在走廊地图上只比较规划和控制；默认 `amcl` 不变。走廊里 AMCL 的修正和协方差会单独决定结果（见设计文档），系统级结论仍要用 `amcl` 跑。
 
+`--goal-heading planned|turn_at_goal`（只对 navigate 任务的目标，默认 `planned` 不变）。`turn_at_goal` 时，任务节点不把目标朝向直接交给规划器，分三步：
+
+1. 选到达朝向：
+   - 按朝向规划的规划器（`smac_hybrid`、`smac_lattice`）：先按 12 个朝向（每 30°，从要求的朝向开始）各问一次 ComputePathToPose。要求朝向的路径不比最短的长 3% + 0.10 m 时，就用要求的朝向；否则在这个范围内选离要求朝向最近的一个。
+   - 不管朝向的规划器：取路径最后 0.5 m 的方向。
+2. 按到达朝向发 NavigateToPose。
+3. 到点后，朝向差超过目标检查的 yaw 容差（默认 0.35 rad）时，检查原地转向扫过的范围：实测外形从当前朝向转到要求朝向扫过的区域，最大是半径 0.846 m 的圆。扫过的范围要离保存地图的占据和未知格、局部代价地图的障碍格都至少有规划余量那么远。先试较短的方向，不行再试另一个方向。有一个方向空着，就用 Nav2 的 Spin 原地转过去（Spin 自己的碰撞检查、碰撞监控和闸门照常）；两个方向都不空，车停在原地，记录里报告朝向差。
+
+`mission_result.json` 每个目标多一个 `heading`：要求和到达的朝向、选择理由、每个候选朝向的路径长度、转向判断（每个方向在两张图里的最小间隙）、Spin 结果和最后的朝向差。这时 `succeeded` 要求到点并且朝向在容差内，`status` 仍是 NavigateToPose 的结果。车后没有传感器：从没看到过、地图里也没有的东西不会挡住转向，这和任何原地转向一样。
+
 ## 规划台架：同一批请求比较各规划器
 
 ```bash

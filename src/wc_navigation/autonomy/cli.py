@@ -87,6 +87,11 @@ def arguments(argv=None):
                           help="amcl (default): map_server + AMCL from the approximate initial pose; truth: the "
                                "simulator publishes map->odom from ground truth and the gate does not require an "
                                "AMCL covariance, to judge planning and control without localization effects")
+    from ..planning.goal_heading import DEFAULT_MODE, MODES
+    navigate.add_argument("--goal-heading", choices=MODES, default=DEFAULT_MODE,
+                          help="planned (default): each goal heading goes to the planner, unchanged; turn_at_goal: "
+                               "plan to the goal point along the arrival direction, then turn in place to the goal "
+                               "heading only when the swept area is clear (planning/goal_heading.py)")
     args = parser.parse_args(argv)
     from ..planning.options import resolve_body_arguments, resolve_planning_arguments
     resolve_body_arguments(parser, args)
@@ -224,6 +229,10 @@ def build_config(args):
                       map_yaml=saved, source_exploration=str(source), initial_pose_map=list(initial),
                       initial_pose_std=list(args.initial_pose_std),
                       true_start_map=list(start_map), goals_map=goals, localization=args.localization)
+    if args.mode == "navigate" and args.goal_heading == "turn_at_goal":
+        from ..planning.goal_heading import mission_config
+        config["mission"] = {"goal_heading": mission_config(args.planning.planner, _body(profile, config["body_model"]),
+                                                            margin_m=profile.margin_m)}
     config["world"].pop("actors", None)                  # actors are chosen per run, never inherited
     if getattr(args, "actors", None) is not None:
         from .actors import scenario_config

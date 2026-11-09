@@ -358,9 +358,10 @@ class Supervisor:
         files["bt_to_pose"] = self.write("bt_navigate_to_pose.xml", nav2_config.behavior_tree_xml(**tree))
         files["bt_through"] = self.write("bt_navigate_through_poses.xml",
                                          nav2_config.behavior_tree_xml(through_poses=True, **tree))
-        files["nav2"] = self.write("nav2_params.yaml", nav2_config.navigation_parameters(
+        nav2 = nav2_config.navigation_parameters(
             profile, mode=mode, bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
-            planning=planning_choice(cfg)))
+            planning=planning_choice(cfg))
+        files["nav2"] = self.write("nav2_params.yaml", nav2)
         if mode == "explore":
             if self.mapper() == "slam_toolbox":
                 files["mapping"] = self.write("slam_params.yaml", nav2_config.slam_parameters(
@@ -397,9 +398,14 @@ class Supervisor:
                 "max_duration_s": cfg["max_duration_s"], "nominal_speed": profile.max_linear * 0.6,
                 **cfg.get("explorer", {})})
         else:
+            mission = dict(cfg.get("mission", {}))
+            if "goal_heading" in mission:   # the turn decision uses the goal checker's own yaw tolerance
+                checker = nav2["controller_server"]["ros__parameters"]["general_goal_checker"]
+                mission["goal_heading"] = dict(mission["goal_heading"],
+                                               yaw_tolerance_rad=float(checker["yaw_goal_tolerance"]))
             files["task"] = self.write("mission_config.json", {
                 "output_dir": str(self.output), "goals": cfg["goals_map"], "max_duration_s": cfg["max_duration_s"],
-                "nominal_speed": profile.max_linear * 0.6, **cfg.get("mission", {})})
+                "nominal_speed": profile.max_linear * 0.6, **mission})
         return profile, files
 
     def run(self):
