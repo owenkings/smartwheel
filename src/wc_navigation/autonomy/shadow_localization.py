@@ -82,6 +82,8 @@ def add_arguments(parser):
     group.add_argument("--gate-correction-reference", choices=("odom_origin", "robot"),
                        help="amcl: measure the correction change as the move of the robot's map position "
                             "(robot, default) or as map->odom itself (odom_origin, the earlier measure)")
+    from .safety_gate import add_covariance_mode_arguments
+    add_covariance_mode_arguments(group)
 
 
 def check_arguments(parser, args):
@@ -90,7 +92,8 @@ def check_arguments(parser, args):
     amcl_only = {"--initial-pose-offset": args.initial_pose_offset, "--initial-pose-std": args.initial_pose_std,
                  "--amcl-params": args.amcl_params, "--gate-correction-limits": args.gate_correction_limits,
                  "--gate-covariance-limits": args.gate_covariance_limits,
-                 "--gate-correction-reference": args.gate_correction_reference}
+                 "--gate-correction-reference": args.gate_correction_reference,
+                 "--gate-covariance-mode": args.gate_covariance_mode, "--gate-slow-limits": args.gate_slow_limits}
     if mode == "identity":
         given = [k for k, v in {**specific, **amcl_only}.items() if v is not None]
         if given:
@@ -115,6 +118,11 @@ def check_arguments(parser, args):
         value = getattr(args, name)
         if value is not None and not all(v > 0 for v in value):
             parser.error("--" + name.replace("_", "-") + " must be positive")
+    from .safety_gate import covariance_mode_settings
+    try:
+        covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def alignment_from_args(args):
@@ -180,7 +188,13 @@ def config_section(args, output, recording, window):
                                   "covariance_yaw_std_rad": math.radians(float(cov_yaw_deg)),
                                   "defaults": bool(args.gate_correction_limits is None
                                                    and args.gate_covariance_limits is None
-                                                   and args.gate_correction_reference is None)}
+                                                   and args.gate_correction_reference is None
+                                                   and args.gate_covariance_mode in (None, "xy"))}
+        from .safety_gate import covariance_mode_settings
+        trial = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+        if trial:
+            section["gate_limits"].update(covariance_mode=trial["covariance_mode"],
+                                          slow_std_m=trial["slow_std_m"], slow_linear=trial["slow_linear"])
     return section
 
 
@@ -216,6 +230,9 @@ def gate_config(profile, config):
     limits = config["gate_limits"]
     gate.update(require_covariance=True, covariance_xy_std_max_m=limits["covariance_xy_std_m"],
                 covariance_yaw_std_max_rad=limits["covariance_yaw_std_rad"])
+    if limits.get("covariance_mode", "xy") != "xy":         # window D's trial, only when chosen explicitly
+        gate.update(covariance_mode=limits["covariance_mode"], slow_std_m=limits["slow_std_m"],
+                    slow_linear=limits["slow_linear"])
     monitor = {"window_s": limits["correction_window_s"], "max_translation_m": limits["correction_translation_m"],
                "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": limits["correction_hold_s"],
                "reference": limits.get("correction_reference", GATE_REFERENCE)}

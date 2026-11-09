@@ -5,14 +5,16 @@ rate, so the base watchdog always sees a fresh decision. Status JSON goes to
 ``/wc_nav/gate_status`` at 2 Hz and on every state change. With AMCL (the
 covariance condition on), a robot held for its covariance gets a bounded number
 of AMCL no-motion updates (``StationaryRelocalization``); the gate's own
-conditions and limits do not change.
+conditions and limits do not change. The covariance condition's mode
+(``GateConfig.covariance_mode``: xy by default, lateral as a trial) is assessed
+on every AMCL pose with its heading.
 """
 from __future__ import annotations
 
 import argparse
 
 from .nav2_config import CMD_GATED, CMD_MONITORED
-from .ros_util import json_message, latched_qos, load_config, lookup_pose, require_isolated_domain
+from .ros_util import json_message, latched_qos, load_config, lookup_pose, quaternion_to_yaw, require_isolated_domain
 from .safety_gate import COVARIANCE_REASONS, CorrectionMonitor, GateConfig, SafetyGate, StationaryRelocalization
 
 NOMOTION_SERVICE = "/request_nomotion_update"
@@ -59,7 +61,9 @@ class GateNode:
         self.gate.on_command(message.linear.x, message.angular.z, self.now())
 
     def on_pose(self, message):
-        self.covariance_ok, self.covariance_reason = self.gate.check_covariance(message.pose.covariance)
+        # The heading is used by the lateral covariance mode only; the xy mode ignores it.
+        self.covariance_ok, self.covariance_reason = self.gate.on_covariance(
+            message.pose.covariance, quaternion_to_yaw(message.pose.pose.orientation))
 
     def tick(self):
         now = self.now()
@@ -110,6 +114,8 @@ class GateNode:
                       "linear": decision.linear, "angular": decision.angular}
             if self.relocalization is not None:
                 status["stationary_relocalization"] = self.relocalization.status()
+            if self.gate.config.require_covariance:
+                status["covariance"] = self.gate.covariance_status()
             self.status.publish(json_message(status))
             self.last_state, self.last_status = decision.state, now
 

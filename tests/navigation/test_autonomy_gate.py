@@ -1,4 +1,5 @@
 """Safety gate: every failed condition yields an explicit zero twist."""
+import json
 import math
 
 import pytest
@@ -227,3 +228,135 @@ def test_an_unavailable_service_does_not_use_the_budget():
     assert ticks(relocalization, 3.25, 6.0, (0.0, 0.0, 0.0)) == [4.0, 5.0]
     with pytest.raises(ValueError):
         StationaryRelocalization(max_requests=50)
+
+
+# -- lateral covariance mode (trial of 2026-11-09, not a default) ---------------------------------------------
+def ellipse(major, minor, angle, yaw_std=0.05):
+    """Row-major 6x6 pose covariance with a position error ellipse at ``angle`` (rad) in the map."""
+    c, s = math.cos(angle), math.sin(angle)
+    xx = c * c * major ** 2 + s * s * minor ** 2
+    yy = s * s * major ** 2 + c * c * minor ** 2
+    xy = c * s * (major ** 2 - minor ** 2)
+    covariance = [0.0] * 36
+    covariance[0], covariance[1], covariance[6], covariance[7], covariance[35] = xx, xy, xy, yy, yaw_std ** 2
+    return covariance
+
+
+def test_covariance_spread_gives_the_ellipse_axes_and_the_heading_components():
+    from wc_navigation.autonomy.safety_gate import covariance_spread
+    spread = covariance_spread(ellipse(0.64, 0.2, math.radians(30)), math.radians(30))
+    assert spread["major"] == pytest.approx(0.64) and spread["minor"] == pytest.approx(0.2)
+    assert spread["along"] == pytest.approx(0.64) and spread["across"] == pytest.approx(0.2)
+    turned = covariance_spread(ellipse(0.64, 0.2, math.radians(30)), math.radians(120))
+    assert turned["along"] == pytest.approx(0.2) and turned["across"] == pytest.approx(0.64)
+    assert covariance_spread([0.0] * 36)["major"] == 0.0 and "along" not in covariance_spread([0.0] * 36)
+    assert covariance_spread([float("nan")] * 36) is None and covariance_spread([0.0] * 3) is None
+
+
+def lateral_gate(**config):
+    return active_gate(covariance_mode="lateral", require_covariance=True, **config)
+
+
+def test_lateral_mode_stops_only_for_the_uncertainty_across_the_heading_or_in_the_heading():
+    gate = lateral_gate()
+    corridor = ellipse(0.64, 0.2, 0.0)             # long along map x, robot heading along x: B's stuck case
+    assert gate.check_covariance(corridor, 0.0) == (True, "")
+    assert gate.check_covariance(corridor, math.pi / 2) == (False, "COVARIANCE_ACROSS_HEADING_TOO_LARGE")
+    assert gate.check_covariance(ellipse(0.3, 0.2, 0.0, yaw_std=0.3), 0.0) == (False, "COVARIANCE_YAW_TOO_LARGE")
+    assert gate.check_covariance(corridor) == (False, "COVARIANCE_HEADING_UNKNOWN")
+    assert gate.check_covariance([float("nan")] * 36, 0.0) == (False, "COVARIANCE_INVALID")
+    # the default xy mode is unchanged: the same corridor ellipse stops, the heading is ignored
+    assert active_gate(require_covariance=True).check_covariance(corridor, 0.0) == (False, "COVARIANCE_XY_TOO_LARGE")
+    assert SafetyGate().check_covariance(corridor) == (False, "COVARIANCE_XY_TOO_LARGE")
+
+
+def drive(gate, start, end, linear=0.3, angular=0.1, dt=0.05):
+    """Fresh commands and decisions every ``dt``; returns the decisions."""
+    out = []
+    for k in range(int(round((end - start) / dt)) + 1):
+        t = start + k * dt
+        gate.on_enable(True, t)
+        gate.on_command(linear, angular, t)
+        out.append(gate.evaluate(t))
+    return out
+
+
+def test_lateral_mode_slows_while_the_major_axis_is_large_and_keeps_the_curvature():
+    gate = lateral_gate()
+    assert drive(gate, 0.0, 0.2)[-1].linear == pytest.approx(0.3)     # nothing assessed yet: full speed
+    assert gate.on_covariance(ellipse(0.64, 0.2, 0.0), 0.0) == (True, "") and gate.slow
+    decisions = drive(gate, 0.25, 1.0)
+    # ramps down at 0.6 m/s^2 (0.25 s), then holds 0.15 m/s with the same turn radius (0.3 m/s : 0.1 rad/s)
+    assert decisions[0].linear == pytest.approx(0.3 - 0.6 * 0.05)
+    assert decisions[0].angular == pytest.approx(0.1 * decisions[0].linear / 0.3)
+    assert decisions[-1].linear == pytest.approx(0.15) and decisions[-1].angular == pytest.approx(0.05)
+    assert all("LOCALIZATION_SLOW" in d.reasons and d.state == "ACTIVE" for d in decisions)
+    # a slower command passes unchanged, a turn in place is not limited
+    assert drive(gate, 1.05, 1.05, linear=0.1, angular=0.2)[-1].linear == pytest.approx(0.1)
+    turn = drive(gate, 1.1, 1.1, linear=0.0, angular=0.4)[-1]
+    assert (turn.linear, turn.angular) == (0.0, 0.4) and "LOCALIZATION_SLOW" in turn.reasons
+    # hysteresis: still slow at 0.47 m, released at 0.44 m, then ramps up at 0.3 m/s^2 (0.5 s)
+    gate.on_covariance(ellipse(0.47, 0.2, 0.0), 0.0)
+    assert gate.slow and drive(gate, 1.15, 1.5)[-1].linear == pytest.approx(0.15)
+    gate.on_covariance(ellipse(0.44, 0.2, 0.0), 0.0)
+    assert not gate.slow
+    rising = drive(gate, 1.55, 2.2)
+    assert rising[0].linear == pytest.approx(0.15 + 0.3 * 0.05)
+    assert rising[-1].linear == pytest.approx(0.3) and rising[-1].reasons == ()
+    status = gate.covariance_status()
+    assert status["mode"] == "lateral" and status["slow"] is False and status["std_major_m"] == pytest.approx(0.44)
+
+
+def test_lateral_slow_down_starts_without_a_ramp_after_a_stop():
+    gate = lateral_gate()
+    gate.on_covariance(ellipse(0.64, 0.2, 0.0), 0.0)
+    gate.on_localization(False, "MAP_CORRECTION_CHANGING_FAST")
+    assert drive(gate, 0.0, 1.0)[-1].state == "LOCALIZATION_UNTRUSTED"
+    gate.on_localization(True)
+    assert drive(gate, 1.05, 1.05)[-1].linear == pytest.approx(0.15)     # the output was zero: no ramp needed
+
+
+def test_the_xy_mode_never_slows():
+    gate = active_gate(require_covariance=True)
+    gate.on_covariance(ellipse(0.45, 0.1, math.radians(45)), 0.0)        # passes in xy (std_x = std_y = 0.33)
+    decisions = drive(gate, 0.0, 1.0)
+    assert not gate.slow and all((d.linear, d.angular, d.reasons) == (0.3, 0.1, ()) for d in decisions)
+    assert gate.covariance_status() == {"mode": "xy"}
+
+
+def test_covariance_mode_settings_and_config_checks():
+    from wc_navigation.autonomy.safety_gate import covariance_mode_settings
+    assert covariance_mode_settings(None) == {} and covariance_mode_settings("xy") == {}
+    assert covariance_mode_settings("lateral") == {"covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
+    assert covariance_mode_settings("lateral", (0.4, 0.1))["slow_linear"] == 0.1
+    for bad in ((None, (0.5, 0.15)), ("lateral", (0.5, 0.4)), ("lateral", (0.02, 0.1)), ("lateral", (0.5, -1)),
+                ("other", None)):
+        with pytest.raises(ValueError):
+            covariance_mode_settings(*bad)
+    with pytest.raises(ValueError):
+        GateConfig(covariance_mode="map")
+    with pytest.raises(ValueError):
+        GateConfig(covariance_mode="lateral", slow_linear=0.5)
+    assert GateConfig().covariance_mode == "xy"
+
+
+def test_simulation_navigate_writes_the_trial_into_the_gate_config_only_when_asked(tmp_path):
+    from pathlib import Path
+    from wc_navigation.autonomy import cli
+    from wc_navigation.autonomy.bringup import Supervisor
+    project = Path(__file__).resolve().parents[2]
+    base = ["--project-root", str(project), "navigate", "--world", "two_rooms", "--goal", "8.0", "1.4", "0.0"]
+    for extra, expected in (([], None), (["--gate-covariance-mode", "lateral", "--gate-slow-limits", "0.4", "0.12"],
+                                         {"covariance_mode": "lateral", "slow_std_m": 0.4, "slow_linear": 0.12})):
+        config = cli.build_config(cli.arguments(base + extra))
+        assert config.get("gate_options") == expected
+        output = tmp_path / ("run%d" % len(extra))
+        output.mkdir()
+        cli.write_world_map(config, output)
+        _, files = Supervisor(project, output, config).prepare()
+        gate = json.loads(Path(files["gate"]).read_text(encoding="utf-8"))["gate"]
+        assert gate == {"max_linear": 0.3, "max_angular": 0.5, "require_covariance": True, **(expected or {})}
+    with pytest.raises(SystemExit):
+        cli.arguments(base + ["--gate-covariance-mode", "lateral", "--localization", "truth"])
+    with pytest.raises(SystemExit):
+        cli.arguments(base + ["--gate-slow-limits", "0.5", "0.15"])

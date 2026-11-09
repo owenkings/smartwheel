@@ -306,7 +306,9 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
     monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
     monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
-    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve", lambda self, value: tmp_path / "run")
+    runs = iter(range(10))
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve",
+                        lambda self, value: tmp_path / ("run%d" % next(runs)))
     map_yaml = tmp_path / "m.yaml"
     map_yaml.write_text("image: m.pgm\n")
     write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
@@ -318,6 +320,12 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     assert captured["relay"] == {"source_domain": 83, "source_prefix": "", "output_prefix": cli.OUTPUT_PREFIX,
                                  "wait_for_panel_consumers": True}
     assert captured["source_prefix"] == cli.OUTPUT_PREFIX and captured["lidar_time_offset_ms"] == 75.0
+    assert "covariance_mode" not in captured["gate_limits"]                  # gate trial only when asked
+    captured.clear()
+    with pytest.raises(Stop):
+        cli.main(argv + ["--gate-covariance-mode", "lateral"])
+    assert {k: captured["gate_limits"][k] for k in ("covariance_mode", "slow_std_m", "slow_linear")} == {
+        "covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.15}
 
 
 def test_sim_time_is_set_everywhere_in_a_parameter_tree():

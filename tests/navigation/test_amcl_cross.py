@@ -176,7 +176,7 @@ def test_evaluate_run_flags_each_gate_variant_on_a_heading_correction_far_from_t
     assert after["change_2s_xy"] == pytest.approx(math.hypot(*shifted)) and after["change_2s_robot_xy"] < 1e-9
     assert after["gate_until_20261107_correction_ok"] is False and after["gate_default_correction_ok"] is True
     assert after["gate_until_20261107_covariance_ok"] is False and after["gate_default_covariance_ok"] is True
-    assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_default": 0}
+    assert extra["correction_jump_events"] == {"gate_until_20261107": 1, "gate_default": 0, "gate_lateral_trial": 0}
 
 
 def track(lidar_poses, dt=0.3):
@@ -237,3 +237,27 @@ def test_lidar_time_offset_argument_is_explicit_and_bounded(tmp_path):
     assert arguments(base + ["--lidar-time-offset-ms", "75"]).lidar_time_offset_ms == 75.0
     with pytest.raises(SystemExit):
         arguments(base + ["--lidar-time-offset-ms", "300"])
+
+
+def test_lateral_trial_variant_passes_and_slows_where_the_default_stops():
+    from wc_navigation.live.amcl_cross import GATE_VARIANTS, CSV_FIELDS, evaluate_run, summarize_run
+    assert GATE_VARIANTS["gate_lateral_trial"]["covariance_mode"] == "lateral"
+    assert "gate_lateral_trial_slow" in CSV_FIELDS and "gate_default_slow" not in CSV_FIELDS
+    scorer = EndpointScorer(corridor_grid(), 0.1, (0.0, 0.0, 0.0))
+    frames, trajectory, rows = [], [], []
+    covariance = [0.0] * 36
+    covariance[0], covariance[7], covariance[35] = 0.64 ** 2, 0.2 ** 2, 0.05 ** 2   # long along x
+    for k in range(8):
+        axle = se2(1.0 + 0.1 * k, 2.0, 0.0)                    # driving along x
+        stamp = 1_000_000_000 + k * 300_000_000
+        frames.append({"stamp_ns": stamp, "t": k * 0.3, "segment": "MIDDLE", "motion": "STRAIGHT",
+                       "axle": axle, "lidar": axle, "endpoints": np.array([[0.0, -0.95]])})
+        rows.append({"stamp_ns": stamp, "x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0, "filter_updated": True})
+        trajectory.append({"stamp_ns": stamp, "covariance": covariance, "yaw_rad": 0.0})
+    table, _ = evaluate_run({"map_odom_trajectory": rows, "trajectory": trajectory}, frames, np.eye(3), scorer)
+    assert all(r["gate_default_covariance_ok"] is False for r in table)
+    assert all(r["gate_lateral_trial_covariance_ok"] is True and r["gate_lateral_trial_slow"] is True for r in table)
+    gate = summarize_run(table, frames)["gate"]
+    assert gate["gate_lateral_trial"]["slow_frames"]["MIDDLE"] == 8
+    assert gate["gate_lateral_trial"]["full_speed_frames"]["MIDDLE"] == 0
+    assert gate["gate_default"]["slow_frames"]["MIDDLE"] == 0 and gate["gate_default"]["either_untrusted_frames"]["MIDDLE"] == 8

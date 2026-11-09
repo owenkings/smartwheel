@@ -47,7 +47,19 @@ SEGMENTS = ("START_DOOR", "MIDDLE", "END_DOOR")
 GATE_VARIANTS = {
     "gate_until_20261107": {"reference": "odom_origin", "translation_m": 0.25, "yaw_deg": 5.0, "cov_xy_m": 0.30},
     "gate_default": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50},
+    # Trial of 2026-11-09 (not a default): covariance stops only across the heading and in the heading; a major
+    # axis above slow_std_m slows the robot to slow_linear_m_s (safety_gate.GateConfig covariance_mode lateral).
+    "gate_lateral_trial": {"reference": "robot", "translation_m": 0.25, "yaw_deg": 10.0, "cov_xy_m": 0.50,
+                           "covariance_mode": "lateral", "slow_std_m": 0.50, "slow_linear_m_s": 0.15},
 }
+
+
+def gate_variant_config(settings):
+    """GateConfig of a GATE_VARIANTS entry (covariance required)."""
+    from ..autonomy.safety_gate import GateConfig, covariance_mode_settings
+    trial = covariance_mode_settings(settings.get("covariance_mode"), (
+        settings["slow_std_m"], settings["slow_linear_m_s"]) if settings.get("covariance_mode") == "lateral" else None)
+    return GateConfig(require_covariance=True, covariance_xy_std_max_m=settings["cov_xy_m"], **trial)
 JOIN_XY_M, JOIN_YAW_DEG, JOIN_SHARE = 0.25, 5.0, 0.9
 CONVERGED_XY_M, CONVERGED_YAW_DEG = 0.10, 2.0
 DIVERGED_XY_M, DIVERGED_YAW_DEG = 0.50, 10.0
@@ -274,8 +286,8 @@ def evaluate_run(result, frames, alignment, scorer, analyzer=None):
 
     Every GATE_VARIANTS entry gets its own covariance check and correction monitor on the returned map->odom.
     """
-    from ..autonomy.safety_gate import CorrectionMonitor, GateConfig, SafetyGate
-    variants = {name: (SafetyGate(GateConfig(require_covariance=True, covariance_xy_std_max_m=v["cov_xy_m"])),
+    from ..autonomy.safety_gate import CorrectionMonitor, SafetyGate
+    variants = {name: (SafetyGate(gate_variant_config(v)),
                        CorrectionMonitor(max_translation_m=v["translation_m"], max_yaw_rad=math.radians(v["yaw_deg"]),
                                          reference=v["reference"]))
                 for name, v in GATE_VARIANTS.items()}
@@ -283,6 +295,7 @@ def evaluate_run(result, frames, alignment, scorer, analyzer=None):
     series = map_odom_series(result, {f["stamp_ns"]: f["axle"] for f in frames})
     rows, history = [], []
     last_map_odom = last_covariance = None
+    assessed = {}            # per variant: (ok, reason, slow) of the last AMCL pose, as the gate node holds it
     for frame in frames:
         stamp, t = frame["stamp_ns"], frame["t"]
         received = series.get(stamp)
@@ -322,10 +335,16 @@ def evaluate_run(result, frames, alignment, scorer, analyzer=None):
             row.update(std_x=math.sqrt(max(last_covariance[0], 0.0)), std_y=math.sqrt(max(last_covariance[7], 0.0)),
                        std_yaw=math.sqrt(max(last_covariance[35], 0.0)), std_along=std_along, std_across=std_across)
             for name, (gate, monitor) in variants.items():
-                ok, reason = gate.check_covariance(last_covariance)
+                if pose_row is not None or name not in assessed:
+                    # like the gate node: assessed on each AMCL pose with that pose's heading, then held
+                    ok, reason = gate.on_covariance(last_covariance, (pose_row or {}).get("yaw_rad", yaw))
+                    assessed[name] = (ok, reason, gate.slow)
+                ok, reason, slow = assessed[name]
                 row[name + "_covariance_ok"] = ok
                 if not ok:
                     row[name + "_covariance_reason"] = reason
+                if gate.config.covariance_mode == "lateral":
+                    row[name + "_slow"] = slow
         if analyzer is not None:
             report = analyzer.analyze(frame["ranges"], frame["angles"], list(xyyaw(lidar)), heading_yaw_rad=yaw)
             row.update(coverage_insufficient=report["coverage_insufficient"],
@@ -352,6 +371,10 @@ def motion_breakdown(rows, frames):
             entry[variant + "_untrusted_frames"] = int(sum(
                 1 for r in selected if r.get(variant + "_covariance_ok") is False
                 or r.get(variant + "_correction_ok") is False))
+            if GATE_VARIANTS[variant].get("covariance_mode") == "lateral":
+                entry[variant + "_slow_frames"] = int(sum(
+                    1 for r in selected if r.get(variant + "_covariance_ok") is True
+                    and r.get(variant + "_correction_ok") is True and r.get(variant + "_slow")))
         result[name] = entry
     return result
 
@@ -389,6 +412,12 @@ def summarize_run(rows, frames):
             "either_untrusted_frames": {name: int(sum(1 for r in rows if (r.get(covariance) is False
                                                                           or r.get(correction) is False)
                                                       and r["segment"] == name)) for name in SEGMENTS},
+            # passing frames (both conditions evaluated and true) that the lateral trial slows down; 0 otherwise
+            "slow_frames": {name: int(sum(1 for r in rows if r.get(covariance) is True and r.get(correction) is True
+                                          and r.get(variant + "_slow") and r["segment"] == name)) for name in SEGMENTS},
+            "full_speed_frames": {name: int(sum(1 for r in rows if r.get(covariance) is True
+                                                and r.get(correction) is True and not r.get(variant + "_slow")
+                                                and r["segment"] == name)) for name in SEGMENTS},
             "covariance_reasons": sorted({r[variant + "_covariance_reason"] for r in rows
                                           if r.get(variant + "_covariance_reason")})}
     ambiguous = [r for r in rows if r.get("along_heading_ambiguity") and r["segment"] == "MIDDLE"]
@@ -621,6 +650,7 @@ CSV_FIELDS = ("stamp_ns", "t", "segment", "acknowledged", "filter_updated", "x",
               "support", "std_x", "std_y", "std_yaw", "std_along", "std_across", "along_vs_fixed",
               "across_vs_fixed", "yaw_vs_fixed", "change_2s_xy", "change_2s_robot_xy", "change_2s_yaw",
               *[name + suffix for name in GATE_VARIANTS for suffix in ("_correction_ok", "_covariance_ok")],
+              *[name + "_slow" for name, v in GATE_VARIANTS.items() if v.get("covariance_mode") == "lateral"],
               "coverage_insufficient", "along_heading_ambiguity")
 
 

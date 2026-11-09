@@ -110,6 +110,8 @@ def arguments(argv=None):
     shadow.add_argument("--gate-covariance-limits", nargs=2, type=finite, default=[0.50, math.degrees(0.25)],
                         metavar=("XY_STD_M", "YAW_STD_DEG"))
     shadow.add_argument("--gate-correction-reference", choices=["odom_origin", "robot"], default="robot")
+    from ..autonomy.safety_gate import add_covariance_mode_arguments
+    add_covariance_mode_arguments(shadow)
     shadow.add_argument("--footprint", nargs="+", type=finite)
     shadow.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     shadow.add_argument("--max-duration", type=finite, default=900.0, help="wall seconds")
@@ -138,6 +140,11 @@ def arguments(argv=None):
         from .amcl_cross import CANDIDATES
         if args.amcl_params != "framework" and args.amcl_params not in CANDIDATES:
             parser.error("--amcl-params must be framework or one of " + ", ".join(CANDIDATES))
+        from ..autonomy.safety_gate import covariance_mode_settings
+        try:
+            args.gate_trial = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+        except ValueError as exc:
+            parser.error(str(exc))
         if args.footprint is not None:
             from ..autonomy import nav2_config
             if len(args.footprint) < 6 or len(args.footprint) % 2:
@@ -235,7 +242,8 @@ def main(argv=None):
                                    "correction_yaw_deg": args.gate_correction_limits[1],
                                    "correction_reference": args.gate_correction_reference,
                                    "covariance_xy_std_m": args.gate_covariance_limits[0],
-                                   "covariance_yaw_std_deg": args.gate_covariance_limits[1]},
+                                   "covariance_yaw_std_deg": args.gate_covariance_limits[1],
+                                   **args.gate_trial},
                       initial_pose=[args.initial_pose[0], args.initial_pose[1], math.radians(args.initial_pose[2])],
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)

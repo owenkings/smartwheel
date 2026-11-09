@@ -91,6 +91,20 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
+## 闸门协方差判据的试用选项（默认不变）
+
+用户 2026-11-08 决定先做成显式选项试，默认仍是现在的判据。仿真导航（`navigation_autonomy_sim navigate`，要求默认的 `--localization amcl`）、录包影子运行（`navigation_nav2_shadow --localization amcl`）和实时影子（`navigation_live_shadow shadow`）都有这两个选项：
+
+```bash
+... --gate-covariance-mode lateral --gate-slow-limits 0.50 0.15
+```
+
+- `--gate-covariance-mode xy`（默认，不给时相同）：地图坐标轴上较大的位置标准差超过 0.50 m，或航向标准差超过 0.25 rad，闸门停车。
+- `--gate-covariance-mode lateral`（试用）：只有车头横向的标准差超过 0.50 m 或航向标准差超过 0.25 rad 才停车，修正突变条件不变。放行时，误差椭圆长轴的标准差超过 STD_M 就把线速度限到 SPEED_M_S，降到 STD_M − 0.05 m 以下才恢复；线速度和角速度按同一比例缩小（转弯半径不变），原地转向不限，限速值按 0.6 / 0.3 m/s² 过渡。
+- `--gate-slow-limits STD_M SPEED_M_S` 只能和 lateral 一起给，默认 0.50 m、0.15 m/s；STD_M 在 0.05–2 m，SPEED_M_S 不超过最大线速度。依据和验证结果见[设计说明](../architecture/live_shadow.md#闸门协方差只看横向的试用选项2026-11-09)。
+- 记录：`/wc_nav/gate_status` 多一节 `covariance`（模式；lateral 时还有横向、沿车头、长轴和航向标准差，是否限速，当前限速值）。限速时状态仍是 `ACTIVE`，`reasons` 里有 `LOCALIZATION_SLOW`；横向超限的停车原因是 `COVARIANCE_ACROSS_HEADING_TOO_LARGE`。实时影子的 `result.json` 有 `gate_slow_s`（闸门限速放行的秒数，和 `gate_state_s` 同一时段；xy 下是 0）；仿真的 `gate_config.json` 和影子运行的 `gate_limits` 记下所选模式和限速值。
+- `navigation_amcl_replay cross` 不需要选项：离线评估里多一个闸门变体 `gate_lateral_trial`，逐帧 CSV 有 `gate_lateral_trial_slow` 列，`summary.json` 的闸门判定里有 `slow_frames` 和 `full_speed_frames`。
+
 ## 上车前冻结当前配置
 
 ```bash

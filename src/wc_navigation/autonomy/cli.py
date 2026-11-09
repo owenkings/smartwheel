@@ -83,11 +83,21 @@ def arguments(argv=None):
                           metavar=("DX", "DY", "DYAW"), help="error added to the AMCL initial pose (map frame)")
     navigate.add_argument("--initial-pose-std", nargs=2, type=_positive, default=[0.25, 0.15],
                           metavar=("XY_M", "YAW_RAD"), help="uncertainty sent with the initial pose")
+    from .safety_gate import add_covariance_mode_arguments, covariance_mode_settings
+    add_covariance_mode_arguments(navigate)        # window D's gate trial; default unchanged
     navigate.add_argument("--localization", choices=["amcl", "truth"], default="amcl",
                           help="amcl (default): map_server + AMCL from the approximate initial pose; truth: the "
                                "simulator publishes map->odom from ground truth and the gate does not require an "
                                "AMCL covariance, to judge planning and control without localization effects")
     args = parser.parse_args(argv)
+    if args.mode == "navigate":
+        try:
+            args.gate_options = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits,
+                                                         args.max_linear)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.gate_options and args.localization == "truth":
+            parser.error("--gate-covariance-mode needs --localization amcl")
     from ..planning.options import resolve_body_arguments, resolve_planning_arguments
     resolve_body_arguments(parser, args)
     resolve_planning_arguments(parser, args)
@@ -165,6 +175,8 @@ def build_config(args):
               "odometry": OdometryErrorModel.preset(args.odometry_error, seed=args.seed).as_dict(),
               "real_time_factor": args.real_time_factor, "max_duration_s": args.max_duration,
               "seed": args.seed, "simulation_only": True, "hardware_control": False}
+    if getattr(args, "gate_options", None):
+        config["gate_options"] = dict(args.gate_options)   # GateConfig fields of the gate trial (window D)
     if args.mode == "explore":
         if args.world:
             world, default_start = synthetic_world(args.world, obstacles)
