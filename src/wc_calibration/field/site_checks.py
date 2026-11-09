@@ -5,7 +5,7 @@
   scripts/lidar_site_checks tape       --front-cm 8.9 --height-cm 3.9 [--lateral-cm 46.2] [--dataset 录包]
   scripts/lidar_site_checks push       --dataset 录包
   scripts/lidar_site_checks isolation  --both 录包 --left-only 录包 --right-only 录包
-  scripts/lidar_site_checks nearby     --with 车前站人的录包 --without 同一摆放没人的录包
+  scripts/lidar_site_checks nearby     --dataset 前后没人、中间有人的录包
 
 - bias：开头 30 s 静止的 10+10+10 零偏确认。写用户的物理静止声明，再调 wc_runtime.mapping_bias_confirm。
 - wall：车头正对平墙，按卷尺距离依次停车。量两台雷达到墙的距离、和卷尺的差、左右差、测距比例、墙面俯仰。
@@ -13,7 +13,7 @@
 - push：车头朝走廊尽头墙推近、拉远，三种速度。量每趟速度、左右墙面差，以及雷达相对轮速的时间偏移和比例
   （正前方尽头墙的距离对轮速积分的位移；比例取每趟前后的静止端点）。
 - isolation：只开左、只开右、两台都开的静止录包，比较悬空点和地面上翘点的比例，判断是不是两台互相干扰。
-- nearby：车前站人和同一摆放没人的静止录包，比较没被挡住的远处像素距离，判断近处亮物会不会把远处拉近。
+- nearby：同一段静止录包里中间车前站人、前后没人（或两段录包），比较没被挡住的远处像素距离，判断近处亮物会不会把远处拉近。
 
 点云默认用录包里的 filtered 源帧（建图用的），按录包冻结的 hardware_setup（或 --hardware-setup 覆盖）换到车轴系。
 filtered 带 SDK 主机滤波（含 Kalman 时间滤波），移动时正对的面距离会滞后，所以 push 的时间偏移用 raw 帧（同一帧滤波前），
@@ -702,6 +702,16 @@ def floating_mask(p, h, rng):
     return out
 
 
+def artifact_counts(mount_t, p):
+    """一帧（车轴系有效点）：车前 0.5–4.5 m、左右 1.5 m 内的点数、其中的悬空点和地面上翘点（2 m 外、离地 0.2765–0.45 m）。"""
+    p = p[(p[:, 0] > mount_t[0] + 0.5) & (p[:, 0] < mount_t[0] + 4.5) & (np.abs(p[:, 1]) <= 1.5)]
+    h = p[:, 2] + AXLE_HEIGHT
+    rng = np.hypot(p[:, 0] - mount_t[0], p[:, 1] - mount_t[1])
+    floating = floating_mask(p, h, rng)
+    curl = (rng >= 2.0) & (h >= 0.2765) & (h < 0.45)
+    return len(p), int(floating.sum()), int(curl.sum())
+
+
 def static_rates(rec, side, window=None, stride=2):
     """静止录包每帧：车前区域点数、悬空点、地面上翘点（2 m 外、离地 0.2765–0.45 m），和中位距离图。"""
     mount_t = rec.mounts[side][1]
@@ -709,14 +719,7 @@ def static_rates(rec, side, window=None, stride=2):
     keep = None if window is None else (lambda s: window[0] <= s <= window[1])
     for _, xyz in rec.frames(side, keep, stride):
         ranges.append(np.linalg.norm(xyz, axis=1).astype(np.float32))
-        p = rec.to_axle(side, xyz[np.isfinite(xyz).all(1)])
-        roi = (p[:, 0] > mount_t[0] + 0.5) & (p[:, 0] < mount_t[0] + 4.5) & (np.abs(p[:, 1]) <= 1.5)
-        p = p[roi]
-        h = p[:, 2] + AXLE_HEIGHT
-        rng = np.hypot(p[:, 0] - mount_t[0], p[:, 1] - mount_t[1])
-        floating = floating_mask(p, h, rng)
-        curl = (rng >= 2.0) & (h >= 0.2765) & (h < 0.45)
-        rows.append((len(p), int(floating.sum()), int(curl.sum())))
+        rows.append(artifact_counts(mount_t, rec.to_axle(side, xyz[np.isfinite(xyz).all(1)])))
     if not rows:
         return None
     a = np.array(rows, dtype=float)
@@ -764,39 +767,191 @@ def analyze_isolation(recs, window=None, stride=2):
 
 
 # ------------------------------------------------------------------ nearby
-def analyze_nearby(with_rec, without_rec, with_window=None, without_window=None, stride=2):
-    """车前站人（with）和同一摆放没人（without）比：没被人挡住的远处像素距离变了多少，以及悬空点、地面上翘点。"""
-    info = {'with': str(with_rec.dir), 'without': str(without_rec.dir), 'with_window_s': with_window,
-            'without_window_s': without_window, 'frame_stride': stride,
-            'same_recording': with_rec.dir == without_rec.dir}
-    out = []
-    for side in [s for s in with_rec.sides if s in without_rec.sides]:
-        name = SIDE_NAMES[side]
-        a = static_rates(without_rec, side, without_window, stride)
-        b = static_rates(with_rec, side, with_window, stride)
-        if not a or not b:
-            out.append(check('%s雷达帧' % name, 'FAIL', None, None, '有一段录包（或时间窗）里没有这台雷达的帧'))
+PERSON_BOX = (FRONT_X + 0.15, FRONT_X + 1.2, 0.5, 0.30, 1.80)  # 车轴系 x 范围、|y| 上限、离地高度：脚踏前 0.5 m 站的人
+PERSON_HI, PERSON_LO = 150, 20   # 盒子里的点数：≥ PERSON_HI 算有人，≤ PERSON_LO 算没人，中间的帧不用
+
+
+def frame_table(rec, side, keep=None, artifact_stride=4):
+    """静止录包逐帧：时间、距离图、站人盒子里的点数；每 artifact_stride 帧另算悬空点和地面上翘点。"""
+    x0, x1, half, h0, h1 = PERSON_BOX
+    mount_t = rec.mounts[side][1]
+    t, ranges, box, art = [], [], [], []
+    for n, (rel, xyz) in enumerate(rec.frames(side, keep)):
+        p = rec.to_axle(side, xyz[np.isfinite(xyz).all(1)])
+        h = p[:, 2] + AXLE_HEIGHT
+        t.append(rel)
+        ranges.append(np.linalg.norm(xyz, axis=1).astype(np.float32))
+        box.append(int(((p[:, 0] >= x0) & (p[:, 0] <= x1) & (np.abs(p[:, 1]) <= half) & (h >= h0) & (h <= h1)).sum()))
+        art.append(artifact_counts(mount_t, p) if n % artifact_stride == 0 else (np.nan, np.nan, np.nan))
+    if not t:
+        return None
+    return {'t': np.array(t), 'ranges': np.stack(ranges), 'box': np.array(box), 'artifacts': np.array(art, dtype=float)}
+
+
+def presence_runs(t, flags, gap_s):
+    """flags 为真的连续段 [(起始下标, 结束下标)]；中间断开不超过 gap_s 的算同一段。"""
+    runs, start, last = [], None, None
+    for i, flag in enumerate(flags):
+        if not flag:
             continue
-        ra, rb = a['_median_range'], b['_median_range']
-        valid = np.isfinite(ra) & np.isfinite(rb)
-        diff = np.where(valid, rb - ra, np.nan)
-        blocked = valid & (diff < -0.30)                        # 被人挡住、变近 30 cm 以上的像素
-        far = valid & (ra >= 2.4) & (np.abs(diff) < 0.30)       # 远处、没被挡住的像素
-        shift = float(np.median(diff[far])) if far.sum() >= 500 else None
-        row = {'without': {k: (r(v, 5) if isinstance(v, float) else v) for k, v in a.items() if not k.startswith('_')},
-               'with': {k: (r(v, 5) if isinstance(v, float) else v) for k, v in b.items() if not k.startswith('_')},
-               'blocked_pixels': int(blocked.sum()), 'far_pixels': int(far.sum()), 'far_shift_m': r(shift)}
-        if far.any():
-            row['far_shift_p10_p90_m'] = [r(float(np.percentile(diff[far], q))) for q in (10, 90)]
+        if start is None:
+            start = i
+        elif t[i] - t[last] > gap_s:
+            runs.append((start, last))
+            start = i
+        last = i
+    if start is not None:
+        runs.append((start, last))
+    return runs
+
+
+def split_presence(t, box, hi=PERSON_HI, lo=PERSON_LO, edge_s=2.0, gap_s=1.0):
+    """按站人盒子的点数分出有人的最长一段，和紧挨着它前、后没人的两段（时间窗，交接处各让开 edge_s）。"""
+    t, box = np.asarray(t, dtype=float), np.asarray(box)
+    runs = presence_runs(t, box >= hi, gap_s)
+    if not runs:
+        return None
+    k = max(range(len(runs)), key=lambda i: t[runs[i][1]] - t[runs[i][0]])
+    a, b = runs[k]
+    before = (t[0] if k == 0 else t[runs[k - 1][1]] + edge_s, t[a] - edge_s)
+    after = (t[b] + edge_s, t[-1] if k + 1 == len(runs) else t[runs[k + 1][0]] - edge_s)
+    windows = {'with': (t[a] + edge_s, t[b] - edge_s), 'before': before, 'after': after}
+    return {key: (float(w[0]), float(w[1])) if w[1] > w[0] else None for key, w in windows.items()}
+
+
+def subset_stats(table, mask):
+    import warnings
+    if not mask.any():
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)   # 一直无效的像素
+        median = np.nanmedian(table['ranges'][mask], axis=0)
+    art = table['artifacts'][mask]
+    art = art[np.isfinite(art[:, 0])]
+    stamps = table['t'][mask]
+    return {'frames': int(mask.sum()), 'span_s': [r(float(stamps.min()), 1), r(float(stamps.max()), 1)],
+            'roi_points_median': int(np.median(art[:, 0])) if len(art) else None,
+            'floating_per_frame_median': float(np.median(art[:, 1])) if len(art) else None,
+            'curl_per_frame_median': float(np.median(art[:, 2])) if len(art) else None, '_median_range': median}
+
+
+def far_shift(reference, other):
+    """reference 里 ≥2.4 m、两边差不到 30 cm 的像素：other − reference 的中位；另给变近 30 cm 以上（被挡住）的像素数。"""
+    valid = np.isfinite(reference) & np.isfinite(other)
+    diff = np.where(valid, other - reference, np.nan)
+    blocked = valid & (diff < -0.30)
+    far = valid & (reference >= 2.4) & (np.abs(diff) < 0.30)
+    row = {'blocked_pixels': int(blocked.sum()), 'far_pixels': int(far.sum()),
+           'far_shift_m': r(float(np.median(diff[far]))) if far.sum() >= 500 else None}
+    if far.any():
+        row['far_shift_p10_p90_m'] = [r(float(np.percentile(diff[far], q))) for q in (10, 90)]
+    return row
+
+
+def static_check(rec, spans):
+    """spans 都落在同一个轮速静止段里（车没动）吗：返回 (True/False/None, 静止段)。没有轮速反馈时为 None。"""
+    if not len(rec.wheel):
+        return None, []
+    track = wheel_track(rec.capture(), min_still_s=5.0)
+    segments = [(float(track['t'][a]), float(track['t'][b])) for a, b in track['segments']]
+    lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+    return any(a - 0.2 <= lo and hi <= b + 0.2 for a, b in segments), [[r(a, 1), r(b, 1)] for a, b in segments]
+
+
+def stats_view(stats):
+    return {k: (r(v, 5) if isinstance(v, float) else v) for k, v in stats.items() if not k.startswith('_')}
+
+
+def analyze_nearby(with_rec, without_rec=None, with_window=None, without_window=None, window=None, stride=4):
+    """车前站人和没人比：没被人挡住的远处像素距离变了多少，以及悬空点、地面上翘点。
+    without_rec 为 None 时用同一段录包：按站人盒子的点数分出有人的一段和它前后没人的两段（C 的要求），
+    前后两段一起当"没人"，线性漂移基本抵消；否则 with_rec 和 without_rec 两段录包（或同一段的两个时间窗）比。"""
+    single = without_rec is None
+    info = {'mode': 'same_recording_before_after' if single else 'two_windows', 'with': str(with_rec.dir),
+            'without': str(with_rec.dir if single else without_rec.dir), 'artifact_stride': stride,
+            'person_box_axle_m': {'x': list(PERSON_BOX[:2]), 'abs_y_max': PERSON_BOX[2], 'height': list(PERSON_BOX[3:])},
+            'person_points': {'present_min': PERSON_HI, 'absent_max': PERSON_LO}}
+    out = []
+    span = lambda w: (lambda s: w is None or w[0] <= s <= w[1])  # noqa: E731
+    if single:
+        sides = list(with_rec.sides)
+        tables = {side: frame_table(with_rec, side, span(window), stride) for side in sides}
+        reference = next((side for side in sides if tables[side] is not None), None)
+        split = split_presence(tables[reference]['t'], tables[reference]['box']) if reference else None
+        info.update(window_s=window, segmented_by=reference, windows_s=split)
+        length = lambda w: 0.0 if not w else w[1] - w[0]  # noqa: E731
+        if not split or length(split['with']) < 15.0:
+            out.append(check('有人的一段', 'FAIL', r(length(split['with']) if split else 0.0, 1), '≥ 15 s',
+                             '车前 0.5 m 站人、站够 40 s 不动；没找到或太短就重录'))
+            return info, out
+        out.append(check('有人的一段', 'PASS', r(length(split['with']), 1), '≥ 15 s', '去掉进出各 2 s'))
+        sides_ok = [key for key in ('before', 'after') if length(split[key]) >= 10.0]
+        out.append(check('没人的前后两段（各 ≥ 10 s）', 'PASS' if len(sides_ok) == 2 else 'WARN' if sides_ok else 'FAIL',
+                         {key: r(length(split[key]), 1) for key in ('before', 'after')}, '各 ≥ 10 s',
+                         '前后都有才能抵消漂移；只有一侧时结果含漂移，都没有就重录'))
+        if not sides_ok:
+            return info, out
+        still, segments = static_check(with_rec, [split[key] for key in ['with', *sides_ok]])
+        info['static_segments_s'] = segments
+        out.append(check('整段车没动', {True: 'PASS', False: 'FAIL', None: 'INFO'}[still], still, True,
+                         '有人、没人的几段要在同一个轮速静止段里；没有轮速反馈时没法确认'))
+        pairs = {}
+        for side in sides:
+            table = tables[side]
+            if table is None:
+                continue
+            t, box = table['t'], table['box']
+            inside = lambda w: (t >= w[0]) & (t <= w[1])  # noqa: E731
+            parts = {'with': inside(split['with']) & (box >= PERSON_HI)}
+            for key in sides_ok:
+                parts[key] = inside(split[key]) & (box <= PERSON_LO)
+            parts['without'] = np.logical_or.reduce([parts[key] for key in sides_ok])
+            pairs[side] = {key: subset_stats(table, mask) for key, mask in parts.items()}
+    else:
+        same = with_rec.dir == without_rec.dir
+        sides = [s for s in with_rec.sides if s in without_rec.sides]
+        info.update(with_window_s=with_window, without_window_s=without_window, same_recording=same)
+        pairs, checked = {}, False
+        for side in sides:
+            a = frame_table(without_rec, side, span(without_window), stride)
+            b = frame_table(with_rec, side, span(with_window), stride)
+            if a is None or b is None:
+                continue
+            if not checked:                    # 用到的帧都在一个轮速静止段里（车没动）
+                checked = True
+                for rec, table, label in ((with_rec, b, '有人'), (without_rec, a, '没人')):
+                    still, _ = static_check(rec, [(float(table['t'].min()), float(table['t'].max()))])
+                    out.append(check('%s那段车没动' % label, {True: 'PASS', False: 'FAIL', None: 'INFO'}[still], still,
+                                     True, '用到的帧要在一个轮速静止段里；没有轮速反馈时没法确认'))
+            pairs[side] = {'with': subset_stats(b, np.ones(len(b['t']), dtype=bool)),
+                           'without': subset_stats(a, np.ones(len(a['t']), dtype=bool))}
+    for side in sides:
+        name = SIDE_NAMES[side]
+        stats = pairs.get(side)
+        if not stats or not stats.get('with') or not stats.get('without'):
+            out.append(check('%s雷达帧' % name, 'FAIL', None, None, '有一段里没有这台雷达的帧'))
+            continue
+        a, b = stats['without'], stats['with']
+        row = {key: stats_view(value) for key, value in stats.items() if value}
+        row.update(far_shift(a['_median_range'], b['_median_range']))
         info[side] = row
-        out.append(check('%s雷达看到车前的人（被挡住的像素）' % name, 'PASS' if blocked.sum() >= 200 else 'FAIL',
-                         int(blocked.sum()), 200, '人站在脚踏前 0.5 m、正对车头、40 s 不动；不够说明人不在视野里，重录'))
+        out.append(check('%s雷达看到车前的人（被挡住的像素）' % name, 'PASS' if row['blocked_pixels'] >= 200 else 'FAIL',
+                         row['blocked_pixels'], 200, '人站在脚踏前 0.5 m、正对车头、不动；不够说明人不在视野里，重录'))
+        shift = row['far_shift_m']
         status = ('INFO' if shift is None else 'PASS' if abs(shift) <= 0.01 else 'WARN' if shift <= -0.02 else 'INFO')
-        out.append(check('%s雷达远处没被挡的像素：有人 − 没人（中位，负值=变近）' % name, status, r(shift),
+        out.append(check('%s雷达远处没被挡的像素：有人 − 没人（中位，负值=变近）' % name, status, shift,
                          '≤1 cm 不受影响；≤ −2 cm 受影响',
-                         '近处有亮物时远处被拉近；两段不是同一段录包时含约 ±1 cm 的温漂，中间值说不清'))
+                         '近处有亮物时远处被拉近；' + ('没人取有人前后两段，线性漂移基本抵消'
+                                                      if single else '两段不是同时录的，含约 1 cm 量级的温漂')))
+        if single and stats.get('before') and stats.get('after'):
+            drift = far_shift(stats['before']['_median_range'], stats['after']['_median_range'])
+            row['after_minus_before'] = drift
+            value = drift['far_shift_m']
+            out.append(check('%s雷达没人的后一段 − 前一段（远处像素中位）' % name,
+                             'INFO' if value is None else 'PASS' if abs(value) <= 0.01 else 'WARN', value, 0.01,
+                             '这段录包里的漂移或场景变化；超过 1 cm 时上一行不太可靠'))
         for key, label in (('floating_per_frame_median', '悬空点'), ('curl_per_frame_median', '地面上翘点')):
-            ratio = b[key] / a[key] if a[key] > 0 else None
+            ratio = b[key] / a[key] if b[key] is not None and a[key] else None
             out.append(check('%s雷达%s每帧：有人 / 没人' % (name, label), 'INFO', r(ratio, 2), None,
                              '有人：%s，没人：%s；人挡住了身后的地面，比值只作参考' % (r(b[key], 1), r(a[key], 1))))
     return info, out
@@ -962,12 +1117,14 @@ def main(argv=None):
     iso.add_argument('--window', type=float, nargs=2, metavar=('START_S', 'END_S'),
                      help='只用每段录包这段时间（秒，从采集窗起点算）；默认整段')
     iso.add_argument('--stride', type=int, default=2, help='每隔几帧取一帧（默认 2，即 5 Hz）')
-    near = sub.add_parser('nearby', help='车前站人和同一摆放没人比：远处像素距离、悬空点')
-    near.add_argument('--with', dest='with_dataset', type=Path, required=True, help='车前站人的录包')
-    near.add_argument('--without', dest='without_dataset', type=Path, required=True, help='同一摆放、车前没人的录包')
+    near = sub.add_parser('nearby', help='车前站人和没人比：远处像素距离、悬空点')
+    near.add_argument('--dataset', type=Path, help='同一段录包：前后没人、中间有人，自动分段')
+    near.add_argument('--window', type=float, nargs=2, metavar=('START_S', 'END_S'), help='--dataset 只用这段时间（秒）')
+    near.add_argument('--with', dest='with_dataset', type=Path, help='或者两段录包：车前站人的那段')
+    near.add_argument('--without', dest='without_dataset', type=Path, help='和同一摆放、车前没人的那段')
     near.add_argument('--with-window', type=float, nargs=2, metavar=('START_S', 'END_S'), help='只用这段时间（秒）')
     near.add_argument('--without-window', type=float, nargs=2, metavar=('START_S', 'END_S'), help='只用这段时间（秒）')
-    near.add_argument('--stride', type=int, default=2, help='每隔几帧取一帧（默认 2，即 5 Hz）')
+    near.add_argument('--stride', type=int, default=4, help='悬空点每隔几帧算一次（默认 4）；距离图用每一帧')
     args = parser.parse_args(argv)
     project = args.project_root.resolve()
     if args.command == 'bias':
@@ -998,10 +1155,18 @@ def main(argv=None):
         show('isolation', out, checks, info)
         return 0
     if args.command == 'nearby':
-        with_rec = Recording(args.with_dataset)
-        without_rec = with_rec if args.without_dataset.resolve() == with_rec.dir else Recording(args.without_dataset)
-        info, checks = analyze_nearby(with_rec, without_rec, tuple(args.with_window) if args.with_window else None,
-                                      tuple(args.without_window) if args.without_window else None, max(1, args.stride))
+        if bool(args.dataset) == bool(args.with_dataset or args.without_dataset) or (
+                not args.dataset and not (args.with_dataset and args.without_dataset)):
+            parser.error('nearby：给 --dataset，或者 --with 和 --without 一起')
+        stride = max(1, args.stride)
+        if args.dataset:
+            with_rec = Recording(args.dataset)
+            info, checks = analyze_nearby(with_rec, window=tuple(args.window) if args.window else None, stride=stride)
+        else:
+            with_rec = Recording(args.with_dataset)
+            without_rec = with_rec if args.without_dataset.resolve() == with_rec.dir else Recording(args.without_dataset)
+            info, checks = analyze_nearby(with_rec, without_rec, tuple(args.with_window) if args.with_window else None,
+                                          tuple(args.without_window) if args.without_window else None, stride=stride)
         out = write_result(project, 'nearby', with_rec.dir.name, {'kind': 'nearby', 'info': info, 'checks': checks})
         show('nearby', out, checks, info)
         return 0 if not any(row['status'] == 'FAIL' for row in checks) else 1
