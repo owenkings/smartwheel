@@ -94,6 +94,10 @@ def arguments(argv=None):
                           help="planned (default): each goal heading goes to the planner, unchanged; turn_at_goal: "
                                "plan to the goal point along the arrival direction, then turn in place to the goal "
                                "heading only when the swept area is clear (planning/goal_heading.py)")
+    navigate.add_argument("--enable-pause", nargs=2, type=_positive, metavar=("AFTER_S", "DURATION_S"),
+                          help="validation only: AFTER_S simulated seconds into the mission the supervisor's enable "
+                               "heartbeat sends false for DURATION_S (at most 30 s), so the gate stops the chair once "
+                               "and then releases it; used to check how motion restarts (--smoother-feedback)")
     args = parser.parse_args(argv)
     if args.mode == "navigate":
         try:
@@ -105,6 +109,8 @@ def arguments(argv=None):
             parser.error("--gate-covariance-mode and --gate-slow-limits need --localization amcl")
         # the covariance condition as run, recorded explicitly; truth runs do not check covariance
         args.gate_options = covariance if args.localization == "amcl" else {}
+        if args.enable_pause is not None and args.enable_pause[1] > 30.0:
+            parser.error("--enable-pause DURATION_S must be at most 30 s")
     from ..planning.options import resolve_body_arguments, resolve_planning_arguments
     resolve_body_arguments(parser, args)
     resolve_planning_arguments(parser, args)
@@ -247,6 +253,8 @@ def build_config(args):
         from ..planning.goal_heading import mission_config
         config["mission"] = {"goal_heading": mission_config(args.planning.planner, _body(profile, config["body_model"]),
                                                             margin_m=profile.margin_m)}
+    if args.mode == "navigate" and args.enable_pause is not None:
+        config["enable_pause"] = {"after_s": args.enable_pause[0], "duration_s": args.enable_pause[1]}
     config["world"].pop("actors", None)                  # actors are chosen per run, never inherited
     if getattr(args, "actors", None) is not None:
         from .actors import scenario_config

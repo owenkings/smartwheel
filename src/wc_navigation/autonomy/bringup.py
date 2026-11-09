@@ -142,6 +142,7 @@ class Recorder:
         self.sim_status = None
         self.map_messages = 0
         self.enabled = False
+        self.enable_pause = None    # (from, to) simulated seconds: the heartbeat sends false (--enable-pause)
         node = self.node
         node.create_subscription(Clock, "/clock", self._on_clock, 10)
         node.create_subscription(Odometry, "/wc_sim/ground_truth", lambda m: setattr(self, "truth", self._pose(m)), 20)
@@ -208,7 +209,8 @@ class Recorder:
 
     def _heartbeat(self):
         message = self.Bool()
-        message.data = bool(self.enabled)
+        paused = self.enable_pause is not None and self.enable_pause[0] <= self.now() < self.enable_pause[1]
+        message.data = bool(self.enabled) and not paused
         self.enable_pub.publish(message)
 
     def publish_initial_pose(self, pose, covariance):
@@ -362,6 +364,9 @@ class Supervisor:
             profile, mode=mode, bt_to_pose_path=files["bt_to_pose"], bt_through_poses_path=files["bt_through"],
             planning=planning_choice(cfg))
         files["nav2"] = self.write("nav2_params.yaml", nav2)
+        if planning_choice(cfg).smoother_feedback == "gated":   # window B: smoother feedback relay (explicit option)
+            from ..planning.velocity_feedback import node_config
+            files["feedback"] = self.write("velocity_feedback_config.json", node_config(self.output))
         if mode == "explore":
             if self.mapper() == "slam_toolbox":
                 files["mapping"] = self.write("slam_params.yaml", nav2_config.slam_parameters(
@@ -494,6 +499,11 @@ class Supervisor:
                 if bad:
                     raise RunError(f"parameter readback mismatch on {node_name}: {bad} -> {actual}")
             self.report["parameter_readback"] = readback
+            if "feedback" in files:                             # window B: --smoother-feedback gated
+                from ..planning.stack import FEEDBACK_TOPIC
+                self.launch_python("velocity_feedback", "wc_navigation.planning.velocity_feedback", files["feedback"])
+                self.wait_for(recorder, lambda: recorder.node.count_publishers(FEEDBACK_TOPIC) > 0, 30,
+                              "velocity_feedback_ready")
             self.launch_python("safety_gate", "wc_navigation.autonomy.gate_node", files["gate"])
             recorder.enabled = True
             ready_states = ("COMMAND_STALE", "ACTIVE")
@@ -502,6 +512,10 @@ class Supervisor:
             module = "wc_navigation.autonomy." + ("explorer_node" if mode == "explore" else "mission_node")
             process = self.launch_python(task, module, files["task"])
             sim_start = recorder.now()
+            pause = cfg.get("enable_pause")                     # window B: validation option --enable-pause
+            if pause:
+                recorder.enable_pause = (sim_start + pause["after_s"], sim_start + pause["after_s"] + pause["duration_s"])
+                self.report["enable_pause_sim_s"] = [round(t, 3) for t in recorder.enable_pause]
             while process.poll() is None:
                 if time.monotonic() - self.t0 > wall_budget:
                     raise RunError("wall-clock budget exceeded")

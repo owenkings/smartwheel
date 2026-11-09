@@ -82,6 +82,12 @@ def add_planning_arguments(parser):
     parser.add_argument("--local-padding", type=float, default=0.0, metavar="M",
                         help="footprint padding of the local costmap, i.e. of the controller's collision checks "
                              "(default 0, unchanged); e.g. 0.10 keeps the planning margin while driving too")
+    from .stack import DEFAULT_SMOOTHER_FEEDBACK, SMOOTHER_FEEDBACK
+    parser.add_argument("--smoother-feedback", choices=SMOOTHER_FEEDBACK, default=DEFAULT_SMOOTHER_FEEDBACK,
+                        help="open_loop (default, unchanged): the velocity smoother ramps from its own last output; "
+                             "gated: it ramps from rest after the gate or the collision monitor stopped the chair "
+                             "(planning/velocity_feedback.py); odom: Nav2's closed loop on /odom, comparison only "
+                             "(crawls through the monitor's slowdown zones)")
 
 
 def resolve_planning_arguments(parser, args):
@@ -95,7 +101,7 @@ def resolve_planning_arguments(parser, args):
                                        recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
                                        global_live_scans=args.global_costmap == "live",
                                        fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback,
-                                       local_padding_m=args.local_padding)
+                                       local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
