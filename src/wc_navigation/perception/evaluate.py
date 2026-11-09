@@ -100,8 +100,16 @@ def scan_points(points, lever_xy, height_band=(-0.5, 0.5)):
 
 def evaluate(left_cell, right_cell=None, cfg=ObstacleFilter(), footprint=(), radius_m=None, horizon_s=4.0,
              shrink_m=0.03, near_m=0.30, window_s=None, right_lever=None, hashes=None, keep_points=True,
-             consensus=True, witness_max_age_s=0.2):
-    """Per-frame false-positive counts of the obstacle filter and of the baseline scan."""
+             consensus=True, witness_max_age_s=0.2, lidar_time_offset_s=0.0):
+    """Per-frame false-positive counts of the obstacle filter and of the baseline scan.
+
+    ``lidar_time_offset_s``: the lidar stamps are late by this against the odometry; each
+    frame (both lidars, and the /scan baseline) is placed at the recorded pose of stamp -
+    offset, and its future path starts there.
+    """
+    offset = float(lidar_time_offset_s)
+    if not math.isfinite(offset) or abs(offset) > 0.25:
+        raise ValueError("lidar time offset must be finite and within +-0.25 s")
     hashes = {} if hashes is None else hashes
     left_cell, left_runtime, _ = frontend_frames.load_runtime(left_cell)
     left_lever = frontend_frames.mount(left_runtime, "left")
@@ -134,35 +142,37 @@ def evaluate(left_cell, right_cell=None, cfg=ObstacleFilter(), footprint=(), rad
             if window_s and not window_s[0] - lead <= t <= window_s[1]:
                 continue
             in_window = not window_s or t >= window_s[0]       # earlier frames only warm the history
-            pose = path.at(t)[0]
+            tp = t - offset                                    # capture time on the odometry clock
+            pose = path.at(tp)[0]
             witness = None
             if consensus and other in frames:
                 j = int(np.argmin(np.abs(side_times[other] - t)))
                 if abs(side_times[other][j] - t) <= witness_max_age_s:
-                    relative = planar_relative(path.at(side_times[other][j])[0], pose)
+                    relative = planar_relative(path.at(side_times[other][j] - offset)[0], pose)
                     witness = Witness(move(frames[other][j][1].astype(float) + levers[other], relative),
                                       move(levers[other][None, :], relative)[0])
-            recent = history.recent(t, pose) if history is not None else None
+            recent = history.recent(tp, pose) if history is not None else None
             result = filter_frame(pts, lever, cfg, body, witness, recent=recent)
             obstacles, stats = result["points"], result["stats"]
             if history is not None:
-                history.add(t, pose, result["candidates"])
+                history.add(tp, pose, result["candidates"])
             if not in_window:
                 continue
             stats["witness"] = witness is not None
             stats["recent"] = recent is not None
             base = obstacles.astype(float) + lever
             world = to_world(base[:, :2], pose)
-            hit = swept_hits(world, path, t, outline, horizon_s)
-            near = swept_hits(world, path, t, grow_convex(body, near_m), horizon_s) & ~hit if body else hit
+            hit = swept_hits(world, path, tp, outline, horizon_s)
+            near = swept_hits(world, path, tp, grow_convex(body, near_m), horizon_s) & ~hit if body else hit
             h = base[:, 2] + cfg.axle_height_m
-            row = {"side": side, "frame": k, "t": round(t, 3), "voxels": int(len(obstacles)), **stats,
-                   "swept_voxels": int(hit.sum()), "near_voxels": int(near.sum()),
+            moving = path.odometer(min(tp + 0.5, path.t[-1])) - path.odometer(max(tp - 0.5, path.t[0])) >= 0.02
+            row = {"side": side, "frame": k, "t": round(t, 3), "moving": bool(moving), "voxels": int(len(obstacles)),
+                   **stats, "swept_voxels": int(hit.sum()), "near_voxels": int(near.sum()),
                    "swept_heights": [round(float(h[hit].min()), 3), round(float(h[hit].max()), 3)] if hit.any() else None}
             if side == "left":
                 scan = scan_points(pts, lever[:2])
                 scan_world = to_world(scan, pose)
-                scan_hit = swept_hits(scan_world, path, t, outline, horizon_s)
+                scan_hit = swept_hits(scan_world, path, tp, outline, horizon_s)
                 row["scan_returns"] = int(len(scan))
                 row["scan_swept_returns"] = int(scan_hit.sum())
             rows.append(row)
@@ -185,17 +195,26 @@ def summarize(rows, horizon_s):
         swept = np.asarray([r["swept_voxels"] for r in sel])
         near = np.asarray([r["near_voxels"] for r in sel])
         removed = {k[len("removed_"):]: int(sum(r.get(k, 0) for r in sel)) for k in sel[0] if k.startswith("removed_")}
-        out[side] = {"frames": n, "frames_with_swept_obstacle": int((swept > 0).sum()),
+        moving = np.asarray([r.get("moving", True) for r in sel], dtype=bool)
+        static = {"frames": int((~moving).sum()), "mean_voxels_per_frame": (
+            float(np.mean([r["voxels"] for r, m in zip(sel, moving) if not m])) if (~moving).any() else None),
+            "removed_points_by_stage": {k[len("removed_"):]: int(sum(r.get(k, 0) for r, m in zip(sel, moving) if not m))
+                                        for k in sel[0] if k.startswith("removed_")}}
+        out[side] = {"frames": n, "frames_moving": int(moving.sum()), "frames_with_swept_obstacle": int((swept > 0).sum()),
                      "frames_with_4plus_swept_voxels": int((swept >= 4).sum()), "swept_voxels_total": int(swept.sum()),
                      "frames_with_near_path_obstacle": int((near > 0).sum()),
                      "mean_voxels_per_frame": float(np.mean([r["voxels"] for r in sel])),
-                     "removed_points_by_stage": removed}
+                     "removed_points_by_stage": removed,
+                     # standing still there is no future path to check; the static frames are reported apart
+                     "static": static}
         if side == "left":
             scan = np.asarray([r["scan_swept_returns"] for r in sel])
-            out["scan_baseline"] = {"frames": n, "frames_with_swept_return": int((scan > 0).sum()),
+            out["scan_baseline"] = {"frames": n, "frames_moving": int(moving.sum()),
+                                    "frames_with_swept_return": int((scan > 0).sum()),
                                     "frames_with_4plus_swept_returns": int((scan >= 4).sum()),
                                     "swept_returns_total": int(scan.sum())}
     out["horizon_s"] = horizon_s
+    out["moving_rule"] = "axle travels at least 0.02 m within +-0.5 s of the frame"
     return out
 
 
@@ -214,8 +233,13 @@ def arguments(argv=None):
     parser.add_argument("--filter", default="{}", help="JSON object of ObstacleFilter overrides")
     parser.add_argument("--no-consensus", action="store_true",
                         help="do not use the other lidar as witness for unsupported clusters")
+    parser.add_argument("--lidar-time-offset-ms", type=float, default=0.0, metavar="MS",
+                        help="the lidar stamps are late by MS: place every frame at the pose of stamp - MS "
+                             "(default 0 = as recorded)")
     parser.add_argument("--label", default="obstacle_eval")
     args = parser.parse_args(argv)
+    if not math.isfinite(args.lidar_time_offset_ms) or abs(args.lidar_time_offset_ms) > 250.0:
+        parser.error("--lidar-time-offset-ms must be finite and within +-250")
     if args.footprint is not None:
         if len(args.footprint) < 6 or len(args.footprint) % 2:
             parser.error("--footprint needs at least three x y pairs")
@@ -235,7 +259,8 @@ def main(argv=None):
     rows, points, meta = evaluate(args.left_cell, args.right_cell, args.filter, args.footprint or (),
                                   None if args.footprint else args.assumed_radius, args.horizon,
                                   window_s=args.window, right_lever=args.right_lever, hashes=hashes,
-                                  consensus=not args.no_consensus)
+                                  consensus=not args.no_consensus,
+                                  lidar_time_offset_s=args.lidar_time_offset_ms * 1e-3)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = storage.resolve("reports/navigation_obstacles/" + stamp + "_" + args.label + "_" + uuid.uuid4().hex[:6])
     output.mkdir(parents=True, exist_ok=False)
@@ -245,7 +270,7 @@ def main(argv=None):
                     if p.endswith(("index.jsonl", "runtime_config.json")))
     result = {"schema_version": 1, "kind": "OBSTACLE_FILTER_FUTURE_PATH_CHECK", "left_cell": str(args.left_cell),
               "right_cell": str(args.right_cell) if args.right_cell else None, "filter": args.filter.as_dict(),
-              "consensus": not args.no_consensus,
+              "consensus": not args.no_consensus, "lidar_time_offset_ms": args.lidar_time_offset_ms,
               "body_model": ("POLYGON_" + args.footprint_source) if args.footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
               "footprint": args.footprint, "assumed_radius_m": None if args.footprint else args.assumed_radius,
               "window_s": args.window, "meta": meta, "summary": summary, "source_files_hashed": len(hashes),

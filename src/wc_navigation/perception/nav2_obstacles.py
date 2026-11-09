@@ -18,6 +18,10 @@ filtered obstacle points up to 8 m in the same 161 bins and frame as /scan).
 ``scan`` with ``filtered`` keeps both costmaps two-dimensional (ObstacleLayer)
 on the filtered scan; the collision monitor keeps /scan and no cloud is wired
 in (the left cloud, ``obstacle_clouds`` = left, only feeds the filtered scan).
+``obstacle_monitor`` (empty: same as ``obstacle_input``) gives the collision
+monitor its own input, e.g. ``scan`` costmaps on the filtered scan with a
+``cloud`` monitor: the monitor reacts to the current frames only, while nothing
+remembers marks the lidars can no longer see.
 The global costmap's layers and plugins are not touched here.
 """
 from __future__ import annotations
@@ -37,24 +41,33 @@ VOXEL_Z_CELLS = 16          # the Humble VoxelLayer maximum
 CLEAR_RANGE_MARGIN_M = 0.5
 
 
-def check(obstacle_input, sides, obstacle_scan="raw"):
-    """Validated (obstacle_input, sides tuple, obstacle_scan)."""
+def check(obstacle_input, sides, obstacle_scan="raw", obstacle_monitor=""):
+    """Validated (obstacle_input, sides tuple, obstacle_scan, obstacle_monitor).
+
+    ``obstacle_monitor`` comes back empty when it equals ``obstacle_input``, so equal profiles compare equal.
+    """
     if obstacle_input not in OBSTACLE_INPUTS:
         raise ValueError("obstacle_input must be one of " + ", ".join(OBSTACLE_INPUTS))
     if obstacle_scan not in OBSTACLE_SCANS:
         raise ValueError("obstacle_scan must be one of " + ", ".join(OBSTACLE_SCANS))
+    obstacle_monitor = obstacle_monitor or ""
+    if obstacle_monitor not in ("", *OBSTACLE_INPUTS):
+        raise ValueError("obstacle_monitor must be empty (same as obstacle_input) or one of " + ", ".join(OBSTACLE_INPUTS))
+    if obstacle_monitor == obstacle_input:
+        obstacle_monitor = ""
+    monitor = obstacle_monitor or obstacle_input
     sides = tuple(sides or ())
-    if obstacle_input == "scan" and obstacle_scan == "raw":
+    if obstacle_input == "scan" and obstacle_scan == "raw" and monitor == "scan":
         if sides:
-            raise ValueError("obstacle_clouds need obstacle_input cloud or scan_and_cloud, or a filtered obstacle_scan")
-        return obstacle_input, (), obstacle_scan
+            raise ValueError("obstacle_clouds need a cloud input (costmap or monitor) or a filtered obstacle_scan")
+        return obstacle_input, (), obstacle_scan, obstacle_monitor
     if not sides or len(set(sides)) != len(sides) or any(s not in SIDES for s in sides):
         raise ValueError("obstacle_clouds must name left and/or right once each")
     if obstacle_scan == "filtered" and "left" not in sides:
         raise ValueError("the filtered scan comes from the left lidar; obstacle_clouds must include left")
-    if obstacle_input == "scan" and sides != ("left",):
+    if obstacle_input == "scan" and monitor == "scan" and sides != ("left",):
         raise ValueError("with obstacle_input scan the clouds only feed the filtered scan: obstacle_clouds is left")
-    return obstacle_input, tuple(s for s in SIDES if s in sides), obstacle_scan
+    return obstacle_input, tuple(s for s in SIDES if s in sides), obstacle_scan, obstacle_monitor
 
 
 def scan_topic(obstacle_scan):

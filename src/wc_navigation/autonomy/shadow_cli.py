@@ -825,6 +825,7 @@ def main(argv=None):
     from ..perception import shadow_cli_options
     source, recording, hashes = prepare_recording(args.source_cell, args.scan_height,
                                                   shadow_cli_options.prepare_kwargs(args))
+    recording.update(shadow_cli_options.recording_entries(args))     # lidar time offset for the replay
     run_id = (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_shadow_" + args.mode + "_"
               + uuid.uuid4().hex[:8])
     output = storage.resolve("reports/navigation_nav2_shadow/" + run_id)

@@ -76,23 +76,31 @@ class NavProfile:
     controller_frequency_hz: float = 10.0
     # Optional convex body outline [(x, y), ...] in base_link (axle origin inside). Empty: the circle above.
     footprint: tuple = ()
-    # Obstacle input (perception.nav2_obstacles): "scan"/"raw" keep /scan everywhere.
+    # Obstacle input (perception.nav2_obstacles): "scan"/"raw"/"" keep /scan everywhere.
     obstacle_input: str = "scan"
     obstacle_clouds: tuple = ()
     obstacle_scan: str = "raw"
+    obstacle_monitor: str = ""          # collision monitor input; empty: the same as obstacle_input
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan"):
+            if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan", "obstacle_monitor"):
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
         object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
         from ..perception.nav2_obstacles import check
-        obstacle_input, clouds, obstacle_scan = check(self.obstacle_input, self.obstacle_clouds, self.obstacle_scan)
+        obstacle_input, clouds, obstacle_scan, monitor = check(self.obstacle_input, self.obstacle_clouds,
+                                                               self.obstacle_scan, self.obstacle_monitor)
         object.__setattr__(self, "obstacle_input", obstacle_input)
         object.__setattr__(self, "obstacle_clouds", clouds)
         object.__setattr__(self, "obstacle_scan", obstacle_scan)
+        object.__setattr__(self, "obstacle_monitor", monitor)
+
+    @property
+    def monitor_input(self):
+        """What the collision monitor reads: scan, cloud or scan_and_cloud."""
+        return self.obstacle_monitor or self.obstacle_input
 
     @property
     def body_inscribed_m(self):
@@ -117,12 +125,13 @@ class NavProfile:
     def as_dict(self):
         values = {name: getattr(self, name) for name in self.__dataclass_fields__}
         values["footprint"] = [list(p) for p in self.footprint]
-        if self.obstacle_input == "scan" and self.obstacle_scan == "raw":   # default: recorded profile unchanged
-            values.pop("obstacle_input")
-            values.pop("obstacle_clouds")
-            values.pop("obstacle_scan")
+        if self.obstacle_input == "scan" and self.obstacle_scan == "raw" and not self.obstacle_monitor:
+            for name in ("obstacle_input", "obstacle_clouds", "obstacle_scan", "obstacle_monitor"):
+                values.pop(name)                    # default: recorded profile unchanged
         else:
             values["obstacle_clouds"] = list(self.obstacle_clouds)
+            if not self.obstacle_monitor:
+                values.pop("obstacle_monitor")      # profiles recorded before the option stay identical
         return values
 
 
@@ -380,12 +389,12 @@ def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_p
     # stop zone is that outline grown by the same ring (see monitor_polygons).
     zones = monitor_polygons(profile)
     sources = {"observation_sources": ["scan"], "scan": {"type": "scan", "topic": "/scan", "enabled": True}}
-    if profile.obstacle_input != "scan":           # obstacle clouds (perception.nav2_obstacles)
+    if profile.monitor_input != "scan":            # obstacle clouds (perception.nav2_obstacles)
         from ..perception import nav2_obstacles
         sources.update(nav2_obstacles.monitor_sources(profile.obstacle_clouds),
-                       observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
+                       observation_sources=nav2_obstacles.monitor_source_names(profile.monitor_input,
                                                                                 profile.obstacle_clouds))
-        if profile.obstacle_input == "cloud":
+        if profile.monitor_input == "cloud":
             sources.pop("scan")
     return {
         "controller_server": _p({
@@ -601,7 +610,9 @@ def _readback_expectations(profile, mode):
     if profile.obstacle_input != "scan":           # the obstacle clouds must really be wired in
         from ..perception import nav2_obstacles
         local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
-        stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.obstacle_input,
+    if profile.monitor_input != "scan":
+        from ..perception import nav2_obstacles
+        stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.monitor_input,
                                                                                    profile.obstacle_clouds))
     if profile.obstacle_scan != "raw":             # and so must the filtered scan
         from ..perception import nav2_obstacles

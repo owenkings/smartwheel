@@ -54,3 +54,4 @@
 - [navigation_nav2_shadow](navigation_nav2_shadow)：在冻结录包上开环运行 Nav2 全链路（规划或沿司机路线），记录各级速度指令但不发出，见[说明](../docs/operations/navigation_autonomy.md#在真实录包上做-nav2-影子运行)。
 - [navigation_planner_bench](navigation_planner_bench)：同一批录包起终点、同一张静态代价地图上并排比较各 Nav2 规划器（成功率、规划耗时、车体到障碍间隙、窄过道），见[说明](../docs/operations/navigation_planning.md)。
 - [navigation_obstacle_eval](navigation_obstacle_eval)：在冻结左右前端上离线检查三维障碍过滤，统计录包未来扫掠外形里的障碍点，并与 /scan 对比，见[说明](../docs/operations/navigation_obstacles.md)。
+- [navigation_obstacle_tracks](navigation_obstacle_tracks)：在冻结左右前端上离线跟踪地图外的障碍，列出所有“在动”的航迹（空走廊里就是误报），见[说明](../docs/operations/navigation_obstacles.md)。
