@@ -13,15 +13,19 @@ from the vehicle's sensor domain) is prepared but refuses to start without the
 explicit approval described in docs/operations/navigation_live_shadow.md.
 
 Every process runs in WC_AUTONOMY_ROS_DOMAIN (96-101, localhost only) under the
-checkout's domain lock; only processes started here are stopped.
+checkout's domain lock; only processes started here are stopped. The first
+Ctrl-C (or SIGTERM/SIGHUP) starts the shutdown; later ones cannot interrupt it
+(``InterruptGuard``).
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -29,10 +33,82 @@ import time
 from ..autonomy import nav2_config
 from ..autonomy.bringup import EXECUTABLES, PACKAGES, RunError, Supervisor, _parameter_value, _same
 from ..autonomy.ros_util import json_message, latched_qos, lookup_pose, require_isolated_domain, simulation_domain
+from ..nav2_planner import _stop_owned
 from .config import SOURCE_TOPICS
 
 VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
+INTERRUPTED = "OPERATOR_INTERRUPT"
+
+
+class StartCheckStop(Exception):
+    """The start check did not let the run go on (INITIAL_POSE_MISMATCH and the like)."""
+
+    def __init__(self, status):
+        super().__init__(status)
+        self.status = status
+
+
+def _say(text):
+    """Operator message on stderr; a closed terminal (SIGHUP) must not break the shutdown."""
+    try:
+        print(text, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+class InterruptGuard:
+    """SIGINT, SIGTERM and SIGHUP of one live-chain command, in the main thread.
+
+    The first signal raises KeyboardInterrupt, which starts the shutdown. Inside a ``deferred()`` block (starting
+    a child process) it is held until the block ends, so a process that was just started is always registered
+    and stopped. Every later signal, and every signal after ``begin_shutdown()``, only prints that the shutdown
+    is running: a second Ctrl-C can no longer cut the stopping of this command's processes or the result file.
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def __init__(self):
+        self.received = []
+        self.shutting_down = False
+        self._depth = 0
+        self._pending = False
+        self._previous = {}
+
+    def install(self):
+        for number in self.SIGNALS:
+            self._previous[number] = signal.signal(number, self._handle)
+        return self
+
+    def restore(self):
+        for number, handler in self._previous.items():
+            signal.signal(number, handler)
+        self._previous = {}
+
+    def _handle(self, number, frame):
+        self.received.append(signal.Signals(number).name)
+        if self.shutting_down:
+            _say("收尾中：正在停本命令启动的进程并写 result.json，再按 Ctrl-C 不会打断")
+            return
+        self.shutting_down = True
+        if self._depth:
+            self._pending = True
+            return
+        raise KeyboardInterrupt
+
+    def begin_shutdown(self):
+        self.shutting_down = True
+
+    @contextlib.contextmanager
+    def deferred(self):
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+        if not self._depth and self._pending:
+            self._pending = False
+            raise KeyboardInterrupt
 
 
 def require_live_domain(config=None):
@@ -75,6 +151,22 @@ class LiveMonitor:
         self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
         self.initial_pub = self.node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.node.create_timer(0.25, self._heartbeat)
+        # standing scans and the odometry pose for the start check (live/start_check.py)
+        from collections import deque
+        from nav_msgs.msg import Odometry
+        from sensor_msgs.msg import LaserScan
+        self.scans = deque(maxlen=50)
+        self.odom_pose = None
+        self.node.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+        self.node.create_subscription(Odometry, "/odom", self._on_odom, 20)
+
+    def _on_scan(self, message):
+        self.scans.append((list(message.ranges), float(message.angle_min), float(message.angle_increment)))
+
+    def _on_odom(self, message):
+        from ..autonomy.ros_util import quaternion_to_yaw
+        position = message.pose.pose.position
+        self.odom_pose = (float(position.x), float(position.y), quaternion_to_yaw(message.pose.pose.orientation))
 
     def _heartbeat(self):
         message = self.Bool()
@@ -148,6 +240,40 @@ class LiveSupervisor(Supervisor):
     readback -> gate -> goals]. The bracketed steps are the shadow run; Nav2's costmaps only activate once
     sensor data, odometry TF and AMCL's map->odom exist."""
 
+    def __init__(self, project_root, output_dir, config, guard=None):
+        super().__init__(project_root, output_dir, config)
+        self.guard = guard
+
+    def launch(self, name, args):
+        if self.guard is None:
+            return super().launch(name, args)
+        with self.guard.deferred():
+            if self.guard.shutting_down:
+                raise KeyboardInterrupt   # a stop was asked for: start nothing new
+            return super().launch(name, args)
+
+    def stop_all(self):
+        """Stop this command's processes, newest first, each on its own: one failure does not skip the rest."""
+        errors = {}
+        running = sum(1 for _, process in self.processes if process.poll() is None)
+        if running:
+            _say("收尾：停本命令启动的 %d 个进程…" % running)
+        for name, process in reversed(self.processes):
+            try:
+                _stop_owned(process)
+            except Exception as exc:
+                errors[name] = type(exc).__name__ + ": " + str(exc)
+            self.report["process_exit_codes"][name] = process.poll()
+        for handle in self.handles:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        if errors:
+            self.report["stop_errors"] = errors
+        if running:
+            _say("收尾：进程已停" + ("，%d 个停止出错（见 result.json）" % len(errors) if errors else ""))
+
     def node_config(self, name, value):
         return self.write(name + ".json", value)
 
@@ -168,7 +294,8 @@ class LiveSupervisor(Supervisor):
         for role in INPUT_ROLES:
             self.launch_module("inputs_" + role, "wc_navigation.live.inputs_node", files["inputs_" + role])
         if cfg.get("relay"):
-            # nice 10: the relay's loopback copy competes with the panel's recorder for CPU (window A).
+            # +10 on the command's niceness (vehicle: 10 -> 19): the relay's loopback copy competes with the
+            # panel's recorder for CPU (window A).
             self.launch("relay", ["nice", "-n", "10", sys.executable, "-B", "-s", "-m", "wc_navigation.live.relay_node",
                                   "--config", files["relay"]])
             # On the vehicle the relay first waits until the panel's own consumers are subscribed.
@@ -250,10 +377,68 @@ class LiveSupervisor(Supervisor):
         self.wait_for(monitor, localized, 60, "amcl_tf")
         self.report["initial_pose"] = {"pose_map": cfg["initial_pose"], "covariance": covariance,
                                        "messages_sent": published["count"]}
+        self.start_odom = monitor.odom_pose          # where the chair stood when AMCL took the start pose
+
+    def start_check(self, monitor):
+        """Standing scans against the map at the given start pose, before Nav2 and the gate start."""
+        from . import start_check as check
+        cfg = self.config
+        mode = cfg.get("start_check", "block")
+        if mode == "off":
+            self.report["start_check"] = {"status": "OFF", "mode": mode}
+            return
+        from ..autonomy.maps import read_back
+        from .amcl_cross import EndpointScorer
+        _, data, meta = read_back(cfg["map_yaml"])
+        scorer = EndpointScorer(data, meta["resolution"], meta["origin"])
+        lever = json.loads(Path(cfg["live_config_file"]).read_text(encoding="utf-8"))["lever_xy"]
+        reference = getattr(self, "start_odom", None)
+        monitor.scans.clear()
+        status = None
+        end = time.monotonic() + 15.0
+        while len(monitor.scans) < check.MIN_SCANS and time.monotonic() < end:
+            self.check_alive(allow=("bag_play",))
+            monitor.spin(0.1)
+            if reference is None:
+                reference = monitor.odom_pose
+            elif monitor.odom_pose is not None and check.moved(monitor.odom_pose, reference):
+                status = "START_CHECK_NOT_STANDING"
+                break
+        scans = list(monitor.scans)
+        result = (check.evaluate(scorer, scans, lever, cfg["initial_pose"]) if status is None
+                  else {"status": status, "scans": len(scans)})
+        result.update(mode=mode, standing_verified=reference is not None)
+        self.report["start_check"] = result
+        self.report["stages"].append({"stage": "start_check", "status": result["status"],
+                                      "wall_s": round(time.monotonic() - self.t0, 2), "sim_s": round(monitor.now(), 3)})
+        _say(check.operator_message(result, mode))
+        if check.stops_run(result["status"], mode):
+            raise StartCheckStop(result["status"])
 
     def run(self):
+        """Run until the source ends, the duration limit or the operator's stop; always returns the report."""
+        self.t0 = time.monotonic()
+        try:
+            self._run()
+        except KeyboardInterrupt:
+            # interrupted before the processes' try block, or (without a guard) during its clean-up
+            if self.guard is not None:
+                self.guard.begin_shutdown()
+            self.report["stopped"] = INTERRUPTED
+            self.stop_all()
+        if self.guard is not None:
+            self.report["signals"] = list(self.guard.received)
+        self.report["logs"] = self.logs
+        self.report["process_args"] = self.commands
+        self.report["wall_s"] = round(time.monotonic() - self.t0, 2)
+        return self.report
+
+    def _run(self):
         require_live_domain()
         cfg = self.config
+        if cfg.get("niceness") is not None:
+            # vehicle: the panel's recording comes first (2026-11-09); every child inherits this niceness
+            self.report["niceness"] = lower_priority(int(cfg["niceness"]))
         self.report["ros_domain_id"] = int(simulation_domain())
         versions = subprocess.run(["dpkg-query", "-W", "-f=${Package} ${Version}\n", *PACKAGES],
                                   capture_output=True, text=True, timeout=10.0)
@@ -282,7 +467,6 @@ class LiveSupervisor(Supervisor):
         context = Context()
         rclpy.init(args=[], context=context)
         monitor = None
-        self.t0 = time.monotonic()
         try:
             monitor = LiveMonitor(context, cfg["use_sim_time"])
             monitor.spin(2.0)
@@ -295,6 +479,7 @@ class LiveSupervisor(Supervisor):
             bag = self.start_bag() if cfg["source"] == "bag" else None
             if profile is not None:
                 self.initial_pose(monitor)
+                self.start_check(monitor)
                 self.start_shadow(monitor, files, profile)
                 self.launch_module("goals", "wc_navigation.live.goals_node", files["goals"])
             budget = cfg.get("max_duration_s", 900.0)
@@ -311,9 +496,18 @@ class LiveSupervisor(Supervisor):
             monitor.enabled = False
             monitor.spin(2.0)
             self.report["final_status"] = dict(monitor.status)
+        except KeyboardInterrupt:
+            self.report["stopped"] = INTERRUPTED
+            _say("收到停止信号，开始收尾（再按 Ctrl-C 不会打断）")
+            if monitor is not None:
+                self.report["final_status"] = dict(monitor.status)
+        except StartCheckStop as stop:
+            self.report["stopped"] = stop.status          # Nav2 and the gate were never started
         except Exception as exc:
             self.report["error"] = type(exc).__name__ + ": " + str(exc)
         finally:
+            if self.guard is not None:
+                self.guard.begin_shutdown()
             if monitor is not None:
                 monitor.enabled = False
                 try:
@@ -321,14 +515,21 @@ class LiveSupervisor(Supervisor):
                 except Exception:
                     pass
             self.stop_all()
-            if monitor is not None:
-                monitor.close()
-            if context.ok():
-                context.shutdown()
-        self.report["logs"] = self.logs
-        self.report["process_args"] = self.commands
-        self.report["wall_s"] = round(time.monotonic() - self.t0, 2)
-        return self.report
+            try:
+                if monitor is not None:
+                    monitor.close()
+                if context.ok():
+                    context.shutdown()
+            except Exception as exc:
+                self.report["close_error"] = type(exc).__name__ + ": " + str(exc)
+
+
+def lower_priority(target):
+    """Raise this process's niceness to at least ``target`` (children inherit it); never raises the priority."""
+    current = os.nice(0)
+    if current < target:
+        current = os.nice(target - current)
+    return current
 
 
 def vehicle_approved():
