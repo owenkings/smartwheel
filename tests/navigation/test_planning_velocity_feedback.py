@@ -149,6 +149,45 @@ def test_gated_feedback_starts_the_relay_and_pause_is_explicit(tmp_path):
     assert _arguments(["--smoother-feedback", "odom"], mode="explore").planning.smoother_feedback == "odom"
 
 
+def test_rescue_planner_is_asked_last_and_reads_back():
+    import xml.etree.ElementTree as ET
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.autonomy.bringup import _same
+    profile = nav2_config.NavProfile()
+
+    def params(choice):
+        return nav2_config.navigation_parameters(profile, mode="navigate", bt_to_pose_path="/tmp/a.xml",
+                                                 bt_through_poses_path="/tmp/b.xml", planning=choice)
+    choice = stack.PlanningChoice(planner="smac_hybrid", fallback_planner="smac_lattice", controller="shim_rpp",
+                                  rescue_planner="navfn")
+    p = params(choice)["planner_server"]["ros__parameters"]
+    assert p["planner_plugins"] == ["GridBased", "Fallback", "Rescue"]
+    assert p["Rescue"] == stack.planner_plugin("navfn", exploring=False)
+    expected = nav2_config.readback_expectations(profile, "navigate", planning=choice)["planner_server"]
+    assert expected["planner_plugins"] == ["GridBased", "Fallback", "Rescue"]
+    for dotted, value in expected.items():
+        current = p
+        for part in dotted.split("."):
+            current = current[part]
+        assert _same(current, value), dotted
+    for through in (False, True):
+        tree = nav2_config.behavior_tree_xml(through_poses=through, **choice.behavior_tree_options())
+        ids = [e.get("planner_id") for e in ET.fromstring(tree).iter() if e.get("planner_id")]
+        assert ids == ["GridBased", "Fallback", "Rescue"]
+    # without a rescue planner the tree is exactly the one before (fallback only)
+    plain = stack.PlanningChoice(planner="smac_hybrid", fallback_planner="smac_lattice", controller="shim_rpp")
+    assert nav2_config.behavior_tree_xml(**plain.behavior_tree_options()) == \
+        nav2_config.behavior_tree_xml(fallback_planner=True)
+    only = stack.PlanningChoice(planner="smac_hybrid", controller="shim_rpp", rescue_planner="navfn")
+    assert params(only)["planner_server"]["ros__parameters"]["planner_plugins"] == ["GridBased", "Rescue"]
+    assert stack.PlanningChoice.from_dict(json.loads(json.dumps(choice.as_dict()))) == choice
+    assert "rescue_planner" not in plain.as_dict()
+    for bad in ({"rescue_planner": "smac_lattice"}, {"planner": "navfn", "rescue_planner": "navfn"}):
+        with pytest.raises(ValueError):
+            stack.PlanningChoice(**bad)
+    assert _arguments(["--planner", "smac_hybrid", "--planner-rescue", "navfn"]).planning.rescue_planner == "navfn"
+
+
 def test_smoother_timeout_is_an_explicit_choice():
     from wc_navigation.autonomy import nav2_config
     from wc_navigation.autonomy.bringup import _same

@@ -70,6 +70,11 @@ def add_planning_arguments(parser):
     parser.add_argument("--planner-fallback", choices=("none", *PLANNERS), default="none",
                         help="second planner the behaviour tree asks only when --planner finds no path "
                              "(e.g. smac_lattice, which can turn in place, behind forward-only smac_hybrid)")
+    from .stack import RESCUE_PLANNERS
+    parser.add_argument("--planner-rescue", choices=("none", *RESCUE_PLANNERS), default="none",
+                        help="last planner, asked only when every planner before it finds no path (default none); "
+                             "a heading-free planner (e.g. navfn) plans from a start whose outline plus margin "
+                             "already touches an obstacle, which the outline-checking planners refuse")
     parser.add_argument("--controller", choices=CONTROLLERS, default=DEFAULT_CONTROLLER,
                         help="local controller plugin (default rpp: Regulated Pure Pursuit, unchanged)")
     parser.add_argument("--controller-param", action="append", default=[], metavar="NAME=VALUE",
@@ -115,6 +120,7 @@ def resolve_planning_arguments(parser, args):
                                        recovery_retries=args.recovery_retries, recovery_wait_s=args.recovery_wait,
                                        global_live_scans=args.global_costmap == "live",
                                        fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback,
+                                       rescue_planner="" if args.planner_rescue == "none" else args.planner_rescue,
                                        local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback,
                                        smoother_timeout_s=args.smoother_timeout,
                                        people_reaction=args.people_reaction, people_keepout=args.people_keepout)
