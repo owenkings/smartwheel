@@ -346,6 +346,38 @@ def test_planner_report_checks_the_recorded_costmap_when_the_static_map_is_clear
     assert without["failure_reasons"] == {"NO_RECORDED_COSTMAP": 1}
 
 
+def test_plan_success_per_cycle_counts_a_fallback_answer_as_one_success(tmp_path):
+    from wc_navigation.autonomy.shadow_cli import planner_cycles
+    tree = tmp_path / "bt.xml"
+    tree.write_text(nav2_config.behavior_tree_xml(fallback_planner=True, rescue_planner=True))
+    log = tmp_path / "planner_server.log"
+    # Humble 1.1.20 lines. Cycles: GridBased and Fallback fail, Rescue answers; all three fail;
+    # GridBased throws, Fallback answers; then 7 cycles GridBased answers.
+    log.write_text("\n".join([
+        "[WARN] [1.0] [planner_server]: Planning algorithm GridBased failed to generate a valid path to (1.00, 2.00)",
+        "[WARN] [1.1] [planner_server]: Planning algorithm Fallback failed to generate a valid path to (1.00, 2.00)",
+        "[WARN] [2.0] [planner_server]: Planning algorithm GridBased failed to generate a valid path to (1.00, 2.00)",
+        "[WARN] [2.1] [planner_server]: Planning algorithm Fallback failed to generate a valid path to (1.00, 2.00)",
+        "[WARN] [2.2] [planner_server]: Planning algorithm Rescue failed to generate a valid path to (1.00, 2.00)",
+        '[WARN] [3.0] [planner_server]: GridBased plugin failed to plan calculation to (1.00, 2.00): "x"',
+        "[WARN] [3.0] [planner_server]: [compute_path_to_pose] [ActionServer] Aborting handle.", ""]))
+    planner = {"terminal_status_counts": {"compute_path_to_pose": {"SUCCEEDED": 9, "ABORTED": 6}},
+               "plan_requests": 15, "plan_success_fraction": 0.6}
+    cycles = planner_cycles(planner, log, tree)
+    assert cycles["plan_cycle_success_fraction"] == pytest.approx(0.9)
+    assert cycles["plan_cycles"]["planners"] == ["GridBased", "Fallback", "Rescue"]
+    assert cycles["plan_cycles"]["failures_by_planner"] == {"GridBased": 3, "Fallback": 2, "Rescue": 1}
+    assert cycles["plan_cycles"]["answered_by"] == {"GridBased": 7, "Fallback": 1, "Rescue": 1}
+    # One planner: a cycle is one action, so both fractions agree.
+    tree.write_text(nav2_config.behavior_tree_xml())
+    log.write_text("[WARN] [1.0] [planner_server]: Planning algorithm GridBased failed to generate a valid path"
+                   " to (1.00, 2.00)\n" * 2)
+    single = planner_cycles({"terminal_status_counts": {"compute_path_to_pose": {"SUCCEEDED": 8, "ABORTED": 2}}},
+                            log, tree)
+    assert single["plan_cycle_success_fraction"] == pytest.approx(0.8)
+    assert planner_cycles(planner, tmp_path / "missing.log", tree)["plan_cycle_success_fraction"] is None
+
+
 def test_followed_path_is_the_recorded_path_ahead():
     times, poses = arc(n=41, v=0.5, w=0.0, start=(0.0, 0.0, 0.0))     # 12 s straight along +x
     path = shadow.path_ahead(times, poses, 2.0, 4.0, times[-1], spacing_m=0.1)
