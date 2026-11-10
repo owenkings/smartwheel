@@ -94,7 +94,8 @@ def test_dry_run_owner_drives_the_simulated_driver_through_auto_sock_and_stops_o
         moving = [speed for state, speed in seen if state == 'AUTO' and speed is not None and speed > 0.09]
         assert moving and max(moving) < 0.105, seen
         assert status['auto_state'] == 'NONE' and 'DECISION_STALE' in status['reason']
-        records = [json.loads(line) for line in (Path(tmp)/'session/wheel_feedback.jsonl').read_text().splitlines()]
+        records = [json.loads(line) for line in
+                   (Path(tmp)/'session/sources/wheel_feedback.jsonl').read_text().splitlines()]
         writes = [r for r in records if r.get('event') == 'wheel_io_complete' and r['request_hex'][2:4] == '10']
         assert writes and records[-1]['event'] == 'journal_finalization'
         assert {r['state'] for r in records if r.get('event') == 'auto_state'} >= {'INITIALIZING', 'AUTO', 'NONE'}

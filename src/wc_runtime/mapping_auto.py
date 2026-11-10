@@ -85,6 +85,36 @@ def auto_socket_path(project_root, directory, session_id):
     return manual_socket_path(project_root, directory, session_id).with_name(AUTO_SOCKET_NAME)
 
 
+def recording_sessions(project_root):
+    """(directory, session id, status) of this checkout's recordings in the capture staging area, newest first.
+
+    A recording stays there until it has been copied to the data disk at its end."""
+    import json
+    from .project_paths import capture_staging_root
+    root, found = Path(project_root).resolve(), []
+    for manifest in capture_staging_root().glob('*/capture_manifest.json'):
+        try:
+            value = json.loads(manifest.read_text(encoding='utf-8'))
+            if Path(value.get('project_root') or '/').resolve() == root and isinstance(value.get('session_id'), str):
+                found.append((manifest.stat().st_mtime_ns, str(manifest.parent), value['session_id'],
+                              value.get('status')))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return [(Path(directory), session_id, status) for _, directory, session_id, status in sorted(found, reverse=True)]
+
+
+def running_auto_sessions(project_root):
+    """(session directory, session id) of this checkout's recordings whose wheel owner has an auto.sock now."""
+    found = []
+    for directory, session_id, status in recording_sessions(project_root):
+        try:
+            if status == 'RECORDING' and auto_socket_path(project_root, directory, session_id).is_socket():
+                found.append((directory, session_id))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 def _limit(value, name, cap):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= cap:
         raise FeedbackError('auto_controls.%s must be a finite number in (0, %s]' % (name, cap))

@@ -9,7 +9,8 @@ first closed loop's: 0.10 m/s and 0.30 rad/s. The owner status carries ``dry_run
 
 Run the base bridge with ``--dry-run`` and the same --project-root, --session-root and --session-id; it finds
 auto.sock at ``auto_socket_path(project_root, session_root, session_id)``. The owner's journal is
-<session-root>/wheel_feedback.jsonl, the same records as a vehicle session. Ctrl-C ends the run: the owner writes
+<session-root>/sources/wheel_feedback.jsonl next to configuration/manual_runtime.json, the same layout and records as
+a recording session, so wc_motion.auto_stop_report reads it too. Ctrl-C ends the run: the owner writes
 zero and closes as on the vehicle.
 """
 import argparse
@@ -52,6 +53,9 @@ class SimulatedDriver:
     def __init__(self, sock, follow, *, tau_s=0.15, clock=time.monotonic):
         self.sock, self.follow, self.tau_s, self.clock = sock, follow, tau_s, clock
         self.enabled, self.target, self.speed, self.updated = False, (0, 0), [0.0, 0.0], clock()
+        # The vehicle's emergency stop acts on the driver only: while it is pressed the wheels coast to zero
+        # whatever is written; released, they follow the last target again (the case section 7.3 step 5 checks).
+        self.estop = False
         self.buffer = bytearray()
         self.frames = []   # (function code, register) of every well-formed frame, for tests
         self.stopped = threading.Event()
@@ -64,7 +68,7 @@ class SimulatedDriver:
     def _advance(self):
         now = self.clock()
         share = 1.0 - math.exp(-max(0.0, now - self.updated) / self.tau_s)
-        goal = [word * self.follow if self.enabled else 0.0 for word in self.target]
+        goal = [word * self.follow if self.enabled and not self.estop else 0.0 for word in self.target]
         self.speed = [value + (aim - value) * share for value, aim in zip(self.speed, goal)]
         self.updated = now
 
@@ -156,10 +160,14 @@ class DryRun:
             raise FeedbackError('start must be once, always or never')
         self.start_mode, self.clock = start, clock
         self.session_root = Path(session_root).absolute()
-        self.session_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.near, self.far = socket.socketpair()
-        self.journal = create_journal(self.session_root / 'wheel_feedback.jsonl', asynchronous=True)
+        # The layout of a recording session: the stop report and other readers find the same files.
+        for folder in (self.session_root, self.session_root / 'sources', self.session_root / 'configuration'):
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         config = owner_config(project_root, session_id)
+        (self.session_root / 'configuration/manual_runtime.json').write_text(
+            json.dumps(config, indent=1, ensure_ascii=False) + '\n', encoding='utf-8')
+        self.near, self.far = socket.socketpair()
+        self.journal = create_journal(self.session_root / 'sources/wheel_feedback.jsonl', asynchronous=True)
         try:
             self.channel = WheelChannel(SimulatedLease(self.near.fileno()), self.journal)
             self.owner = MappingWheel(config, self.channel, self.journal)
@@ -262,8 +270,8 @@ def main(argv=None):
     finally:
         run.close()
     print(json.dumps({'state': 'FAILED' if failure else 'STOPPED', 'failure': failure,
-                      'auto': run.auto.status()['counters'], 'journal': str(run.session_root / 'wheel_feedback.jsonl')},
-                     ensure_ascii=False), flush=True)
+                      'auto': run.auto.status()['counters'],
+                      'journal': str(run.session_root / 'sources/wheel_feedback.jsonl')}, ensure_ascii=False), flush=True)
     return 1 if failure else 0
 
 
