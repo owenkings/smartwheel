@@ -6,6 +6,7 @@ import socket as sk
 import struct
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace as NS
 
 import pytest
@@ -823,18 +824,21 @@ def evidence_project(tmp, hold=None):
                 'communication_timeout_s': 0.3, 'approved_limits': dict(LIMITS),
                 'driver_readback': [{'purpose': 'communication_timeout', 'request_hex': TIMEOUT_REQUEST.hex(),
                                      'word_index': 0, 'mask': 65535, 'equals': 7}],
-                'stop_tests': {name: test for name in names if hold is None or name != 'dead_man'}}
+                'stop_tests': {name: dict(test) for name in names if hold is None or name != 'dead_man'}}
+    evidence['stop_tests']['estop']['moved_after_reset'] = False
     (root/'evidence'/'auto.json').write_text(json.dumps(evidence))
     return root
 
 
-def attached(tmp, *, controls=None, environ=None, switches=True, readback=True, socket_path=None, hold=None):
+def attached(tmp, *, controls=None, environ=None, switches=True, readback=True, socket_path=None, hold=None,
+             lease=None):
     import datetime
     root = evidence_project(tmp, hold)
     cfg = config()
     cfg['auto_controls'] = controls or {'allowed': True, 'evidence': 'evidence/auto.json',
                                         'hold_to_run_switch': 'INSTALLED', **LIMITS}
     clock, channel, records = Clock(), FakeChannel(), []
+    channel.lease = lease   # the vehicle's serial line, for the startup readback
     owner = m.MappingWheel(cfg, channel, records.append, clock=clock, wall_ns=clock.wall, mono_ns=clock.ns)
     today = datetime.date(2026, 11, 9)
     env = {'WC_AUTO_DRIVE_APPROVAL': 'APPROVED_BY_USER_20261109'} if environ is None else environ
@@ -857,7 +861,7 @@ NOT_INSTALLED_CONTROLS = {'allowed': True, 'evidence': 'evidence/auto.json', 'ho
 @pytest.mark.parametrize('case, reason', [
     ('not_allowed', 'AUTO_NOT_ALLOWED'), ('no_approval', 'NO_USER_APPROVAL_TODAY'),
     ('old_approval', 'NO_USER_APPROVAL_TODAY'), ('template', 'EVIDENCE_REJECTED'),
-    ('no_switches', 'NO_SWITCH_INPUT'), ('no_readback', 'DRIVER_READBACK_NOT_IMPLEMENTED'),
+    ('no_switches', 'NO_SWITCH_INPUT'),
     ('differs', 'HOLD_TO_RUN_SWITCH_DIFFERS_FROM_EVIDENCE'), ('reader_given', 'SWITCH_READER_GIVEN_BUT_NOT_INSTALLED')])
 def test_attach_auto_stays_unavailable_without_every_precondition(short_tmp, case, reason):
     controls = None
@@ -878,11 +882,66 @@ def test_attach_auto_stays_unavailable_without_every_precondition(short_tmp, cas
         switches = False
     elif case == 'reader_given':
         controls, hold = NOT_INSTALLED_CONTROLS, NOT_INSTALLED
+    # No readback reader and no serial line: every refusal here comes before the startup readback would read.
     owner, sock, records = attached(short_tmp, controls=controls, environ=environ, switches=switches,
-                                    readback=case != 'no_readback', socket_path=short_tmp/'auto.sock', hold=hold)
+                                    readback=False, socket_path=short_tmp/'auto.sock', hold=hold)
     assert sock is None and not (short_tmp/'auto.sock').exists()
     assert owner.auto.state == 'UNAVAILABLE' and owner.auto.reason.startswith(reason), owner.auto.reason
     assert any(r.get('event') == 'auto_attached' for r in records)
+    assert not any(r.get('event', '').startswith('auto_readback') for r in records)
+
+
+class DriverEnd(threading.Thread):
+    """The driver end of a socket pair: answers every 8-byte request with ``reply(request)`` (None: silence)."""
+    def __init__(self, sock, reply):
+        super().__init__(daemon=True)
+        self.sock, self.reply, self.requests = sock, reply, []
+
+    def run(self):
+        while True:
+            try:
+                request = self.sock.recv(8)
+            except OSError:
+                return
+            if len(request) < 8:
+                return
+            self.requests.append(request)
+            answer = self.reply(request)
+            if answer is not None:
+                self.sock.sendall(answer)
+
+
+@pytest.mark.parametrize('answer', ['words', 'exception', 'silent'])
+def test_vehicle_owner_reads_the_evidence_registers_once_at_session_start(short_tmp, answer):
+    near, far = sk.socketpair()
+
+    def reply(request):
+        payload = {'words': b'\x01\x03\x02\x00\x07', 'exception': b'\x01\x83\x02'}.get(answer)
+        return None if payload is None else payload + m.crc16(payload)
+    driver = DriverEnd(far, reply)
+    driver.start()
+    lease = NS(fd=near.fileno(), failed=False)
+    try:
+        if answer == 'silent':
+            with pytest.raises(m.FeedbackError, match='AUTO_STARTUP_READBACK_FAILED: communication_timeout'):
+                attached(short_tmp, readback=False, lease=lease, socket_path=short_tmp/'auto.sock')
+            assert lease.failed and not (short_tmp/'auto.sock').exists()
+            return
+        owner, sock, records = attached(short_tmp, readback=False, lease=lease, socket_path=short_tmp/'auto.sock')
+        reads = [r for r in records if r.get('event') == 'auto_readback']
+        assert driver.requests == [TIMEOUT_REQUEST] and len(reads) == 1
+        assert reads[0]['request_hex'] == TIMEOUT_REQUEST.hex() and reads[0]['purpose'] == 'communication_timeout'
+        if answer == 'words':
+            assert sock is not None and owner.auto.state == 'NONE' and reads[0]['words_u16'] == [7]
+            assert owner.auto.readback(TIMEOUT_REQUEST) == [7] and driver.requests == [TIMEOUT_REQUEST]  # cached
+            sock.close()
+        else:
+            assert sock is None and owner.auto.reason.startswith('DRIVER_READBACK_EXCEPTION: communication_timeout')
+            assert reads[0]['exception_code'] == 2 and not lease.failed
+    finally:
+        near.close()
+        far.close()
+        driver.join(timeout=2)
 
 
 def test_attach_auto_with_the_switch_not_installed_needs_no_reader(short_tmp):

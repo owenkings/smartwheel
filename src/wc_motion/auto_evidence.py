@@ -12,6 +12,22 @@ braking rows (ground test) or a passed supervised run (closed loop) at the step 
 ``hold_to_run_switch`` records whether the hold-to-run switch is installed. Not installed is the user's decision of
 2026-11-09 23:50 (the first empty-chair runs use the vehicle's emergency stop with a person beside the chair); it has
 to be written out, and then the ``dead_man`` stop test and braking path are not required.
+
+What each stage needs follows the coordinator's plan of 2026-11-10 14:40 for the first empty-chair closed loop at
+0.10 m/s (velocity_channel.md 8.1):
+
+- STAND_TEST, before automatic control runs on the stand: with the existing manual channel, the emergency stop (and
+  no wheel motion after a reset with zero commanded) and the USB adapter pulled, 3 trials each.
+- GROUND_TEST adds ``auto_stand_checks``: the test command source at 0.10 m/s on the stand, with the wheel feedback
+  within 10 % of the command in every trial (the speed conversion).
+- SUPERVISED_CLOSED_LOOP adds braking rows on the ground at the approved top speed, 3 trials each: software zero,
+  test source killed, emergency stop, and USB adapter pulled.
+
+A driver that does not stop by itself when the USB adapter is pulled may be recorded as such (``driver_stopped``
+false) with the decision, by the user or the coordinator, only while the approved linear limit is 0.10 m/s: the
+person beside the chair presses the emergency stop (coordinator 2026-11-10 14:40). Then the communication-loss
+braking row is not required and ``communication_timeout_s`` may be null. The killed owner and the cut Orin power are
+optional now; when recorded as verified they are checked as before.
 """
 import hashlib
 import json
@@ -30,18 +46,26 @@ HARD_LIMITS = {'max_linear_m_s': 0.30, 'max_angular_rad_s': 0.50, 'max_wheel_rpm
 LINEAR_STEPS_M_S = (0.10, 0.20, 0.30)
 ANGULAR_STEPS_RAD_S = (0.30, 0.40, 0.50)
 STOP_TESTS = ('estop', 'dead_man', 'owner_killed', 'usb_unplugged', 'orin_power_cut', 'software_zero',
-              'auto_stand_checks')
+              'source_killed', 'auto_stand_checks')
 LOSS_TESTS = ('owner_killed', 'usb_unplugged', 'orin_power_cut')   # stop by the driver's communication timeout
 LOSS_STOP_MARGIN_S = 0.5   # section 8.1, level 2: stopped within the communication timeout plus 0.5 s
 REQUIRED_STOP_TESTS = {
-    # Level 2 items a-d are done with the existing manual channel before the automatic channel runs on the stand.
-    'STAND_TEST': ('estop', 'dead_man', 'owner_killed', 'usb_unplugged', 'orin_power_cut'),
-    # Level 2 items e-g with the automatic channel on the stand.
-    'GROUND_TEST': STOP_TESTS,
-    'SUPERVISED_CLOSED_LOOP': STOP_TESTS}
-BRAKING_LIMITS_M = {'software_zero': 0.18, 'communication_loss': 0.30, 'estop': 0.30, 'dead_man': 0.30}
-BRAKING_TRIALS, BRAKING_SPREAD, BRAKING_HEADING_DEG = 5, 0.20, 5.0
-REQUIRED_READBACK = ('communication_timeout',)
+    # The existing manual channel on the stand (WASD at 0.10 m/s), before the automatic channel runs.
+    'STAND_TEST': ('estop', 'dead_man', 'usb_unplugged'),
+    # The test command source at 0.10 m/s on the stand.
+    'GROUND_TEST': ('estop', 'dead_man', 'usb_unplugged', 'auto_stand_checks'),
+    # On the ground the braking rows carry the trials.
+    'SUPERVISED_CLOSED_LOOP': ('estop', 'dead_man', 'usb_unplugged', 'auto_stand_checks')}
+NOT_STOPPED_MAX_LINEAR_M_S = 0.10   # a driver that ignores the lost line is accepted only up to this approved speed
+DECIDED_BY = ('user', 'coordinator')
+SPEED_RATIO_TOLERANCE = 0.10        # wheel feedback within 10 % of the command on the stand
+# source_killed: the owner brakes in software when its source is gone, as for software zero.
+BRAKING_LIMITS_M = {'software_zero': 0.18, 'source_killed': 0.18, 'communication_loss': 0.30, 'estop': 0.30,
+                    'dead_man': 0.30}
+# 3 trials per path (coordinator 2026-11-10). The spread may be 20 % of the mean or 2 cm, whichever is larger: at
+# 0.10 m/s the distances are a few centimetres and the 10 Hz wheel feedback resolves about 1 cm.
+BRAKING_TRIALS, BRAKING_SPREAD, BRAKING_SPREAD_FLOOR_M, BRAKING_HEADING_DEG = 3, 0.20, 0.02, 5.0
+REQUIRED_READBACK = ('communication_timeout',)   # when communication_timeout_s is given
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 
 
@@ -120,6 +144,8 @@ def check_readback(item):
     _, _, address, count = struct.unpack('>BBHH', request[:-2])
     if not 1 <= count <= 8 or request != read_request(1, address, count):
         raise FeedbackError('readback range is invalid')
+    from .driver_readback import whitelisted
+    whitelisted(request)   # the owner reads these at session start, only from the read-only whitelist
     index = _integer(item.get('word_index'), 'readback word_index', 0, count - 1)
     mask = _integer(item.get('mask'), 'readback mask', 1, 65535)
     equals = _integer(item.get('equals'), 'readback equals', 0, 65535)
@@ -148,11 +174,32 @@ def check_limits(value, stage):
     return {name: _number(value[name], 'approved_limits.' + name, 1e-6, HARD_LIMITS[name]) for name in HARD_LIMITS}
 
 
-def check_stop_test(name, value, project_root, roots, communication_timeout_s):
+def driver_ignored_loss(value):
+    """True when a loss test records that the driver did not stop by itself (``driver_stopped`` false)."""
+    return isinstance(value, dict) and value.get('driver_stopped', True) is False
+
+
+def check_stop_test(name, value, project_root, roots, communication_timeout_s, max_linear_m_s):
     if not isinstance(value, dict) or value.get('verified') is not True:
         raise FeedbackError('stop test %s is not verified' % name)
-    _integer(value.get('trials'), name + '.trials', 3, 1000)
-    if name in LOSS_TESTS:
+    trials = _integer(value.get('trials'), name + '.trials', 3, 1000)
+    if name in LOSS_TESTS and driver_ignored_loss(value):
+        # Coordinator 2026-11-10 14:40: at 0.10 m/s the chair may run on a driver that keeps going when the line is
+        # lost; the person beside it presses the emergency stop, and the driver parameters are changed later.
+        if max_linear_m_s > NOT_STOPPED_MAX_LINEAR_M_S + 1e-9:
+            raise FeedbackError('stop test %s: a driver that did not stop by itself is accepted only up to %.2f m/s'
+                                % (name, NOT_STOPPED_MAX_LINEAR_M_S))
+        _text(value.get('decision'), name + '.decision', 400)
+        if value.get('decided_by') not in DECIDED_BY:
+            raise FeedbackError('%s.decided_by must be one of %s' % (name, ', '.join(DECIDED_BY)))
+        _text(value.get('decided_at'), name + '.decided_at')
+        if value.get('max_stop_time_s') is not None:
+            raise FeedbackError('%s: the driver did not stop by itself, so max_stop_time_s must be null' % name)
+    elif name in LOSS_TESTS:
+        if value.get('driver_stopped', True) is not True:
+            raise FeedbackError(name + '.driver_stopped must be true or false')
+        if communication_timeout_s is None:
+            raise FeedbackError('stop test %s: the driver stopped, so communication_timeout_s is required' % name)
         limit = communication_timeout_s + LOSS_STOP_MARGIN_S
         stop = _number(value.get('max_stop_time_s'), name + '.max_stop_time_s', 0.0, 10.0)
         if stop > limit + 1e-9:
@@ -160,6 +207,18 @@ def check_stop_test(name, value, project_root, roots, communication_timeout_s):
                                 % (name, stop, LOSS_STOP_MARGIN_S, limit))
     elif value.get('max_stop_time_s') is not None:
         _number(value['max_stop_time_s'], name + '.max_stop_time_s', 0.0, 10.0)
+    if name == 'estop' and value.get('moved_after_reset') is not False:
+        raise FeedbackError('estop.moved_after_reset must be false: after a reset with zero commanded the wheels '
+                            'must not move')
+    if name == 'auto_stand_checks':
+        ratios = value.get('speed_ratios')
+        if not isinstance(ratios, list) or len(ratios) != trials:
+            raise FeedbackError('auto_stand_checks.speed_ratios needs one feedback/command ratio per trial')
+        for ratio in ratios:
+            ratio = _number(ratio, 'auto_stand_checks.speed_ratios', 0.0, 10.0)
+            if abs(ratio - 1.0) > SPEED_RATIO_TOLERANCE + 1e-9:
+                raise FeedbackError('speed conversion: wheel feedback %.0f %% of the command, outside %.0f %%'
+                                    % (100 * ratio, 100 * SPEED_RATIO_TOLERANCE))
     return _sources(value.get('sources'), 'stop test ' + name, project_root, roots)
 
 
@@ -179,8 +238,9 @@ def check_braking(rows, paths, project_root, roots):
         mean = sum(values) / len(values)
         if max(values) > BRAKING_LIMITS_M[row['path']]:
             raise FeedbackError('braking distance above the pass line for ' + row['path'])
-        if mean > 0 and (max(values) - min(values)) / mean > BRAKING_SPREAD:
-            raise FeedbackError('braking distances scatter more than 20% for ' + row['path'])
+        if max(values) - min(values) > max(BRAKING_SPREAD * mean, BRAKING_SPREAD_FLOOR_M) + 1e-9:
+            raise FeedbackError('braking distances scatter more than 20%% of the mean and more than %.2f m for %s'
+                                % (BRAKING_SPREAD_FLOOR_M, row['path']))
         if _number(row.get('max_heading_change_deg'), 'braking heading change', 0.0, 180.0) > BRAKING_HEADING_DEG:
             raise FeedbackError('heading changed more than 5 degrees while braking on ' + row['path'])
         _sources(row.get('sources'), 'braking row', project_root, roots)
@@ -231,13 +291,15 @@ def load_evidence(value, project_root, expected_device_id):
     _text(value.get('reviewer'), 'reviewer')
     _text(value.get('reviewed_at'), 'reviewed_at')
     hold = check_hold_to_run(value.get('hold_to_run_switch'))
-    timeout = _number(value.get('communication_timeout_s'), 'communication_timeout_s', 0.01, 5.0)
+    timeout = value.get('communication_timeout_s')   # null: not known; needed once a loss test says the driver stopped
+    if timeout is not None or 'communication_timeout_s' not in value:
+        timeout = _number(timeout, 'communication_timeout_s', 0.01, 5.0)
     limits = check_limits(value.get('approved_limits'), stage)
     readback = value.get('driver_readback')
     if not isinstance(readback, list) or not readback:
         raise FeedbackError('driver parameter readback checks are required')
     checks = [check_readback(item) for item in readback]
-    missing = set(REQUIRED_READBACK) - {item['purpose'] for item in checks}
+    missing = set(REQUIRED_READBACK if timeout is not None else ()) - {item['purpose'] for item in checks}
     if missing:
         raise FeedbackError('driver readback must include ' + ', '.join(sorted(missing)))
     roots = allowed_roots(project_root)
@@ -245,9 +307,12 @@ def load_evidence(value, project_root, expected_device_id):
     if not isinstance(tests, dict) or set(tests) - set(STOP_TESTS):
         raise FeedbackError('stop_tests must use the names ' + ', '.join(STOP_TESTS))
     required = [name for name in REQUIRED_STOP_TESTS[stage] if hold['installed'] or name != 'dead_man']
-    for name in required:
-        check_stop_test(name, tests.get(name), project_root, roots, timeout)
-    paths = [path for path in BRAKING_LIMITS_M if hold['installed'] or path != 'dead_man']
+    for name in STOP_TESTS:
+        # Tests a stage does not need are optional; one recorded as verified is checked like a required one.
+        if name in required or (isinstance(tests.get(name), dict) and tests[name].get('verified') is True):
+            check_stop_test(name, tests.get(name), project_root, roots, timeout, limits['max_linear_m_s'])
+    paths = [path for path in BRAKING_LIMITS_M if (hold['installed'] or path != 'dead_man') and
+             not (path == 'communication_loss' and driver_ignored_loss(tests.get('usb_unplugged')))]
     measured = check_braking(value.get('braking', []), paths, project_root, roots)
     if stage == 'SUPERVISED_CLOSED_LOOP':
         short = sorted(path for path in paths if measured[path] < limits['max_linear_m_s'] - 1e-9)

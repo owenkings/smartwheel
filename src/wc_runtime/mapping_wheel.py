@@ -1009,7 +1009,8 @@ def main(argv=None):
         control_socket = ManualSocket(socket_path, owner)
         owner.before_control = control_socket.pump
         if config.get('auto_controls') is not None:
-            # Optional automatic control source (velocity_channel.md); absent from every generated configuration.
+            # Optional automatic control source (velocity_channel.md): only a hardware setup with auto_controls
+            # puts it into the session configuration (capture.manual_runtime_configuration).
             from .mapping_auto import attach_auto
             auto_socket = attach_auto(config, owner, ROOT, directory)
             if auto_socket is not None:

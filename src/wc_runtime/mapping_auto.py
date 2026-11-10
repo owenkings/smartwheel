@@ -1,7 +1,7 @@
 """Automatic control source of the single wheel serial owner (docs/architecture/velocity_channel.md, sections 3-6).
 
 Default: absent. ``mapping_wheel.main`` only calls ``attach_auto`` when the session's frozen configuration carries
-``auto_controls``; the capture and mapping configuration builders never write it. Even then automatic control is
+``auto_controls``, which only a hardware setup that has the key puts there. Even then automatic control is
 UNAVAILABLE, and no ``auto.sock`` is created, unless all of these hold:
 
 - ``auto_controls.allowed`` is true and today's user approval ``WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>``
@@ -9,10 +9,12 @@ UNAVAILABLE, and no ``auto.sock`` is created, unless all of these hold:
 - the reviewed evidence file validates for this controller (``wc_motion.auto_evidence``) and records the same
   ``hold_to_run_switch`` decision as ``auto_controls``;
 - with ``hold_to_run_switch: INSTALLED``, a reader of the hold-to-run switch and the emergency stop exists;
-- the driver parameters listed in the evidence can be read back.
+- the driver parameters listed in the evidence read back as recorded.
 
-In this revision (level 0) the vehicle has no driver readback, so automatic control only runs against the fake serial
-channel of the tests.
+The capture copies ``auto_controls`` from the hardware setup into the session configuration when the setup has it.
+On the vehicle ``attach_auto`` reads the evidence's readback requests once at session start, before the owner's
+first feedback read, and only after the approval and the evidence passed (``startup_readback``: FC03 of the
+read-only whitelist of ``wc_motion.driver_readback``); every start of automatic control compares those values.
 
 ``hold_to_run_switch: NOT_INSTALLED`` (the user's decision of 2026-11-09 23:50): there is no switch and no switch
 reader; the status reports ``dead_man`` and ``estop`` as null and the gate's enable follows the operator's
@@ -44,6 +46,7 @@ import select
 import socket
 import stat
 import struct
+import time
 
 from wc_motion.auto_evidence import HARD_LIMITS, read_evidence_file
 from wc_motion.auto_protocol import (DECISION_STALE_S, GATE_ACTIVE, GATE_ESTOP, MAX_LINE_BYTES, STATUS_PERIOD_S,
@@ -898,9 +901,54 @@ class AutoSocket:
             pass
 
 
+READBACK_TIMEOUT_S = 0.1   # one FC03 exchange
+READBACK_GAP_S = 0.05      # bus idle time between two reads, as in wc_motion.driver_readback
+
+
+def startup_readback(owner, checks, *, timeout_s=READBACK_TIMEOUT_S, gap_s=READBACK_GAP_S, sleep=time.sleep):
+    """Read the evidence's readback requests once on the owner's serial line: (lookup, None) or (None, reason).
+
+    Runs before the owner's first feedback read, so nothing else is on the bus. Only requests of the read-only
+    whitelist of ``wc_motion.driver_readback`` are sent, each once; every answer goes into the owner's journal. A
+    Modbus exception answer leaves automatic control unavailable. A transport failure (timeout, CRC, stray bytes,
+    disconnect) fails the line like any other wheel exchange, without a retry, and is raised: the session ends.
+    """
+    from wc_motion.driver_readback import exchange, whitelisted
+    from wc_motion.feedback_transport import QueryFailure
+    channel, words = owner.channel, {}
+    for check in checks:
+        request = check['request']
+        if request in words:
+            continue
+        whitelisted(request)
+        if words:
+            sleep(gap_s)
+        if channel.failed or channel.lease.failed or channel.lease.fd is None:
+            raise FeedbackError('AUTO_STARTUP_READBACK_FAILED: closed or failed wheel channel')
+        started = time.monotonic_ns()
+        try:
+            response, values, code = exchange(channel.lease.fd, request, timeout_s)
+        except (QueryFailure, OSError) as failure:
+            channel.failed = channel.lease.failed = True
+            owner._log({'event': 'auto_readback_failed', 'purpose': check['purpose'], 'request_hex': request.hex(),
+                        'response_hex': bytes(getattr(failure, 'response', b'')).hex(), 'error': str(failure)},
+                       required=False)
+            raise FeedbackError('AUTO_STARTUP_READBACK_FAILED: %s: %s' % (check['purpose'], failure)) from failure
+        owner._log({'event': 'auto_readback', 'purpose': check['purpose'], 'request_hex': request.hex(),
+                    'response_hex': response.hex(), 'words_u16': values, 'exception_code': code,
+                    'exchange_started_monotonic_ns': started, 'exchange_completed_monotonic_ns': time.monotonic_ns()})
+        if code is not None:
+            return None, 'DRIVER_READBACK_EXCEPTION: %s answered Modbus exception %d' % (check['purpose'], code)
+        words[request] = values
+    return (lambda request: list(words[request])), None
+
+
 def attach_auto(config, owner, project_root, session_dir, *, environ=None, today=None, switches=None, readback=None,
                 socket_path=None):
-    """Attach the automatic control source to ``owner``; returns its socket, or None while it is unavailable."""
+    """Attach the automatic control source to ``owner``; returns its socket, or None while it is unavailable.
+
+    Without ``readback`` (the vehicle) the evidence's readback requests are read once here (``startup_readback``),
+    after everything else passed."""
     controls = validate_auto_controls(config.get('auto_controls'))
     environ = os.environ if environ is None else environ
     today = today or datetime.date.today()
@@ -926,7 +974,7 @@ def attach_auto(config, owner, project_root, session_dir, *, environ=None, today
     if unavailable is None and hold == 'INSTALLED' and switches is None:
         unavailable = 'NO_SWITCH_INPUT'
     if unavailable is None and readback is None:
-        unavailable = 'DRIVER_READBACK_NOT_IMPLEMENTED'
+        readback, unavailable = startup_readback(owner, evidence['readback'])
     auto = AutoDrive(owner, limits, hold_to_run_switch=hold, switches=switches, readback=readback,
                      readback_checks=evidence.get('readback', ()), unavailable=unavailable, evidence=evidence)
     owner._log({'event': 'auto_attached', 'state': auto.state, 'reason': auto.reason, 'limits': auto.limits,

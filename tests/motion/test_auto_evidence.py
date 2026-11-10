@@ -15,6 +15,9 @@ LIMITS = {'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30, 'max_wheel_rpm': 27
           'max_linear_decel_m_s2': 0.60, 'max_angular_accel_rad_s2': 0.80}
 NOT_INSTALLED = {'installed': False, 'decided_by': 'user', 'decided_at': '2026-11-09',
                  'decision': '不做硬件松手即停；第一次空车低速闭环用车上现有急停、人在车旁'}
+DRIVER_KEPT_GOING = {'verified': True, 'trials': 3, 'driver_stopped': False, 'max_stop_time_s': None,
+                     'decided_by': 'coordinator', 'decided_at': '2026-11-10 14:40',
+                     'decision': '拔 USB 时驱动器不停：0.10 m/s 照样开，掉线靠人按急停，回头再改驱动器参数'}
 
 
 @pytest.fixture
@@ -40,6 +43,8 @@ def evidence(source, stage='STAND_TEST', hold=None):
              'driver_readback': [{'purpose': 'communication_timeout', 'request_hex': read_request(1, 0x2000, 1).hex(),
                                   'word_index': 0, 'mask': 65535, 'equals': 300}],
              'stop_tests': {name: copy.deepcopy(test) for name in e.STOP_TESTS}}
+    value['stop_tests']['estop']['moved_after_reset'] = False
+    value['stop_tests']['auto_stand_checks']['speed_ratios'] = [0.98, 1.0, 1.03]
     if stage == 'SUPERVISED_CLOSED_LOOP':
         value['braking'] = braking(source, 0.10)
     return value
@@ -51,6 +56,7 @@ def load(root, value):
 
 def test_template_is_always_rejected():
     template = json.loads((ROOT/'config/wheel_auto_drive_evidence.template.json').read_text())
+    assert set(template['stop_tests']) == set(e.STOP_TESTS)
     with pytest.raises(FeedbackError, match='not reviewed'):
         load(ROOT, template)
     reviewed = {**template, 'state': 'REVIEWED'}
@@ -79,7 +85,11 @@ def test_complete_synthetic_evidence_gives_the_approved_limits(project, stage):
     (lambda v: v['driver_readback'][0].update(purpose='acceleration_time'), 'communication_timeout'),
     (lambda v: v['driver_readback'][0].update(request_hex='0106200e0007' + '0000'), 'RTU frame'),
     (lambda v: v['driver_readback'][0].update(equals=70000), 'equals'),
+    # the owner reads these at session start, so only requests of the read-only whitelist
+    (lambda v: v['driver_readback'][0].update(request_hex=read_request(1, 0x20AB, 2).hex()), 'whitelist'),
     (lambda v: v['stop_tests']['estop'].update(verified=False), 'estop'),
+    (lambda v: v['stop_tests']['estop'].pop('moved_after_reset'), 'moved_after_reset'),
+    (lambda v: v['stop_tests']['estop'].update(moved_after_reset=True), 'moved_after_reset'),
     (lambda v: v['stop_tests']['orin_power_cut'].update(trials=2), 'trials'),
     (lambda v: v['stop_tests']['dead_man'].update(sources=[]), 'sources'),
     (lambda v: v['stop_tests']['usb_unplugged']['sources'][0].update(sha256='0'*64), 'hash mismatch'),
@@ -88,11 +98,13 @@ def test_complete_synthetic_evidence_gives_the_approved_limits(project, stage):
     (lambda v: v.update(hold_to_run_switch={'installed': 'no'}), 'hold_to_run_switch'),
     (lambda v: v.update(hold_to_run_switch={'installed': False}), 'decision'),
     (lambda v: v.update(hold_to_run_switch={**NOT_INSTALLED, 'decided_by': 'A'}), 'decided_by the user'),
+    (lambda v: v.pop('communication_timeout_s'), 'communication_timeout_s'),
     (lambda v: v.update(communication_timeout_s=None), 'communication_timeout_s'),
     # section 8.1 level 2: communication-loss stops within the driver's timeout plus 0.5 s, and they must be measured
     (lambda v: v['stop_tests']['owner_killed'].update(max_stop_time_s=None), 'owner_killed.max_stop_time_s'),
     (lambda v: v['stop_tests']['usb_unplugged'].update(max_stop_time_s=0.9), 'communication timeout plus'),
     (lambda v: v['stop_tests']['orin_power_cut'].update(max_stop_time_s=9.0), 'communication timeout plus'),
+    (lambda v: v['stop_tests']['usb_unplugged'].update(driver_stopped='no'), 'driver_stopped'),
     (lambda v: v.update(closed_loop_runs=[{'max_linear_m_s': 0.1}]), 'SUPERVISED_CLOSED_LOOP')])
 def test_incomplete_or_inconsistent_evidence_is_rejected(project, change, message):
     root, source = project
@@ -102,13 +114,71 @@ def test_incomplete_or_inconsistent_evidence_is_rejected(project, change, messag
         load(root, value)
 
 
-def test_stand_stage_does_not_need_the_automatic_stand_checks_but_ground_stage_does(project):
+def test_each_stage_needs_its_own_tests_and_the_others_are_optional(project):
     root, source = project
     value = evidence(source, 'STAND_TEST')
-    del value['stop_tests']['software_zero'], value['stop_tests']['auto_stand_checks']
-    assert load(root, value)['stage'] == 'STAND_TEST'
+    for name in ('owner_killed', 'orin_power_cut', 'software_zero', 'source_killed', 'auto_stand_checks'):
+        del value['stop_tests'][name]
+    assert load(root, value)['stage'] == 'STAND_TEST'     # the manual channel on the stand: estop and USB pulled
+    for name in ('estop', 'usb_unplugged', 'dead_man'):
+        short = copy.deepcopy(value)
+        del short['stop_tests'][name]
+        with pytest.raises(FeedbackError, match=name):
+            load(root, short)
     value['stage'] = 'GROUND_TEST'
-    with pytest.raises(FeedbackError, match='software_zero'):
+    with pytest.raises(FeedbackError, match='auto_stand_checks'):
+        load(root, value)
+    value['stop_tests']['owner_killed'] = {'verified': False, 'trials': 0, 'max_stop_time_s': None, 'sources': []}
+    value['stop_tests']['auto_stand_checks'] = {'verified': True, 'trials': 3, 'speed_ratios': [1.0, 0.97, 1.02],
+                                                'sources': [source]}
+    assert load(root, value)['stage'] == 'GROUND_TEST'   # an optional test not done yet is ignored
+    value['stage'] = 'SUPERVISED_CLOSED_LOOP'
+    value['braking'] = braking(source, 0.10)
+    assert load(root, value)['stage'] == 'SUPERVISED_CLOSED_LOOP'
+
+
+@pytest.mark.parametrize('ratios, message', [
+    ([1.0, 1.0], 'one feedback/command ratio per trial'), (None, 'speed_ratios'),
+    ([1.0, 1.11, 1.0], 'speed conversion: wheel feedback 111 %'), ([0.89, 1.0, 1.0], 'speed conversion'),
+    ([1.0, 8.9, 1.0], 'speed conversion')])
+def test_stand_checks_need_the_wheel_feedback_within_ten_percent_of_the_command(project, ratios, message):
+    root, source = project
+    value = evidence(source, 'GROUND_TEST')
+    value['stop_tests']['auto_stand_checks']['speed_ratios'] = ratios
+    with pytest.raises(FeedbackError, match=message):
+        load(root, value)
+    value['stop_tests']['auto_stand_checks']['speed_ratios'] = [0.9, 1.1, 1.0]
+    assert load(root, value)['stage'] == 'GROUND_TEST'
+
+
+@pytest.mark.parametrize('stage', e.STAGES)
+def test_a_driver_that_keeps_going_without_the_line_is_accepted_at_0_10_m_s_with_the_decision(project, stage):
+    root, source = project
+    value = evidence(source, stage, hold=NOT_INSTALLED)
+    del value['stop_tests']['dead_man'], value['stop_tests']['owner_killed'], value['stop_tests']['orin_power_cut']
+    value['stop_tests']['usb_unplugged'] = dict(DRIVER_KEPT_GOING, sources=[source])
+    value['communication_timeout_s'] = None               # not known: the driver did not stop
+    value['driver_readback'][0]['purpose'] = 'input_functions'
+    value['driver_readback'][0]['request_hex'] = read_request(1, 0x2016, 3).hex()
+    if stage == 'SUPERVISED_CLOSED_LOOP':                 # no communication-loss braking row needed
+        value['braking'] = braking(source, 0.10, ('software_zero', 'source_killed', 'estop'))
+    result = load(root, value)
+    assert result['communication_timeout_s'] is None and result['limits'] == LIMITS
+    for change, message in [
+            (lambda v: v['approved_limits'].update(max_linear_m_s=0.2), 'only up to 0.10 m/s'),
+            (lambda v: v['stop_tests']['usb_unplugged'].pop('decision'), 'usb_unplugged.decision'),
+            (lambda v: v['stop_tests']['usb_unplugged'].update(decided_by='A'), 'decided_by must be one of'),
+            (lambda v: v['stop_tests']['usb_unplugged'].update(decided_at=''), 'decided_at'),
+            (lambda v: v['stop_tests']['usb_unplugged'].update(max_stop_time_s=1.2), 'must be null'),
+            (lambda v: v['stop_tests']['usb_unplugged'].update(driver_stopped=True), 'communication_timeout_s'),
+            (lambda v: v['stop_tests'].update(owner_killed={'verified': True, 'trials': 3, 'max_stop_time_s': 0.4,
+                                                             'sources': [source]}), 'communication_timeout_s')]:
+        changed = copy.deepcopy(value)
+        change(changed)
+        with pytest.raises(FeedbackError, match=message):
+            load(root, changed)
+    value['communication_timeout_s'] = 1.0   # known after all: the readback must then include it
+    with pytest.raises(FeedbackError, match='driver readback must include communication_timeout'):
         load(root, value)
 
 
@@ -118,7 +188,7 @@ def test_switch_not_installed_is_recorded_and_drops_the_dead_man_test_and_brakin
     value = evidence(source, stage, hold=NOT_INSTALLED)
     del value['stop_tests']['dead_man']
     if stage == 'SUPERVISED_CLOSED_LOOP':
-        value['braking'] = braking(source, 0.10, ('software_zero', 'communication_loss', 'estop'))
+        value['braking'] = braking(source, 0.10, ('software_zero', 'source_killed', 'communication_loss', 'estop'))
     result = load(root, value)
     assert result['hold_to_run_switch'] == {'installed': False, 'decision': NOT_INSTALLED['decision'],
                                             'decided_at': '2026-11-09'}
@@ -130,10 +200,13 @@ def test_switch_not_installed_is_recorded_and_drops_the_dead_man_test_and_brakin
 
 @pytest.mark.parametrize('change, message', [
     (lambda rows: rows.pop(), 'approved top speed'),
+    (lambda rows: rows.pop(1), 'approved top speed for source_killed'),
     (lambda rows: rows[0].update(distances_m=[0.2]*5), 'pass line'),
+    (lambda rows: rows[1].update(distances_m=[0.19, 0.17, 0.17]), 'pass line for source_killed'),
     (lambda rows: rows[1].update(distances_m=[0.05, 0.05, 0.05, 0.05, 0.08]), 'scatter'),
+    (lambda rows: rows[3].update(distances_m=[0.20, 0.24, 0.27]), 'scatter'),
     (lambda rows: rows[2].update(max_heading_change_deg=6.0), 'heading'),
-    (lambda rows: rows[3].update(distances_m=[0.05]*4), 'at least 5'),
+    (lambda rows: rows[3].update(distances_m=[0.05]*2), 'at least 3'),
     (lambda rows: [row.update(speed_m_s=0.05) for row in rows], 'approved top speed')])
 def test_closed_loop_needs_braking_rows_within_the_pass_lines(project, change, message):
     root, source = project
@@ -141,6 +214,19 @@ def test_closed_loop_needs_braking_rows_within_the_pass_lines(project, change, m
     change(value['braking'])
     with pytest.raises(FeedbackError, match=message):
         load(root, value)
+
+
+def test_braking_spread_allows_two_centimetres_at_low_speed(project):
+    root, source = project
+    value = evidence(source, 'SUPERVISED_CLOSED_LOOP')
+    for row in value['braking']:
+        row['distances_m'] = [0.02, 0.03, 0.04]          # 2 cm apart at a 3 cm mean: within the 2 cm floor
+    assert load(root, value)['stage'] == 'SUPERVISED_CLOSED_LOOP'
+    value['braking'][0]['distances_m'] = [0.02, 0.03, 0.045]
+    with pytest.raises(FeedbackError, match='scatter'):
+        load(root, value)
+    value['braking'][0]['distances_m'] = [0.15, 0.17, 0.18]   # 20 % of 0.167 m is 3.3 cm: within
+    assert load(root, value)['stage'] == 'SUPERVISED_CLOSED_LOOP'
 
 
 def test_ground_test_goes_up_one_speed_step_after_braking_at_the_step_below(project):

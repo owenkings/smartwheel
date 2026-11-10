@@ -12,10 +12,15 @@
 | 4 个测试文件（新） | 见"假串口测了什么" |
 | README、本设计文档 | 文件列表和说明 |
 
+## 11-10 为第一次空车闭环加的（总管 14:40 的顺序）
+- 9e5d79dc：没装开关时桥照样发 `/wc_nav/estop`。3f575fd9：只读回读小工具。3631f11f：接口约定按你同意的那句改。
+- 977c69ec：给 D 的闭环干跑，真的轮控所有者配模拟驱动器。52065582：0.10 m/s 测试指令源和停车报告。
+- 其后一个提交：采集从本机硬件配置抄 `auto_controls`；轮控所有者在会话开始读一次证据列的驱动器参数；证据按减过的现场计划改（3 次、只做 0.10 m/s、拔 USB 驱动器不停时记下决定）。见设计 8.1 和第 11 节。
+
 ## 默认路径为什么不变
 1. `MappingWheel` 里新增的属性 `auto` 默认是 `None`。四处挂接（`command`、`fault`、`step`、`status`）都写成 `if self.auto is not None`，为 `None` 时一行旧代码都没跳过。
-2. `main()` 只在会话冻结配置里有 `auto_controls` 时才导入 `mapping_auto`、调用 `attach_auto`。采集和建图的配置生成器都不写这个键，`hardware_setup.json` 里也没有。所以面板会话里自动控制源根本不挂，也不导入这个模块。这次在 `main()` 的收尾里给 `auto_socket.close()` 加了 try（审查第 4 条），也在 `auto_socket is not None` 的分支里。
-3. 即使写了 `auto_controls`，也要 `allowed`、当天的 `WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>`、审过的证据文件（其中的 `hold_to_run_switch` 和配置一致）、装了开关时的开关读入、驱动器参数回读全有，才建 `auto.sock`。参数回读现在不存在，所以车上一定是 `UNAVAILABLE`。
+2. `main()` 只在会话冻结配置里有 `auto_controls` 时才导入 `mapping_auto`、调用 `attach_auto`。采集只在本机硬件配置有 `auto_controls` 时才把它抄进会话配置（11-10 加），建图的配置生成器不写；仓库和车上现在的 `hardware_setup.json` 里都没有。所以现在的面板会话里自动控制源根本不挂，也不导入这个模块。这次在 `main()` 的收尾里给 `auto_socket.close()` 加了 try（审查第 4 条），也在 `auto_socket is not None` 的分支里。
+3. 即使写了 `auto_controls`，也要 `allowed`、当天的 `WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>`、审过的证据文件（其中的 `hold_to_run_switch` 和配置一致）、装了开关时的开关读入、证据列的驱动器参数回读成功，才建 `auto.sock`。回读在前面几条都过了以后、会话开始时读一次（11-10 加，只发白名单里的 FC03）。
 4. 主循环原来是 `control_socket.pump(); owner.step()`，现在拆成两行，中间加一行 `if auto_socket is not None: auto_socket.pump()`，顺序不变。
 5. 现场证据：11-09 面板跑的就是 b46193c7（录包 ZL1108shadow_2026_1109_203823 的 `software_hashes.json` 里 mapping_wheel.py 的 sha256 是 681827af…）。会话配置里没有 `auto_controls`，事务日志里没有任何 `auto_*` 事件。那次的轮速超时是 USB 转 485 从 USB 上掉线，出在没改过的 `WheelChannel.exchange`（设计第 7.1 节）。总管审查也确认了这一条。
 6. 回归：原有的 `tests/operations/test_mapping_wheel.py`（110 个）不改一字照样通过；另有测试专门核对"不挂接时状态里没有 `auto`"和"`main()` 只在有 `auto_controls` 时挂接、关自动 socket 出错也照样写零"。
@@ -40,7 +45,7 @@
 
 ## 还没做的
 - RViz 面板的"开始自动""停止自动"和状态显示：要改 C++（`src/wc_bringup/src/mapping_teleop.cpp`）并重编面板，等你审完这部分、同意重编再做。
-- 第 1 级：驱动器参数只读回读、2003h 输入状态、故障码的低频读取，都是新的 FC03 读，放在 `step()` 里和反馈读错开，还没做。只发 FC03 的现场小工具已写：[driver_readback.py](../../src/wc_motion/driver_readback.py)（设计 7.3 第 7 步），总管审过、你当天同意再用。
+- 2003h 输入状态、故障码的低频读取：放到第一次闭环以后（总管 11-10 14:40）。驱动器参数在会话开始读一次（11-10 加）。只发 FC03 的现场小工具：[driver_readback.py](../../src/wc_motion/driver_readback.py)（设计 7.3 第 7 步），总管审过、你当天同意再用。
 - 现场：按设计第 7.3 节修 USB 转换器，架空看急停怎么停、复位后会不会自己走，拔 USB 看驱动器停不停。
 - 别人的部分：D 按 9.2 改闸门（`gate_command`、`require_base`、使能来源检查、单调钟，以及这次登记的"开始自动"使能）；B 看平滑器放行跳变和 `velocity_timeout`；C 用实测停车距离核对碰撞监控余量。
 - [接口约定](../reference/interface_contract.md)：你 11-10 同意的改法已写进去（只有轮控所有者的自动控制源能向驱动器写速度，而且只在用户当天同意、证据文件通过时；其他进程照旧不发电机或导航命令）。
