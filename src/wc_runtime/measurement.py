@@ -9,14 +9,24 @@ def vector(value, size=3):
     return result
 
 
+# Exact float64 bytes of matrices that already passed rotation(); the check
+# depends only on these values, so an identical matrix is not checked again.
+_PROPER_ROTATIONS = set()
+
+
 def rotation(value):
     if value is None:
         raise ValueError('MISSING_REQUIRED_IMU_ROTATION')
     result = np.asarray(value, dtype=float)
+    key = result.tobytes() if result.shape == (3, 3) else None
+    if key in _PROPER_ROTATIONS:
+        return result
     if result.shape != (3, 3) or not np.isfinite(result).all() or not np.allclose(
             result.T @ result, np.eye(3), atol=1e-6, rtol=0) or not np.isclose(
             np.linalg.det(result), 1., atol=1e-6, rtol=0):
         raise ValueError('IMU installation must be an explicit proper rotation')
+    if len(_PROPER_ROTATIONS) < 64:
+        _PROPER_ROTATIONS.add(key)
     return result
 
 

@@ -6,11 +6,12 @@ T_A_B maps B coordinates into A; gyro is SI native-IMU angular velocity.
 """
 import argparse
 from array import array
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left, bisect_right, insort
 from collections import deque
 import copy
 import json
 import math
+from operator import itemgetter
 from pathlib import Path
 import re
 import signal
@@ -59,6 +60,8 @@ DEFAULT_POLICY = {
     # cleanup after observed multi-second eMMC writes finish on their owner.
     'max_pending_writes': 128, 'writer_close_timeout_s': 20.0,
 }
+# Source rows are kept in stamp order, so they are bisected by this key.
+_STAMP = itemgetter('stamp')
 
 
 def _record_timing(records, name, duration):
@@ -309,6 +312,7 @@ class MotionPrior:
         self.planar = self.config['motion_model'] == 'planar_ekf'
         self.planar_anchor = None
         self.planar_cache = {}
+        self._planar_keys, self._planar_keys_of = [], self.planar_cache  # sorted planar_cache keys
         self.wheel_decoder = HistoryPreview(self.config['wheel_candidate'], continuous=self.continuous)
         self.imu, self.wheel, self.checkpoints = [], [], []
         self.failure = None
@@ -807,7 +811,12 @@ class MotionPrior:
                 from .offline_planar_process import ContinuousPlanarEKF
                 state = ContinuousPlanarEKF.from_state(state,
                     process_noise=self.config['continuous_process_noise'])
+            if hasattr(state, 'posted_updates'):
+                # Replays send their updates without waiting; the answers are
+                # read with the next state read, so each replay waits once.
+                state.posted_updates = True
             self._planar_observe(state, horizon, initial=True)
+            self._settle(state)
             self.planar_anchor = (horizon, state)
             self.initialization.update(planar_ekf=self.config['planar_ekf'],
                 estimator=self.config['estimator'],
@@ -818,10 +827,50 @@ class MotionPrior:
                 live_geometry_enabled=self.config['geometry'])
         return True
 
+    def _cache_keys(self):
+        """Sorted planar_cache keys; rebuilt if the dict was replaced or resized elsewhere."""
+        if getattr(self, '_planar_keys_of', None) is not self.planar_cache or \
+                len(self._planar_keys) != len(self.planar_cache):
+            self._planar_keys, self._planar_keys_of = sorted(self.planar_cache), self.planar_cache
+        return self._planar_keys
+
+    def _cache_planar(self, stamp, state):
+        keys = self._cache_keys()
+        if stamp not in self.planar_cache:
+            if keys and stamp < keys[-1]:
+                insort(keys, stamp)
+            else:
+                keys.append(stamp)
+        self.planar_cache[stamp] = state
+
     def _invalidate_planar_after(self, stamp):
         # Future samples can delimit a missing interval starting at the old
         # last packet. No cached state strictly after that boundary is reusable.
-        self.planar_cache = {t: value for t, value in self.planar_cache.items() if t <= stamp}
+        keys = self._cache_keys()
+        index = bisect_right(keys, stamp)
+        for t in keys[index:]:
+            del self.planar_cache[t]
+        del keys[index:]
+
+    def _retire_planar_cache(self, anchor):
+        """Keep only cached states strictly after the new anchor."""
+        keys = self._cache_keys()
+        index = bisect_right(keys, anchor)
+        for t in keys[:index]:
+            del self.planar_cache[t]
+        del keys[:index]
+
+    def _planar_pose(self, state):
+        """state.output(...)[0]; an estimator with pose() skips the Jacobian and covariances."""
+        pose, t = getattr(state, 'pose', None), self.T_reference_axle[:3, 3]
+        return pose(t) if pose is not None else state.output(t)[0]
+
+    @staticmethod
+    def _settle(state):
+        """Make a native estimator read its outstanding answers, so errors raise in this call."""
+        settle = getattr(state, 'settle', None)
+        if settle is not None:
+            settle()
 
     def _planar_observe(self, state, stamp, *, initial=False, grouped=None):
         """Each original sequence updates once; never fabricate intermediate observations."""
@@ -880,22 +929,24 @@ class MotionPrior:
         history when multiple valid IMU sequences share one original timestamp.
         """
         start, saved = self.planar_anchor
-        cached = [t for t in self.planar_cache if start < t <= stamp_ns]
-        if cached:
-            start = max(cached)
+        keys = self._cache_keys()
+        index = bisect_right(keys, stamp_ns)-1
+        if index >= 0 and keys[index] > start:
+            start = keys[index]
             saved = self.planar_cache[start]
         state = saved.copy()
-        its, wts = [r['stamp'] for r in self.imu], [r['stamp'] for r in self.wheel]
-        real_events = set(its+wts)
-        events = sorted({start, stamp_ns} | {s for s in real_events if start <= s < stamp_ns})
+        # Only rows in [start, stamp_ns) are replayed; bisection finds them
+        # without scanning the retained history.
+        events, row_stamps = {start, stamp_ns}, set()
         grouped = {'wheel': {}, 'imu': {}}
         for kind, rows in (('wheel', self.wheel), ('imu', self.imu)):
-            for row in rows:
-                if start <= row['stamp'] < stamp_ns:
-                    grouped[kind].setdefault(row['stamp'], []).append(row)
-        watermark = min(its[-1], wts[-1])
+            for row in rows[bisect_left(rows, start, key=_STAMP):bisect_left(rows, stamp_ns, key=_STAMP)]:
+                grouped[kind].setdefault(row['stamp'], []).append(row)
+                row_stamps.add(row['stamp'])
+        events = sorted(events | row_stamps)
+        watermark = min(self.imu[-1]['stamp'], self.wheel[-1]['stamp'])
         for begin, end in zip(events, events[1:]):
-            ii, wi = bisect_right(its, begin)-1, bisect_right(wts, begin)-1
+            ii, wi = bisect_right(self.imu, begin, key=_STAMP)-1, bisect_right(self.wheel, begin, key=_STAMP)-1
             observed = end <= watermark and min(ii, wi) >= 0 and self._span_observed(ii, wi, begin, end)
             if not observed:
                 if not self.continuous and not allow_uncovered:
@@ -903,9 +954,17 @@ class MotionPrior:
                 state.decorrelate_gap()
             self._planar_observe(state, begin, grouped=grouped)
             state.predict((end-begin)*1e-9, observed=observed)
-            if end in real_events and end <= watermark:
-                self.planar_cache[end] = state.copy()
+            if end <= watermark and (end in row_stamps or self._is_event(end)):
+                self._cache_planar(end, state.copy())
         return state
+
+    def _is_event(self, stamp):
+        """True when a retained IMU or wheel row has exactly this stamp."""
+        for rows in (self.imu, self.wheel):
+            index = bisect_left(rows, stamp, key=_STAMP)
+            if index < len(rows) and rows[index]['stamp'] == stamp:
+                return True
+        return False
 
     def _retire_planar_history(self):
         streams = {'imu': self.imu, 'wheel': self.wheel}
@@ -917,23 +976,33 @@ class MotionPrior:
                 cutoff = max(cutoff, rows[-capacity]['stamp'])
         # Anchor only at a real source event. Partial cloud-query predictions
         # never split process noise intervals or change future state estimates.
-        events = [row['stamp'] for rows in streams.values() for row in rows
-                  if self.planar_anchor[0] < row['stamp'] <= cutoff]
+        # Per stream, the newest row at or before the cutoff is its candidate.
+        events = [rows[index-1]['stamp'] for rows in streams.values()
+                  for index in (bisect_right(rows, cutoff, key=_STAMP),)
+                  if index and rows[index-1]['stamp'] > self.planar_anchor[0]]
         if events:
             anchor = max(events)
-            state = self._planar_state_at(anchor, allow_uncovered=True)
+            if anchor in self.planar_cache:
+                # The same state _planar_state_at would copy from the cache, which
+                # gives it up below; it becomes the anchor without a copy.
+                state = self.planar_cache[anchor]
+            else:
+                state = self._planar_state_at(anchor, allow_uncovered=True)
+                self._settle(state)
             watermark = min(self.imu[-1]['stamp'], self.wheel[-1]['stamp'])
             if anchor > max(self.planar_anchor[0], watermark):
                 self._coverage_gap('history', max(self.planar_anchor[0], watermark), anchor,
                                    'source absent while bounded planar history advances')
             self.planar_anchor = (anchor, state)
-            self.planar_cache = {t: value for t, value in self.planar_cache.items() if t > anchor}
-            pose = state.output(self.T_reference_axle[:3, 3])[0]
-            self.checkpoints = [(anchor, pose)]+[p for p in self.checkpoints if p[0] > anchor]
+            self._retire_planar_cache(anchor)
+            # Planar poses are replayed from planar_anchor. This first checkpoint
+            # only marks where retained history starts; no planar path reads its
+            # pose, so the native state is not read back to compute one.
+            self.checkpoints = [(anchor, None)]+[p for p in self.checkpoints if p[0] > anchor]
             for name, rows in streams.items():
                 # Keep all distinct IMU packets at the anchor timestamp: they
                 # have not yet updated its pre-event state.
-                index = max(0, bisect_left([r['stamp'] for r in rows], anchor)-1)
+                index = max(0, bisect_left(rows, anchor, key=_STAMP)-1)
                 self.history_discarded_samples[name] += index
                 del rows[:index]
             if self.bias_estimator is not None and self.bias_estimator.last_stamp_ns is not None:
@@ -966,7 +1035,7 @@ class MotionPrior:
         if min(self.imu[-1]['stamp'], self.wheel[-1]['stamp']) < stamp_ns:
             raise NotReady('waiting for IMU and wheel watermarks')
         if self.planar:
-            return self._planar_state_at(stamp_ns).output(self.T_reference_axle[:3, 3])[0]
+            return self._planar_pose(self._planar_state_at(stamp_ns))
         checkpoint = bisect_right([r[0] for r in self.checkpoints], stamp_ns)-1
         start, pose = self.checkpoints[checkpoint]
         pose = pose.copy()
