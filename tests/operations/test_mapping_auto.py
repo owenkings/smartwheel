@@ -1194,3 +1194,116 @@ def test_an_inferred_hardware_stop_is_reported_for_half_a_second_so_the_gate_lat
     assert status['estop_request'] is True and status['estop_reasons'] == ['WHEELS_STOPPED_WHILE_COMMANDED']
     assert until(env, lambda: not env.owner.status()['auto']['estop_request'], 1.0)
     assert 0.5 - 0.011 <= env.clock() - began <= 0.5 + 0.011
+
+
+# ---------------------------------------------------------------- operator command line (operator.sock)
+def unfocused(env, seconds):
+    """The operator works in a terminal: RViz sends foreground false heartbeats, the gate keeps deciding."""
+    for _ in range(round(seconds/0.01)):
+        keys(env, [], foreground=False)
+        if env.gate and env.tick % 5 == 0:
+            decision(env)
+        env.tick += 1
+        env.owner.step()
+        env.clock.advance(0.01)
+
+
+def test_operator_start_waits_for_the_rviz_focus_and_then_checks_every_entry_condition():
+    env = make()
+    run(env, 1.0)                                    # RViz has the focus, idle: hand-push release
+    env.linear = 0.10
+    unfocused(env, 0.5)                              # the operator clicks into a terminal and types the command
+    env.auto.operator_request(True)
+    unfocused(env, 3.0)
+    status = env.auto.status()
+    assert env.auto.state == 'NONE' and status['operator_pending'] and env.auto.refusal is None
+    assert not status['enable_request'] and env.auto.counters['entries'] == 0
+    run(env, 1.5)                                    # a click into RViz: fresh foreground heartbeats again
+    assert env.auto.state == 'AUTO', (env.auto.reason, env.auto.refusal)
+    assert not env.auto.status()['operator_pending']
+    env.auto.operator_request(False)                 # "stop automatic" from the command line
+    assert env.auto.state == 'STOPPING' and env.auto.reason == 'USER_STOPPED_AUTO' and not env.auto.immediate
+    assert until(env, lambda: env.auto.state == 'NONE')
+    requests = [r['enabled'] for r in env.records if r.get('event') == 'auto_operator_request']
+    assert requests == [True, False]
+
+
+def test_operator_start_is_refused_without_a_click_and_cancelled_by_keys_or_the_software_estop():
+    env = make()
+    run(env, 1.0)
+    unfocused(env, 0.3)
+    env.auto.operator_request(True)
+    unfocused(env, a.OPERATOR_WAIT_S + 0.1)
+    assert env.auto.state == 'NONE' and env.auto.refusal == 'AUTO_REFUSED: UI_NOT_FRESH'
+    assert not env.auto.status()['operator_pending'] and env.auto.counters['entries'] == 0
+    env.auto.operator_request(True)
+    run(env, 0.01, held=['w'])                       # the first thing back in RViz is a key: manual driving only
+    assert not env.auto.status()['operator_pending'] and env.auto.state == 'NONE'
+    run(env, 1.0)
+    unfocused(env, 0.3)
+    env.auto.operator_request(True)
+    software_estop(env, True)
+    assert not env.auto.status()['operator_pending']
+    env.auto.operator_request(True)                  # refused while the panel's emergency stop is pressed
+    assert env.auto.refusal == 'AUTO_REFUSED: SOFTWARE_ESTOP_PRESSED' and not env.auto.status()['operator_pending']
+    software_estop(env, False)
+    env.auto.operator_request(False)                 # "stop automatic" when idle changes nothing
+    assert env.auto.state == 'NONE' and env.auto.counters['entries'] == 0
+    unavailable = make(unavailable='NO_SWITCH_INPUT')
+    unavailable.auto.operator_request(True)
+    assert unavailable.auto.refusal == 'AUTO_REFUSED: NO_SWITCH_INPUT'
+    assert not unavailable.auto.status()['operator_pending']
+
+
+def operator_client(path, message):
+    client = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+    client.connect(str(path))
+    client.sendall(message if isinstance(message, bytes) else p.encode_line(message))
+    return client
+
+
+def operator_answer(sock, client):
+    sock.pump()
+    client.settimeout(1.0)
+    data = b''
+    while not data.endswith(b'\n'):
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    client.close()
+    return json.loads(data) if data else None
+
+
+def test_operator_socket_answers_one_line_per_request_and_rejects_anything_else(short_tmp):
+    import stat
+    env = make()
+    run(env, 1.0)
+    sock = a.AutoSocket(short_tmp/'auto.sock', env.auto)
+    path = short_tmp/'operator.sock'
+    assert path.is_socket() and stat.S_IMODE(path.stat().st_mode) == 0o600
+    sid = env.owner.session_id
+    value = operator_answer(sock, operator_client(path, {'type': 'status', 'session_id': sid}))
+    assert value['type'] == 'operator_status' and value['session_id'] == sid
+    assert value['status']['auto_state'] == 'NONE' and value['status']['operator_pending'] is False
+    value = operator_answer(sock, operator_client(path, {'type': 'auto_request', 'session_id': sid, 'enabled': True}))
+    assert value['status']['operator_pending'] is True
+    value = operator_answer(sock, operator_client(path, {'type': 'auto_request', 'session_id': sid, 'enabled': False}))
+    assert value['status']['operator_pending'] is False
+    for bad in ({'type': 'auto_request', 'session_id': 'other_session', 'enabled': True},
+                {'type': 'auto_request', 'session_id': sid, 'enabled': 'yes'},
+                {'type': 'auto', 'session_id': sid, 'enabled': True},
+                {'type': 'status', 'session_id': sid, 'extra': 1},
+                b'{"type": "status", "session_id": NaN}\n', b'not json\n'):
+        assert operator_answer(sock, operator_client(path, bad)) is None    # closed without an answer
+    assert not env.auto.status()['operator_pending'] and env.auto.counters['entries'] == 0
+    silent = operator_client(path, b'{"type": "sta')
+    sock.pump()
+    env.clock.advance(a.OPERATOR_LINE_S + 0.1)
+    sock.pump()
+    silent.settimeout(1.0)
+    assert silent.recv(16) == b''                                       # no complete line within 1 s: closed
+    silent.close()
+    assert len([r for r in env.records if r.get('event') == 'auto_operator_rejected']) == 7
+    sock.close()
+    assert not path.exists() and not (short_tmp/'auto.sock').exists()

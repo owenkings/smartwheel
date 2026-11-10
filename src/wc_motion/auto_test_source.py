@@ -11,7 +11,11 @@ deceleration. --stop external: it keeps 0.10 m/s until something else stops the 
 USB adapter pulled, kill -9 of this process: the owner then brakes because its bridge is gone), and after --max-s
 seconds at the latest it sends zero itself. It ends when the wheels have stood still for 1 s after the stop (10 s
 after the stop at the latest), or when the owner closes the socket, and prints the stop time and distance from the
-session's wheel journal (wc_motion.auto_stop_report; run that again after kill -9).
+session's wheel journal (wc_motion.auto_stop_report).
+
+--stop kill is the kill -9 stop without anyone at a terminal, where a click out of RViz would already stop
+automatic control: a child test source in external mode is killed with SIGKILL --forward-s seconds after
+automatic control started, and this process prints the stop report.
 
 Refuses unless the owner's evidence stage is STAND_TEST or GROUND_TEST (the closed loop uses the real gate), or the
 owner is the dry run (--dry-run). Needs WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<today>, like the bridge, except
@@ -22,6 +26,10 @@ import datetime
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
+import threading
 import time
 import uuid
 
@@ -114,8 +122,9 @@ class TestSource:
 def main(argv=None, *, environ=None, today=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--project-root', type=Path, required=True)
-    parser.add_argument('--stop', choices=('software_zero', 'external'), required=True)
-    parser.add_argument('--forward-s', type=float, default=3.0, help='software_zero: seconds at 0.10 m/s (0.5-10)')
+    parser.add_argument('--stop', choices=('software_zero', 'external', 'kill'), required=True)
+    parser.add_argument('--forward-s', type=float, default=3.0,
+                        help='software_zero and kill: seconds at 0.10 m/s before the stop (0.5-10)')
     parser.add_argument('--max-s', type=float, default=8.0, help='external: zero after this many seconds (1-20)')
     parser.add_argument('--session-root', type=Path, help='default: the one running recording with an auto.sock')
     parser.add_argument('--session-id')
@@ -138,6 +147,8 @@ def main(argv=None, *, environ=None, today=None):
         session_root, session_id = sessions[0]
     else:
         session_root, session_id = args.session_root.absolute(), args.session_id
+    if args.stop == 'kill':
+        return kill_trial(root, session_root, session_id, args.forward_s, args.dry_run, environ)
     core = BridgeCore(session_id, 'test_source_' + uuid.uuid4().hex[:12], require_dry_run=args.dry_run)
     source = TestSource(core, stop=args.stop, forward_s=args.forward_s, max_s=args.max_s, dry_run=args.dry_run)
     print('test source pid %d, session %s, stop %s; start automatic control now (auto_operator start, then click '
@@ -154,11 +165,49 @@ def main(argv=None, *, environ=None, today=None):
         core.close()
     time.sleep(0.5)   # the owner's journal is written in batches of up to 50 ms
     from .auto_stop_report import lines, report
+    print_report(session_root, started)
+    return 1 if failure and source.phase not in ('OWNER_STOPPED', 'ZERO') else 0
+
+
+def print_report(session_root, started):
+    from .auto_stop_report import lines, report
     try:
         print('\n'.join(lines(report(session_root, since_mono_s=started))), flush=True)
     except (OSError, ValueError, KeyError) as error:
         print('no stop report: %s' % error, flush=True)
-    return 1 if failure and source.phase not in ('OWNER_STOPPED', 'ZERO') else 0
+
+
+def kill_trial(root, session_root, session_id, forward_s, dry_run, environ):
+    """--stop kill: a child test source in external mode, killed with SIGKILL forward_s after AUTO started."""
+    command = [sys.executable, '-u', '-m', 'wc_motion.auto_test_source', '--project-root', str(root),
+               '--stop', 'external', '--max-s', '%.1f' % min(20.0, forward_s + 5.0),
+               '--session-root', str(session_root), '--session-id', session_id] + (['--dry-run'] if dry_run else [])
+    started = time.monotonic()
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=dict(environ))
+    print('test source pid %d is killed with SIGKILL %.1f s after automatic control starts' % (child.pid, forward_s),
+          flush=True)
+
+    def kill():
+        if child.poll() is None:
+            os.kill(child.pid, signal.SIGKILL)
+            print('%s KILLED: kill -9 %d' % (datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3], child.pid),
+                  flush=True)
+    timer = None
+    try:
+        for text in child.stdout:
+            print(text, end='', flush=True)
+            if timer is None and ' FORWARD: ' in text:
+                timer = threading.Timer(forward_s, kill)
+                timer.start()
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if child.poll() is None:
+            child.kill()   # this process was interrupted: the child never outlives it
+        child.wait()
+    time.sleep(1.5)   # the owner brakes once its bridge is gone; its journal is written in batches
+    print_report(session_root, started)
+    return 0 if child.returncode == -signal.SIGKILL else 1
 
 
 if __name__ == '__main__':

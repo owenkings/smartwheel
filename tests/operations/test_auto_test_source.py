@@ -103,6 +103,23 @@ def test_killed_source_and_pulled_usb_adapter():
         assert trials[0]['stop'].startswith('UNKNOWN') and trials[0]['measured_m_s'] > 0.09
 
 
+def test_kill_mode_kills_a_child_source_while_it_drives_and_reports_the_stop(capsys):
+    """The kill -9 stop as the field runs it: nobody at a terminal, RViz keeps the focus."""
+    with tempfile.TemporaryDirectory(prefix='wc-src-', dir='/tmp') as tmp:
+        owner = Owner(tmp)
+        try:
+            code = t.main(['--project-root', str(ROOT), '--stop', 'kill', '--forward-s', '1.5', '--dry-run',
+                           '--session-root', str(owner.run.session_root), '--session-id', 'dryrun_source'])
+        finally:
+            owner.close()
+        out = capsys.readouterr().out
+        assert code == 0 and 'FORWARD: automatic control started' in out and 'KILLED: kill -9' in out, out
+        row = r.report(owner.run.session_root)['trials'][-1]
+        assert row['kind'] == 'source_lost' and row['owner_exit_reason'] == 'BRIDGE_DISCONNECTED'
+        assert 0 < row['stop_time_s'] < 1.0 and 0 < row['stop_distance_m'] < 0.05 and 'source_lost' in out
+        assert not owner.errors
+
+
 def test_cli_needs_todays_approval_and_one_running_session(tmp_path):
     with pytest.raises(SystemExit, match='APPROVED_BY_USER_20261111'):
         t.main(['--project-root', str(ROOT), '--stop', 'software_zero'], environ={},

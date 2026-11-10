@@ -35,6 +35,11 @@ that does not increase ends automatic control. Its decision must report ``allow_
 above the approved ones; the linear velocity must stay under its current ``linear_ceiling``. A decision is fresh for
 0.3 s counted from the gate's own ``mono_ns`` (end to end), not only from its arrival here.
 
+Until the RViz panel has its "start automatic" and "stop automatic" buttons, the operator gives them with
+``wc_runtime.auto_operator`` over ``operator.sock`` next to ``auto.sock`` (``OperatorSocket``, same user only). A start
+from there waits up to ``OPERATOR_WAIT_S`` for the RViz window to have the focus again and then goes through the same
+entry conditions as the panel's packet; the base bridge and navigation never use that socket.
+
 ``switches`` and ``readback`` are called from write guards and packet handlers: they must return cached values and
 must never perform an RTU exchange themselves (level 1 reads them in ``step`` between feedback reads).
 """
@@ -57,6 +62,7 @@ from .mapping_wheel import (CONTROL_PERIOD_S, FEEDBACK_FRESH_S, INITIALIZATION_W
 
 APPROVAL_ENV = 'WC_AUTO_DRIVE_APPROVAL'
 AUTO_SOCKET_NAME = 'auto.sock'
+OPERATOR_SOCKET_NAME = 'operator.sock'
 HOLD_TO_RUN_MODES = ('INSTALLED', 'NOT_INSTALLED')
 ENABLE_SOURCES = {'INSTALLED': 'HOLD_TO_RUN_SWITCH', 'NOT_INSTALLED': 'OPERATOR_START'}
 LINEAR_TOLERANCE_M_S, ANGULAR_TOLERANCE_RAD_S = 0.005, 0.01   # beyond the limit by more: the chain is broken
@@ -70,6 +76,8 @@ MOVING_AT_ZERO_S = 1.0
 COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driver, inferred from the feedback
 OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
 START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
+OPERATOR_WAIT_S = 10.0            # a command-line start waits this long for the RViz window to have the focus
+OPERATOR_CLIENTS, OPERATOR_LINE_S = 4, 1.0   # operator.sock: clients at a time, seconds to send the request line
 INFERRED_ESTOP_HOLD_S = 0.5       # an inferred hardware emergency stop is reported this long, so the gate latches
 ACTIVE_STATES = ('INITIALIZING', 'AUTO', 'STOPPING')
 # Exit reasons that write zero at once instead of decelerating at the software limit.
@@ -104,6 +112,11 @@ def recording_sessions(project_root):
         except (OSError, ValueError, TypeError, AttributeError):
             continue
     return [(Path(directory), session_id, status) for _, directory, session_id, status in sorted(found, reverse=True)]
+
+
+def operator_socket_path(project_root, directory, session_id):
+    """The operator's command-line socket of a session, next to manual.sock and auto.sock."""
+    return auto_socket_path(project_root, directory, session_id).with_name(OPERATOR_SOCKET_NAME)
 
 
 def running_auto_sessions(project_root):
@@ -183,6 +196,7 @@ class AutoDrive:
         self.refusal = None              # last refused start; kept apart from the stop reason
         self.immediate_reason = None     # what made the current stop immediate
         self.start_pending_until = None
+        self.operator_pending_until = None   # a command-line start waiting for the RViz window's focus
         self.software_estop = False           # the panel's emergency stop button, pressed
         self.inferred_estop_until = None      # report a stop inferred from the wheel feedback until then
         self.decision = self.decision_time = None
@@ -255,8 +269,7 @@ class AutoDrive:
         if kind == 'estop':
             self._estop_packet(value)
             return True
-        if self.start_pending_until is not None and (kind in ('disarm', 'close', 'push_mode') or
-                                                     (kind == 'keys' and value.get('keys'))):
+        if self._pending() and (kind in ('disarm', 'close', 'push_mode') or (kind == 'keys' and value.get('keys'))):
             self._cancel_pending('START_CANCELLED_BY_OPERATOR')
         active = self.state in ACTIVE_STATES
         if kind == 'keys' and (active or self.takeover_latch):
@@ -300,7 +313,7 @@ class AutoDrive:
         self.software_estop = pressed
         if not pressed:
             return
-        if self.start_pending_until is not None:
+        if self._pending():
             self._cancel_pending('SOFTWARE_ESTOP')
         if self.state in ACTIVE_STATES:
             self._begin_stop('SOFTWARE_ESTOP', immediate=True)
@@ -317,27 +330,64 @@ class AutoDrive:
         if value['foreground']:
             owner.foreground, owner.last_ui_heartbeat = True, owner.clock()
         if not value['enabled']:
-            if self.start_pending_until is not None:
-                self._cancel_pending('START_CANCELLED_BY_OPERATOR')
-            if self.state in ACTIVE_STATES:
-                self._begin_stop('USER_STOPPED_AUTO', immediate=False)
+            self._operator_stop()
             return
         if self.state == 'UNAVAILABLE':
             self._refuse(self.unavailable)
         elif value['arm_generation'] != owner.arm_generation:
             self._refuse('STALE_UI_GENERATION')
         else:
+            self.operator_pending_until = None
             self._request_start(owner.clock())
+
+    def _operator_stop(self):
+        """"Stop automatic": cancel a waiting start, decelerate an active run to zero."""
+        if self._pending():
+            self._cancel_pending('START_CANCELLED_BY_OPERATOR')
+        if self.state in ACTIVE_STATES:
+            self._begin_stop('USER_STOPPED_AUTO', immediate=False)
+
+    def operator_request(self, enabled):
+        """"Start / stop automatic" from the command line (``wc_runtime.auto_operator`` over ``operator.sock``).
+
+        The operator types the command outside RViz, so the RViz window has lost the focus: a start waits up to
+        OPERATOR_WAIT_S for the operator to click into it, then is checked like the panel's request."""
+        self._log({'event': 'auto_operator_request', 'enabled': enabled}, required=False)
+        if not enabled:
+            self._operator_stop()
+        elif self.state == 'UNAVAILABLE':
+            self._refuse(self.unavailable)
+        elif self.state != 'NONE':
+            self._refuse('AUTO_NOT_IDLE_' + self.state)
+        elif self.software_estop:
+            self._refuse('SOFTWARE_ESTOP_PRESSED')
+        else:
+            self.refusal = None
+            self.operator_pending_until = self.owner.clock() + OPERATOR_WAIT_S
+            self._log({'event': 'auto_start_pending', 'reason': 'WAITING_FOR_RVIZ_FOCUS'}, required=False)
+
+    def _operator_pending(self, now):
+        if self.owner._ui_fresh():
+            self.operator_pending_until = None
+            self._request_start(now)
+        elif now > self.operator_pending_until:
+            self.operator_pending_until = None
+            self._refuse('UI_NOT_FRESH')   # nobody clicked into the RViz window in time
+
+    def _pending(self):
+        return self.start_pending_until is not None or self.operator_pending_until is not None
 
     # ---------------------------------------------------------------- owner hooks
     def on_fault(self, reason):
-        self.start_pending_until = None
+        self.start_pending_until = self.operator_pending_until = None
         if self.state != 'UNAVAILABLE':
             self.state, self.reason = 'FAULT', 'OWNER_FAULT: ' + str(reason)
 
     def step(self, now):
         """Called by MappingWheel.step after the feedback read; True while automatic control owns the tick."""
         self._observe()
+        if self.operator_pending_until is not None and self.state == 'NONE':
+            self._operator_pending(now)
         if self.start_pending_until is not None and self.state == 'NONE':
             self._pending_start(now)
         if self.state not in ACTIVE_STATES:
@@ -413,7 +463,7 @@ class AutoDrive:
             self._refuse(blockers[0])
 
     def _cancel_pending(self, reason):
-        self.start_pending_until = None
+        self.start_pending_until = self.operator_pending_until = None
         self._log({'event': 'auto_start_cancelled', 'reason': reason}, required=False)
 
     def _try_start(self, now, blockers=None):
@@ -628,7 +678,7 @@ class AutoDrive:
         return speed_write(*words), words
 
     def _begin_stop(self, reason, *, immediate):
-        self.start_pending_until = None
+        self.start_pending_until = self.operator_pending_until = None
         if reason == 'WHEELS_STOPPED_WHILE_COMMANDED':
             self.inferred_estop_until = self.owner.clock() + INFERRED_ESTOP_HOLD_S
         if self.state == 'STOPPING':
@@ -784,6 +834,7 @@ class AutoDrive:
                 'feedback': feedback, 'stationary_samples': self.stationary,
                 'hold_to_run_switch': self.hold_to_run_switch, 'enable_source': self.enable_source,
                 'enable_request': self.enable_request(now), 'start_pending': self.start_pending_until is not None,
+                'operator_pending': self.operator_pending_until is not None,
                 'estop_request': bool(self.estop_reasons(now)), 'estop_reasons': self.estop_reasons(now),
                 'switch_input': self.switches is not None,
                 'dead_man': None if switches is None else switches['dead_man'],
@@ -818,6 +869,11 @@ class AutoSocket:
         except BaseException:
             self.listener.close()
             raise
+        try:
+            self.operator = OperatorSocket(self.path.with_name(OPERATOR_SOCKET_NAME), auto)
+        except BaseException:
+            self.close()
+            raise
 
     def drop(self, reason, *, closing=False):
         if self.client is not None:
@@ -837,6 +893,7 @@ class AutoSocket:
         self.last_status = self.clock()
 
     def pump(self):
+        self.operator.pump()
         try:
             if select.select([self.listener], [], [], 0)[0]:
                 client, _ = self.listener.accept()
@@ -892,13 +949,110 @@ class AutoSocket:
 
     def close(self):
         self.drop('SESSION_EXIT', closing=True)
+        operator = getattr(self, 'operator', None)
+        if operator is not None:
+            operator.close()
         self.listener.close()
+        _unlink_own_socket(self.path, self.identity)
+
+
+def _unlink_own_socket(path, identity):
+    try:
+        value = path.lstat()
+        if stat.S_ISSOCK(value.st_mode) and (value.st_dev, value.st_ino) == identity:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+class OperatorSocket:
+    """The operator's command line (``wc_runtime.auto_operator``): same-UID clients, one request line each.
+
+    ``{"type": "auto_request", "session_id": ..., "enabled": true|false}`` is "start / stop automatic";
+    ``{"type": "status", "session_id": ...}`` only asks. The answer is one line, ``{"type": "operator_status",
+    "status": <the automatic control status>}``, then the connection closes. At most OPERATOR_CLIENTS at a time;
+    one that has not sent its line within OPERATOR_LINE_S is closed. Nothing here can make the wheels move by
+    itself: a start still needs the RViz window's focus and every entry condition."""
+
+    def __init__(self, path, auto):
+        self.path, self.auto, self.clock = Path(path), auto, auto.owner.clock
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.clients, self.identity = {}, None
         try:
-            value = self.path.lstat()
-            if stat.S_ISSOCK(value.st_mode) and (value.st_dev, value.st_ino) == self.identity:
-                self.path.unlink()
-        except FileNotFoundError:
-            pass
+            self.listener.bind(str(self.path))   # never removes or reuses an existing socket
+            os.chmod(self.path, 0o600)
+            info = self.path.stat()
+            self.identity = (info.st_dev, info.st_ino)
+            self.listener.listen(OPERATOR_CLIENTS)
+            self.listener.setblocking(False)
+        except BaseException:
+            self.listener.close()
+            raise
+
+    def _reject(self, client, reason):
+        self.clients.pop(client, None)
+        client.close()
+        self.auto._log({'event': 'auto_operator_rejected', 'reason': reason}, required=False)
+
+    def _answer(self, line):
+        value = decode_line(bytes(line))
+        if value.get('session_id') != self.auto.owner.session_id:
+            raise ProtocolError('operator request for another session')
+        if value.get('type') == 'auto_request' and set(value) == {'type', 'session_id', 'enabled'} and \
+                type(value['enabled']) is bool:
+            self.auto.operator_request(value['enabled'])
+        elif value.get('type') != 'status' or set(value) != {'type', 'session_id'}:
+            raise ProtocolError('operator request must be auto_request with enabled, or status')
+        return encode_line({'type': 'operator_status', 'session_id': self.auto.owner.session_id,
+                            'status': self.auto.status()})
+
+    def pump(self):
+        try:
+            while select.select([self.listener], [], [], 0)[0]:
+                client, _ = self.listener.accept()
+                if hasattr(socket, 'SO_PEERCRED'):
+                    _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    if uid != os.getuid():
+                        client.close()
+                        continue
+                if len(self.clients) >= OPERATOR_CLIENTS:
+                    client.close()
+                    continue
+                client.setblocking(False)
+                self.clients[client] = (self.clock(), bytearray())
+        except OSError:
+            pass   # a client that went away while being accepted
+        for client, (accepted, received) in list(self.clients.items()):
+            try:
+                if select.select([client], [], [], 0)[0]:
+                    data = client.recv(MAX_LINE_BYTES + 1)
+                    if not data:
+                        self._reject(client, 'closed before a request')
+                        continue
+                    received.extend(data)
+                if b'\n' in received:
+                    line = received.partition(b'\n')[0]
+                    if not line or len(line) > MAX_LINE_BYTES:
+                        raise ProtocolError('operator request line bound')
+                    answer = self._answer(line)
+                    self.clients.pop(client, None)
+                    try:
+                        client.send(answer)   # a few kB into an empty local socket buffer
+                    finally:
+                        client.close()
+                elif len(received) > MAX_LINE_BYTES:
+                    raise ProtocolError('unterminated operator request exceeds bound')
+                elif self.clock() - accepted > OPERATOR_LINE_S:
+                    self._reject(client, 'no request line within %.1f s' % OPERATOR_LINE_S)
+            except (ProtocolError, ValueError, TypeError, UnicodeError, OSError) as error:
+                self._reject(client, str(error))
+
+    def close(self):
+        for client in list(self.clients):
+            client.close()
+        self.clients.clear()
+        self.listener.close()
+        _unlink_own_socket(self.path, self.identity)
 
 
 READBACK_TIMEOUT_S = 0.1   # one FC03 exchange
