@@ -1,10 +1,11 @@
-"""Base bridge without ROS: socket forwarding, faults, enable/estop outputs, base status and the end-to-end path."""
+"""Base bridge without ROS: socket forwarding, faults, enable/estop outputs, base status, main() wiring, end to end."""
 import datetime
 import json
 from pathlib import Path
 import socket
 import sys
 import tempfile
+from types import ModuleType, SimpleNamespace as NS
 
 import pytest
 
@@ -59,10 +60,15 @@ def connected(short_tmp, clock):
 
 def owner_status(**change):
     value = {'type': 'status', 'schema': p.STATUS_SCHEMA, 'session_id': 'session_a', 'source': 'AUTO',
-             'auto_state': 'AUTO', 'dead_man': True, 'estop': False,
+             'auto_state': 'AUTO', 'dead_man': True, 'estop': False, 'enable_source': 'HOLD_TO_RUN_SWITCH',
+             'enable_request': True,
              'feedback': {'sequence': 41, 'stamp_mono_ns': 4_990_000_000, 'age_s': 0.01, 'linear_m_s': 0.05}}
     value.update(change)
     return value
+
+
+def operator_status(**change):
+    return owner_status(dead_man=None, estop=None, enable_source='OPERATOR_START', **change)
 
 
 def deliver(core, conn, status):
@@ -143,6 +149,26 @@ def test_enable_heartbeat_release_and_estop_outputs(short_tmp):
     core.close(); conn.close(); server.close()
 
 
+def test_without_the_switch_the_enable_follows_the_operator_start(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    deliver(core, conn, operator_status(enable_request=False, auto_state='NONE', source='NONE'))
+    assert core.switch_outputs(False) == [('enable', False)]   # known: not enabled; no estop topic at all
+    assert core.switch_outputs(True) == []
+    deliver(core, conn, operator_status(enable_request=True, auto_state='INITIALIZING'))
+    assert core.switch_outputs(False) == [('enable', True)]    # the new start: false -> true, the gate's unlatch edge
+    assert core.switch_outputs(True) == [('enable', True)]
+    deliver(core, conn, operator_status(enable_request=False, auto_state='STOPPING'))
+    assert core.switch_outputs(False) == [('enable', False)]   # stop auto, Space, WASD: one false at once
+    assert core.switch_outputs(True) == []
+    relay = core.base_status()
+    assert relay['enable_source'] == 'OPERATOR_START' and relay['enable_request'] is False
+    assert relay['dead_man'] is None and relay['estop'] is None
+    clock.advance(0.31)
+    assert core.switch_outputs(True) == [] and core.base_status()['enable_source'] is None
+    core.close(); conn.close(); server.close()
+
+
 def test_missing_switch_input_publishes_nothing(short_tmp):
     clock = ClockNs()
     server, core, conn = connected(short_tmp, clock)
@@ -188,8 +214,108 @@ def test_environment_must_be_the_navigation_domain_with_todays_approval():
             b.check_environment(bad, today)
 
 
+def fake_ros(monkeypatch, hooks):
+    """Minimal rclpy / std_msgs stand-ins: timers fire on a fake 10 ms spin, ``hooks`` run at given spin counts."""
+    class Msg:
+        def __init__(self, data=None): self.data = data
+
+    class Publisher:
+        def __init__(self, topic, qos): self.topic, self.qos, self.sent = topic, qos, []
+        def publish(self, message): self.sent.append(message.data)
+
+    class Node:
+        def __init__(self, name):
+            self.name, self.publishers, self.subscriptions, self.timers, self.destroyed = name, {}, {}, [], False
+        def create_publisher(self, kind, topic, qos):
+            self.publishers[topic] = Publisher(topic, qos)
+            return self.publishers[topic]
+        def create_subscription(self, kind, topic, callback, qos):
+            self.subscriptions[topic] = (callback, qos)
+        def create_timer(self, period, callback):
+            self.timers.append([period, callback, 0.0])
+        def destroy_node(self):
+            self.destroyed = True
+
+    state = NS(ok=True, time=0.0, spins=0, node=None, inbox=[])
+
+    def create_node(name):
+        state.node = Node(name)
+        return state.node
+
+    def spin_once(node, timeout_sec=None):
+        state.spins += 1
+        state.time += 0.01
+        if state.spins in hooks:
+            hooks[state.spins](state)
+        for timer in node.timers:
+            if state.time - timer[2] >= timer[0] - 1e-9:
+                timer[2] = state.time
+                timer[1]()
+        while state.inbox:
+            topic, data = state.inbox.pop(0)
+            node.subscriptions[topic][0](Msg(data))
+        if state.spins > 1000:
+            state.ok = False
+
+    rclpy = ModuleType('rclpy')
+    rclpy.init = lambda args=None: None
+    rclpy.ok = lambda: state.ok
+    rclpy.shutdown = lambda: setattr(state, 'ok', False)
+    rclpy.create_node = create_node
+    rclpy.spin_once = spin_once
+    qos = ModuleType('rclpy.qos')
+    qos.QoSProfile = lambda **kwargs: NS(**kwargs)
+    qos.ReliabilityPolicy = NS(RELIABLE='RELIABLE')
+    qos.DurabilityPolicy = NS(VOLATILE='VOLATILE', TRANSIENT_LOCAL='TRANSIENT_LOCAL')
+    msg = ModuleType('std_msgs.msg')
+    msg.Bool = msg.String = Msg
+    std_msgs = ModuleType('std_msgs')
+    std_msgs.msg = msg
+    for name, module in (('rclpy', rclpy), ('rclpy.qos', qos), ('std_msgs', std_msgs), ('std_msgs.msg', msg)):
+        monkeypatch.setitem(sys.modules, name, module)
+    return state
+
+
+def test_bridge_main_wires_qos_timers_switches_and_stops_on_a_malformed_gate_command(short_tmp, monkeypatch, capsys):
+    from wc_runtime import mapping_auto as a
+    path = short_tmp/'auto.sock'
+    server = served(path)
+    today = datetime.date.today().strftime('%Y%m%d')
+    for name, value in (('ROS_DOMAIN_ID', '100'), ('ROS_LOCALHOST_ONLY', '1'),
+                        ('WC_AUTO_DRIVE_APPROVAL', 'APPROVED_BY_USER_' + today)):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv('ROS_DISCOVERY_SERVER', raising=False)
+    monkeypatch.setattr(a, 'auto_socket_path', lambda project, root, session: path)
+    owner_side = {}
+
+    def accept(state):
+        conn, _ = server.accept()
+        owner_side['conn'] = conn
+        conn.sendall(p.encode_line(operator_status(session_id='session_main', enable_request=True)))
+
+    def malformed(state):
+        state.inbox.append(('/wc_nav/gate_command', '{"schema": "wc_gate_command_v1"}'))
+    state = fake_ros(monkeypatch, {3: accept, 40: malformed})
+    result = b.main(['--project-root', str(short_tmp), '--session-root', str(short_tmp), '--session-id', 'session_main',
+                     '--bridge-id', 'bridge_main'])
+    node = state.node
+    assert result == 1 and node.destroyed and state.spins < 100
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['failure'].startswith('gate command rejected')
+    assert sorted(period for period, _, _ in node.timers) == [0.02, b.SWITCH_PERIOD_S]
+    callback, subscribed = node.subscriptions['/wc_nav/gate_command']
+    assert (subscribed.depth, subscribed.reliability, subscribed.durability) == (1, 'RELIABLE', 'VOLATILE')
+    estop = node.publishers['/wc_nav/estop'].qos
+    assert (estop.depth, estop.reliability, estop.durability) == (1, 'RELIABLE', 'TRANSIENT_LOCAL')
+    assert node.publishers['/wc_nav/enable'].sent[:1] == [True] and node.publishers['/wc_nav/estop'].sent == []
+    statuses = [json.loads(text) for text in node.publishers['/wc_nav/base_status'].sent]
+    assert statuses and statuses[-1]['enable_source'] == 'OPERATOR_START' and statuses[-1]['bridge_id'] == 'bridge_main'
+    hello = read_lines(owner_side['conn'], 1)[0]
+    assert p.check_hello(hello, 'session_main') == 'bridge_main'
+    owner_side['conn'].close(); server.close()
+
+
 def test_bridge_into_the_owner_socket_end_to_end(short_tmp):
-    """BridgeCore -> AutoSocket -> AutoDrive with the fake serial channel of the owner tests."""
+    """BridgeCore -> AutoSocket -> AutoDrive with the fake serial channel of the owner tests, on one clock."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'operations'))
     import test_mapping_auto as owner_tests
     from wc_runtime import mapping_auto as a
@@ -197,16 +323,17 @@ def test_bridge_into_the_owner_socket_end_to_end(short_tmp):
     env = owner_tests.make()
     env.auto.on_bridge_lost('RESET')
     sock = a.AutoSocket(short_tmp/'auto.sock', env.auto)
-    clock = ClockNs()
-    core = b.BridgeCore(env.owner.session_id, 'bridge_e2e', clock_ns=clock)
+    core = b.BridgeCore(env.owner.session_id, 'bridge_e2e', clock_ns=env.clock.ns)
     core.connect(short_tmp/'auto.sock')
     for _ in range(5):
         sock.pump()
     assert env.auto.bridge_connected and env.auto.bridge_id == 'bridge_e2e'
+    clock = env.clock.ns
     assert core.on_gate_command(gate_text(clock, linear=0.04))
     for _ in range(5):
         sock.pump()
     assert env.auto.decision['linear'] == 0.04 and env.auto.decision['gate_id'] == 'gate_1'
+    assert env.auto._decision_age(env.clock()) == 0.0            # same clock end to end
     env.clock.advance(0.2)
     for _ in range(5):
         sock.pump(); core.pump()
@@ -215,6 +342,8 @@ def test_bridge_into_the_owner_socket_end_to_end(short_tmp):
     assert core.enable() is True                              # fake switches: hold-to-run held, no estop
     relay = core.base_status()
     assert relay['base_auto'] is False and relay['reason'] == 'BASE_NOT_AUTO'   # owner is not in AUTO
+    env.clock.advance(0.2)
+    assert env.auto._decision_age(env.clock()) > p.DECISION_STALE_S   # 0.4 s after the gate made it
     core.close()
     for _ in range(5):
         sock.pump()

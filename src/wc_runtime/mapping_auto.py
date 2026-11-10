@@ -6,12 +6,19 @@ UNAVAILABLE, and no ``auto.sock`` is created, unless all of these hold:
 
 - ``auto_controls.allowed`` is true and today's user approval ``WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>``
   is set;
-- the reviewed evidence file validates for this controller (``wc_motion.auto_evidence``);
-- a reader of the hold-to-run switch and the emergency stop exists;
+- the reviewed evidence file validates for this controller (``wc_motion.auto_evidence``) and records the same
+  ``hold_to_run_switch`` decision as ``auto_controls``;
+- with ``hold_to_run_switch: INSTALLED``, a reader of the hold-to-run switch and the emergency stop exists;
 - the driver parameters listed in the evidence can be read back.
 
-In this revision (level 0) the vehicle has neither the switch reader nor the driver readback, so automatic control
-only runs against the fake serial channel of the tests.
+In this revision (level 0) the vehicle has no driver readback, so automatic control only runs against the fake serial
+channel of the tests.
+
+``hold_to_run_switch: NOT_INSTALLED`` (the user's decision of 2026-11-09 23:50): there is no switch and no switch
+reader; the status reports ``dead_man`` and ``estop`` as null and the gate's enable follows the operator's
+"start automatic" (``enable_source: OPERATOR_START``, ``enable_request``). The vehicle's emergency stop acts on the
+driver only; it is inferred here from the wheel feedback (a wheel commanded faster than 0.05 m/s while both wheels
+report zero for 0.3 s), which writes zero at once so that releasing the emergency stop cannot resume an old command.
 
 While automatic control is active (or stopping) the manual state machine of ``MappingWheel`` is frozen: manual
 packets are intercepted here, where any key, Space or hand-push request ends automatic control, and
@@ -20,7 +27,11 @@ zero and a confirmed standstill. Nothing here releases the servo for hand pushin
 
 The gate is one source for the whole automatic run: a different ``gate_id`` (the gate restarted) or a gate ``seq``
 that does not increase ends automatic control. Its decision must report ``allow_reverse`` false and limits not
-above the approved ones; the linear velocity must stay under its current ``linear_ceiling``.
+above the approved ones; the linear velocity must stay under its current ``linear_ceiling``. A decision is fresh for
+0.3 s counted from the gate's own ``mono_ns`` (end to end), not only from its arrival here.
+
+``switches`` and ``readback`` are called from write guards and packet handlers: they must return cached values and
+must never perform an RTU exchange themselves (level 1 reads them in ``step`` between feedback reads).
 """
 import datetime
 import math
@@ -40,17 +51,24 @@ from .mapping_wheel import (CONTROL_PERIOD_S, FEEDBACK_FRESH_S, INITIALIZATION_W
 
 APPROVAL_ENV = 'WC_AUTO_DRIVE_APPROVAL'
 AUTO_SOCKET_NAME = 'auto.sock'
+HOLD_TO_RUN_MODES = ('INSTALLED', 'NOT_INSTALLED')
+ENABLE_SOURCES = {'INSTALLED': 'HOLD_TO_RUN_SWITCH', 'NOT_INSTALLED': 'OPERATOR_START'}
 LINEAR_TOLERANCE_M_S, ANGULAR_TOLERANCE_RAD_S = 0.005, 0.01   # beyond the limit by more: the chain is broken
 ENTRY_STATIONARY_SAMPLES = 5      # 0.5 s of zero wheel feedback before automatic control starts
 EXIT_STATIONARY_SAMPLES = 3       # same rule as the manual stop
 STOP_CONFIRM_S = 1.0              # zero written and still not standing still after this: FAULT
 SWITCH_FRESH_S = 0.2
+FUTURE_TOLERANCE_S = 0.05         # a gate or bridge stamp further ahead of this clock is not the same clock
 BACKWARD_M_S, BACKWARD_S = -0.02, 0.2
 MOVING_AT_ZERO_S = 1.0
+COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driver, inferred from the feedback
+OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
+START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
 ACTIVE_STATES = ('INITIALIZING', 'AUTO', 'STOPPING')
 # Exit reasons that write zero at once instead of decelerating at the software limit.
 IMMEDIATE = frozenset({'NO_SWITCH_INPUT', 'SWITCH_INPUT_STALE', 'ESTOP', 'DEAD_MAN_RELEASED', 'UI_NOT_FRESH',
-                       'UI_CLOSED', 'USER_STOP', 'GATE_ESTOP_LATCHED', 'MOVING_BACKWARD', 'MANUAL_LAYER_STOP'})
+                       'UI_CLOSED', 'USER_STOP', 'GATE_ESTOP_LATCHED', 'MOVING_BACKWARD', 'MANUAL_LAYER_STOP',
+                       'WHEELS_STOPPED_WHILE_COMMANDED', 'FEEDBACK_OVERSPEED'})
 
 
 class AutoFault(FeedbackError):
@@ -71,16 +89,21 @@ def _limit(value, name, cap):
 
 def validate_auto_controls(value):
     """``auto_controls`` of a session configuration: explicit, bounded, and off unless ``allowed`` is true."""
-    if not isinstance(value, dict) or set(value) - ({'allowed', 'evidence', 'note'} | set(HARD_LIMITS)):
-        raise FeedbackError('auto_controls must be an object with allowed, evidence and the limits only')
+    if not isinstance(value, dict) or \
+            set(value) - ({'allowed', 'evidence', 'note', 'hold_to_run_switch'} | set(HARD_LIMITS)):
+        raise FeedbackError('auto_controls must be an object with allowed, evidence, hold_to_run_switch and the '
+                            'limits only')
     if type(value.get('allowed', False)) is not bool:
         raise FeedbackError('auto_controls.allowed must be a boolean')
-    result = {'allowed': value.get('allowed', False), 'evidence': value.get('evidence'), 'note': value.get('note')}
+    result = {'allowed': value.get('allowed', False), 'evidence': value.get('evidence'), 'note': value.get('note'),
+              'hold_to_run_switch': value.get('hold_to_run_switch')}
     for name, cap in HARD_LIMITS.items():
         if name in value or result['allowed']:
             result[name] = _limit(value.get(name), name, cap)
     if result['allowed'] and (not isinstance(result['evidence'], str) or not result['evidence']):
         raise FeedbackError('auto_controls.evidence must name the reviewed evidence file')
+    if (result['allowed'] or 'hold_to_run_switch' in value) and result['hold_to_run_switch'] not in HOLD_TO_RUN_MODES:
+        raise FeedbackError('auto_controls.hold_to_run_switch must be INSTALLED or NOT_INSTALLED')
     return result
 
 
@@ -100,21 +123,29 @@ def limits_consistent(limits, wheel):
 class AutoDrive:
     """Automatic control source inside the wheel owner; ``owner`` is the session's ``MappingWheel``."""
 
-    def __init__(self, owner, limits, *, switches=None, readback=None, readback_checks=(), unavailable=None,
-                 evidence=None):
+    def __init__(self, owner, limits, *, hold_to_run_switch='INSTALLED', switches=None, readback=None,
+                 readback_checks=(), unavailable=None, evidence=None):
         wheel = owner.wheel
         for key in ('wheel_radius_m', 'track_width_m', 'register_to_wheel_rpm', 'left_sign', 'right_sign'):
             if key not in wheel:
                 raise FeedbackError('wheel candidate lacks ' + key + ' for automatic control')
+        if hold_to_run_switch not in HOLD_TO_RUN_MODES:
+            raise FeedbackError('hold_to_run_switch must be INSTALLED or NOT_INSTALLED')
+        if hold_to_run_switch == 'NOT_INSTALLED' and switches is not None:
+            raise FeedbackError('a switch reader was given although the hold-to-run switch is not installed')
         if unavailable is None and not (owner.hybrid_manual and owner.control['arm_allowed']):
             unavailable = 'NEEDS_AUTHORISED_HYBRID_MANUAL_SESSION'
         self.owner = owner
         self.limits = {name: float(limits[name]) for name in HARD_LIMITS}
+        self.hold_to_run_switch, self.enable_source = hold_to_run_switch, ENABLE_SOURCES[hold_to_run_switch]
         self.switches, self.readback, self.readback_checks = switches, readback, list(readback_checks)
         self.evidence = dict(evidence or {})
         self.unavailable = unavailable
         self.state = 'UNAVAILABLE' if unavailable else 'NONE'
         self.reason = unavailable or 'IDLE'
+        self.refusal = None              # last refused start; kept apart from the stop reason
+        self.immediate_reason = None     # what made the current stop immediate
+        self.start_pending_until = None
         self.decision = self.decision_time = None
         self.last_decision_sequence = 0
         self.bridge_connected, self.bridge_id = False, None
@@ -124,6 +155,7 @@ class AutoDrive:
         self.immediate, self.zero_reached, self.zero_since = False, None, None
         self.init_step, self.next_init = 0, 0.0
         self.seen_sequence, self.stationary, self.backward_since, self.feedback = owner.sequence, 0, None, None
+        self.commanded_since = self.zero_feedback_since = self.overspeed_since = None
         self.settled = 0   # consecutive zero samples taken after the zero command of the current stop
         self.takeover_latch = False
         self.counters = {name: 0 for name in ('decisions', 'decisions_rejected', 'writes', 'zero_writes',
@@ -140,23 +172,30 @@ class AutoDrive:
     def on_bridge_lost(self, reason, *, closing=False):
         self.bridge_connected = False
         self.decision = self.decision_time = None
+        self.start_pending_until = None
         self._log({'event': 'auto_bridge_lost', 'reason': reason}, required=False)
         if self.state in ACTIVE_STATES:
             if closing:
-                # Session exit: MappingWheel.close() writes zero right after this.
-                self._set('NONE', 'SESSION_EXIT_ZERO_BY_OWNER_CLOSE')
+                # Session exit: MappingWheel.close() writes zero right after this; a failing log must not stop it.
+                self._set('NONE', 'SESSION_EXIT_ZERO_BY_OWNER_CLOSE', required=False)
             else:
                 self._begin_stop('BRIDGE_DISCONNECTED', immediate=False)
 
     def on_decision(self, value):
         try:
             decision = parse_decision(value, self.owner.session_id, self.last_decision_sequence)
+            now = self.owner.clock()
+            for name in ('gate_mono_ns', 'received_mono_ns'):
+                ahead = decision[name] * 1e-9 - now
+                if ahead > FUTURE_TOLERANCE_S:
+                    raise ProtocolError('%s is %.3f s ahead of the owner clock: not the same monotonic clock'
+                                        % (name, ahead))
         except ProtocolError:
             self.counters['decisions_rejected'] += 1
             raise
         previous = self.decision
         self.last_decision_sequence = decision['sequence']
-        self.decision, self.decision_time = decision, self.owner.clock()
+        self.decision, self.decision_time = decision, now
         self.counters['decisions'] += 1
         if self.state in ('INITIALIZING', 'AUTO'):
             if decision['gate_id'] != self.entry_gate_id:
@@ -173,6 +212,9 @@ class AutoDrive:
         if kind == 'auto':
             self._auto_packet(value)
             return True
+        if self.start_pending_until is not None and (kind in ('disarm', 'close', 'push_mode') or
+                                                     (kind == 'keys' and value.get('keys'))):
+            self._cancel_pending('START_CANCELLED_BY_OPERATOR')
         active = self.state in ACTIVE_STATES
         if kind == 'keys' and (active or self.takeover_latch):
             sequence, keys = value.get('sequence'), value.get('keys')
@@ -212,6 +254,8 @@ class AutoDrive:
         if value['foreground']:
             owner.foreground, owner.last_ui_heartbeat = True, owner.clock()
         if not value['enabled']:
+            if self.start_pending_until is not None:
+                self._cancel_pending('START_CANCELLED_BY_OPERATOR')
             if self.state in ACTIVE_STATES:
                 self._begin_stop('USER_STOPPED_AUTO', immediate=False)
             return
@@ -220,16 +264,19 @@ class AutoDrive:
         elif value['arm_generation'] != owner.arm_generation:
             self._refuse('STALE_UI_GENERATION')
         else:
-            self._try_start(owner.clock())
+            self._request_start(owner.clock())
 
     # ---------------------------------------------------------------- owner hooks
     def on_fault(self, reason):
+        self.start_pending_until = None
         if self.state != 'UNAVAILABLE':
             self.state, self.reason = 'FAULT', 'OWNER_FAULT: ' + str(reason)
 
     def step(self, now):
         """Called by MappingWheel.step after the feedback read; True while automatic control owns the tick."""
         self._observe()
+        if self.start_pending_until is not None and self.state == 'NONE':
+            self._pending_start(now)
         if self.state not in ACTIVE_STATES:
             return False
         try:
@@ -262,6 +309,11 @@ class AutoDrive:
             reason = self._exit_reason(now)
             if reason is not None:
                 self._begin_stop(reason, immediate=reason in IMMEDIATE)
+        elif self.state == 'STOPPING' and not self.immediate:
+            # A controlled stop already decelerating still turns immediate on any emergency-class condition.
+            reason = self._immediate_reason(now)
+            if reason is not None:
+                self._begin_stop(reason, immediate=True)
         if self.state == 'AUTO':
             if self.command == (0.0, 0.0) and self.zero_since is not None and now - self.zero_since > MOVING_AT_ZERO_S \
                     and self.stationary == 0:
@@ -273,8 +325,36 @@ class AutoDrive:
         return True
 
     # ---------------------------------------------------------------- entry
-    def _try_start(self, now):
+    def _request_start(self, now):
         blockers = self._entry_blockers(now)
+        if blockers == ['GATE_ESTOP_LATCHED'] and self.enable_source == 'OPERATOR_START':
+            # The gate unlatches only on a new enable edge, and in this mode the enable follows enable_request: keep
+            # the request for START_PENDING_S so that the bridge sends it, and enter once the gate is unlatched.
+            self.start_pending_until = now + START_PENDING_S
+            self.refusal = None
+            self._log({'event': 'auto_start_pending', 'reason': 'GATE_ESTOP_LATCHED'}, required=False)
+            return
+        self._try_start(now, blockers)
+
+    def _pending_start(self, now):
+        if now > self.start_pending_until:
+            self.start_pending_until = None
+            self._refuse('GATE_ESTOP_LATCHED')
+            return
+        blockers = self._entry_blockers(now)
+        if not blockers:
+            self.start_pending_until = None
+            self._try_start(now, blockers)
+        elif blockers != ['GATE_ESTOP_LATCHED']:
+            self.start_pending_until = None
+            self._refuse(blockers[0])
+
+    def _cancel_pending(self, reason):
+        self.start_pending_until = None
+        self._log({'event': 'auto_start_cancelled', 'reason': reason}, required=False)
+
+    def _try_start(self, now, blockers=None):
+        blockers = self._entry_blockers(now) if blockers is None else blockers
         if blockers:
             self._refuse(blockers[0])
             return
@@ -287,7 +367,8 @@ class AutoDrive:
         self.entry_generation = owner.arm_generation
         self.entry_gate_id = self.decision['gate_id']
         self.command, self.last_write, self.zero_since = (0.0, 0.0), None, None
-        self.immediate, self.zero_reached = False, None
+        self.immediate, self.immediate_reason, self.zero_reached = False, None, None
+        self.commanded_since, self.refusal = None, None
         owner.hybrid_release_inhibited = True
         owner.stop_deadline, owner.stop_zero_samples = None, 0
         self.counters['entries'] += 1
@@ -318,6 +399,8 @@ class AutoDrive:
             out.append('BRIDGE_DISCONNECTED')
         elif self._decision_age(now) > DECISION_STALE_S:
             out.append('DECISION_STALE')
+        elif self.decision['state'] == GATE_ESTOP:
+            out.append('GATE_ESTOP_LATCHED')
         elif self._gate_limits_problem():
             out.append(self._gate_limits_problem())
         if self.stationary < ENTRY_STATIONARY_SAMPLES or not self._feedback_fresh(now):
@@ -343,38 +426,51 @@ class AutoDrive:
                 return
             self.init_step += 1
             self.next_init = owner.clock() + delay
+            if request == INITIALIZATION_WRITES[3]:
+                # Enabled: the servo holds the wheels from now on, even if automatic control ends before AUTO.
+                owner.initialized_by_user, owner.servo_release_acknowledged = True, False
+                owner.push_mode = owner.push_mode_requested = False
             return
-        owner.initialized_by_user, owner.servo_release_acknowledged = True, False
-        owner.push_mode = owner.push_mode_requested = False
         owner.stop_deadline = None
         self.command, self.last_write = (0.0, 0.0), None
         self._set('AUTO', 'AUTO_STARTED')
 
     # ---------------------------------------------------------------- running and stopping
-    def _exit_reason(self, now):
-        owner = self.owner
+    def _immediate_reason(self, now):
+        """Conditions that write zero at once, also while a controlled stop is still decelerating."""
         problem = self._switch_problem(now)
         if problem:
             return problem
+        if self.decision is not None and self.decision['state'] == GATE_ESTOP:
+            return 'GATE_ESTOP_LATCHED'
+        if self.backward_since is not None and now - self.backward_since > BACKWARD_S:
+            return 'MOVING_BACKWARD'
+        if self.overspeed_since is not None and now - self.overspeed_since > OVERSPEED_S:
+            return 'FEEDBACK_OVERSPEED'
+        if self.commanded_since is not None and self.zero_feedback_since is not None and self._feedback_fresh(now) \
+                and now - max(self.commanded_since, self.zero_feedback_since) > WHEELS_STOPPED_S:
+            return 'WHEELS_STOPPED_WHILE_COMMANDED'
+        return None
+
+    def _exit_reason(self, now):
+        owner = self.owner
+        reason = self._immediate_reason(now)
+        if reason:
+            return reason
         if not owner._ui_fresh():
             return 'UI_NOT_FRESH'
         if not self.bridge_connected:
             return 'BRIDGE_DISCONNECTED'
         if self._decision_age(now) > DECISION_STALE_S:
             return 'DECISION_STALE'
-        decision = self.decision
-        if decision['state'] == GATE_ESTOP:
-            return 'GATE_ESTOP_LATCHED'
         problem = self._gate_limits_problem()
         if problem:
             return problem
-        violation = self._violation(decision)
+        violation = self._violation(self.decision)
         if violation:
             return violation
         if not self._feedback_fresh(now):
             return 'FEEDBACK_STALE'
-        if self.backward_since is not None and now - self.backward_since > BACKWARD_S:
-            return 'MOVING_BACKWARD'
         return None
 
     def _violation(self, decision):
@@ -428,18 +524,25 @@ class AutoDrive:
         self.command, self.last_words, self.last_write = (linear, angular), words, owner.clock()
         self.counters['zero_writes' if zero else 'writes'] += 1
         self.zero_since = (self.zero_since or self.last_write) if zero else None
+        half = owner.wheel['track_width_m'] / 2
+        if max(abs(linear - angular * half), abs(linear + angular * half)) > COMMANDED_WHEEL_M_S:
+            if self.commanded_since is None:
+                self.commanded_since = self.last_write
+        else:
+            self.commanded_since = None
 
     def _guard(self, expected, generation):
         """Right before a nonzero write: pump the sockets, then recheck everything the write depends on.
 
-        While stopping, a deceleration step is only cancelled when the stop turned immediate (the next tick writes
-        zero); the exit condition that started the stop must not block the deceleration itself."""
+        While stopping, a deceleration step is cancelled when the stop turned immediate or an emergency-class
+        condition appeared (the next tick writes zero); the exit condition that started the controlled stop must
+        not block the deceleration itself."""
         owner = self.owner
         owner.before_control()
         if self.state != expected or owner.arm_generation != generation:
             raise Cancelled('automatic control changed before write')
         if expected == 'STOPPING':
-            if self.immediate:
+            if self.immediate or self._immediate_reason(owner.clock()) is not None:
                 raise Cancelled('stop became immediate before write')
         elif self._exit_reason(owner.clock()) is not None:
             raise Cancelled('automatic exit condition before write')
@@ -458,11 +561,16 @@ class AutoDrive:
         return speed_write(*words), words
 
     def _begin_stop(self, reason, *, immediate):
+        self.start_pending_until = None
         if self.state == 'STOPPING':
-            self.immediate = self.immediate or immediate
+            if immediate and not self.immediate:
+                self.immediate, self.immediate_reason = True, reason
+                self._log({'event': 'auto_stop_immediate', 'reason': reason, 'stop_reason': self.reason},
+                          required=False)
             return
         self.counters['exits'] += 1
         self.immediate, self.zero_reached, self.settled = immediate, None, 0
+        self.immediate_reason = reason if immediate else None
         self._set('STOPPING', reason)
 
     def _finish_or_fault(self, now):
@@ -472,8 +580,11 @@ class AutoDrive:
             self.zero_reached, self.settled = self.last_write, 0
         if self.settled >= EXIT_STATIONARY_SAMPLES and self._feedback_fresh(now):
             owner = self.owner
+            if 'WHEELS_STOPPED_WHILE_COMMANDED' in (self.reason, self.immediate_reason):
+                # Probably the vehicle's emergency stop acted on the driver: initialize again before the next run.
+                owner.initialized_by_user = False
             self._set('NONE', 'AUTO_EXITED: ' + self.reason)
-            self.command, self.last_write, self.zero_since = (0.0, 0.0), None, None
+            self.command, self.last_write, self.zero_since, self.commanded_since = (0.0, 0.0), None, None, None
             owner.hybrid_release_inhibited = True
             owner.disarm('AUTO_EXITED')   # manual state back to READY; no servo release follows
         elif now - self.zero_reached > STOP_CONFIRM_S:
@@ -490,9 +601,18 @@ class AutoDrive:
         self.stationary = self.stationary + 1 if zero else 0
         if self.zero_reached is not None and stamp > self.zero_reached:
             self.settled = self.settled + 1 if zero else 0
+        if zero:
+            self.zero_feedback_since = stamp if self.zero_feedback_since is None else self.zero_feedback_since
+        else:
+            self.zero_feedback_since = None
         wheel = owner.wheel
-        scale = wheel['register_to_wheel_rpm'] * 2 * math.pi * wheel['wheel_radius_m'] / 60
         signed = [value - 65536 if value >= 32768 else value for value in words]
+        if max(abs(value) for value in signed) * wheel['register_to_wheel_rpm'] > \
+                OVERSPEED_FACTOR * self.limits['max_wheel_rpm']:
+            self.overspeed_since = stamp if self.overspeed_since is None else self.overspeed_since
+        else:
+            self.overspeed_since = None
+        scale = wheel['register_to_wheel_rpm'] * 2 * math.pi * wheel['wheel_radius_m'] / 60
         left, right = signed[0] * scale * wheel['left_sign'], signed[1] * scale * wheel['right_sign']
         self.feedback = {'left_m_s': left, 'right_m_s': right, 'linear_m_s': (left + right) / 2, 'stamp': stamp,
                          'sequence': owner.sequence - 1}
@@ -506,7 +626,10 @@ class AutoDrive:
         return last is not None and 0 <= now - last <= FEEDBACK_FRESH_S
 
     def _decision_age(self, now):
-        return math.inf if self.decision_time is None else now - self.decision_time
+        """End to end: from the gate's own stamp (same CLOCK_MONOTONIC as the owner) and from the arrival here."""
+        if self.decision_time is None:
+            return math.inf
+        return max(now - self.decision_time, now - self.decision['gate_mono_ns'] * 1e-9)
 
     def _gate_limits_problem(self):
         limits = self.decision['limits']
@@ -531,6 +654,8 @@ class AutoDrive:
         return value
 
     def _switch_problem(self, now, *, entry=False):
+        if self.hold_to_run_switch == 'NOT_INSTALLED':
+            return None   # the user's recorded decision; the operator's start is the enable
         if self.switches is None:
             return 'NO_SWITCH_INPUT'
         value = self._switch_values(now)
@@ -542,18 +667,24 @@ class AutoDrive:
             return 'DEAD_MAN_NOT_HELD' if entry else 'DEAD_MAN_RELEASED'
         return None
 
+    def enable_request(self, now):
+        """The operator's start in effect: running, initializing, or held while the gate unlatches."""
+        return self.state in ('INITIALIZING', 'AUTO') or \
+            (self.start_pending_until is not None and now <= self.start_pending_until)
+
     # ---------------------------------------------------------------- records
     def _log(self, record, *, required=True):
         self.owner._log(record, required=required)
 
-    def _set(self, state, reason):
+    def _set(self, state, reason, *, required=True):
         self.state, self.reason = state, reason
-        self._log({'event': 'auto_state', 'state': state, 'reason': reason, 'command': list(self.command),
-                   'decision_sequence': self.last_decision_sequence, 'physical_stop_confirmed': False})
+        self._log({'event': 'auto_state', 'state': state, 'reason': reason, 'immediate_reason': self.immediate_reason,
+                   'command': list(self.command), 'decision_sequence': self.last_decision_sequence,
+                   'physical_stop_confirmed': False}, required=required)
 
     def _refuse(self, reason):
         self.counters['refusals'] += 1
-        self.reason = 'AUTO_REFUSED: ' + reason
+        self.refusal = 'AUTO_REFUSED: ' + reason
         self._log({'event': 'auto_refused', 'reason': reason}, required=False)
 
     def status(self):
@@ -569,9 +700,12 @@ class AutoDrive:
             # Owner clock (CLOCK_MONOTONIC) when the response was read: comparable with mono_ns on this machine.
             feedback['stamp_mono_ns'] = int(round(self.feedback['stamp'] * 1e9))
         return {'type': 'status', 'schema': STATUS_SCHEMA, 'session_id': owner.session_id, 'source': source,
-                'auto_state': self.state, 'reason': self.reason, 'limits': dict(self.limits),
+                'auto_state': self.state, 'reason': self.reason, 'refusal': self.refusal,
+                'immediate_reason': self.immediate_reason, 'limits': dict(self.limits),
                 'command': {'linear': self.command[0], 'angular': self.command[1], 'words': list(self.last_words)},
                 'feedback': feedback, 'stationary_samples': self.stationary,
+                'hold_to_run_switch': self.hold_to_run_switch, 'enable_source': self.enable_source,
+                'enable_request': self.enable_request(now), 'start_pending': self.start_pending_until is not None,
                 'switch_input': self.switches is not None,
                 'dead_man': None if switches is None else switches['dead_man'],
                 'estop': None if switches is None else switches['estop'],
@@ -663,7 +797,7 @@ class AutoSocket:
                         self.auto.on_bridge_connected(bridge_id)
                         self._queue_status()
                     else:
-                        self.auto.on_decision(value)
+                        self.auto.on_decision(value)   # only decisions: navigation can never request automatic
                 if len(self.received) > MAX_LINE_BYTES:
                     raise ProtocolError('unterminated base bridge line exceeds bound')
             if self.ready and self.clock() - self.last_status >= STATUS_PERIOD_S:
@@ -695,6 +829,7 @@ def attach_auto(config, owner, project_root, session_dir, *, environ=None, today
     environ = os.environ if environ is None else environ
     today = today or datetime.date.today()
     unavailable, evidence = None, {}
+    hold = controls['hold_to_run_switch'] or 'INSTALLED'
     if not controls['allowed']:
         unavailable = 'AUTO_NOT_ALLOWED'
     else:
@@ -706,15 +841,20 @@ def attach_auto(config, owner, project_root, session_dir, *, environ=None, today
                 unavailable = 'EVIDENCE_REJECTED: ' + str(error)
     approved = evidence.get('limits', HARD_LIMITS)
     limits = {name: min(HARD_LIMITS[name], approved[name], controls.get(name, 0.0)) for name in HARD_LIMITS}
+    if unavailable is None and evidence['hold_to_run_switch']['installed'] != (hold == 'INSTALLED'):
+        unavailable = 'HOLD_TO_RUN_SWITCH_DIFFERS_FROM_EVIDENCE'
     if unavailable is None and not limits_consistent(limits, owner.wheel):
         unavailable = 'LIMITS_INCONSISTENT'
-    if unavailable is None and switches is None:
+    if hold == 'NOT_INSTALLED' and switches is not None:
+        unavailable, switches = unavailable or 'SWITCH_READER_GIVEN_BUT_NOT_INSTALLED', None
+    if unavailable is None and hold == 'INSTALLED' and switches is None:
         unavailable = 'NO_SWITCH_INPUT'
     if unavailable is None and readback is None:
         unavailable = 'DRIVER_READBACK_NOT_IMPLEMENTED'
-    auto = AutoDrive(owner, limits, switches=switches, readback=readback, readback_checks=evidence.get('readback', ()),
-                     unavailable=unavailable, evidence=evidence)
+    auto = AutoDrive(owner, limits, hold_to_run_switch=hold, switches=switches, readback=readback,
+                     readback_checks=evidence.get('readback', ()), unavailable=unavailable, evidence=evidence)
     owner._log({'event': 'auto_attached', 'state': auto.state, 'reason': auto.reason, 'limits': auto.limits,
+                'hold_to_run_switch': hold, 'enable_source': auto.enable_source,
                 'evidence_stage': evidence.get('stage'), 'evidence_sha256': evidence.get('evidence_sha256'),
                 'physical_stop_confirmed': False})
     if auto.state == 'UNAVAILABLE':

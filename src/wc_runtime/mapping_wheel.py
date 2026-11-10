@@ -1046,7 +1046,10 @@ def main(argv=None):
             owner.fault(failure)
     finally:
         if auto_socket is not None:
-            auto_socket.close()
+            try:
+                auto_socket.close()
+            except Exception as error:  # noqa: BLE001 - owner.close() below must still write zero
+                result, failure = 1, failure or 'automatic control socket close failed: ' + str(error)
         if control_socket is not None:
             control_socket.close()
         if owner is not None:

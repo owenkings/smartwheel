@@ -4,6 +4,14 @@ The file records what was measured on this chair before automatic control may ru
 the user approved for that stage. It is a human-reviewed record, not a manufacturer attestation: the hashes only
 stop a different revision of the evidence being used by accident. ``load_evidence`` rejects anything incomplete;
 the template in ``config/wheel_auto_drive_evidence.template.json`` must always be rejected.
+
+Speeds go up one step at a time (user decision of 2026-11-10): linear 0.10, 0.20, 0.30 m/s and angular 0.30, 0.40,
+0.50 rad/s. On the stand and in the first runs of each stage the first step is the limit; the next linear step needs
+braking rows (ground test) or a passed supervised run (closed loop) at the step below.
+
+``hold_to_run_switch`` records whether the hold-to-run switch is installed. Not installed is the user's decision of
+2026-11-09 23:50 (the first empty-chair runs use the vehicle's emergency stop with a person beside the chair); it has
+to be written out, and then the ``dead_man`` stop test and braking path are not required.
 """
 import hashlib
 import json
@@ -19,10 +27,12 @@ STAGES = ('STAND_TEST', 'GROUND_TEST', 'SUPERVISED_CLOSED_LOOP')
 # Section 5: no layer of the chain may exceed these, whatever a file says.
 HARD_LIMITS = {'max_linear_m_s': 0.30, 'max_angular_rad_s': 0.50, 'max_wheel_rpm': 27.0,
                'max_linear_accel_m_s2': 0.30, 'max_linear_decel_m_s2': 0.60, 'max_angular_accel_rad_s2': 0.80}
-# Wheels off the ground (level 2): the first speeds only.
-STAGE_LIMITS = {'STAND_TEST': {'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30}}
+LINEAR_STEPS_M_S = (0.10, 0.20, 0.30)
+ANGULAR_STEPS_RAD_S = (0.30, 0.40, 0.50)
 STOP_TESTS = ('estop', 'dead_man', 'owner_killed', 'usb_unplugged', 'orin_power_cut', 'software_zero',
               'auto_stand_checks')
+LOSS_TESTS = ('owner_killed', 'usb_unplugged', 'orin_power_cut')   # stop by the driver's communication timeout
+LOSS_STOP_MARGIN_S = 0.5   # section 8.1, level 2: stopped within the communication timeout plus 0.5 s
 REQUIRED_STOP_TESTS = {
     # Level 2 items a-d are done with the existing manual channel before the automatic channel runs on the stand.
     'STAND_TEST': ('estop', 'dead_man', 'owner_killed', 'usb_unplugged', 'orin_power_cut'),
@@ -48,10 +58,20 @@ def _integer(value, name, low, high):
     return value
 
 
-def _text(value, name):
-    if not isinstance(value, str) or not value.strip() or len(value) > 200:
+def _text(value, name, limit=200):
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise FeedbackError(name + ' must be a short non-empty string')
     return value
+
+
+def _step_cap(steps, done):
+    """One step above the highest step already passed (``done``), the first step when nothing passed yet."""
+    if done is None:
+        return steps[0]
+    for step in steps:
+        if step > done + 1e-9:
+            return step
+    return steps[-1]
 
 
 def allowed_roots(project_root):
@@ -80,6 +100,12 @@ def check_source(item, project_root, roots):
     return str(path)
 
 
+def _sources(value, name, project_root, roots):
+    if not isinstance(value, list) or not value:
+        raise FeedbackError(name + ' needs its recordings or videos as sources')
+    return [check_source(item, project_root, roots) for item in value]
+
+
 def check_readback(item):
     """One read-only FC03 check of a driver parameter, written like manual_hardware's state checks."""
     if not isinstance(item, dict) or set(item) - {'purpose', 'request_hex', 'word_index', 'mask', 'equals', 'note'}:
@@ -102,30 +128,46 @@ def check_readback(item):
     return {'purpose': purpose, 'request': request, 'word_index': index, 'mask': mask, 'equals': equals}
 
 
+def check_hold_to_run(value):
+    """Installed or not, written out; not installed needs the user's decision in words, by whom and when."""
+    if not isinstance(value, dict) or set(value) - {'installed', 'decision', 'decided_by', 'decided_at', 'note'} or \
+            type(value.get('installed')) is not bool:
+        raise FeedbackError('hold_to_run_switch must say installed true or false')
+    result = {'installed': value['installed'], 'decision': value.get('decision')}
+    if not value['installed']:
+        result['decision'] = _text(value.get('decision'), 'hold_to_run_switch.decision', 400)
+        if value.get('decided_by') != 'user':
+            raise FeedbackError('hold_to_run_switch not installed must be decided_by the user')
+        result['decided_at'] = _text(value.get('decided_at'), 'hold_to_run_switch.decided_at')
+    return result
+
+
 def check_limits(value, stage):
     if not isinstance(value, dict) or set(value) != set(HARD_LIMITS):
         raise FeedbackError('approved_limits must give exactly ' + ', '.join(sorted(HARD_LIMITS)))
-    caps = {**HARD_LIMITS, **STAGE_LIMITS.get(stage, {})}
-    return {name: _number(value[name], 'approved_limits.' + name, 1e-6, caps[name]) for name in HARD_LIMITS}
+    return {name: _number(value[name], 'approved_limits.' + name, 1e-6, HARD_LIMITS[name]) for name in HARD_LIMITS}
 
 
-def check_stop_test(name, value, project_root, roots):
+def check_stop_test(name, value, project_root, roots, communication_timeout_s):
     if not isinstance(value, dict) or value.get('verified') is not True:
         raise FeedbackError('stop test %s is not verified' % name)
     _integer(value.get('trials'), name + '.trials', 3, 1000)
-    if value.get('max_stop_time_s') is not None:
+    if name in LOSS_TESTS:
+        limit = communication_timeout_s + LOSS_STOP_MARGIN_S
+        stop = _number(value.get('max_stop_time_s'), name + '.max_stop_time_s', 0.0, 10.0)
+        if stop > limit + 1e-9:
+            raise FeedbackError('stop test %s took %.2f s, more than the communication timeout plus %.1f s (%.2f s)'
+                                % (name, stop, LOSS_STOP_MARGIN_S, limit))
+    elif value.get('max_stop_time_s') is not None:
         _number(value['max_stop_time_s'], name + '.max_stop_time_s', 0.0, 10.0)
-    sources = value.get('sources')
-    if not isinstance(sources, list) or not sources:
-        raise FeedbackError('stop test %s needs its recordings or videos as sources' % name)
-    return [check_source(item, project_root, roots) for item in sources]
+    return _sources(value.get('sources'), 'stop test ' + name, project_root, roots)
 
 
-def check_braking(rows, max_linear, project_root, roots):
-    """Section 8 pass lines, at least at the approved top speed, for every stop path."""
+def check_braking(rows, paths, project_root, roots):
+    """Section 8 pass lines for every row; returns the highest measured speed per path."""
     if not isinstance(rows, list):
         raise FeedbackError('braking must be a list of measured rows')
-    covered = set()
+    measured = {path: 0.0 for path in paths}
     for row in rows:
         if not isinstance(row, dict) or row.get('path') not in BRAKING_LIMITS_M:
             raise FeedbackError('braking row needs a path in ' + ', '.join(BRAKING_LIMITS_M))
@@ -141,15 +183,31 @@ def check_braking(rows, max_linear, project_root, roots):
             raise FeedbackError('braking distances scatter more than 20% for ' + row['path'])
         if _number(row.get('max_heading_change_deg'), 'braking heading change', 0.0, 180.0) > BRAKING_HEADING_DEG:
             raise FeedbackError('heading changed more than 5 degrees while braking on ' + row['path'])
-        for item in row.get('sources') or []:
-            check_source(item, project_root, roots)
-        if not row.get('sources'):
-            raise FeedbackError('braking row needs its recordings as sources')
-        if speed >= max_linear - 1e-9:
-            covered.add(row['path'])
-    missing = set(BRAKING_LIMITS_M) - covered
-    if missing:
-        raise FeedbackError('braking not measured at the approved top speed for ' + ', '.join(sorted(missing)))
+        _sources(row.get('sources'), 'braking row', project_root, roots)
+        if row['path'] in measured:
+            measured[row['path']] = max(measured[row['path']], speed)
+    return measured
+
+
+def check_closed_loop_runs(rows, project_root, roots):
+    """Supervised runs already passed: (highest linear, highest angular) among them, or (None, None)."""
+    if rows is None:
+        return None, None
+    if not isinstance(rows, list):
+        raise FeedbackError('closed_loop_runs must be a list')
+    linear = angular = None
+    for row in rows:
+        if not isinstance(row, dict) or set(row) - {'max_linear_m_s', 'max_angular_rad_s', 'passed', 'reviewed_at',
+                                                    'sources', 'note'} or type(row.get('passed')) is not bool:
+            raise FeedbackError('closed loop run needs max_linear_m_s, max_angular_rad_s, passed, reviewed_at, sources')
+        v = _number(row.get('max_linear_m_s'), 'closed loop max_linear_m_s', 0.01, HARD_LIMITS['max_linear_m_s'])
+        w = _number(row.get('max_angular_rad_s'), 'closed loop max_angular_rad_s', 0.01, HARD_LIMITS['max_angular_rad_s'])
+        _text(row.get('reviewed_at'), 'closed loop reviewed_at')
+        _sources(row.get('sources'), 'closed loop run', project_root, roots)
+        if row['passed']:
+            linear = v if linear is None else max(linear, v)
+            angular = w if angular is None else max(angular, w)
+    return linear, angular
 
 
 def load_evidence(value, project_root, expected_device_id):
@@ -172,6 +230,8 @@ def load_evidence(value, project_root, expected_device_id):
     firmware = _text(value.get('firmware_id'), 'firmware_id')
     _text(value.get('reviewer'), 'reviewer')
     _text(value.get('reviewed_at'), 'reviewed_at')
+    hold = check_hold_to_run(value.get('hold_to_run_switch'))
+    timeout = _number(value.get('communication_timeout_s'), 'communication_timeout_s', 0.01, 5.0)
     limits = check_limits(value.get('approved_limits'), stage)
     readback = value.get('driver_readback')
     if not isinstance(readback, list) or not readback:
@@ -184,12 +244,31 @@ def load_evidence(value, project_root, expected_device_id):
     tests = value.get('stop_tests')
     if not isinstance(tests, dict) or set(tests) - set(STOP_TESTS):
         raise FeedbackError('stop_tests must use the names ' + ', '.join(STOP_TESTS))
-    for name in REQUIRED_STOP_TESTS[stage]:
-        check_stop_test(name, tests.get(name), project_root, roots)
+    required = [name for name in REQUIRED_STOP_TESTS[stage] if hold['installed'] or name != 'dead_man']
+    for name in required:
+        check_stop_test(name, tests.get(name), project_root, roots, timeout)
+    paths = [path for path in BRAKING_LIMITS_M if hold['installed'] or path != 'dead_man']
+    measured = check_braking(value.get('braking', []), paths, project_root, roots)
     if stage == 'SUPERVISED_CLOSED_LOOP':
-        check_braking(value.get('braking'), limits['max_linear_m_s'], project_root, roots)
+        short = sorted(path for path in paths if measured[path] < limits['max_linear_m_s'] - 1e-9)
+        if short:
+            raise FeedbackError('braking not measured at the approved top speed for ' + ', '.join(short))
+        done_linear, done_angular = check_closed_loop_runs(value.get('closed_loop_runs'), project_root, roots)
+    else:
+        if value.get('closed_loop_runs'):
+            raise FeedbackError('closed_loop_runs belong to the SUPERVISED_CLOSED_LOOP stage')
+        done_angular = None   # stand and ground tests stay at the first angular step
+        ground = [step for step in LINEAR_STEPS_M_S if all(measured[path] >= step - 1e-9 for path in paths)]
+        done_linear = max(ground) if stage == 'GROUND_TEST' and ground else None
+    caps = {'max_linear_m_s': _step_cap(LINEAR_STEPS_M_S, done_linear),
+            'max_angular_rad_s': _step_cap(ANGULAR_STEPS_RAD_S, done_angular)}
+    for name, cap in caps.items():
+        if limits[name] > cap + 1e-9:
+            raise FeedbackError('approved_limits.%s %.2f is above the next speed step %.2f for this evidence'
+                                % (name, limits[name], cap))
     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     return {'stage': stage, 'device_id': device, 'firmware_id': firmware, 'limits': limits, 'readback': checks,
+            'hold_to_run_switch': hold, 'communication_timeout_s': timeout, 'speed_caps': caps,
             'evidence_sha256': hashlib.sha256(raw).hexdigest()}
 
 

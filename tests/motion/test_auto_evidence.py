@@ -13,6 +13,8 @@ from wc_motion.protocol import FeedbackError, read_request
 ROOT = Path(__file__).resolve().parents[2]
 LIMITS = {'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30, 'max_wheel_rpm': 27.0, 'max_linear_accel_m_s2': 0.30,
           'max_linear_decel_m_s2': 0.60, 'max_angular_accel_rad_s2': 0.80}
+NOT_INSTALLED = {'installed': False, 'decided_by': 'user', 'decided_at': '2026-11-09',
+                 'decision': '不做硬件松手即停；第一次空车低速闭环用车上现有急停、人在车旁'}
 
 
 @pytest.fixture
@@ -24,35 +26,46 @@ def project(tmp_path):
                       'sha256': hashlib.sha256(record.read_bytes()).hexdigest()}
 
 
-def evidence(source, stage='STAND_TEST'):
+def braking(source, speed, paths=tuple(e.BRAKING_LIMITS_M)):
+    return [{'path': path, 'speed_m_s': speed, 'distances_m': [0.05, 0.05, 0.051, 0.052, 0.05],
+             'max_heading_change_deg': 1.0, 'sources': [source]} for path in paths]
+
+
+def evidence(source, stage='STAND_TEST', hold=None):
     test = {'verified': True, 'trials': 3, 'max_stop_time_s': 0.4, 'sources': [source]}
     value = {'schema': e.EVIDENCE_SCHEMA, 'state': 'REVIEWED', 'stage': stage, 'device_id': 'ZLAC8030D-0000000014',
              'firmware_id': 'SYNTHETIC', 'reviewer': 'test', 'reviewed_at': '2026-11-09',
+             'hold_to_run_switch': copy.deepcopy(hold or {'installed': True}), 'communication_timeout_s': 0.3,
              'approved_limits': dict(LIMITS),
              'driver_readback': [{'purpose': 'communication_timeout', 'request_hex': read_request(1, 0x2000, 1).hex(),
-                                  'word_index': 0, 'mask': 65535, 'equals': 7}],
+                                  'word_index': 0, 'mask': 65535, 'equals': 300}],
              'stop_tests': {name: copy.deepcopy(test) for name in e.STOP_TESTS}}
     if stage == 'SUPERVISED_CLOSED_LOOP':
-        value['braking'] = [{'path': path, 'speed_m_s': 0.10, 'distances_m': [0.05, 0.05, 0.051, 0.052, 0.05],
-                             'max_heading_change_deg': 1.0, 'sources': [source]} for path in e.BRAKING_LIMITS_M]
+        value['braking'] = braking(source, 0.10)
     return value
+
+
+def load(root, value):
+    return e.load_evidence(value, root, 'ZLAC8030D-0000000014')
 
 
 def test_template_is_always_rejected():
     template = json.loads((ROOT/'config/wheel_auto_drive_evidence.template.json').read_text())
     with pytest.raises(FeedbackError, match='not reviewed'):
-        e.load_evidence(template, ROOT, 'ZLAC8030D-0000000014')
+        load(ROOT, template)
     reviewed = {**template, 'state': 'REVIEWED'}
     with pytest.raises(FeedbackError):
-        e.load_evidence(reviewed, ROOT, 'ZLAC8030D-0000000014')
+        load(ROOT, reviewed)
 
 
 @pytest.mark.parametrize('stage', e.STAGES)
 def test_complete_synthetic_evidence_gives_the_approved_limits(project, stage):
     root, source = project
-    result = e.load_evidence(evidence(source, stage), root, 'ZLAC8030D-0000000014')
+    result = load(root, evidence(source, stage))
     assert result['stage'] == stage and result['limits'] == LIMITS
     assert result['readback'][0]['purpose'] == 'communication_timeout' and len(result['evidence_sha256']) == 64
+    assert result['hold_to_run_switch']['installed'] is True and result['communication_timeout_s'] == 0.3
+    assert result['speed_caps'] == {'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30}
 
 
 @pytest.mark.parametrize('change, message', [
@@ -70,23 +83,49 @@ def test_complete_synthetic_evidence_gives_the_approved_limits(project, stage):
     (lambda v: v['stop_tests']['orin_power_cut'].update(trials=2), 'trials'),
     (lambda v: v['stop_tests']['dead_man'].update(sources=[]), 'sources'),
     (lambda v: v['stop_tests']['usb_unplugged']['sources'][0].update(sha256='0'*64), 'hash mismatch'),
-    (lambda v: v['stop_tests']['owner_killed']['sources'][0].update(path='/etc/hostname'), 'checkout or the data root')])
+    (lambda v: v['stop_tests']['owner_killed']['sources'][0].update(path='/etc/hostname'), 'checkout or the data root'),
+    (lambda v: v.pop('hold_to_run_switch'), 'hold_to_run_switch'),
+    (lambda v: v.update(hold_to_run_switch={'installed': 'no'}), 'hold_to_run_switch'),
+    (lambda v: v.update(hold_to_run_switch={'installed': False}), 'decision'),
+    (lambda v: v.update(hold_to_run_switch={**NOT_INSTALLED, 'decided_by': 'A'}), 'decided_by the user'),
+    (lambda v: v.update(communication_timeout_s=None), 'communication_timeout_s'),
+    # section 8.1 level 2: communication-loss stops within the driver's timeout plus 0.5 s, and they must be measured
+    (lambda v: v['stop_tests']['owner_killed'].update(max_stop_time_s=None), 'owner_killed.max_stop_time_s'),
+    (lambda v: v['stop_tests']['usb_unplugged'].update(max_stop_time_s=0.9), 'communication timeout plus'),
+    (lambda v: v['stop_tests']['orin_power_cut'].update(max_stop_time_s=9.0), 'communication timeout plus'),
+    (lambda v: v.update(closed_loop_runs=[{'max_linear_m_s': 0.1}]), 'SUPERVISED_CLOSED_LOOP')])
 def test_incomplete_or_inconsistent_evidence_is_rejected(project, change, message):
     root, source = project
     value = evidence(source)
     change(value)
     with pytest.raises(FeedbackError, match=message):
-        e.load_evidence(value, root, 'ZLAC8030D-0000000014')
+        load(root, value)
 
 
 def test_stand_stage_does_not_need_the_automatic_stand_checks_but_ground_stage_does(project):
     root, source = project
     value = evidence(source, 'STAND_TEST')
     del value['stop_tests']['software_zero'], value['stop_tests']['auto_stand_checks']
-    assert e.load_evidence(value, root, 'ZLAC8030D-0000000014')['stage'] == 'STAND_TEST'
+    assert load(root, value)['stage'] == 'STAND_TEST'
     value['stage'] = 'GROUND_TEST'
     with pytest.raises(FeedbackError, match='software_zero'):
-        e.load_evidence(value, root, 'ZLAC8030D-0000000014')
+        load(root, value)
+
+
+@pytest.mark.parametrize('stage', e.STAGES)
+def test_switch_not_installed_is_recorded_and_drops_the_dead_man_test_and_braking_path(project, stage):
+    root, source = project
+    value = evidence(source, stage, hold=NOT_INSTALLED)
+    del value['stop_tests']['dead_man']
+    if stage == 'SUPERVISED_CLOSED_LOOP':
+        value['braking'] = braking(source, 0.10, ('software_zero', 'communication_loss', 'estop'))
+    result = load(root, value)
+    assert result['hold_to_run_switch'] == {'installed': False, 'decision': NOT_INSTALLED['decision'],
+                                            'decided_at': '2026-11-09'}
+    installed = evidence(source, stage)
+    del installed['stop_tests']['dead_man']
+    with pytest.raises(FeedbackError, match='dead_man'):
+        load(root, installed)
 
 
 @pytest.mark.parametrize('change, message', [
@@ -101,7 +140,48 @@ def test_closed_loop_needs_braking_rows_within_the_pass_lines(project, change, m
     value = evidence(source, 'SUPERVISED_CLOSED_LOOP')
     change(value['braking'])
     with pytest.raises(FeedbackError, match=message):
-        e.load_evidence(value, root, 'ZLAC8030D-0000000014')
+        load(root, value)
+
+
+def test_ground_test_goes_up_one_speed_step_after_braking_at_the_step_below(project):
+    root, source = project
+    value = evidence(source, 'GROUND_TEST')
+    value['approved_limits']['max_linear_m_s'] = 0.20
+    with pytest.raises(FeedbackError, match='next speed step 0.10'):
+        load(root, value)                                   # nothing measured yet: 0.10 m/s first
+    value['braking'] = braking(source, 0.10)
+    assert load(root, value)['speed_caps']['max_linear_m_s'] == 0.20
+    value['approved_limits']['max_linear_m_s'] = 0.30
+    with pytest.raises(FeedbackError, match='next speed step 0.20'):
+        load(root, value)                                   # 0.30 only after braking at 0.20
+    value['braking'] += braking(source, 0.20)
+    assert load(root, value)['speed_caps']['max_linear_m_s'] == 0.30
+    value['approved_limits']['max_angular_rad_s'] = 0.40
+    with pytest.raises(FeedbackError, match='max_angular_rad_s'):
+        load(root, value)                                   # turning stays at 0.30 rad/s off the closed loop
+
+
+def test_closed_loop_goes_up_one_step_after_a_passed_run_at_the_step_below(project):
+    root, source = project
+    value = evidence(source, 'SUPERVISED_CLOSED_LOOP')
+    value['braking'] = braking(source, 0.20)
+    value['approved_limits']['max_linear_m_s'] = 0.20
+    with pytest.raises(FeedbackError, match='next speed step 0.10'):
+        load(root, value)                                   # first closed loop: 0.10 m/s, 0.30 rad/s
+    run = {'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30, 'passed': False, 'reviewed_at': '2026-11-20',
+           'sources': [source]}
+    value['closed_loop_runs'] = [run]
+    with pytest.raises(FeedbackError, match='next speed step 0.10'):
+        load(root, value)                                   # a failed run does not count
+    run['passed'] = True
+    assert load(root, value)['speed_caps'] == {'max_linear_m_s': 0.20, 'max_angular_rad_s': 0.40}
+    value['approved_limits']['max_linear_m_s'] = 0.30
+    with pytest.raises(FeedbackError, match='approved top speed|next speed step'):
+        load(root, value)                                   # neither braked nor run at 0.20 yet
+    run['sources'] = []
+    value['approved_limits']['max_linear_m_s'] = 0.20
+    with pytest.raises(FeedbackError, match='sources'):
+        load(root, value)
 
 
 def test_read_evidence_file_resolves_relative_to_the_checkout(project):

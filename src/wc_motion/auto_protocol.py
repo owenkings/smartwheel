@@ -19,6 +19,8 @@ STATUS_SCHEMA = 'wc_base_status_v1'
 GATE_ACTIVE = 'ACTIVE'
 GATE_ESTOP = 'ESTOP_LATCHED'
 GATE_LIMIT_FIELDS = ('max_linear', 'max_angular', 'linear_ceiling', 'allow_reverse')
+# Where the gate's enable comes from: the hold-to-run switch, or (switch not installed) the operator's start.
+ENABLE_SOURCES = ('HOLD_TO_RUN_SWITCH', 'OPERATOR_START')
 DECISION_STALE_S = 0.3      # a gate decision older than this is not used to move
 STATUS_PERIOD_S = 0.1       # owner -> bridge status period
 STATUS_STALE_S = 0.3        # bridge treats an older owner status as missing
@@ -192,4 +194,8 @@ def parse_status(value, session_id):
         raise ProtocolError('unknown control source')
     if not isinstance(value.get('auto_state'), str):
         raise ProtocolError('auto_state must be a string')
+    if value.get('enable_source') not in ENABLE_SOURCES:
+        raise ProtocolError('enable_source must be one of ' + ', '.join(ENABLE_SOURCES))
+    if type(value.get('enable_request')) is not bool:
+        raise ProtocolError('enable_request must be a boolean')
     return value

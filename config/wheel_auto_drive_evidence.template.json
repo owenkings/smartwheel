@@ -6,6 +6,8 @@
   "firmware_id": null,
   "reviewer": null,
   "reviewed_at": null,
+  "hold_to_run_switch": {"installed": null, "decision": null, "decided_by": null, "decided_at": null},
+  "communication_timeout_s": null,
   "approved_limits": {
     "max_linear_m_s": null,
     "max_angular_rad_s": null,
@@ -25,8 +27,10 @@
     "auto_stand_checks": {"verified": false, "trials": 0, "max_stop_time_s": null, "sources": []}
   },
   "braking": [],
+  "closed_loop_runs": [],
   "readback_schema": {"purpose": "communication_timeout | acceleration_time | ...", "request_hex": "slave 1 FC03 frame with CRC", "word_index": null, "mask": null, "equals": null},
   "braking_schema": {"path": "software_zero | communication_loss | estop | dead_man", "speed_m_s": null, "distances_m": [], "max_heading_change_deg": null, "sources": []},
+  "closed_loop_run_schema": {"max_linear_m_s": null, "max_angular_rad_s": null, "passed": null, "reviewed_at": null, "sources": []},
   "source_schema": {"kind": "recording | video | tape_sheet | manual", "path": "checkout-relative or data-root path", "sha256": null},
-  "note": "docs/architecture/velocity_channel.md section 8. stage: STAND_TEST (wheels off the ground, at most 0.10 m/s and 0.30 rad/s; needs estop, dead_man, owner_killed, usb_unplugged, orin_power_cut), GROUND_TEST (adds software_zero and auto_stand_checks), SUPERVISED_CLOSED_LOOP (adds braking rows at the approved top speed for every path: software_zero <= 0.18 m, the others <= 0.30 m, at least 5 trials, scatter <= 20 %, heading change <= 5 deg). Register addresses and expected values stay empty until the ZLAC8030D manual is checked; this template must be rejected."
+  "note": "docs/architecture/velocity_channel.md section 8. stage: STAND_TEST (wheels off the ground; needs estop, dead_man, owner_killed, usb_unplugged, orin_power_cut), GROUND_TEST (adds software_zero and auto_stand_checks), SUPERVISED_CLOSED_LOOP (adds braking rows at the approved top speed for every path: software_zero <= 0.18 m, the others <= 0.30 m, at least 5 trials, scatter <= 20 %, heading change <= 5 deg). hold_to_run_switch: installed true, or installed false with the user's decision in words, decided_by user and decided_at; not installed drops the dead_man test and braking path. owner_killed, usb_unplugged and orin_power_cut need max_stop_time_s no more than communication_timeout_s + 0.5 s. Speeds go one step at a time: linear 0.10, 0.20, 0.30 m/s, angular 0.30, 0.40, 0.50 rad/s; the next linear step needs braking rows (GROUND_TEST) or a passed closed_loop_runs entry (SUPERVISED_CLOSED_LOOP) at the step below. Register addresses and expected values stay empty until the ZLAC8030D manual is checked; this template must be rejected."
 }

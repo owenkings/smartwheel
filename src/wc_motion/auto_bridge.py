@@ -8,6 +8,8 @@ agreed with window D on 2026-11-09:
 - enable: ``true`` at 10 Hz while a fresh owner status reports the hold-to-run switch held and no emergency stop;
   one ``false`` the moment a fresh status reports it released (or the emergency stop pressed), then nothing; nothing
   while the owner status is stale or the switch input is missing, so the gate's enable times out on its own.
+  With the switch not installed (``enable_source: OPERATOR_START``) the same rules follow the owner's
+  ``enable_request``: true from the operator's accepted "start automatic" until any stop.
 - estop: ``true`` at 10 Hz while pressed, one ``false`` when released; reliable and transient local.
 
 A malformed gate command (unknown schema, missing or extra field, non-finite number) or one stamped in the future is
@@ -142,27 +144,37 @@ class BridgeCore:
             return None, None
         return self.status.get('dead_man'), self.status.get('estop')
 
+    def enable_decision(self):
+        """True (enable), False (released or stopped: say so once) or None (unknown: say nothing)."""
+        if not self.fresh():
+            return None
+        status = self.status
+        dead_man, estop = status.get('dead_man'), status.get('estop')
+        if estop is True:
+            return False
+        if status.get('enable_source') == 'OPERATOR_START':
+            return status.get('enable_request') is True
+        if dead_man is True and estop is False:
+            return True
+        return False if dead_man is False else None
+
     def enable(self):
-        """True only while a fresh owner status reports the hold-to-run switch held and no emergency stop."""
-        dead_man, estop = self.switches()
-        return dead_man is True and estop is False
+        """True only while a fresh owner status says the gate may be enabled (switch held, or operator start)."""
+        return self.enable_decision() is True
 
     def switch_outputs(self, heartbeat):
         """Messages for this tick as (``'enable'`` or ``'estop'``, value); ``heartbeat`` marks the 10 Hz tick.
 
         Called on every pump for the immediate transitions and every 0.1 s with ``heartbeat`` for the repetitions."""
         out = []
-        dead_man, estop = self.switches()
-        if dead_man is True and estop is False:
+        enabled = self.enable_decision()
+        if enabled is True:
             if heartbeat or self.enable_state is not True:
                 out.append(('enable', True))
-            self.enable_state = True
-        elif dead_man is False or estop is True:
-            if self.enable_state is not False:
-                out.append(('enable', False))   # released: tell the gate at once, then stay silent
-            self.enable_state = False
-        else:
-            self.enable_state = None            # unknown: publish nothing, the gate's enable goes stale
+        elif enabled is False and self.enable_state is not False:
+            out.append(('enable', False))       # released or stopped: tell the gate at once, then stay silent
+        self.enable_state = enabled             # None: unknown, publish nothing, the gate's enable goes stale
+        _, estop = self.switches()
         if estop is True:
             if heartbeat or self.estop_state is not True:
                 out.append(('estop', True))
@@ -188,6 +200,8 @@ class BridgeCore:
                 'base_auto': base_auto, 'reason': reason,
                 'source': None if owner is None else owner.get('source'),
                 'auto_state': None if owner is None else owner.get('auto_state'),
+                'enable_source': None if owner is None else owner.get('enable_source'),
+                'enable_request': None if owner is None else owner.get('enable_request'),
                 'dead_man': dead_man, 'estop': estop, 'enable': self.enable(),
                 'feedback': None if owner is None else owner.get('feedback'),
                 'owner': self.status, 'counters': dict(self.counters)}
