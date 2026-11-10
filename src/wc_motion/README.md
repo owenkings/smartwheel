@@ -8,7 +8,10 @@
 - [auto_bridge.py](auto_bridge.py)：底盘桥，把导航域的闸门决定经 `auto.sock` 交给轮控所有者；不开串口。
 - [auto_evidence.py](auto_evidence.py)：自动速度通道的证据文件格式和检查。
 - [auto_protocol.py](auto_protocol.py)：闸门决定、底盘桥和轮控所有者之间的消息格式。
+- [auto_stop_report.py](auto_stop_report.py)：从会话的轮控日志算每次自动运行的速度换算、停法、停车时间和距离。
+- [auto_test_source.py](auto_test_source.py)：架空和落地用的测试指令源，只发 0.10 m/s 直行和零速；代替桥连 `auto.sock`。
 - [config_template.json](config_template.json)
+- [driver_readback.py](driver_readback.py)：驱动器寄存器只读回读（[速度通道设计](../../docs/architecture/velocity_channel.md) 7.3 第 7 步）：只发 FC03 读请求，寄存器白名单，经轮控用的同一个串口租约独占；没有用户当天的同意不开串口。
 - [feedback_transport.py](feedback_transport.py)
 - [history_preview.py](history_preview.py)
 - [manual_hardware.py](manual_hardware.py)

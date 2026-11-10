@@ -2,11 +2,26 @@
 
 Runs in the navigation domain (ROS_DOMAIN_ID=100, localhost only). Subscribes the safety gate's decisions on
 ``/wc_nav/gate_command`` and hands each one to the wheel serial owner over the session's ``auto.sock``; publishes the
-owner's status on ``/wc_nav/base_status`` and derives ``/wc_nav/enable`` (only while the hold-to-run switch is held)
-and ``/wc_nav/estop`` from it. It never opens a serial port, never publishes in the panel domain, does not change any
-velocity and does not reconnect: when the owner's socket goes away the bridge exits. Starting it requires today's
-user approval ``WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>``; without an available automatic control source
-in the owner there is no socket to connect to.
+owner's status on ``/wc_nav/base_status`` (10 Hz) and derives ``/wc_nav/enable`` and ``/wc_nav/estop`` from it, as
+agreed with window D on 2026-11-09:
+
+- enable: ``true`` at 10 Hz while a fresh owner status reports the hold-to-run switch held and no emergency stop;
+  one ``false`` the moment a fresh status reports it released (or the emergency stop pressed), then nothing; nothing
+  while the owner status is stale or the switch input is missing, so the gate's enable times out on its own.
+  With the switch not installed (``enable_source: OPERATOR_START``) the same rules follow the owner's
+  ``enable_request``: true from the operator's accepted "start automatic" until any stop.
+- estop: ``true`` at 10 Hz while pressed, one ``false`` when released; reliable and transient local. Pressed means
+  the physical emergency stop when it can be read, or the owner's ``estop_request`` (the panel's software emergency
+  stop, or a stop inferred from the wheel feedback, held for at least 0.5 s). The first known state is sent at once.
+  The bridge is the only publisher, also without the hold-to-run switch (D.md 2026-11-10 13:15).
+
+A malformed gate command (unknown schema, missing or extra field, non-finite number) or one stamped in the future is
+a fault: the bridge stops and the owner, seeing the socket close, ends automatic control. A stale gate command
+(older than 0.3 s) is dropped. The bridge never opens a serial port, never publishes in the panel domain, does not
+change any velocity and does not reconnect. Starting it requires today's user approval
+``WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>``; without an available automatic control source in the owner
+there is no socket to connect to. ``--dry-run`` (window D's closed-loop dry run against ``wc_runtime.auto_dry_run``)
+needs no approval, but forwards nothing until the owner's status reports ``dry_run: true`` and stops if it does not.
 """
 import argparse
 import datetime
@@ -22,23 +37,30 @@ from .auto_protocol import (DECISION_STALE_S, STATUS_STALE_S, ProtocolError, dec
 NAV_DOMAIN = '100'
 APPROVAL_ENV = 'WC_AUTO_DRIVE_APPROVAL'
 FUTURE_TOLERANCE_NS = 50_000_000
+RELAY_SCHEMA = 'wc_base_status_relay_v1'
+SWITCH_PERIOD_S = 0.1          # enable heartbeat and estop repetition, same rate as base_status
 
 
 class BridgeError(RuntimeError):
-    """The owner's socket is gone or misbehaves; the bridge stops."""
+    """The owner's socket is gone or misbehaves, or the gate sent something that must not be acted upon."""
 
 
 class BridgeCore:
     """Socket side of the bridge, without ROS. ``clock_ns`` must be the same monotonic clock as the gate's mono_ns."""
 
-    def __init__(self, session_id, bridge_id, *, clock_ns=time.monotonic_ns):
+    def __init__(self, session_id, bridge_id, *, clock_ns=time.monotonic_ns, require_dry_run=False):
         self.session_id, self.bridge_id, self.clock_ns = session_id, bridge_id, clock_ns
+        # --dry-run: nothing is forwarded until the owner's status says it drives the simulated driver of
+        # wc_runtime.auto_dry_run; a status saying otherwise stops the bridge.
+        self.require_dry_run, self.dry_run_confirmed = require_dry_run, False
         self.sock = None
         self.sequence = 0
         self.pending, self.received = bytearray(), bytearray()
         self.status = self.status_ns = None
-        self.counters = {name: 0 for name in ('gate_commands', 'gate_rejected', 'gate_stale', 'forwarded', 'status',
-                                              'status_rejected')}
+        self.enable_state = self.estop_state = None   # what the bridge last told the gate
+        self.counters = {name: 0 for name in ('gate_commands', 'gate_stale', 'gate_held', 'forwarded', 'status',
+                                              'status_rejected', 'enable_true', 'enable_false', 'estop_true',
+                                              'estop_false')}
 
     def connect(self, path, timeout=1.0):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -74,16 +96,21 @@ class BridgeCore:
             del self.pending[:sent]
 
     def on_gate_command(self, text):
-        """Forward one gate decision; malformed, stale or future-dated ones are dropped, never repaired."""
+        """Forward one gate decision. Malformed or future-dated: fault. Older than 0.3 s: dropped, never repaired."""
         now = self.clock_ns()
         self.counters['gate_commands'] += 1
         try:
             gate = parse_gate_command(text)
-        except ProtocolError:
-            self.counters['gate_rejected'] += 1
-            return False
-        if gate['mono_ns'] > now + FUTURE_TOLERANCE_NS or (now - gate['mono_ns']) * 1e-9 > DECISION_STALE_S:
+        except ProtocolError as error:
+            raise BridgeError('gate command rejected: ' + str(error)) from error
+        if gate['mono_ns'] > now + FUTURE_TOLERANCE_NS:
+            raise BridgeError('gate command stamped %.3f s in the future: not the same monotonic clock'
+                              % ((gate['mono_ns'] - now) * 1e-9))
+        if (now - gate['mono_ns']) * 1e-9 > DECISION_STALE_S:
             self.counters['gate_stale'] += 1
+            return False
+        if self.require_dry_run and not self.dry_run_confirmed:
+            self.counters['gate_held'] += 1
             return False
         self.sequence += 1
         self._queue(decision_packet(gate, self.session_id, self.sequence, now))
@@ -109,11 +136,16 @@ class BridgeCore:
             line, _, rest = self.received.partition(b'\n')
             self.received[:] = rest
             try:
-                self.status = parse_status(decode_line(bytes(line)), self.session_id)
-                self.status_ns = self.clock_ns()
-                self.counters['status'] += 1
+                status = parse_status(decode_line(bytes(line)), self.session_id)
             except ProtocolError:
                 self.counters['status_rejected'] += 1
+                continue
+            if self.require_dry_run:
+                if status.get('dry_run') is not True:
+                    raise BridgeError('--dry-run bridge connected to a wheel owner that is not the dry run')
+                self.dry_run_confirmed = True
+            self.status, self.status_ns = status, self.clock_ns()
+            self.counters['status'] += 1
 
     def status_age_s(self):
         return None if self.status_ns is None else (self.clock_ns() - self.status_ns) * 1e-9
@@ -122,20 +154,86 @@ class BridgeCore:
         age = self.status_age_s()
         return age is not None and age <= STATUS_STALE_S
 
-    def enable(self):
-        """True only while a fresh owner status reports the hold-to-run switch held and no emergency stop."""
-        return self.fresh() and self.status.get('dead_man') is True and self.status.get('estop') is False
+    def switches(self):
+        """(dead_man, estop) from a fresh owner status; None for each value that is unknown."""
+        if not self.fresh():
+            return None, None
+        return self.status.get('dead_man'), self.status.get('estop')
 
-    def estop(self):
-        return self.status.get('estop') if self.fresh() else None
+    def enable_decision(self):
+        """True (enable), False (released or stopped: say so once) or None (unknown: say nothing)."""
+        if not self.fresh():
+            return None
+        status = self.status
+        dead_man, estop = status.get('dead_man'), status.get('estop')
+        if estop is True or status.get('estop_request') is True:
+            return False
+        if status.get('enable_source') == 'OPERATOR_START':
+            return status.get('enable_request') is True
+        if dead_man is True and estop is False:
+            return True
+        return False if dead_man is False else None
+
+    def estop_decision(self):
+        """True (pressed or requested), False (released: say so once) or None (unknown: say nothing)."""
+        if not self.fresh():
+            return None
+        status = self.status
+        if status.get('estop') is True or status.get('estop_request') is True:
+            return True
+        if status.get('estop') is False or status.get('enable_source') == 'OPERATOR_START':
+            return False
+        return None
+
+    def enable(self):
+        """True only while a fresh owner status says the gate may be enabled (switch held, or operator start)."""
+        return self.enable_decision() is True
+
+    def switch_outputs(self, heartbeat):
+        """Messages for this tick as (``'enable'`` or ``'estop'``, value); ``heartbeat`` marks the 10 Hz tick.
+
+        Called on every pump for the immediate transitions and every 0.1 s with ``heartbeat`` for the repetitions."""
+        out = []
+        enabled = self.enable_decision()
+        if enabled is True:
+            if heartbeat or self.enable_state is not True:
+                out.append(('enable', True))
+        elif enabled is False and self.enable_state is not False:
+            out.append(('enable', False))       # released or stopped: tell the gate at once, then stay silent
+        self.enable_state = enabled             # None: unknown, publish nothing, the gate's enable goes stale
+        estop = self.estop_decision()
+        if estop is True:
+            if heartbeat or self.estop_state is not True:
+                out.append(('estop', True))
+            self.estop_state = True
+        elif estop is False and self.estop_state is not False:
+            out.append(('estop', False))        # released, or the first known state: keeps transient local current
+            self.estop_state = False
+        for name, value in out:
+            self.counters['%s_%s' % (name, 'true' if value else 'false')] += 1
+        return out
 
     def base_status(self):
+        """``/wc_nav/base_status``: the owner's status plus what the gate acts on (``base_auto``, ``reason``)."""
         age = self.status_age_s()
-        return {'schema': 'wc_base_status_relay_v1', 'session_id': self.session_id, 'bridge_id': self.bridge_id,
-                'connected': self.sock is not None, 'owner_status_age_s': None if age is None else round(age, 3),
-                'owner_status_stale': not self.fresh(), 'reason': None if self.fresh() else 'BASE_STATUS_STALE',
-                'enable': self.enable(), 'owner': self.status,
-                'counters': dict(self.counters)}
+        fresh = self.fresh()
+        owner = self.status if fresh else None
+        base_auto = owner is not None and owner.get('auto_state') == 'AUTO'
+        reason = None if base_auto else ('BASE_NOT_AUTO' if fresh else 'BASE_STATUS_STALE')
+        dead_man, estop = self.switches()
+        return {'schema': RELAY_SCHEMA, 'stamp_mono_ns': self.clock_ns(), 'session_id': self.session_id,
+                'bridge_id': self.bridge_id, 'connected': self.sock is not None,
+                'owner_status_age_s': None if age is None else round(age, 3), 'owner_status_stale': not fresh,
+                'base_auto': base_auto, 'reason': reason,
+                'source': None if owner is None else owner.get('source'),
+                'auto_state': None if owner is None else owner.get('auto_state'),
+                'enable_source': None if owner is None else owner.get('enable_source'),
+                'enable_request': None if owner is None else owner.get('enable_request'),
+                'estop_request': None if owner is None else owner.get('estop_request'),
+                'estop_reasons': None if owner is None else owner.get('estop_reasons'),
+                'dead_man': dead_man, 'estop': estop, 'enable': self.enable(),
+                'feedback': None if owner is None else owner.get('feedback'),
+                'owner': self.status, 'counters': dict(self.counters)}
 
     def close(self):
         if self.sock is not None:
@@ -143,12 +241,12 @@ class BridgeCore:
             self.sock = None
 
 
-def check_environment(environ, today):
-    """Refuse outside the navigation domain or without today's explicit user approval."""
+def check_environment(environ, today, *, dry_run=False):
+    """Refuse outside the navigation domain or, unless this is a dry run, without today's explicit user approval."""
     if environ.get('ROS_DOMAIN_ID') != NAV_DOMAIN or environ.get('ROS_LOCALHOST_ONLY') != '1' or \
             environ.get('ROS_DISCOVERY_SERVER'):
         raise SystemExit('the base bridge runs only with ROS_DOMAIN_ID=%s and ROS_LOCALHOST_ONLY=1' % NAV_DOMAIN)
-    if environ.get(APPROVAL_ENV) != 'APPROVED_BY_USER_' + today.strftime('%Y%m%d'):
+    if not dry_run and environ.get(APPROVAL_ENV) != 'APPROVED_BY_USER_' + today.strftime('%Y%m%d'):
         raise SystemExit('the base bridge needs %s=APPROVED_BY_USER_<today, YYYYMMDD>' % APPROVAL_ENV)
 
 
@@ -158,10 +256,13 @@ def main(argv=None):
     parser.add_argument('--session-root', type=Path, required=True, help='directory of the running panel session')
     parser.add_argument('--session-id', required=True)
     parser.add_argument('--bridge-id', default='bridge_' + uuid.uuid4().hex[:12])
+    parser.add_argument('--dry-run', action='store_true',
+                        help='connect to wc_runtime.auto_dry_run (simulated driver): no user approval needed, and '
+                             'nothing is forwarded unless the owner reports dry_run')
     args = parser.parse_args(argv)
-    check_environment(os.environ, datetime.date.today())
+    check_environment(os.environ, datetime.date.today(), dry_run=args.dry_run)
     from wc_runtime.mapping_auto import auto_socket_path
-    core = BridgeCore(args.session_id, args.bridge_id)
+    core = BridgeCore(args.session_id, args.bridge_id, require_dry_run=args.dry_run)
     core.connect(auto_socket_path(args.project_root, args.session_root, args.session_id))
     import json
     import rclpy
@@ -171,11 +272,12 @@ def main(argv=None):
     node = rclpy.create_node('wc_auto_bridge')
     failure = []
     try:
-        status_pub = node.create_publisher(String, '/wc_nav/base_status', 10)
-        enable_pub = node.create_publisher(Bool, '/wc_nav/enable', 10)
-        estop_pub = node.create_publisher(Bool, '/wc_nav/estop', 10)
         latest = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
-        last_estop = [None]
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        status_pub = node.create_publisher(String, '/wc_nav/base_status', 10)
+        publishers = {'enable': node.create_publisher(Bool, '/wc_nav/enable', 10),
+                      'estop': node.create_publisher(Bool, '/wc_nav/estop', latched)}
 
         def guarded(action):
             def run(*args):
@@ -187,18 +289,21 @@ def main(argv=None):
                     failure.append(str(error))
             return run
 
-        node.create_subscription(String, '/wc_nav/gate_command', guarded(lambda m: core.on_gate_command(m.data)), latest)
-        node.create_timer(0.02, guarded(core.pump))
-        node.create_timer(0.1, guarded(lambda: status_pub.publish(String(data=json.dumps(core.base_status())))))
+        def publish_switches(heartbeat):
+            for name, value in core.switch_outputs(heartbeat):
+                publishers[name].publish(Bool(data=value))
 
-        def switches():
-            if core.enable():
-                enable_pub.publish(Bool(data=True))   # no message when released: the gate's enable goes stale
-            estop = core.estop()
-            if estop is not None and estop != last_estop[0]:
-                estop_pub.publish(Bool(data=estop))
-                last_estop[0] = estop
-        node.create_timer(0.25, guarded(switches))
+        def fast():
+            core.pump()
+            publish_switches(False)
+
+        def slow():
+            publish_switches(True)
+            status_pub.publish(String(data=json.dumps(core.base_status(), allow_nan=False)))
+
+        node.create_subscription(String, '/wc_nav/gate_command', guarded(lambda m: core.on_gate_command(m.data)), latest)
+        node.create_timer(0.02, guarded(fast))
+        node.create_timer(SWITCH_PERIOD_S, guarded(slow))
         while rclpy.ok() and not failure:
             rclpy.spin_once(node, timeout_sec=0.05)
     finally:

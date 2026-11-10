@@ -74,7 +74,8 @@ acceleration integration or acceleration lever-arm compensation.
 """
     setup = _object(value, {'schema_version', 'status', 'coordinate_convention',
                            'rotation_convention', 'calibration_reference',
-                           'lidars', 'imu', 'wheel_odometry'}, 'hardware_setup', optional={'visualization','manual_controls'})
+                           'lidars', 'imu', 'wheel_odometry'}, 'hardware_setup',
+                    optional={'visualization', 'manual_controls', 'auto_controls'})
     if type(setup['schema_version']) is not int or setup['schema_version'] != 1 or \
             setup['status'] != 'EXPERIMENT':
         raise ValueError('hardware_setup requires schema_version 1 and status EXPERIMENT')
@@ -141,6 +142,11 @@ acceleration integration or acceleration lever-arm compensation.
     if 'manual_controls' in setup:
         from .mapping_wheel import validate_manual_controls
         resolved['manual_controls'] = validate_manual_controls(setup['manual_controls'])
+    if 'auto_controls' in setup:
+        # Kept as written: the wheel owner validates it again from the session configuration.
+        from .mapping_auto import validate_auto_controls
+        validate_auto_controls(setup['auto_controls'])
+        resolved['auto_controls'] = copy.deepcopy(setup['auto_controls'])
     return resolved
 
 
@@ -150,7 +156,7 @@ def _resolve_v2(value):
     setup = _object(value, {'schema_version', 'status', 'coordinate_convention',
         'rotation_convention', 'transform_convention', 'profile', 'assembly',
         'source_documents', 'mechanical_reference', 'data_transforms', 'wheel_odometry'},
-        'hardware_setup_v2', optional={'visualization', 'manual_controls', 'legacy_profile'})
+        'hardware_setup_v2', optional={'visualization', 'manual_controls', 'auto_controls', 'legacy_profile'})
     if type(setup['schema_version']) is not int or setup['schema_version'] != 2 or setup['status'] != 'EXPERIMENT':
         raise ValueError('hardware_setup_v2 requires schema_version 2 and status EXPERIMENT')
     if setup['coordinate_convention'] != 'FLU' or setup['rotation_convention'] != ROTATION_CONVENTION:
@@ -215,6 +221,11 @@ def _resolve_v2(value):
     if 'manual_controls' in setup:
         from .mapping_wheel import validate_manual_controls
         resolved['manual_controls'] = validate_manual_controls(setup['manual_controls'])
+    if 'auto_controls' in setup:
+        # Kept as written: the wheel owner validates it again from the session configuration.
+        from .mapping_auto import validate_auto_controls
+        validate_auto_controls(setup['auto_controls'])
+        resolved['auto_controls'] = copy.deepcopy(setup['auto_controls'])
     return resolved
 
 

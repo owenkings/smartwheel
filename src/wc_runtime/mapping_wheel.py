@@ -1009,7 +1009,8 @@ def main(argv=None):
         control_socket = ManualSocket(socket_path, owner)
         owner.before_control = control_socket.pump
         if config.get('auto_controls') is not None:
-            # Optional automatic control source (velocity_channel.md); absent from every generated configuration.
+            # Optional automatic control source (velocity_channel.md): only a hardware setup with auto_controls
+            # puts it into the session configuration (capture.manual_runtime_configuration).
             from .mapping_auto import attach_auto
             auto_socket = attach_auto(config, owner, ROOT, directory)
             if auto_socket is not None:
@@ -1046,7 +1047,10 @@ def main(argv=None):
             owner.fault(failure)
     finally:
         if auto_socket is not None:
-            auto_socket.close()
+            try:
+                auto_socket.close()
+            except Exception as error:  # noqa: BLE001 - owner.close() below must still write zero
+                result, failure = 1, failure or 'automatic control socket close failed: ' + str(error)
         if control_socket is not None:
             control_socket.close()
         if owner is not None:

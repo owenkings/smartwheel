@@ -12,6 +12,7 @@
 - [test_auto_bridge.py](test_auto_bridge.py)
 - [test_auto_evidence.py](test_auto_evidence.py)
 - [test_auto_protocol.py](test_auto_protocol.py)
+- [test_driver_readback.py](test_driver_readback.py)
 - [test_feedback.py](test_feedback.py)
 - [test_feedback_cli_exit.py](test_feedback_cli_exit.py)
 - [test_feedback_transport.py](test_feedback_transport.py)

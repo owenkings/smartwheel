@@ -372,6 +372,9 @@ def manual_runtime_configuration(setup, wheel_hardware, directory, session):
     controls.update(arm_allowed=True, interaction_policy='hybrid_manual',
         reason='本会话显式 --manual-drive：用户键盘驾驶及自动手推授权；不证明物理断线停车。')
     controls = validate_manual_controls(controls)
+    # Optional automatic control source (velocity_channel.md): only a hardware setup with auto_controls gives it;
+    # the wheel owner still needs the day's approval, the evidence and the driver readback before it runs.
+    automatic = {'auto_controls': copy.deepcopy(resolved['auto_controls'])} if 'auto_controls' in resolved else {}
     return dict(session_id=session, source_mode='real', status='EXPERIMENT', duration_s=0,
                 continuous_mapping=True, wheel_device_id=hardware['device_id'],
                 wheel_hardware_config=str(Path(directory)/'configuration/wheel_feedback.json'),
@@ -380,7 +383,7 @@ def manual_runtime_configuration(setup, wheel_hardware, directory, session):
                 motion_estimation=False, slam=False,
                 manual_authorization={'source': 'EXPLICIT_CAPTURE_MANUAL_DRIVE_ARGUMENT',
                     'session_id': session, 'scope': 'human WASD and hybrid hand-push for this session only',
-                    'hardware_stop_validated': False})
+                    'hardware_stop_validated': False}, **automatic)
 
 
 def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None, sides='all', preview_layout='separate',

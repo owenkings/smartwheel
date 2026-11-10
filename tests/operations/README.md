@@ -6,6 +6,9 @@
 
 - [cli_probe.py](cli_probe.py)
 - [process_helper.py](process_helper.py)
+- [test_auto_dry_run.py](test_auto_dry_run.py)
+- [test_auto_operator.py](test_auto_operator.py)
+- [test_auto_test_source.py](test_auto_test_source.py)
 - [test_camera_encoder_cli.py](test_camera_encoder_cli.py)
 - [test_cli.py](test_cli.py)
 - [test_compare_truth.py](test_compare_truth.py)

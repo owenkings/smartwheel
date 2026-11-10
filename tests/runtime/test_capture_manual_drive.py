@@ -200,6 +200,35 @@ def test_manual_runtime_requires_explicit_command_scale(capture_temp):
                                              capture_temp/'session', 'session')
 
 
+AUTO_CONTROLS = {'allowed': True, 'evidence': 'config/local/project/wheel_auto_drive_evidence.json',
+                 'hold_to_run_switch': 'NOT_INSTALLED', 'max_linear_m_s': 0.10, 'max_angular_rad_s': 0.30,
+                 'max_wheel_rpm': 27.0, 'max_linear_accel_m_s2': 0.30, 'max_linear_decel_m_s2': 0.60,
+                 'max_angular_accel_rad_s2': 0.80, 'note': 'synthetic'}
+
+
+def test_manual_runtime_carries_auto_controls_only_when_the_hardware_setup_has_them(capture_temp):
+    from wc_runtime.hardware_setup import resolve_hardware_setup
+    from wc_runtime.mapping_auto import validate_auto_controls
+    setup = read_config('hardware_setup.json')
+    assert 'auto_controls' not in setup
+    runtime = capture.manual_runtime_configuration(setup, read_config('wheel_feedback_current.json'),
+                                                   capture_temp/'session', 'session')
+    assert 'auto_controls' not in runtime
+    setup['auto_controls'] = copy.deepcopy(AUTO_CONTROLS)
+    assert resolve_hardware_setup(setup)['auto_controls'] == AUTO_CONTROLS
+    runtime = capture.manual_runtime_configuration(setup, read_config('wheel_feedback_current.json'),
+                                                   capture_temp/'session', 'session')
+    assert runtime['auto_controls'] == AUTO_CONTROLS and setup['auto_controls'] == AUTO_CONTROLS
+    assert validate_auto_controls(runtime['auto_controls'])['allowed'] is True   # the owner validates it again
+    setup['auto_controls']['max_linear_m_s'] = 0.5
+    with pytest.raises(ValueError, match='auto_controls.max_linear_m_s'):
+        capture.manual_runtime_configuration(setup, read_config('wheel_feedback_current.json'),
+                                             capture_temp/'session', 'session')
+    setup['auto_controls'] = dict(AUTO_CONTROLS, approval='APPROVED_BY_USER_20261111')
+    with pytest.raises(ValueError, match='auto_controls must be an object'):
+        resolve_hardware_setup(setup)
+
+
 @pytest.mark.parametrize('change', [dict(session_id='other'), dict(ready=False),
     dict(raw_recorder_discovered=False), dict(manual_socket_ready=False), dict(feedback_samples=0),
     dict(feedback_samples=True), dict(source_type='READ_ONLY')])

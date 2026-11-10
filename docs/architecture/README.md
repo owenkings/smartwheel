@@ -11,6 +11,7 @@
 - [planning_control.md](planning_control.md)：车体外形贯穿仿真、影子运行和代价地图；规划器与控制器的选择及对比证据。
 - [live_shadow.md](live_shadow.md)：已存地图上的定位、闸门的定位条件和实车影子链路的设计。
 - [velocity_channel.md](velocity_channel.md)：导航到电机的速度通道：手动和自动的切换、各层速度上限、出事时怎么停、急停硬件和接通前的证据（设计，用户 2026-11-09 同意）。
+- [velocity_channel_review.md](velocity_channel_review.md)：速度通道第 0 级代码的一页说明，给用户审。
 
 ## 添加与验证
 
