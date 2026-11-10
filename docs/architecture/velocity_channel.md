@@ -136,6 +136,7 @@ flowchart LR
 - 失联停车靠 2000h；默认 1000 ms 在 0.30 m/s 时多走 0.3 m。读命令算不算通讯，要架空实测。
 
 ### 7.3 下次现场怎么做（不买东西，不写驱动器参数）
+2026-11-10 起按[第一次空车闭环的现场步骤](../operations/first_closed_loop_steps.md)做：总管 14:40 减过（不拧开按钮盒、不量触点、不断 Orin 电源，只做 0.10 m/s，每种停法 3 次）。下面是原来的完整版，第 7 步回读的说明照样适用。
 前提：按 8.1 第 2 级，用户当次同意。先不开录制，或者先在面板正常结束录制。在 Orin 上运行 `sync`：万一某个按钮连带断了 Orin 的电，数据盘不坏。车架空：驱动轮离地 ≥ 2 cm，垫块不滑，没人坐，轮子周围没人没东西。下面凡是让轮子转的步骤，人都站在车旁、手放在急停上。
 1. 修 USB 转换器：在集线器上插牢、把线固定，能直接插 Orin 更好；J5 上的杜邦线换成拧紧的端子。修完动一动车和线，看内核日志里 1-2.2 有没有掉线（`journalctl -k --since -10min | grep "1-2.2: USB disconnect"`）。之后每次开录前都看一眼。
 2. 断电看线（关绿色开关，等驱动器 PWR 灯灭）：拍下 J4 每个端子上的线；拧开按钮盒，看两个按钮的触点块（常闭一般标 11-12 或 21-22，常开标 13-14 或 23-24）和线的去向；记下蓝色按钮是自锁还是点动。不拆线。
@@ -191,7 +192,7 @@ flowchart LR
 |---|---|---|
 | 0 离线 | 代码评审；单元测试（假串口）覆盖第 4、5、6 节每一条；影子运行的闸门输出离线过限速器；D 审接口；用户同意改接口约定（2026-11-10，已改） | 测试全过；违规 0 |
 | 1 只读设备 | 只读驱动器的固件、加减速时间、最大转速、通讯中断设置、故障码、输入状态（7.3 第 7 步的白名单），原始值记进证据文件 | 都读到值；单位和含义等 8030D 手册核对（第 10 节），第一次闭环只要求会话开始回读的值和证据文件一致 |
-| 2 架空 | 车垫高、驱动轮离地、无人乘坐，用车上现有急停，人在车旁（步骤见 7.3、8.2）。先用现有手动通道（WASD，0.10 m/s）试急停和拔 USB，再用测试指令源（0.10 m/s）核对速度换算 | 下面 a、b 各 3 次，c 软件零速 3 次、急停 1 次，都按预期；急停复位后轮子不自己动；拔 USB 后驱动器自己停的，停下的时间 ≤ 驱动器通讯中断时间 + 0.5 s，不停的只在 0.10 m/s 下照样开，掉线靠人按急停（总管 11-10 定）；测试指令源每次的轮速反馈在指令的 ±10 % 以内 |
+| 2 架空 | 车垫高、驱动轮离地、无人乘坐，用车上现有急停，人在车旁（步骤见 7.3、8.2）。先用现有手动通道（WASD，0.10 m/s）试急停和拔 USB，再用测试指令源（0.10 m/s）核对速度换算 | 下面 a、b 各 3 次，c 软件零速 3 次、急停 1 次，都按预期；急停复位后轮子不自己动；拔 USB 后驱动器自己停的，停下的时间 ≤ 驱动器通讯中断时间 + 0.5 s（中断时间不知道时只记下时间），不停的只在 0.10 m/s 下照样开，掉线靠人按急停（总管 11-10 定）；测试指令源每次的轮速反馈在指令的 ±10 % 以内 |
 | 3 落地制动 | 空车，人在车旁跟车、手能按到急停，测试指令源只跑 0.10 m/s（0.20、0.30 m/s 放到第一次闭环以后）；四种停法：软件零速、`kill -9` 测试指令源、拔 USB、急停（以后装了松手即停开关再加松手），每种 3 次；之后经用户同意加配重或乘坐者再测 | 软件零速、杀测试指令源的停车距离 ≤ 0.18 m（含延迟），急停、拔 USB ≤ 0.30 m；3 次的离散不超过均值的 20 % 或 2 cm（取大的）；停车时航向变化 ≤ 5°；拔 USB 时驱动器不停的，这一种不要制动记录；坐人以前再加减速度的舒适限值 |
 | 4 监督闭环 | 框架验证阶梯第 5 级：封闭走廊、空车、人在车旁跟车、手能按到急停，按批准的速度和路线（第一次 0.10 m/s、0.30 rad/s） | 由用户另定 |
 
@@ -206,6 +207,7 @@ flowchart LR
   - 省掉的：杀轮控所有者、断 Orin 电源、拧开按钮盒量触点。自动通道的左右转、负速度、超限，自动中按 WASD、空格的交接，只在假串口和干跑里测过：测试指令源只发直行。
 
 ### 8.2 第一次通电（架空）
+2026-11-10 起由[第一次空车闭环的现场步骤](../operations/first_closed_loop_steps.md)第 1–5 步代替，下面留作原来的设想。
 1. 车体垫高，两个驱动轮离地 ≥ 2 cm，垫块不会滑；轮子周围没人没东西。
 2. 先不通电，按 7.3 第 2、3 步看线、量触点，确认按下急停时回路断开。
 3. 在面板开常规录制（轮控所有者、反馈和录包都在），先只读：轮速反馈约 10 Hz，全为 0。
@@ -247,7 +249,7 @@ flowchart LR
 8. 第一次闭环 0.10 m/s：闸门实车配置给 `--gate-slow-limits 0.50 0.05`（见第 5 节）。
 9. 闸门之前的链路（控制器 10 Hz、平滑器 20 Hz、碰撞监控约 10 Hz）最坏约 0.3 s，归 B、C；第 6 节的延迟预算从闸门算起。
 10. 闭环干跑（D 用，不开设备）：`python3 -m wc_runtime.auto_dry_run --project-root <检出> --session-root <新的空目录>` 起真的轮控所有者、自动控制源和 auto.sock，只有串口换成模拟驱动器（socket pair：启用后轮速按一阶滞后跟最后一次速度写入），面板换成每 50 ms 一次的界面心跳；`--start once|always|never` 模拟操作员点"开始自动"。上限是第一次闭环的 0.10 m/s、0.30 rad/s，状态里 `dry_run: true`，日志 `<session-root>/sources/wheel_feedback.jsonl`、配置 `configuration/manual_runtime.json`，和录制会话的位置、格式一样。桥加 `--dry-run`：不要用户当天同意，但轮控所有者的状态报 `dry_run: true` 之前不转发任何决定，报的不是 dry run 就退出。
-11. "开始自动""停止自动"（总管 11-10 14:40：先不重编 C++ 面板，用最快能用的形式）：`python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start|stop|status`，经会话的 `operator.sock`（和 `manual.sock`、`auto.sock` 在同一个 0700 目录，只收同一用户；一个连接一行请求、回一行状态）。在终端敲命令时 RViz 窗口失去焦点，而自动只在 RViz 有焦点时跑：`start` 以后 10 s 内点进 RViz 窗口，轮控所有者等到界面心跳重新是前台，才按和面板请求一样的进入条件开始，命令行一直打印状态到 AUTO 或被拒。停车用 RViz 里的空格、WASD、急停或 `stop`；点出 RViz 窗口（比如点回终端）自动就立即停。等开始时按键、空格、面板软件急停都会取消。只有这个命令用 `operator.sock`：桥和导航不能请求自动。闭环干跑里同样有 `operator.sock`，加 `--session-root`、`--session-id` 就能对着它用（干跑的界面心跳一直是前台，不用点）。
+11. "开始自动""停止自动"（总管 11-10 14:40：先不重编 C++ 面板，用最快能用的形式）：`python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start|stop|status|session`，经会话的 `operator.sock`（和 `manual.sock`、`auto.sock` 在同一个 0700 目录，只收同一用户；一个连接一行请求、回一行状态）。在终端敲命令时 RViz 窗口失去焦点，而自动只在 RViz 有焦点时跑：`start` 以后 10 s 内点进 RViz 窗口，轮控所有者等到界面心跳重新是前台，才按和面板请求一样的进入条件开始，命令行一直打印状态到 AUTO 或被拒。停车用 RViz 里的空格、WASD、急停或 `stop`；点出 RViz 窗口（比如点回终端）自动就立即停。等开始时按键、空格、面板软件急停都会取消。只有这个命令用 `operator.sock`：桥和导航不能请求自动。闭环干跑里同样有 `operator.sock`，加 `--session-root`、`--session-id` 就能对着它用（干跑的界面心跳一直是前台，不用点）。`session` 打印本次录制的 `--session-root`、`--session-id`，给桥的命令行用；找不到带自动的录制时，`status` 会带上轮控所有者在日志里写的原因（例如证据被拒）。
 
 ## 10. 待新成员从手册核对的问题
 同系列 ZLAC8015D 的 RS485 通讯说明（第 7.2 节的链接）可以对照：2000h 通讯掉线时间、200Dh 控制模式、200Eh 控制字（5 快速停车、6 清故障、7 停止、8 使能）、200Fh 同步或异步、2003h 输入状态、2008h 最大转速、2011h 快速停车方式、2016h–2018h 输入电平和功能、2080h–2085h 加减速和快速停车减速时间、20A5h、20A6h 故障码。8030D 的速度单位和它不同，所以每一项都要用 8030D 手册或只读回读确认，不能直接套用。
@@ -273,7 +275,7 @@ flowchart LR
 - 自动控制源在新文件 [mapping_auto.py](../../src/wc_runtime/mapping_auto.py)。[mapping_wheel.py](../../src/wc_runtime/mapping_wheel.py) 只加挂接（+24/−3 行）：没有挂接时手动驾驶、手推和录包的行为不变。会话冻结配置里没有 `auto_controls` 就不挂接。11-10 起采集从本机硬件配置（`config/local/project/hardware_setup.json`）抄 `auto_controls`，有这个键才抄；仓库里的 `hardware_setup.json` 没有它，车上现在的本机配置也没有。
 - 写了 `auto_controls` 也要下面几条全满足才建 `auto.sock`：`allowed` 为 true；轮控所有者的环境里有当天的 `WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>`（面板要带着它启动）；证据文件通过，并且记下的 `hold_to_run_switch` 和配置一致；上限自洽；装了开关时有开关和急停的读入；证据列的驱动器参数回读成功。回读（11-10 加）：前面几条都过了，轮控所有者才在会话开始、第一次读反馈之前，把证据列的请求各读一次（只发 `driver_readback` 白名单里的 FC03，回答写进事务日志），每次"开始自动"都拿这些值和证据比；Modbus 异常回答时自动不可用，超时、校验错这类传输故障和别的轮控交换一样不重试，会话结束。
 - 消息格式在 [auto_protocol.py](../../src/wc_motion/auto_protocol.py)。桥只接受 `wc_gate_command_v1`，字段正好是 9.2 第 1 条那些（11-09 晚按 D 的审查加了 `gate_id`，`limits` 改成四项），多一个、少一个都拒绝；`linear_ceiling` 不能大于 `max_linear`；`seq`、`stamp_ns` 是非负整数，`mono_ns` 是正整数；`state` 以大写字母开头，只含大写字母、数字和下划线，至多 48 个字符；`reasons` 是至多 16 条的短字符串列表；`config_sha256` 是 64 位小写十六进制或 null。只有 `ACTIVE` 可以带非零速度；其他状态带非零速度、负线速度、线速度超过批准上限或 `linear_ceiling` 0.005 m/s 以上、角速度超过批准上限 0.01 rad/s 以上、`allow_reverse` 为 true、闸门换了来源，都按软件减速上限停车并退出自动，不截断了照走。
-- 证据格式在 [auto_evidence.py](../../src/wc_motion/auto_evidence.py)，模板 [wheel_auto_drive_evidence.template.json](../../config/wheel_auto_drive_evidence.template.json) 总被拒绝。11-10 按总管 14:40 的计划改成：`STAND_TEST`（架空，上限不超过 0.10 m/s、0.30 rad/s；要手动通道的急停 `estop`，带 `moved_after_reset: false`，和拔 USB `usb_unplugged`，装了开关再加 `dead_man`）、`GROUND_TEST`（再加 `auto_stand_checks`：架空跑测试指令源，`speed_ratios` 每次一个反馈/指令比，都在 ±10 % 以内）、`SUPERVISED_CLOSED_LOOP`（再加落地的制动记录：批准最高速度下软件零速、杀测试指令源 `source_killed`、急停、拔 USB `communication_loss` 各至少 3 次，过 8.1 的通过线）。每项停车记录至少 3 次。来源文件记路径和 sha256，只能在本检出或数据根里。按档提速写进了代码（第 5 节）。拔 USB 时驱动器自己停的，停车时间必须填，且不超过 `communication_timeout_s` 加 0.5 s；不停的写 `driver_stopped: false` 和决定（`decided_by` 是用户或总管），只在批准上限 0.10 m/s 以内接受，这时不要拔 USB 的制动记录，`communication_timeout_s` 可以是 null（给了数，回读里就要有 `communication_timeout`）。杀轮控所有者、断 Orin 电源、软件零速和 `source_killed` 的停车记录可选，写了 `verified: true` 就照样检查。开关没装时要写明用户的决定，不要 `dead_man` 的停车记录和制动记录。
+- 证据格式在 [auto_evidence.py](../../src/wc_motion/auto_evidence.py)，模板 [wheel_auto_drive_evidence.template.json](../../config/wheel_auto_drive_evidence.template.json) 总被拒绝。11-10 按总管 14:40 的计划改成：`STAND_TEST`（架空，上限不超过 0.10 m/s、0.30 rad/s；要手动通道的急停 `estop`，带 `moved_after_reset: false`，和拔 USB `usb_unplugged`，装了开关再加 `dead_man`）、`GROUND_TEST`（再加 `auto_stand_checks`：架空跑测试指令源，`speed_ratios` 每次一个反馈/指令比，都在 ±10 % 以内）、`SUPERVISED_CLOSED_LOOP`（再加落地的制动记录：批准最高速度下软件零速、杀测试指令源 `source_killed`、急停、拔 USB `communication_loss` 各至少 3 次，过 8.1 的通过线）。每项停车记录至少 3 次。来源文件记路径和 sha256，只能在本检出或数据根里。按档提速写进了代码（第 5 节）。拔 USB 时驱动器自己停的，停车时间必须填，给了 `communication_timeout_s` 时不超过它加 0.5 s；不停的写 `driver_stopped: false` 和决定（`decided_by` 是用户或总管），只在批准上限 0.10 m/s 以内接受，这时不要拔 USB 的制动记录。批准上限 0.10 m/s 以内 `communication_timeout_s` 也可以是 null（不知道，例如 2000h 读不出来）；给了数，回读里就要有 `communication_timeout`。杀轮控所有者、断 Orin 电源、软件零速和 `source_killed` 的停车记录可选，写了 `verified: true` 就照样检查。开关没装时要写明用户的决定，不要 `dead_man` 的停车记录和制动记录。现场检查一份证据文件，和轮控所有者在会话开始时的检查一样：`python3 -m wc_motion.auto_evidence --project-root ~/wheelchair --evidence <文件>`（只读文件）。
 - 底盘桥在 [auto_bridge.py](../../src/wc_motion/auto_bridge.py)：只在 `ROS_DOMAIN_ID=100`、`ROS_LOCALHOST_ONLY=1` 且有当天同意时启动；闸门决定格式不对或来自未来 50 ms 以上就退出（当故障），超过 0.3 s 的丢掉；`auto.sock` 断了就退出，不重连；使能、急停和 `base_status` 按 9.2 第 2–4 条发。
 - 11-10 按总管的审查（`~/wheelchair_coord/reviews/level0_review_20261110.md`）改：减速停车中出现急停类原因改立即停；闸门决定的新鲜度端到端算；退出路径保证写零；闸门急停锁存挡进入；拒绝原因单独放在 `refusal`；初始化写了使能就不再报手推；证据查失联停车时间；轮速反馈超速立即停；补了审查列出的测试缺口。同时按用户的决定加了"开关未安装"模式和轮速判急停。之后按 D 13:15 的意见，没装开关时桥也发 `/wc_nav/estop`（面板软件急停、轮速判出的急停）。
 - 还没做（总管 11-10 14:40 定放到第一次闭环以后）：RViz C++ 面板的"开始自动""停止自动"和状态显示（在这以前用 9.2 第 11 条的命令行）；2003h 输入状态、故障码的低频读取（第 6 节表里的"新增"），要新的 FC03 读，在 `step()` 里和反馈读错开。驱动器参数只在会话开始读一次（见上）。现场一次性的只读回读另有 [driver_readback.py](../../src/wc_motion/driver_readback.py)（7.3 第 7 步），总管审过、用户当天同意才用。

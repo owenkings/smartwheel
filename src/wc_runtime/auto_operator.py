@@ -1,6 +1,6 @@
 """Start and stop automatic control from the command line until the RViz panel has its buttons (velocity_channel.md).
 
-    python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start|stop|status
+    python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start|stop|status|session
 
 start: asks the wheel owner of the running recording to start automatic control. Typing the command took the focus
 away from the RViz window, and automatic control only runs while RViz has it: click into the RViz window within
@@ -10,6 +10,9 @@ refusal. Stop with Space or WASD in RViz, the emergency stop, or ``stop`` here; 
 terminal, for example) already stops automatic control at once.
 stop: the panel's "stop automatic": decelerate to zero and leave automatic control; also cancels a waiting start.
 status: the owner's automatic control state in one line.
+session: prints ``--session-root <dir> --session-id <id>`` of the running recording, for the base bridge's command
+line: ``python3 -m wc_motion.auto_bridge --project-root ~/wheelchair $(python3 -m wc_runtime.auto_operator
+--project-root ~/wheelchair session)``.
 
 The socket is operator.sock next to the session's manual.sock and auto.sock (same user only). Only this command
 uses it: the base bridge and navigation never request automatic control. --session-root and --session-id select a
@@ -23,7 +26,7 @@ import time
 
 from wc_motion.auto_protocol import ProtocolError, encode_line
 
-from .mapping_auto import OPERATOR_WAIT_S, operator_socket_path, running_auto_sessions
+from .mapping_auto import OPERATOR_WAIT_S, operator_socket_path, recording_sessions, running_auto_sessions
 
 ANSWER_BYTES = 65536
 POLL_S = 0.2
@@ -68,6 +71,21 @@ def line(status):
     return text
 
 
+def attach_reason(directory, *, lines=5000):
+    """The wheel owner's account of its automatic control source (state: reason), from the start of its journal."""
+    try:
+        with (Path(directory) / 'sources/wheel_feedback.jsonl').open(encoding='utf-8') as stream:
+            for number, text in enumerate(stream):
+                if number >= lines:
+                    break
+                if '"auto_attached"' in text:
+                    value = json.loads(text)
+                    return '%s: %s' % (value.get('state'), value.get('reason'))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def session(args):
     root = args.project_root.resolve()
     if (args.session_root is None) != (args.session_id is None):
@@ -76,8 +94,16 @@ def session(args):
         return root, args.session_root.absolute(), args.session_id
     sessions = running_auto_sessions(root)
     if len(sessions) != 1:
-        raise SystemExit('expected one running recording with automatic control, found %d (is the panel started '
-                         'with WC_AUTO_DRIVE_APPROVAL and auto_controls in the hardware setup?)' % len(sessions))
+        hint = ''
+        running = [row for row in recording_sessions(root) if row[2] == 'RECORDING']
+        if not sessions and running:
+            reason = attach_reason(running[0][0])
+            hint = '; the wheel owner of %s reports %s' % (running[0][1], reason or (
+                'nothing about automatic control: is auto_controls in the hardware setup?'))
+        elif not sessions:
+            hint = '; no recording of this checkout is running'
+        raise SystemExit('expected one running recording with automatic control, found %d%s'
+                         % (len(sessions), hint))
     return (root, *sessions[0])
 
 
@@ -108,12 +134,15 @@ def start(path, session_id, *, clock=time.monotonic, sleep=time.sleep, out=print
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=('start', 'stop', 'status'))
+    parser.add_argument('command', choices=('start', 'stop', 'status', 'session'))
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--session-root', type=Path, help='default: the one running recording with automatic control')
     parser.add_argument('--session-id')
     args = parser.parse_args(argv)
     root, session_root, session_id = session(args)
+    if args.command == 'session':
+        print('--session-root %s --session-id %s' % (session_root, session_id), flush=True)
+        return 0
     path = operator_socket_path(root, session_root, session_id)
     try:
         if args.command == 'start':

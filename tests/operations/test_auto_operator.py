@@ -63,10 +63,23 @@ def test_start_status_and_stop_from_the_command_line(capsys):
         assert not errors
 
 
-def test_command_line_needs_one_running_session(tmp_path, monkeypatch):
+def test_command_line_needs_one_running_session(tmp_path, monkeypatch, capsys):
+    assert o.main(['session', '--project-root', str(ROOT), '--session-root', str(tmp_path), '--session-id', 'abc']) == 0
+    assert capsys.readouterr().out == '--session-root %s --session-id abc\n' % tmp_path   # for the bridge
     from wc_runtime import project_paths
     monkeypatch.setattr(project_paths, 'capture_staging_root', lambda: tmp_path)
-    with pytest.raises(SystemExit, match='expected one running recording'):
+    with pytest.raises(SystemExit, match='expected one running recording.*found 0; no recording'):
+        o.main(['status', '--project-root', str(ROOT)])
+    import json
+    (tmp_path/'rec'/'sources').mkdir(parents=True)
+    (tmp_path/'rec'/'capture_manifest.json').write_text(json.dumps(
+        {'session_id': 'rec', 'status': 'RECORDING', 'project_root': str(ROOT)}))
+    with pytest.raises(SystemExit, match='reports nothing about automatic control'):
+        o.main(['status', '--project-root', str(ROOT)])
+    (tmp_path/'rec'/'sources'/'wheel_feedback.jsonl').write_text(json.dumps(
+        {'event': 'lease_open'}) + '\n' + json.dumps({'event': 'auto_attached', 'state': 'UNAVAILABLE',
+        'reason': 'EVIDENCE_REJECTED: automatic drive evidence is not reviewed'}) + '\n')
+    with pytest.raises(SystemExit, match='reports UNAVAILABLE: EVIDENCE_REJECTED'):
         o.main(['status', '--project-root', str(ROOT)])
     with pytest.raises(SystemExit, match='together'):
         o.main(['status', '--project-root', str(ROOT), '--session-id', 'x'])

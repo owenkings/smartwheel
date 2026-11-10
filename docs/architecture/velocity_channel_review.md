@@ -46,7 +46,7 @@
 ## 还没做的
 - RViz 面板的"开始自动""停止自动"和状态显示：要改 C++（`src/wc_bringup/src/mapping_teleop.cpp`）并重编面板，总管 11-10 定放到第一次闭环以后；在这以前用命令行 `python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start|stop|status`（设计 9.2 第 11 条）。
 - 2003h 输入状态、故障码的低频读取：放到第一次闭环以后（总管 11-10 14:40）。驱动器参数在会话开始读一次（11-10 加）。只发 FC03 的现场小工具：[driver_readback.py](../../src/wc_motion/driver_readback.py)（设计 7.3 第 7 步），总管审过、你当天同意再用。
-- 现场：按设计第 7.3 节修 USB 转换器，架空看急停怎么停、复位后会不会自己走，拔 USB 看驱动器停不停。
+- 现场：按[第一次空车闭环的现场步骤](../operations/first_closed_loop_steps.md)做（总管合进现场清单）。
 - 别人的部分：D 按 9.2 改闸门（`gate_command`、`require_base`、使能来源检查、单调钟，以及这次登记的"开始自动"使能）；B 看平滑器放行跳变和 `velocity_timeout`；C 用实测停车距离核对碰撞监控余量。
 - [接口约定](../reference/interface_contract.md)：你 11-10 同意的改法已写进去（只有轮控所有者的自动控制源能向驱动器写速度，而且只在用户当天同意、证据文件通过时；其他进程照旧不发电机或导航命令）。
 

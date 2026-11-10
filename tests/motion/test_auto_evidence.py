@@ -99,7 +99,6 @@ def test_complete_synthetic_evidence_gives_the_approved_limits(project, stage):
     (lambda v: v.update(hold_to_run_switch={'installed': False}), 'decision'),
     (lambda v: v.update(hold_to_run_switch={**NOT_INSTALLED, 'decided_by': 'A'}), 'decided_by the user'),
     (lambda v: v.pop('communication_timeout_s'), 'communication_timeout_s'),
-    (lambda v: v.update(communication_timeout_s=None), 'communication_timeout_s'),
     # section 8.1 level 2: communication-loss stops within the driver's timeout plus 0.5 s, and they must be measured
     (lambda v: v['stop_tests']['owner_killed'].update(max_stop_time_s=None), 'owner_killed.max_stop_time_s'),
     (lambda v: v['stop_tests']['usb_unplugged'].update(max_stop_time_s=0.9), 'communication timeout plus'),
@@ -164,15 +163,28 @@ def test_a_driver_that_keeps_going_without_the_line_is_accepted_at_0_10_m_s_with
         value['braking'] = braking(source, 0.10, ('software_zero', 'source_killed', 'estop'))
     result = load(root, value)
     assert result['communication_timeout_s'] is None and result['limits'] == LIMITS
+    stopped = copy.deepcopy(value)                        # stopped by itself, timeout still not known: accepted
+    stopped['stop_tests']['usb_unplugged'] = {'verified': True, 'trials': 3, 'driver_stopped': True,
+                                              'max_stop_time_s': 1.2, 'sources': [source]}
+    if stage == 'SUPERVISED_CLOSED_LOOP':                 # then the communication-loss braking row is needed
+        stopped['braking'] = braking(source, 0.10, ('software_zero', 'source_killed', 'estop'))
+        with pytest.raises(FeedbackError, match='approved top speed for communication_loss'):
+            load(root, stopped)
+        stopped['braking'] = braking(source, 0.10, ('software_zero', 'source_killed', 'communication_loss', 'estop'))
+    assert load(root, stopped)['communication_timeout_s'] is None
+    timeout_check = {'purpose': 'communication_timeout', 'request_hex': read_request(1, 0x2000, 1).hex(),
+                     'word_index': 0, 'mask': 65535, 'equals': 1000}
     for change, message in [
-            (lambda v: v['approved_limits'].update(max_linear_m_s=0.2), 'only up to 0.10 m/s'),
+            (lambda v: v['approved_limits'].update(max_linear_m_s=0.2), 'communication_timeout_s is required above'),
+            (lambda v: (v['approved_limits'].update(max_linear_m_s=0.2), v.update(communication_timeout_s=1.0),
+                        v['driver_readback'].append(timeout_check)), 'only up to 0.10 m/s'),
             (lambda v: v['stop_tests']['usb_unplugged'].pop('decision'), 'usb_unplugged.decision'),
             (lambda v: v['stop_tests']['usb_unplugged'].update(decided_by='A'), 'decided_by must be one of'),
             (lambda v: v['stop_tests']['usb_unplugged'].update(decided_at=''), 'decided_at'),
             (lambda v: v['stop_tests']['usb_unplugged'].update(max_stop_time_s=1.2), 'must be null'),
-            (lambda v: v['stop_tests']['usb_unplugged'].update(driver_stopped=True), 'communication_timeout_s'),
-            (lambda v: v['stop_tests'].update(owner_killed={'verified': True, 'trials': 3, 'max_stop_time_s': 0.4,
-                                                             'sources': [source]}), 'communication_timeout_s')]:
+            (lambda v: v['stop_tests']['usb_unplugged'].update(driver_stopped=True), 'usb_unplugged.max_stop_time_s'),
+            (lambda v: v['stop_tests'].update(owner_killed={'verified': True, 'trials': 3, 'driver_stopped': 'yes',
+                                                             'sources': [source]}), 'owner_killed.driver_stopped')]:
         changed = copy.deepcopy(value)
         change(changed)
         with pytest.raises(FeedbackError, match=message):
@@ -277,3 +289,21 @@ def test_read_evidence_file_resolves_relative_to_the_checkout(project):
     (root/'evidence'/'bad.json').write_text('{"schema": NaN}')
     with pytest.raises(FeedbackError):
         e.read_evidence_file('evidence/bad.json', root, 'ZLAC8030D-0000000014')
+
+
+def test_check_command_reads_the_file_as_the_wheel_owner_does(project, capsys):
+    root, source = project
+    (root/'evidence'/'auto.json').write_text(json.dumps(evidence(source, 'GROUND_TEST')))
+    (root/'config').mkdir()
+    (root/'config'/'wheel_feedback_current.json').write_text(json.dumps({'device_id': 'ZLAC8030D-0000000014'}))
+    assert e.main(['--project-root', str(root), '--evidence', 'evidence/auto.json']) == 0
+    out = capsys.readouterr().out
+    assert out.startswith('PASS: stage GROUND_TEST, device ZLAC8030D-0000000014, limits 0.10 m/s 0.30 rad/s')
+    assert 'readback communication_timeout' in out
+    assert e.main(['--project-root', str(root), '--evidence', 'evidence/auto.json',
+                   '--device-id', 'ZLAC8030D-5C66036979']) == 1
+    assert 'REJECTED: evidence identifies another wheel controller' in capsys.readouterr().out
+    assert e.main(['--project-root', str(root), '--evidence', str(ROOT/'config/wheel_auto_drive_evidence.template.json')]) == 1
+    assert 'REJECTED: automatic drive evidence is not reviewed' in capsys.readouterr().out
+    assert e.main(['--project-root', str(root), '--evidence', 'evidence/missing.json']) == 1
+    assert 'REJECTED' in capsys.readouterr().out

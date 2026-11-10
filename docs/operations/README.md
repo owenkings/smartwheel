@@ -9,6 +9,7 @@
 - [command_reference.md](command_reference.md)
 - [field_extrinsics.md](field_extrinsics.md)：现场双雷达外参与轮速标定（当前方法）
 - [field_site_checks.md](field_site_checks.md)：走廊现场补录（窗口 A 五项）的录法、分析命令和合格线
+- [first_closed_loop_steps.md](first_closed_loop_steps.md)：第一次空车闭环（0.10 m/s）的现场步骤：架空、落地停车测试和闭环
 - [lidar_plane_workbench.md](lidar_plane_workbench.md)
 - [hardware_setup_zh.md](hardware_setup_zh.md)
 - [mapping_app_zh.md](mapping_app_zh.md)

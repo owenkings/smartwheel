@@ -26,8 +26,9 @@ What each stage needs follows the coordinator's plan of 2026-11-10 14:40 for the
 A driver that does not stop by itself when the USB adapter is pulled may be recorded as such (``driver_stopped``
 false) with the decision, by the user or the coordinator, only while the approved linear limit is 0.10 m/s: the
 person beside the chair presses the emergency stop (coordinator 2026-11-10 14:40). Then the communication-loss
-braking row is not required and ``communication_timeout_s`` may be null. The killed owner and the cut Orin power are
-optional now; when recorded as verified they are checked as before.
+braking row is not required. Up to the same speed ``communication_timeout_s`` may be null (not known, for example
+when 2000h cannot be read); above it the timeout is needed and every line-loss stop must come within it plus 0.5 s.
+The killed owner and the cut Orin power are optional now; when recorded as verified they are checked as before.
 """
 import hashlib
 import json
@@ -56,7 +57,8 @@ REQUIRED_STOP_TESTS = {
     'GROUND_TEST': ('estop', 'dead_man', 'usb_unplugged', 'auto_stand_checks'),
     # On the ground the braking rows carry the trials.
     'SUPERVISED_CLOSED_LOOP': ('estop', 'dead_man', 'usb_unplugged', 'auto_stand_checks')}
-NOT_STOPPED_MAX_LINEAR_M_S = 0.10   # a driver that ignores the lost line is accepted only up to this approved speed
+# Up to this approved speed a driver that ignores the lost line, or an unknown communication timeout, is accepted.
+NOT_STOPPED_MAX_LINEAR_M_S = 0.10
 DECIDED_BY = ('user', 'coordinator')
 SPEED_RATIO_TOLERANCE = 0.10        # wheel feedback within 10 % of the command on the stand
 # source_killed: the owner brakes in software when its source is gone, as for software zero.
@@ -198,11 +200,9 @@ def check_stop_test(name, value, project_root, roots, communication_timeout_s, m
     elif name in LOSS_TESTS:
         if value.get('driver_stopped', True) is not True:
             raise FeedbackError(name + '.driver_stopped must be true or false')
-        if communication_timeout_s is None:
-            raise FeedbackError('stop test %s: the driver stopped, so communication_timeout_s is required' % name)
-        limit = communication_timeout_s + LOSS_STOP_MARGIN_S
         stop = _number(value.get('max_stop_time_s'), name + '.max_stop_time_s', 0.0, 10.0)
-        if stop > limit + 1e-9:
+        limit = None if communication_timeout_s is None else communication_timeout_s + LOSS_STOP_MARGIN_S
+        if limit is not None and stop > limit + 1e-9:
             raise FeedbackError('stop test %s took %.2f s, more than the communication timeout plus %.1f s (%.2f s)'
                                 % (name, stop, LOSS_STOP_MARGIN_S, limit))
     elif value.get('max_stop_time_s') is not None:
@@ -291,10 +291,12 @@ def load_evidence(value, project_root, expected_device_id):
     _text(value.get('reviewer'), 'reviewer')
     _text(value.get('reviewed_at'), 'reviewed_at')
     hold = check_hold_to_run(value.get('hold_to_run_switch'))
-    timeout = value.get('communication_timeout_s')   # null: not known; needed once a loss test says the driver stopped
+    timeout = value.get('communication_timeout_s')   # null: not known, accepted up to NOT_STOPPED_MAX_LINEAR_M_S
     if timeout is not None or 'communication_timeout_s' not in value:
         timeout = _number(timeout, 'communication_timeout_s', 0.01, 5.0)
     limits = check_limits(value.get('approved_limits'), stage)
+    if timeout is None and limits['max_linear_m_s'] > NOT_STOPPED_MAX_LINEAR_M_S + 1e-9:
+        raise FeedbackError('communication_timeout_s is required above %.2f m/s' % NOT_STOPPED_MAX_LINEAR_M_S)
     readback = value.get('driver_readback')
     if not isinstance(readback, list) or not readback:
         raise FeedbackError('driver parameter readback checks are required')
@@ -341,6 +343,13 @@ def _reject_constant(value):
     raise FeedbackError('non-finite JSON constant ' + value)
 
 
+def wheel_device_id(project_root):
+    """device_id of the checkout's selected wheel_feedback_current.json, the one the wheel owner checks against."""
+    from wc_runtime.project_config import selected_config_path
+    path = selected_config_path(Path(project_root), 'wheel_feedback_current.json')
+    return json.loads(path.read_text(encoding='utf-8'))['device_id']
+
+
 def read_evidence_file(path, project_root, expected_device_id):
     path = Path(path)
     path = (Path(project_root) / path if not path.is_absolute() else path)
@@ -351,3 +360,35 @@ def read_evidence_file(path, project_root, expected_device_id):
     except ValueError as error:
         raise FeedbackError('automatic drive evidence is not valid JSON') from error
     return load_evidence(value, project_root, expected_device_id)
+
+
+def main(argv=None):
+    """Check an evidence file as the wheel owner does at session start; reads files only."""
+    import argparse
+    parser = argparse.ArgumentParser(description='Check an automatic drive evidence file as the wheel owner does at '
+                                     'session start (velocity_channel.md 8.1). Reads files only.')
+    parser.add_argument('--project-root', type=Path, required=True)
+    parser.add_argument('--evidence', type=Path, required=True,
+                        help='as in auto_controls.evidence: relative to the checkout, or absolute')
+    parser.add_argument('--device-id', help="default: device_id of the checkout's wheel_feedback_current.json")
+    args = parser.parse_args(argv)
+    root = args.project_root.resolve()
+    try:
+        device = args.device_id or wheel_device_id(root)
+        result = read_evidence_file(args.evidence, root, device)
+    except (FeedbackError, OSError, ValueError, KeyError) as error:
+        print('REJECTED: %s' % error, flush=True)
+        return 1
+    limits = result['limits']
+    print('PASS: stage %s, device %s, limits %.2f m/s %.2f rad/s (next step caps %.2f m/s %.2f rad/s), '
+          'readback %s, communication timeout %s s, hold-to-run switch %s, evidence sha256 %s'
+          % (result['stage'], result['device_id'], limits['max_linear_m_s'], limits['max_angular_rad_s'],
+             result['speed_caps']['max_linear_m_s'], result['speed_caps']['max_angular_rad_s'],
+             ', '.join(check['purpose'] for check in result['readback']), result['communication_timeout_s'],
+             'installed' if result['hold_to_run_switch']['installed'] else 'not installed',
+             result['evidence_sha256'][:12]), flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
