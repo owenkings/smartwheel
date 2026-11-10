@@ -43,7 +43,7 @@
 - 第 1 级：驱动器参数只读回读、2003h 输入状态、故障码的低频读取，都是新的 FC03 读，放在 `step()` 里和反馈读错开，还没做。只发 FC03 的现场小工具已写：[driver_readback.py](../../src/wc_motion/driver_readback.py)（设计 7.3 第 7 步），总管审过、你当天同意再用。
 - 现场：按设计第 7.3 节修 USB 转换器，架空看急停怎么停、复位后会不会自己走，拔 USB 看驱动器停不停。
 - 别人的部分：D 按 9.2 改闸门（`gate_command`、`require_base`、使能来源检查、单调钟，以及这次登记的"开始自动"使能）；B 看平滑器放行跳变和 `velocity_timeout`；C 用实测停车距离核对碰撞监控余量。
-- 要你定的：[接口约定](../reference/interface_contract.md)"不发送任何电机或导航命令"那一条（第 2 级架空之前）。
+- [接口约定](../reference/interface_contract.md)：你 11-10 同意的改法已写进去（只有轮控所有者的自动控制源能向驱动器写速度，而且只在用户当天同意、证据文件通过时；其他进程照旧不发电机或导航命令）。
 
 ## 建议的审法
 1. `git -C ~/wheelchair-wt/motion diff be96b7f7 HEAD -- src/wc_runtime/mapping_wheel.py`：先确认挂接只有这些。
