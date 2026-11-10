@@ -587,6 +587,36 @@ def test_result_json_is_written_after_an_operator_stop(tmp_path, monkeypatch):
     assert result["status"] == "INCOMPLETE" and result["commands"] == {"count": 3}
 
 
+def test_a_run_stopped_by_the_start_check_is_incomplete(tmp_path, monkeypatch):
+    from wc_navigation.live import cli, config as live_config, shadow_summary, supervisor
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+    monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    seen = {}
+
+    def fake_run(self):
+        seen["start_check"] = self.config["start_check"]
+        return {"stages": [], "process_exit_codes": {}, "stopped": "INITIAL_POSE_MISMATCH",
+                "start_check": {"status": "INITIAL_POSE_MISMATCH"}}
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
+    monkeypatch.setattr(shadow_summary, "summarize_shadow", lambda config, output: {"commands": {"count": 0}})
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve", lambda self, value: tmp_path / "run0")
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    (tmp_path / "bag").mkdir()
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
+    argv = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--map", str(map_yaml), "--initial-pose", "0", "0", "0", "--goal", "1", "2", "0", "--source", "bag",
+            "--bag", str(tmp_path / "bag")]
+    assert cli.main(argv) == 1
+    assert seen["start_check"] == "block"                       # the default
+    result = json.loads((tmp_path / "run0" / "result.json").read_text())
+    assert result["status"] == "INCOMPLETE" and result["supervisor"]["stopped"] == "INITIAL_POSE_MISMATCH"
+    with pytest.raises(SystemExit):
+        cli.arguments(argv + ["--start-check", "maybe"])
+    assert cli.arguments(argv + ["--start-check", "strict"]).start_check == "strict"
+
+
 def test_vehicle_priority_is_only_ever_lowered(monkeypatch):
     import os
     from wc_navigation.live import supervisor
@@ -614,3 +644,52 @@ def test_relay_graph_query_needs_the_approval_localhost_only_and_a_valid_prefix(
             cli.arguments(["relay-graph", "--sensor-domain", "83", *bad])
     with pytest.raises(SystemExit):
         cli.arguments(["relay-graph", "--sensor-domain", "300"])
+
+
+# -- start check ------------------------------------------------------------------------------------------------
+def _start_check_scorer():
+    """10 x 10 m map, 0.05 m cells: a corridor y -1.2..1.2 along x with a wall across it at x = 4 (only ahead)."""
+    from wc_navigation.live.amcl_cross import EndpointScorer
+    data = np.zeros((200, 200), dtype=np.int16)                 # origin (-5, -5)
+    for y in (-1.2, 1.2):
+        data[int((y + 5) / 0.05), :] = 100
+    data[int((-1.2 + 5) / 0.05):int((1.2 + 5) / 0.05) + 1, int((4.0 + 5) / 0.05)] = 100
+    return EndpointScorer(data, 0.05, (-5.0, -5.0, 0.0))
+
+
+def _scans_seen_from(pose, scorer, count=10):
+    """Ranges of a 161-bin, +-60 deg scan cast from the laser at ``pose`` (laser = base, no lever) on the map."""
+    from wc_navigation.autonomy.replay_mapping import ANGLES
+    ranges = np.full(len(ANGLES), np.inf)
+    for k, angle in enumerate(ANGLES):
+        heading = pose[2] + angle
+        for r in np.arange(0.3, 8.0, 0.02):
+            xy = np.array([[pose[0] + r * math.cos(heading), pose[1] + r * math.sin(heading)]])
+            if scorer.lookup(xy)[0] < 0.03:
+                ranges[k] = r
+                break
+    return [(ranges, float(ANGLES[0]), float(ANGLES[1] - ANGLES[0]))] * count
+
+
+def test_start_check_passes_the_right_heading_and_stops_the_turned_one():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    facing_wall = _scans_seen_from((1.0, 0.0, 0.0), scorer)           # the wall across the corridor is 3 m ahead
+    right = start_check.evaluate(scorer, facing_wall, (0.0, 0.0), (1.0, 0.0, 0.0))
+    assert right["status"] == "PASS" and right["given"]["best"] > 0.9 and right["turned_180"]["best"] < 0.7
+    wrong = start_check.evaluate(scorer, facing_wall, (0.0, 0.0), (1.0, 0.0, math.pi))
+    assert wrong["status"] == "INITIAL_POSE_MISMATCH"
+    assert start_check.stops_run("INITIAL_POSE_MISMATCH", "block") and not start_check.stops_run("PASS", "strict")
+    assert "反了" in start_check.operator_message(wrong, "block")
+
+
+def test_start_check_reports_a_corridor_view_as_ambiguous():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    along = _scans_seen_from((-3.0, 0.0, math.pi), scorer)          # looking down the corridor away from the wall
+    result = start_check.evaluate(scorer, along, (0.0, 0.0), (-3.0, 0.0, math.pi))
+    assert result["status"] == "AMBIGUOUS"
+    assert not start_check.stops_run("AMBIGUOUS", "block") and start_check.stops_run("AMBIGUOUS", "strict")
+    assert not start_check.stops_run("INITIAL_POSE_MISMATCH", "warn")
+    assert start_check.evaluate(scorer, along[:3], (0.0, 0.0), (-3.0, 0.0, 0.0))["status"] == "START_CHECK_NO_DATA"
+    assert start_check.moved((0.0, 0.0, 0.0), (0.06, 0.0, 0.0)) and not start_check.moved((0, 0, 0), (0.02, 0, 0.01))

@@ -43,6 +43,10 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     车头朝向必须和 YAW_DEG 一致。方向一律按看板地图说：右 = 地图 +x，左 = 地图 −x。不要用东西南北，现实里地图 −x 是东。
     ZL1107 地图的起点 (−0.323, −0.229, 0°) 是车头朝看板地图的右边：往前约 5 m 直走廊到头，接开阔区和一条拐出去的走廊；车后是约 12 m 长的直走廊。
     2026-11-09 两次车头都朝左，和给定航向差 180°。走廊两边对称，AMCL 和闸门在前 4–5 m 都看不出来。
+    起点检查：Nav2 和闸门启动之前，命令用静止扫描核对给定位姿，打印"起点检查…"一行，看到之前不要推车。
+    - 通过：照常运行。
+    - 没通过（INITIAL_POSE_MISMATCH）：运行自己停止。按给定位姿摆好车或改 --initial-pose，再重新启动。
+    - 看不出朝向（AMBIGUOUS，走廊里沿走廊起步时就是这样）：照常运行，朝向只能靠上面的说明核对。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
 11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）。结束时按一次 Ctrl-C 停止本命令：只停本命令启动的进程；收尾期间再按 Ctrl-C 不会打断，收尾完写出 result.json（supervisor.stopped = OPERATOR_INTERRUPT；车上模式这样结束是正常结束）。
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
@@ -105,6 +109,11 @@ def arguments(argv=None):
     shadow.add_argument("--initial-pose", nargs=3, type=finite, required=True, metavar=("X_M", "Y_M", "YAW_DEG"))
     shadow.add_argument("--initial-pose-std", nargs=2, type=finite, default=[0.25, math.degrees(0.15)],
                         metavar=("XY_M", "YAW_DEG"))
+    from .start_check import MODES as START_CHECK_MODES
+    shadow.add_argument("--start-check", choices=START_CHECK_MODES, default="block",
+                        help="standing scans against the map at the start pose before Nav2 and the gate start: block "
+                             "stops on INITIAL_POSE_MISMATCH and warns on AMBIGUOUS (default), strict stops on both, "
+                             "warn only reports, off skips it")
     shadow.add_argument("--goal", action="append", nargs=3, type=finite, metavar=("X_M", "Y_M", "YAW_DEG"))
     shadow.add_argument("--goals-along-cell", type=Path,
                         help="bag test: goals every --goal-spacing m along this frontend's path, placed by --map-alignment-json")
@@ -307,6 +316,7 @@ def run_command(args, guard):
                       initial_pose=[args.initial_pose[0], args.initial_pose[1], math.radians(args.initial_pose[2])],
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)
+        config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
         if args.source == "vehicle":
             config["relay"] = {"source_domain": args.sensor_domain, "source_prefix": "", "output_prefix": OUTPUT_PREFIX,
                                "wait_for_panel_consumers": True}
@@ -344,8 +354,11 @@ def run_command(args, guard):
         from .shadow_summary import summarize_shadow
         try:
             result.update(summarize_shadow(config, output))
-            # the vehicle run ends with Ctrl-C by design; a bag run stopped early did not see the whole recording
-            complete = "error" not in report and result.get("commands") and not (interrupted and config["source"] == "bag")
+            # the vehicle run ends with Ctrl-C by design; a bag run stopped early did not see the whole recording;
+            # a run the start check stopped never started Nav2 and the gate
+            complete = ("error" not in report and result.get("commands")
+                        and report.get("stopped") in (None, INTERRUPTED, "DURATION_LIMIT")
+                        and not (interrupted and config["source"] == "bag"))
             result["status"] = "COMPLETE" if complete else "INCOMPLETE"
         except Exception as exc:
             result["summary_error"] = type(exc).__name__ + ": " + str(exc)

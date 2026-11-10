@@ -254,6 +254,21 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 - 面板域的只读查询没做，下次用上面的命令做。
 - 两次的初始位姿都和车头朝向相反（给 0°、地图 +x，车头朝看板地图的左边、地图 −x），见 `reports/navigation_live_shadow/20261109T152258Z_vehicle_shadow_start_heading/`。走廊两边对称，AMCL 和闸门在前 4–5 m 都没发现。地图在那里接大厅、真实扫描还是走廊，闸门才因修正突变停车。
 
+起点检查（`live/start_check.py`，2026-11-10，用户 2026-11-09 同意）：Nav2 和闸门启动之前，用静止扫描核对给定的起点。
+- 量法：0.15 m 以内贴图的端点比例。比两个值：给定位姿附近 ±0.3 m、±10° 内最好的，和掉头 180° 后附近最好的。
+- 用静止扫描量的门限依据（`~/.kiro_work_live/start_check/study.txt`，每种情况 20 帧）：
+
+  | 情况 | 位姿本身 | 附近最好 | 掉头 180° 附近最好 |
+  |---|---|---|---|
+  | 11-07 建图包自己的起点（对） | 48% | 86% | 79% |
+  | 11-07 验证包起点（对，门口朝走廊对面） | 85% | 85% | 0% |
+  | 11-09 两次的真实起点（对） | 85–86% | 85–86% | 72% |
+  | 11-09 两次的给定起点（反了 180°） | 2%、31% | 79% | 85% |
+
+- 规则：给定朝向附近最好的 ≥ 0.6、而且比掉头的高 0.2 以上才通过；掉头的高 0.2 以上，或给定的 < 0.6，判 INITIAL_POSE_MISMATCH，不放行；其余是 AMBIGUOUS。
+- 走廊里沿走廊起步时，扫描两头看起来一样，只能报 AMBIGUOUS（默认只警告）。要靠检查确认朝向，起步位置要选朝向分得开的地方，例如验证包起点。
+- 门限是按上面 6 种情况定的，数据不多。以后有新的起步位置要补测。
+
 ## 上车配置（freeze-config）
 
 `navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照、那个检出的 `config/calibration/lidar_time_offset.json` 副本，和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`，时间偏移也取其中的副本。

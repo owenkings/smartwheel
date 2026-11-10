@@ -41,6 +41,14 @@ INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work nev
 INTERRUPTED = "OPERATOR_INTERRUPT"
 
 
+class StartCheckStop(Exception):
+    """The start check did not let the run go on (INITIAL_POSE_MISMATCH and the like)."""
+
+    def __init__(self, status):
+        super().__init__(status)
+        self.status = status
+
+
 def _say(text):
     """Operator message on stderr; a closed terminal (SIGHUP) must not break the shutdown."""
     try:
@@ -143,6 +151,22 @@ class LiveMonitor:
         self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
         self.initial_pub = self.node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
         self.node.create_timer(0.25, self._heartbeat)
+        # standing scans and the odometry pose for the start check (live/start_check.py)
+        from collections import deque
+        from nav_msgs.msg import Odometry
+        from sensor_msgs.msg import LaserScan
+        self.scans = deque(maxlen=50)
+        self.odom_pose = None
+        self.node.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+        self.node.create_subscription(Odometry, "/odom", self._on_odom, 20)
+
+    def _on_scan(self, message):
+        self.scans.append((list(message.ranges), float(message.angle_min), float(message.angle_increment)))
+
+    def _on_odom(self, message):
+        from ..autonomy.ros_util import quaternion_to_yaw
+        position = message.pose.pose.position
+        self.odom_pose = (float(position.x), float(position.y), quaternion_to_yaw(message.pose.pose.orientation))
 
     def _heartbeat(self):
         message = self.Bool()
@@ -353,6 +377,43 @@ class LiveSupervisor(Supervisor):
         self.wait_for(monitor, localized, 60, "amcl_tf")
         self.report["initial_pose"] = {"pose_map": cfg["initial_pose"], "covariance": covariance,
                                        "messages_sent": published["count"]}
+        self.start_odom = monitor.odom_pose          # where the chair stood when AMCL took the start pose
+
+    def start_check(self, monitor):
+        """Standing scans against the map at the given start pose, before Nav2 and the gate start."""
+        from . import start_check as check
+        cfg = self.config
+        mode = cfg.get("start_check", "block")
+        if mode == "off":
+            self.report["start_check"] = {"status": "OFF", "mode": mode}
+            return
+        from ..autonomy.maps import read_back
+        from .amcl_cross import EndpointScorer
+        _, data, meta = read_back(cfg["map_yaml"])
+        scorer = EndpointScorer(data, meta["resolution"], meta["origin"])
+        lever = json.loads(Path(cfg["live_config_file"]).read_text(encoding="utf-8"))["lever_xy"]
+        reference = getattr(self, "start_odom", None)
+        monitor.scans.clear()
+        status = None
+        end = time.monotonic() + 15.0
+        while len(monitor.scans) < check.MIN_SCANS and time.monotonic() < end:
+            self.check_alive(allow=("bag_play",))
+            monitor.spin(0.1)
+            if reference is None:
+                reference = monitor.odom_pose
+            elif monitor.odom_pose is not None and check.moved(monitor.odom_pose, reference):
+                status = "START_CHECK_NOT_STANDING"
+                break
+        scans = list(monitor.scans)
+        result = (check.evaluate(scorer, scans, lever, cfg["initial_pose"]) if status is None
+                  else {"status": status, "scans": len(scans)})
+        result.update(mode=mode, standing_verified=reference is not None)
+        self.report["start_check"] = result
+        self.report["stages"].append({"stage": "start_check", "status": result["status"],
+                                      "wall_s": round(time.monotonic() - self.t0, 2), "sim_s": round(monitor.now(), 3)})
+        _say(check.operator_message(result, mode))
+        if check.stops_run(result["status"], mode):
+            raise StartCheckStop(result["status"])
 
     def run(self):
         """Run until the source ends, the duration limit or the operator's stop; always returns the report."""
@@ -418,6 +479,7 @@ class LiveSupervisor(Supervisor):
             bag = self.start_bag() if cfg["source"] == "bag" else None
             if profile is not None:
                 self.initial_pose(monitor)
+                self.start_check(monitor)
                 self.start_shadow(monitor, files, profile)
                 self.launch_module("goals", "wc_navigation.live.goals_node", files["goals"])
             budget = cfg.get("max_duration_s", 900.0)
@@ -439,6 +501,8 @@ class LiveSupervisor(Supervisor):
             _say("收到停止信号，开始收尾（再按 Ctrl-C 不会打断）")
             if monitor is not None:
                 self.report["final_status"] = dict(monitor.status)
+        except StartCheckStop as stop:
+            self.report["stopped"] = stop.status          # Nav2 and the gate were never started
         except Exception as exc:
             self.report["error"] = type(exc).__name__ + ": " + str(exc)
         finally:
