@@ -214,6 +214,32 @@ def test_environment_must_be_the_navigation_domain_with_todays_approval():
             b.check_environment(bad, today)
 
 
+def test_dry_run_needs_no_approval_and_forwards_only_to_the_dry_run_owner(short_tmp):
+    today = datetime.date(2026, 11, 10)
+    b.check_environment({'ROS_DOMAIN_ID': '100', 'ROS_LOCALHOST_ONLY': '1'}, today, dry_run=True)
+    with pytest.raises(SystemExit):
+        b.check_environment({'ROS_DOMAIN_ID': '83', 'ROS_LOCALHOST_ONLY': '1'}, today, dry_run=True)
+    clock = ClockNs()
+    server = served(short_tmp/'auto.sock')
+    core = b.BridgeCore('session_a', 'bridge_1', clock_ns=clock, require_dry_run=True)
+    core.connect(short_tmp/'auto.sock')
+    conn, _ = server.accept()
+    assert read_lines(conn, 1)[0]['type'] == 'hello'
+    assert core.on_gate_command(gate_text(clock)) is False and core.counters['gate_held'] == 1
+    deliver(core, conn, operator_status(dry_run=True))
+    assert core.dry_run_confirmed and core.on_gate_command(gate_text(clock, seq=2)) is True
+    assert read_lines(conn, 1)[0]['gate_seq'] == 2
+    core.close(); conn.close()
+    other = b.BridgeCore('session_a', 'bridge_2', clock_ns=clock, require_dry_run=True)
+    other.connect(short_tmp/'auto.sock')
+    conn, _ = server.accept()
+    conn.sendall(p.encode_line(operator_status()))   # a vehicle owner: dry_run absent
+    with pytest.raises(b.BridgeError, match='not the dry run'):
+        for _ in range(50):
+            other.pump()
+    other.close(); conn.close(); server.close()
+
+
 def fake_ros(monkeypatch, hooks):
     """Minimal rclpy / std_msgs stand-ins: timers fire on a fake 10 ms spin, ``hooks`` run at given spin counts."""
     class Msg:

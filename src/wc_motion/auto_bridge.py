@@ -20,7 +20,8 @@ a fault: the bridge stops and the owner, seeing the socket close, ends automatic
 (older than 0.3 s) is dropped. The bridge never opens a serial port, never publishes in the panel domain, does not
 change any velocity and does not reconnect. Starting it requires today's user approval
 ``WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>``; without an available automatic control source in the owner
-there is no socket to connect to.
+there is no socket to connect to. ``--dry-run`` (window D's closed-loop dry run against ``wc_runtime.auto_dry_run``)
+needs no approval, but forwards nothing until the owner's status reports ``dry_run: true`` and stops if it does not.
 """
 import argparse
 import datetime
@@ -47,15 +48,19 @@ class BridgeError(RuntimeError):
 class BridgeCore:
     """Socket side of the bridge, without ROS. ``clock_ns`` must be the same monotonic clock as the gate's mono_ns."""
 
-    def __init__(self, session_id, bridge_id, *, clock_ns=time.monotonic_ns):
+    def __init__(self, session_id, bridge_id, *, clock_ns=time.monotonic_ns, require_dry_run=False):
         self.session_id, self.bridge_id, self.clock_ns = session_id, bridge_id, clock_ns
+        # --dry-run: nothing is forwarded until the owner's status says it drives the simulated driver of
+        # wc_runtime.auto_dry_run; a status saying otherwise stops the bridge.
+        self.require_dry_run, self.dry_run_confirmed = require_dry_run, False
         self.sock = None
         self.sequence = 0
         self.pending, self.received = bytearray(), bytearray()
         self.status = self.status_ns = None
         self.enable_state = self.estop_state = None   # what the bridge last told the gate
-        self.counters = {name: 0 for name in ('gate_commands', 'gate_stale', 'forwarded', 'status', 'status_rejected',
-                                              'enable_true', 'enable_false', 'estop_true', 'estop_false')}
+        self.counters = {name: 0 for name in ('gate_commands', 'gate_stale', 'gate_held', 'forwarded', 'status',
+                                              'status_rejected', 'enable_true', 'enable_false', 'estop_true',
+                                              'estop_false')}
 
     def connect(self, path, timeout=1.0):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -104,6 +109,9 @@ class BridgeCore:
         if (now - gate['mono_ns']) * 1e-9 > DECISION_STALE_S:
             self.counters['gate_stale'] += 1
             return False
+        if self.require_dry_run and not self.dry_run_confirmed:
+            self.counters['gate_held'] += 1
+            return False
         self.sequence += 1
         self._queue(decision_packet(gate, self.session_id, self.sequence, now))
         self.counters['forwarded'] += 1
@@ -128,11 +136,16 @@ class BridgeCore:
             line, _, rest = self.received.partition(b'\n')
             self.received[:] = rest
             try:
-                self.status = parse_status(decode_line(bytes(line)), self.session_id)
-                self.status_ns = self.clock_ns()
-                self.counters['status'] += 1
+                status = parse_status(decode_line(bytes(line)), self.session_id)
             except ProtocolError:
                 self.counters['status_rejected'] += 1
+                continue
+            if self.require_dry_run:
+                if status.get('dry_run') is not True:
+                    raise BridgeError('--dry-run bridge connected to a wheel owner that is not the dry run')
+                self.dry_run_confirmed = True
+            self.status, self.status_ns = status, self.clock_ns()
+            self.counters['status'] += 1
 
     def status_age_s(self):
         return None if self.status_ns is None else (self.clock_ns() - self.status_ns) * 1e-9
@@ -228,12 +241,12 @@ class BridgeCore:
             self.sock = None
 
 
-def check_environment(environ, today):
-    """Refuse outside the navigation domain or without today's explicit user approval."""
+def check_environment(environ, today, *, dry_run=False):
+    """Refuse outside the navigation domain or, unless this is a dry run, without today's explicit user approval."""
     if environ.get('ROS_DOMAIN_ID') != NAV_DOMAIN or environ.get('ROS_LOCALHOST_ONLY') != '1' or \
             environ.get('ROS_DISCOVERY_SERVER'):
         raise SystemExit('the base bridge runs only with ROS_DOMAIN_ID=%s and ROS_LOCALHOST_ONLY=1' % NAV_DOMAIN)
-    if environ.get(APPROVAL_ENV) != 'APPROVED_BY_USER_' + today.strftime('%Y%m%d'):
+    if not dry_run and environ.get(APPROVAL_ENV) != 'APPROVED_BY_USER_' + today.strftime('%Y%m%d'):
         raise SystemExit('the base bridge needs %s=APPROVED_BY_USER_<today, YYYYMMDD>' % APPROVAL_ENV)
 
 
@@ -243,10 +256,13 @@ def main(argv=None):
     parser.add_argument('--session-root', type=Path, required=True, help='directory of the running panel session')
     parser.add_argument('--session-id', required=True)
     parser.add_argument('--bridge-id', default='bridge_' + uuid.uuid4().hex[:12])
+    parser.add_argument('--dry-run', action='store_true',
+                        help='connect to wc_runtime.auto_dry_run (simulated driver): no user approval needed, and '
+                             'nothing is forwarded unless the owner reports dry_run')
     args = parser.parse_args(argv)
-    check_environment(os.environ, datetime.date.today())
+    check_environment(os.environ, datetime.date.today(), dry_run=args.dry_run)
     from wc_runtime.mapping_auto import auto_socket_path
-    core = BridgeCore(args.session_id, args.bridge_id)
+    core = BridgeCore(args.session_id, args.bridge_id, require_dry_run=args.dry_run)
     core.connect(auto_socket_path(args.project_root, args.session_root, args.session_id))
     import json
     import rclpy

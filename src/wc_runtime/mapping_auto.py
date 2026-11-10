@@ -166,6 +166,7 @@ class AutoDrive:
         self.takeover_latch = False
         self.counters = {name: 0 for name in ('decisions', 'decisions_rejected', 'writes', 'zero_writes',
                                               'cancelled_writes', 'entries', 'refusals', 'exits', 'violations')}
+        self.dry_run = False   # True only in wc_runtime.auto_dry_run, whose serial line is a simulated driver
         owner.auto = self
 
     # ---------------------------------------------------------------- bridge side
@@ -761,7 +762,7 @@ class AutoDrive:
                 'gate_id': None if decision is None else decision['gate_id'], 'entry_gate_id': self.entry_gate_id,
                 'takeover_latched': self.takeover_latch, 'manual_state': owner.state, 'push_mode': owner.push_mode,
                 'evidence_stage': self.evidence.get('stage'), 'evidence_sha256': self.evidence.get('evidence_sha256'),
-                'counters': dict(self.counters), 'physical_stop_confirmed': False}
+                'counters': dict(self.counters), 'dry_run': self.dry_run, 'physical_stop_confirmed': False}
 
 
 class AutoSocket:

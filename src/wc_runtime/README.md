@@ -8,6 +8,7 @@
 
 - [single_mapping_assets](single_mapping_assets/README.md)：下一级职责说明。
 - [__init__.py](__init__.py)
+- [auto_dry_run.py](auto_dry_run.py)：给 D 的闭环干跑：真的轮控所有者和自动控制源，串口换成模拟驱动器；不开设备。
 - [calibration_geometry.py](calibration_geometry.py)
 - [calibration_picker.py](calibration_picker.py)
 - [capture.py](capture.py)
