@@ -206,12 +206,19 @@ class GateNode:
         for reason in decision.reasons:
             self.counts[reason] = self.counts.get(reason, 0) + 1
         if decision.state != self.last_state or age_now - self.last_status >= 0.5:
+            # 2 Hz and on every state change; the preview's own changes show at the next 2 Hz status
             status = {"time_s": round(now, 3), "state": decision.state, "reasons": list(decision.reasons),
                       "previous_state": self.last_state, "counts": self.counts,
                       "map_correction_events": self.correction.events,
                       "linear": decision.linear, "angular": decision.angular,
                       "linear_ceiling": decision.linear_ceiling, "gate_id": self.gate_id, "seq": self.seq,
-                      "clock": self.clock, "conditions": self.gate.conditions()}
+                      "clock": self.clock, "conditions": self.gate.conditions(),
+                      "command": self.gate.command_status(age_now)}
+            # What it would pass with the operator's enable, the base and the sources in order: in the closed
+            # loop the standing chair before "start automatic" shows the shadow's view (BOARD 2026-11-10 14:40).
+            preview = self.gate.preview(age_now)
+            status["preview"] = {"state": preview.state, "reasons": list(preview.reasons),
+                                 "linear": preview.linear, "angular": preview.angular}
             if self.relocalization is not None:
                 status["stationary_relocalization"] = self.relocalization.status()
             if cfg.require_covariance:

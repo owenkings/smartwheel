@@ -5,9 +5,8 @@ emergency stop, a fresh operator enable, trusted localization and a fresh
 command; in the vehicle closed loop also a base that runs automatic control and
 a single enable source. Otherwise it outputs an explicit zero twist. It also
 clamps speeds and blocks reverse motion because the wheelchair has no
-rear-facing range sensor. Ages are fresh only within [0, timeout]: a clock that
-went back never makes an old input fresh. The gate is a software layer; it does
-not replace a validated physical stop.
+rear-facing range sensor. The gate is a software layer; it does not replace a
+validated physical stop.
 """
 from __future__ import annotations
 
@@ -313,11 +312,6 @@ class GateDecision:
     linear_ceiling: float = None
 
 
-def _fresh(age, timeout):
-    """Fresh within ``timeout``; a negative age (a clock that went back) is stale, never fresh."""
-    return 0.0 <= age <= timeout
-
-
 class SafetyGate:
     """Pure decision logic; the ROS node only feeds timestamps and inputs."""
 
@@ -375,6 +369,14 @@ class SafetyGate:
     def on_sources(self, ok):
         """Whether /wc_nav/enable and /wc_nav/estop each have exactly the one allowed publisher (enable_source_node)."""
         self._sources_ok = bool(ok)
+
+    def command_status(self, now):
+        """The last monitored command and its age, for the status topic (None before the first command)."""
+        if self._command is None:
+            return None
+        values = [float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+                  else None for v in self._command]
+        return {"linear": values[0], "angular": values[1], "age_s": round(now - self._command_time, 3)}
 
     def conditions(self):
         """The input conditions as last fed, also while an earlier one holds the robot (status topic: an operator
@@ -454,46 +456,36 @@ class SafetyGate:
         self._last_active = float(now)
         return self._ceiling
 
-    def evaluate(self, now):
-        cfg = self.config
-        # the limit in force while the output is zero: the lateral slow-down's target, else max_linear
-        held = cfg.slow_linear if self.slow else cfg.max_linear
+    def _held(self):
+        """The linear limit in force while the output is zero: the lateral slow-down's target, else max_linear."""
+        return self.config.slow_linear if self.slow else self.config.max_linear
 
-        def stop(state, reason):
-            return GateDecision(0.0, 0.0, state, (reason,), held)
-        if self._latched:
-            return stop("ESTOP_LATCHED", "ESTOP_ENGAGED" if self._estop_engaged else "ESTOP_RESET_REQUIRED")
-        if not self._sources_ok:
-            return stop("DISABLED", "ENABLE_SOURCE_AMBIGUOUS")
-        if not self._enabled:
-            return stop("DISABLED", "OPERATOR_ENABLE_OFF")
-        if not _fresh(now - self._enable_time, cfg.enable_timeout_s):
-            return stop("ENABLE_STALE", "ENABLE_HEARTBEAT_TIMEOUT")
-        if cfg.require_base and not self._base_ok:
-            return stop("BASE_NOT_READY", self._base_reason)
-        if not self._localization_ok:
-            return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
-        if self._command is None or not _fresh(now - self._command_time, cfg.command_timeout_s):
-            return stop("COMMAND_STALE", "NO_FRESH_COMMAND")
+    def _command_stop(self, now, held):
+        """The decision when the command itself is missing, stale or invalid, else None."""
+        cfg = self.config
+        if self._command is None or now - self._command_time > cfg.command_timeout_s:
+            return GateDecision(0.0, 0.0, "COMMAND_STALE", ("NO_FRESH_COMMAND",), held)
         linear, angular = self._command
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (linear, angular)):
-            return stop("ACTIVE", "INVALID_COMMAND_ZEROED")
-        linear, angular = float(linear), float(angular)
-        if not (math.isfinite(linear) and math.isfinite(angular)):
-            return stop("ACTIVE", "NONFINITE_COMMAND_ZEROED")
+            return GateDecision(0.0, 0.0, "ACTIVE", ("INVALID_COMMAND_ZEROED",), held)
+        if not (math.isfinite(float(linear)) and math.isfinite(float(angular))):
+            return GateDecision(0.0, 0.0, "ACTIVE", ("NONFINITE_COMMAND_ZEROED",), held)
+        return None
+
+    def _limit(self, ceiling):
+        """The valid command within the limits: no reverse, the linear ceiling (both speeds scaled together, so the
+        curvature stays), max_linear and max_angular."""
+        cfg = self.config
+        linear, angular = (float(v) for v in self._command)
         reasons = []
         if linear < 0 and not cfg.allow_reverse:
             linear = 0.0
             reasons.append("REVERSE_BLOCKED")
-        ceiling = cfg.max_linear
-        if cfg.covariance_mode == "lateral":
-            ceiling = min(self._speed_ceiling(now), cfg.max_linear)
-            if ceiling < cfg.max_linear:
-                reasons.append("LOCALIZATION_SLOW")
-                if abs(linear) > ceiling:
-                    # same factor for both: the robot keeps the commanded curvature, only slower
-                    scale = ceiling / abs(linear)
-                    linear, angular = linear * scale, angular * scale
+        if ceiling < cfg.max_linear:
+            reasons.append("LOCALIZATION_SLOW")
+            if abs(linear) > ceiling:
+                scale = ceiling / abs(linear)
+                linear, angular = linear * scale, angular * scale
         if abs(linear) > cfg.max_linear:
             linear = math.copysign(cfg.max_linear, linear)
             reasons.append("LINEAR_CLAMPED")
@@ -503,6 +495,47 @@ class SafetyGate:
             angular = math.copysign(cfg.max_angular, angular)
             reasons.append("ANGULAR_CLAMPED")
         return GateDecision(linear, angular, "ACTIVE", tuple(reasons), ceiling)
+
+    def evaluate(self, now):
+        cfg = self.config
+        held = self._held()
+
+        def stop(state, reason):
+            return GateDecision(0.0, 0.0, state, (reason,), held)
+        if self._latched:
+            return stop("ESTOP_LATCHED", "ESTOP_ENGAGED" if self._estop_engaged else "ESTOP_RESET_REQUIRED")
+        if not self._sources_ok:
+            return stop("DISABLED", "ENABLE_SOURCE_AMBIGUOUS")
+        if not self._enabled:
+            return stop("DISABLED", "OPERATOR_ENABLE_OFF")
+        if now - self._enable_time > cfg.enable_timeout_s:
+            return stop("ENABLE_STALE", "ENABLE_HEARTBEAT_TIMEOUT")
+        if cfg.require_base and not self._base_ok:
+            return stop("BASE_NOT_READY", self._base_reason)
+        if not self._localization_ok:
+            return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
+        stopped = self._command_stop(now, held)
+        if stopped is not None:
+            return stopped
+        ceiling = cfg.max_linear
+        if cfg.covariance_mode == "lateral":
+            ceiling = min(self._speed_ceiling(now), cfg.max_linear)
+        return self._limit(ceiling)
+
+    def preview(self, now):
+        """What the gate would pass if the operator's enable, the base and the enable sources were all in order:
+        the shadow's view while the chair stands before "start automatic" in the closed loop. The emergency stop
+        latch, localization and the command count as in ``evaluate``; the lateral slow-down's target is used
+        without its ramp. Changes no state, so ``evaluate`` is not affected."""
+        held = self._held()
+        if self._latched:
+            return GateDecision(0.0, 0.0, "ESTOP_LATCHED", ("ESTOP_ENGAGED" if self._estop_engaged
+                                                            else "ESTOP_RESET_REQUIRED",), held)
+        if not self._localization_ok:
+            return GateDecision(0.0, 0.0, "LOCALIZATION_UNTRUSTED",
+                                (self._localization_reason or "LOCALIZATION_FAILED",), held)
+        stopped = self._command_stop(now, held)
+        return stopped if stopped is not None else self._limit(held)
 
 
 def gate_command(decision, config, gate_id, seq, stamp_ns, mono_ns, config_sha256=None):

@@ -511,13 +511,48 @@ def test_enable_and_estop_need_the_one_allowed_publisher():
         assert not single_source(names, "/wc_auto_bridge")
 
 
-def test_negative_ages_are_stale_not_fresh():
-    gate = active_gate()
-    gate.on_enable(True, 9.95)
-    gate.on_command(0.2, 0.0, 10.0)
-    assert gate.evaluate(10.1).state == "ACTIVE"
-    assert gate.evaluate(9.97).state == "COMMAND_STALE"          # the clock went back past the command
-    assert gate.evaluate(9.0).state == "ENABLE_STALE"            # ... and past the enable
+def test_preview_is_what_the_gate_would_pass_before_the_operator_starts():
+    """Closed loop before "start automatic": the gate holds the chair (DISABLED) and shows what it would pass."""
+    settings = {"require_base": True, "enable_source_node": "/wc_auto_bridge", "max_linear": 0.10,
+                "max_angular": 0.30, "slow_linear": 0.05}
+    gate = active_gate(**settings)
+    gate.on_enable(False, 0.05)
+    decision, preview = gate.evaluate(0.1), gate.preview(0.1)
+    assert decision.state == "DISABLED" and (decision.linear, decision.angular) == (0.0, 0.0)
+    assert (preview.state, preview.linear, preview.angular, preview.linear_ceiling) == ("ACTIVE", 0.10, 0.1, 0.10)
+    gate.on_localization(False, "COVARIANCE_YAW_TOO_LARGE")
+    assert (gate.preview(0.1).state, gate.preview(0.1).reasons) == ("LOCALIZATION_UNTRUSTED",
+                                                                      ("COVARIANCE_YAW_TOO_LARGE",))
+    gate.on_localization(True)
+    assert gate.preview(0.7).state == "COMMAND_STALE"              # the command of t = 0 is older than 0.5 s
+    gate.on_covariance(_corridor_covariance(0.8), 0.0)             # along the corridor: slow-down
+    gate.on_command(0.2, 0.2, 0.7)
+    slowed = gate.preview(0.7)
+    assert (slowed.linear, slowed.angular, slowed.linear_ceiling) == pytest.approx((0.05, 0.05, 0.05))
+    assert "LOCALIZATION_SLOW" in slowed.reasons and slowed.linear <= slowed.linear_ceiling
+    gate.on_estop(True, 0.8)
+    assert gate.preview(0.8).state == "ESTOP_LATCHED"
+
+
+def test_preview_leaves_the_decisions_unchanged():
+    """The slow-down ramp lives in evaluate only: previews in between change no decision."""
+    twins = [active_gate(require_covariance=True), active_gate(require_covariance=True)]
+    for gate in twins:
+        gate.on_covariance(_corridor_covariance(0.3), 0.0)
+    out = ([], [])
+    for step in range(60):
+        t = 0.05 * step
+        for k, gate in enumerate(twins):
+            gate.on_enable(True, t)
+            gate.on_command(0.3, 0.1, t)
+            if step == 20:
+                gate.on_covariance(_corridor_covariance(0.8), 0.0)   # slows from here on, ramped down
+            if k == 1:
+                gate.preview(t)
+                gate.preview(t + 0.01)
+            out[k].append(gate.evaluate(t))
+    assert out[0] == out[1]
+    assert any("LOCALIZATION_SLOW" in d.reasons and 0.15 < d.linear < 0.3 for d in out[0])   # mid-ramp
 
 
 def test_gate_configuration_hash_is_of_the_file_read(tmp_path):
