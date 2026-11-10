@@ -113,6 +113,21 @@ def test_yield_releases_after_the_hold_and_waits_at_most_max_wait():
     away = [pp.Person(7, 1.6, 0.0, 1.0, 0.0, 0.25, True, 0.1)]
     assert reaction.update(0.5, away, *still, b)["state"] == "YIELD_RELEASING"
     assert reaction.update(1.6, away, *still, b)["state"] != "YIELD_RELEASING"
+    # Yields less than wait_reset_s apart are one wait: someone crossing back and forth in front of the chair
+    # is treated as standing after max_wait_s in total, not never.
+    reaction = pp.Reaction(cfg)
+    t = 0.0
+    while t < 4.6:
+        state = reaction.update(t, blocker if int(t) % 2 == 0 else away, *still, b)
+        t += 0.2
+    assert state["yield_s"] is not None and state["yield_s"] >= 4.0 and state["treated_as_standing"] == []
+    assert reaction.update(5.0, blocker, *still, b)["treated_as_standing"] == [7]
+    # After wait_reset_s without a yield the next yield starts a new wait.
+    reaction = pp.Reaction(cfg)
+    reaction.update(0.0, blocker, *still, b)
+    reaction.update(1.0, away, *still, b)
+    reaction.update(6.5, away, *still, b)
+    assert reaction.update(6.6, blocker, *still, b)["yield_s"] == 0.0
 
 
 def test_keepout_mask_is_lethal_near_people_and_repeats_the_inflation_curve():

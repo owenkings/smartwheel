@@ -127,6 +127,9 @@ def main(argv=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise                   # a real failure while running; errors after the shutdown signal are expected
     finally:
         relay.close()
         node.destroy_node()

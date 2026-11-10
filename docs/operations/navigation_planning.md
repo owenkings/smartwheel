@@ -21,13 +21,17 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--planner` | `navfn`（默认）、`smac_2d`、`theta_star`、`smac_hybrid`（Hybrid-A*，只前进的 Dubins 运动，最小转弯半径 0.40 m）、`smac_lattice`（状态栅格，5 cm/0.5 m 差速原语，关倒车扩展） |
 | `--planner-param NAME=VALUE` | 覆盖 `GridBased` 规划器参数，值按 JSON 解析，可重复，例如 `minimum_turning_radius=0.6` |
 | `--planner-fallback 规划器` | 第二个规划器（插件名 `Fallback`），行为树只在 `--planner` 找不到路径时才问它，例如只前进的 `smac_hybrid` 后面接能原地转向的 `smac_lattice`；默认 `none` |
+| `--planner-rescue navfn\|smac_2d\|theta_star` | 最后一个规划器（插件名 `Rescue`），前面的都找不到路径时才问它；默认 `none`。用来对付“起点压到余量”：AMCL 估计偏向墙、外形加余量已经碰到墙格时，按外形检查的规划器拒绝从这里起步，只查中心格的规划器照样能规划，车就能开出来（设计文档“起点压到余量”一节） |
 | `--controller` | `rpp`（默认）、`shim_rpp`（新路线起点偏差超过 45° 时先原地转向并检查碰撞，之后 RPP 关闭行进中原地转向、沿曲率边走边转；只配 `smac_hybrid` 或 `smac_lattice`，因为它不在终点原地对正朝向，而 NavFn 的路径不管朝向，组合会卡在目标附近）、`mppi`（MPPI，差速模型，只前进 `vx_min=0`，代价评价按外形） |
 | `--controller-param NAME=VALUE` | 覆盖 `FollowPath` 控制器参数，例如 `use_rotate_to_heading=false` |
 | `--checker-param NAME=VALUE` | 覆盖目标检查和进度检查参数，只限 `general_goal_checker.*`、`progress_checker.*`，例如 `general_goal_checker.xy_goal_tolerance=0.35` |
 | `--recovery-retries N`、`--recovery-wait S` | 行为树恢复轮数（默认 4）和每次等待秒数（默认 3）；恢复动作仍然只有清代价地图和等待，没有原地自转和倒车 |
 | `--global-costmap live\|static` | `live`（默认）：导航时全局代价地图也标记实时扫描；`static`：只按保存的地图规划，实时扫描仍进局部代价地图、控制器碰撞检查和碰撞监控 |
 | `--local-padding M` | 局部代价地图的外形余量，也就是 RPP 和 RotationShim 自己碰撞检查用的余量（默认 0，不变；最大 0.3 m）。设成和规划余量一样（0.10），控制器就不会把车开进规划器不接受的位姿；碰撞监控不受影响 |
-| `--smoother-feedback open_loop\|gated\|odom` | 速度平滑器以为的当前速度。`open_loop`（默认，不变）：自己上一次的输出。`gated`：同上，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
+| `--people-reaction` | 对航迹里的人做反应（减速、让行，靠速度上限），默认不开；只能和仿真的 `--tracks truth` 一起用，见下面“仿真”一节 |
+| `--people-keepout` | 和 `--people-reaction` 一起用：站着不动满 3 s 的人在两个代价地图里另加禁行区，默认不开 |
+| `--smoother-feedback gated\|open_loop\|odom` | 速度平滑器以为的当前速度。`gated`（仿真和录包影子的默认，11-10 用户决定）：平滑器自己上一次的输出，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`open_loop`：Nav2 的开环，只用自己上一次的输出，实时链路现在还是这样。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
+| `--smoother-timeout S` | 平滑器的 velocity_timeout：控制器停发后，平滑器还继续发上一条速度多久（默认 1.0 s，不变；实车用 0.3 s，用户 11-10 同意；允许 0.2–5 s） |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
@@ -48,6 +52,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 `navigate --world 名称` 或 `--world-map 地图` 不需要先探索：真值世界本身就是导航地图（合成世界写到运行目录的 `world_map.yaml`，已保存地图直接使用；`--obstacle` 圆盘只在真值里、不进地图），世界坐标与地图坐标重合。这样比较规划和控制时不混入建图误差；AMCL 和闸门照常运行。起点要让车体（按外形）不与世界重叠。
 
 `--localization truth`（只对 navigate）：仿真按真值发布 `map→odom`，只启动 map_server、不启动 AMCL，闸门不要求 AMCL 协方差（其余闸门条件照常）。用来在走廊地图上只比较规划和控制；默认 `amcl` 不变。走廊里 AMCL 的修正和协方差会单独决定结果（见设计文档），系统级结论仍要用 `amcl` 跑。
+
+`--tracks truth --people-reaction`（只对 navigate，默认都不开）：仿真把行人（`--actors`）按 C 的航迹格式发到 `/obstacles/tracks`（来源和 seen_by 都是 truth），planning/people_node.py 按 people.py 决定速度上限，发到 `/speed_limit`（控制器服务器自己会用）。相隔不到 5 s 的几次让行算一次等待，等满 20 s 后这些人按站着处理（间隙 0.3 m、不预测）。再加 `--people-keepout` 时，站着不动满 3 s 的人在两个代价地图的 KeepoutFilter 里另画禁行区，半径是人的半径加 0.3 m 再加距离滞后余量；走动的人（包括走一下停一下的人）不画。默认不开禁行区：11-09 仿真里，人站在走廊车道上时禁行区把路堵死，Nav2 规划失败，约 10 s 后放弃目标；把走动的人预测的位置画进去，人来回横穿时走廊一直是堵的。运行目录里记 `people.jsonl`（每次决定）和 `people_costmaps.npz`（每秒一张局部代价地图和全局代价地图车附近 10 m 的截图，用来查旧位置残留）。实时链路还没有接。
 
 `--enable-pause AFTER_S DURATION_S`（只对 navigate，验证用，默认不开）：任务开始后 AFTER_S 仿真秒，监督进程的使能心跳改发 false，持续 DURATION_S（最多 30 s），闸门停车一次再放行，用来看放行后怎么起步（配合 `--smoother-feedback`）。时间窗写在 `result.json` 的 `supervisor.enable_pause_sim_s`。
 

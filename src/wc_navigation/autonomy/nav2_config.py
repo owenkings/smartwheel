@@ -304,7 +304,8 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
     return params
 
 
-def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fallback_planner=False):
+def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fallback_planner=False,
+                      rescue_planner=False):
     """Replanning tree without Spin or BackUp recoveries.
 
     The wheelchair has no rear range sensor, so reversing is never used, and an
@@ -312,7 +313,9 @@ def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fa
     Recovery only clears costmaps and waits before replanning;
     ``recovery_retries`` and ``wait_s`` (defaults 4 and 3 s) set how often and
     how long. With ``fallback_planner`` a second planner plugin named
-    ``Fallback`` is asked only when ``GridBased`` finds no path.
+    ``Fallback`` is asked only when ``GridBased`` finds no path; with
+    ``rescue_planner`` a last one named ``Rescue`` only when all before it
+    found none (window B, planning/stack.py).
     """
     retries = int(recovery_retries)
     wait = float(wait_s)
@@ -328,9 +331,10 @@ def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fa
         goal_updated = "<GoalUpdated/>"
         head = ""
     planner = template.format("GridBased")
-    if fallback_planner:
-        planner = ('<Fallback name="PlannerFallback">\n              ' + planner + "\n              "
-                   + template.format("Fallback") + "\n            </Fallback>")
+    ids = ["GridBased"] + (["Fallback"] if fallback_planner else []) + (["Rescue"] if rescue_planner else [])
+    if len(ids) > 1:
+        planner = ('<Fallback name="PlannerFallback">\n              '
+                   + "\n              ".join(template.format(i) for i in ids) + "\n            </Fallback>")
     return f"""<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="{retries}" name="NavigateRecovery">

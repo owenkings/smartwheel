@@ -98,6 +98,9 @@ def arguments(argv=None):
                           help="validation only: AFTER_S simulated seconds into the mission the supervisor's enable "
                                "heartbeat sends false for DURATION_S (at most 30 s), so the gate stops the chair once "
                                "and then releases it; used to check how motion restarts (--smoother-feedback)")
+    navigate.add_argument("--tracks", choices=["none", "truth"], default="none",
+                          help="none (default): no obstacle tracks; truth: the simulator publishes its actors as "
+                               "truth tracks on /obstacles/tracks (window C's format), for --people-reaction")
     args = parser.parse_args(argv)
     if args.mode == "navigate":
         try:
@@ -255,6 +258,8 @@ def build_config(args):
                                                             margin_m=profile.margin_m)}
     if args.mode == "navigate" and args.enable_pause is not None:
         config["enable_pause"] = {"after_s": args.enable_pause[0], "duration_s": args.enable_pause[1]}
+    if args.mode == "navigate" and args.tracks == "truth":
+        config["tracks"] = {"source": "truth", "hz": 5.0}
     config["world"].pop("actors", None)                  # actors are chosen per run, never inherited
     if getattr(args, "actors", None) is not None:
         from .actors import scenario_config

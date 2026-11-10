@@ -9,7 +9,9 @@ of the navigation profile, checked along every step including turns. With
 ``map_to_odom_from_truth`` it also publishes ``map->odom`` from ground truth,
 so navigation can be judged without AMCL. Actors (moving pedestrian discs,
 ``actors.py``) in the world spec join the world before every physics step and
-are logged to ``actors.jsonl``.
+are logged to ``actors.jsonl``. With ``tracks`` (``--tracks truth``) the actors
+are also published as simulated truth tracks on ``/obstacles/tracks`` in window
+C's ``wc_obstacle_tracks/1`` format (``truth_tracks``), for the people reaction.
 """
 from __future__ import annotations
 
@@ -33,6 +35,38 @@ def collision_body(config):
     if config.get("collision_body"):
         return Body.from_config(config["collision_body"])
     return Body(radius_m=float(config["collision_radius_m"]))
+
+
+TRACKS_TOPIC = "/obstacles/tracks"
+
+
+def truth_tracks(actors, truth_pose, odom_pose, now, first_seen):
+    """``wc_obstacle_tracks/1`` message of the simulated actors in the odom frame (source and seen_by "truth").
+
+    ``actors``: the simulator's ``actors.Actor`` objects (read only). A walking actor is class ``moving`` with
+    its walking velocity; a waiting, paused, yielding or finished one is a standing ``person_candidate``
+    (``has_moved`` once it has walked). Truth has no measurement noise: the velocity standard deviations are 0.
+    ``first_seen`` (actor index -> time) is updated in place for ``age_s``.
+    """
+    from ..perception.tracks import track_entry, tracks_message
+    odom_T_world = compose(tuple(odom_pose), inverse(tuple(truth_pose)))
+    c, s = math.cos(odom_T_world[2]), math.sin(odom_T_world[2])
+    entries = []
+    for k, actor in enumerate(actors, start=1):
+        first_seen.setdefault(k, float(now))
+        vx = vy = 0.0
+        walking = actor.state == "walking" and actor.target is not None
+        if walking:
+            tx, ty = actor.spec.waypoints[actor.target]
+            dx, dy = tx - actor.x, ty - actor.y
+            distance = math.hypot(dx, dy)
+            if distance > 1e-9:
+                vx, vy = actor.spec.speed_mps * dx / distance, actor.spec.speed_mps * dy / distance
+        x, y, _ = compose(odom_T_world, (actor.x, actor.y, 0.0))
+        entries.append(track_entry(k, x, y, c * vx - s * vy, s * vx + c * vy, 0.0, 0.0, actor.spec.radius_m,
+                                   "moving" if walking else "person_candidate", age_s=float(now) - first_seen[k],
+                                   seen_by=("truth",), has_moved=walking or actor.walked_m > 0.0))
+    return tracks_message(now, entries, frame="odom", source="truth")
 
 
 def _time_msg(seconds):
@@ -96,6 +130,14 @@ class Simulator:
         # Optional: map->odom from ground truth (navigation without AMCL, to judge planning and control alone).
         truth = config.get("map_to_odom_from_truth")
         self.map_T_world = None if not truth else inverse(tuple(float(v) for v in truth["world_T_map"]))
+        # Optional: the actors as simulated truth tracks (--tracks truth), for the people reaction.
+        tracks = config.get("tracks")
+        self.tracks_period = None
+        if tracks and self.actors is not None:
+            self.tracks_period = 1.0 / float(tracks.get("hz", 5.0))
+            self.next_tracks = self.sim_time
+            self.tracks_first_seen = {}
+            self.tracks_pub = node.create_publisher(String, TRACKS_TOPIC, 10)
         self.wall_start = time.monotonic()
         node.create_timer(1.0 / self.physics_hz, self.tick)
 
@@ -130,6 +172,10 @@ class Simulator:
         if self.sim_time + 1e-9 >= self.next_scan:
             self.next_scan += self.scan_period
             self.publish_scan()
+        if self.tracks_period is not None and self.sim_time + 1e-9 >= self.next_tracks:
+            self.next_tracks += self.tracks_period
+            self.tracks_pub.publish(json_message(truth_tracks(
+                self.actors.actors, self.base.pose, self.base.odom_pose, self.sim_time, self.tracks_first_seen)))
         if self.sim_time + 1e-9 >= self.next_status:
             self.next_status += 1.0
             x, y, yaw = self.base.pose
