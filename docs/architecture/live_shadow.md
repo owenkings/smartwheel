@@ -292,4 +292,43 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
 核对项：`hardware_setup` 是否来自本机覆盖（否则会悄悄退回仓库基础值，例如轮半径 0.185 m）、轮参数、实时配置里有没有确认过的零偏、和给出的最近前端比外参、主机滤波和设备编号。2026-11-08 对主检出的一次冻结（`reports/navigation_live_shadow/20261108T053419Z_config_31995662`）：硬件配置来自 `config/local/project/hardware_setup.json`，轮参数 0.1646/0.599；`mapping_live.json` 没有配零偏，所以上车时 `--gyro-bias` 必须显式给（现场开头静止做一次 10+10+10，或先用 ZL1107 的零偏文件）；外参、杆臂、主机滤波和设备编号与验证包前端完全相同。先验和前端的差别只在离线字段（离线时间模型、bootstrap 记录、offline_experiment）和实时选项的显式默认值。带上时间偏移副本的一次冻结（`20261108T055023Z_config_0ec08885`，75 ms）作 `--cell` 跑验证包录包检验（`20261108T055103Z_inputs_ac76574c`）：偏移取自副本，484/484 帧扫描逐格相同，里程计与用前端配置时完全相同。
 
+## 实车闭环模式（第一次闭环，2026-11-10）
+
+`navigation_live_shadow shadow --closed-loop` 让车自己走：闸门的决定经窗口 A 的底盘桥（`wc_motion.auto_bridge`）交给面板会话的轮控所有者，由它写驱动器。接口按 A 的速度通道设计 9.2 节（`velocity_channel.md`，D 2026-11-09 审过）。总管 2026-11-10 14:40 把这一步排进关键路径；现场步骤以 A 的步骤单为准。
+
+闸门（`autonomy/safety_gate.py`、`gate_node.py`）：
+- 每个周期发 `/wc_nav/gate_command`（`std_msgs/String` JSON，schema `wc_gate_command_v1`），和 `/wc_nav/cmd_vel_gated` 出自同一个决定。
+  - 字段正好 11 个：`schema`、`gate_id`、`seq`、`stamp_ns`、`mono_ns`、`state`、`reasons`、`linear`、`angular`、`limits`、`config_sha256`。
+  - `gate_id` 在进程启动时生成，`seq` 每个周期加 1，`stamp_ns` 用节点时钟，`mono_ns` 用 `time.monotonic_ns()`。
+  - `limits` 四项：配置的 `max_linear`、`max_angular`，这个决定实际用的 `linear_ceiling`，`allow_reverse`。`config_sha256` 是闸门配置文件的 sha256。
+  - QoS 是 reliable、volatile、keep last 1。仿真和影子里也发，只是没有订阅者。
+  - 单元测试保证两条：只有 ACTIVE 有非零速度；|linear| 不超过 `linear_ceiling`，`linear_ceiling` 不超过 `max_linear`。另外，A 的解析器（motion 分支 9e5d79dc）接受了 6000 个随机输入下的决定。
+- 闭环配置另开三项，默认都关，仿真和影子不受影响：
+
+  | 配置 | 作用 |
+  |---|---|
+  | `require_base` | 订阅桥的 `/wc_nav/base_status`。新状态 `BASE_NOT_READY`，排在 `ENABLE_STALE` 之后、`LOCALIZATION_UNTRUSTED` 之前。轮控所有者不在 AUTO 时原因是 `BASE_NOT_AUTO`；按桥的单调钟时间戳超过 0.3 s 时是 `BASE_STATUS_STALE`；读不懂，或时间戳超前 50 ms 以上时是 `BASE_STATUS_INVALID`。 |
+  | `enable_source_node`（闭环给 `/wc_auto_bridge`） | `/wc_nav/enable` 和 `/wc_nav/estop` 都必须恰好一个发布者，而且就是桥，否则 `DISABLED`（`ENABLE_SOURCE_AMBIGUOUS`）。每个周期查一次。这时 `/wc_nav/estop` 用 transient local 订阅，和桥的发布方式一致。 |
+  | 节点配置 `clock: monotonic` | 使能和命令的年龄、周期定时器都用单调钟。TF 的时间戳是节点时钟，所以 TF 年龄照旧用节点时钟算，时间戳超前 0.05 s 以上也算过期。 |
+
+- 所有模式都改了一处：使能和命令的年龄为负（时钟往回走）时算过期，以前会被当成新鲜。
+- `gate_status` 加了 `gate_id`、`seq`、`clock`、`linear_ceiling` 和 `conditions`。`conditions` 列出定位、底盘、使能来源各自的判断，前面的条件挡着时也看得到定位可不可信。
+
+监督进程（闭环模式）：
+- 启动前查三件事：今天的 `WC_AUTO_DRIVE_APPROVAL`（和桥同一个变量）；域 100；面板会话的 `auto.sock` 存在。socket 路径按 `--panel-root`、`--session-root`、`--session-id` 算，和桥用同样的参数。车上另外还要实车影子的同意。
+- 固定值：
+  - NavProfile 是 0.10 m/s、0.30 rad/s，RPP、平滑器、行为服务器和闸门都跟着降。
+  - 闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s，命令超时 0.5 s。
+  - 平滑器 gated、0.3 s；起点检查只能 block 或 strict；`--monitor-base-shift` 不给时为 off。
+- 启动顺序：Nav2 读回 → velocity_feedback → 桥 → 闸门（闭环配置）→ 目标。
+  - 起桥后，要等 `base_status`、`enable`、`estop` 都有发布者，并收到第一条 `base_status`（阶段 `bridge_ready`），才起闸门。
+  - 监督进程不建 `/wc_nav/enable` 发布者。
+- 目标节点：
+  - 等闸门进 `COMMAND_STALE` 或 `ACTIVE` 才发第一个目标，也就是操作员点了“开始自动”、底盘进了 AUTO 之后。
+  - 目标失败不重发。最后一个目标只按 Nav2 报到达结束，不按 advance radius 提前取消。
+- 运行中每秒打印一行“闭环状态”：闸门状态和原因、定位、底盘、使能、急停、闸门输出、目标。桥或闸门进程退出，整个运行就停。
+- 收尾先停桥：轮控所有者看到 socket 断开就退出自动、写零。
+- 记录：记录器把 `base_status` 的变化写进 `events.jsonl`。`result.json` 多一节 `closed_loop`：最后一条 `base_status`（含桥的计数和轮控所有者的状态），闸门的 `gate_id`、`seq` 和各状态计数；`hardware_control`、`commands_sent` 记为 true。
+- 没改：命令超时（0.5 s）；放行爬升（9.2 第 7 条，要用户同意）。
+
 返回[系统设计](README.md)。

@@ -840,3 +840,204 @@ def test_the_shadow_wires_the_gated_smoother_feedback(tmp_path):
     open_loop = LiveSupervisor(tmp_path / "b", tmp_path / "b", {**config, "smoother_feedback": "open_loop"})
     (tmp_path / "b").mkdir()
     assert "feedback" not in open_loop.prepare_shadow(nav2_config.NavProfile())
+
+
+# -- vehicle closed loop (BOARD 2026-11-10 14:40; D.md 16:45) -------------------------------------------------------
+def _closed_argv(tmp_path, *extra):
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    return ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--source", "vehicle", "--sensor-domain", "83", "--map", str(map_yaml), "--initial-pose", "0", "0", "0",
+            "--goal", "4", "0", "0", "--closed-loop", "--panel-root", str(tmp_path / "panel"),
+            "--session-root", str(tmp_path / "session"), "--session-id", "capture_x", *extra]
+
+
+def test_closed_loop_options_fix_the_first_closed_loop_settings(tmp_path):
+    from wc_navigation.live import cli
+    args = cli.arguments(_closed_argv(tmp_path))
+    assert args.closed_loop and args.monitor_base_shift == "off" and args.start_check == "block"
+    assert args.gate_covariance == {"covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.05}
+    assert cli.arguments(_closed_argv(tmp_path, "--monitor-base-shift", "on")).monitor_base_shift == "on"
+    assert cli.arguments(_closed_argv(tmp_path, "--start-check", "strict")).start_check == "strict"
+    for bad in (["--start-check", "warn"], ["--start-check", "off"], ["--gate-slow-limits", "0.5", "0.15"]):
+        with pytest.raises(SystemExit):
+            cli.arguments(_closed_argv(tmp_path, *bad))       # 0.15 m/s is above the closed loop's 0.10 m/s
+    argv = _closed_argv(tmp_path)
+    with pytest.raises(SystemExit):
+        cli.arguments(argv[:argv.index("--session-id")])       # the session must be named
+    shadow = argv[:argv.index("--closed-loop")]
+    plain = cli.arguments(shadow)
+    assert not plain.closed_loop and plain.monitor_base_shift == "on" and plain.gate_covariance["slow_linear"] == 0.15
+    with pytest.raises(SystemExit):
+        cli.arguments(shadow + ["--session-id", "capture_x"])  # closed-loop options without --closed-loop
+
+
+def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socket(tmp_path, monkeypatch):
+    import socket as socketlib
+    from datetime import datetime
+    from wc_navigation.live import cli
+    args = cli.arguments(_closed_argv(tmp_path))
+    (tmp_path / "session").mkdir()
+    path = tmp_path / "s" / "auto.sock"
+    seen = []
+    monkeypatch.setattr("wc_runtime.mapping_auto.auto_socket_path",
+                        lambda root, directory, session: seen.append((root, directory, session)) or path)
+    monkeypatch.setenv("ROS_DOMAIN_ID", "100")
+    monkeypatch.setenv("WC_AUTO_DRIVE_APPROVAL", "APPROVED_BY_USER_20200101")
+    with pytest.raises(SystemExit, match="today"):
+        cli.closed_loop_settings(args)
+    monkeypatch.setenv("WC_AUTO_DRIVE_APPROVAL", "APPROVED_BY_USER_" + datetime.now().strftime("%Y%m%d"))
+    with pytest.raises(SystemExit, match="no automatic control socket"):
+        cli.closed_loop_settings(args)
+    path.parent.mkdir()
+    path.write_text("not a socket")
+    with pytest.raises(SystemExit, match="no automatic control socket"):
+        cli.closed_loop_settings(args)
+    path.unlink()
+    server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    server.bind(str(path))
+    try:
+        settings = cli.closed_loop_settings(args)
+    finally:
+        server.close()
+    assert settings["auto_socket"] == str(path) and settings["bridge_node"] == "/wc_auto_bridge"
+    assert (settings["max_linear"], settings["max_angular"], settings["enable_timeout_s"]) == (0.10, 0.30, 0.5)
+    assert seen[-1] == (tmp_path / "panel", tmp_path / "session", "capture_x")
+    assert (settings["panel_root"], settings["session_root"]) == (str(tmp_path / "panel"), str(tmp_path / "session"))
+    monkeypatch.setenv("ROS_DOMAIN_ID", "99")
+    with pytest.raises(SystemExit, match="domain 100"):
+        cli.closed_loop_settings(args)
+
+
+def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.autonomy.safety_gate import GateConfig
+    from wc_navigation.live.supervisor import LiveSupervisor
+    import yaml
+    config = {"use_sim_time": False, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
+              "gate_limits": {"correction_translation_m": 0.25, "correction_yaw_deg": 10.0,
+                              "correction_reference": "robot", "covariance_xy_std_m": 0.5,
+                              "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
+                              "slow_linear": 0.05},
+              "goals": [[4.0, 0.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "gated", "smoother_timeout_s": 0.3,
+              "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
+                              "session_root": "/s", "session_id": "capture_x"}}
+    profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
+    files = LiveSupervisor(tmp_path, tmp_path, config).prepare_shadow(profile)
+    node = json.loads(files["gate"].read_text())
+    gate = GateConfig(**node["gate"])
+    assert node["clock"] == "monotonic" and node["use_sim_time"] is False
+    assert (gate.require_base, gate.enable_source_node, gate.enable_timeout_s, gate.command_timeout_s) == (
+        True, "/wc_auto_bridge", 0.5, 0.5)
+    assert (gate.max_linear, gate.max_angular, gate.slow_linear, gate.slow_std_m) == (0.10, 0.30, 0.05, 0.5)
+    assert json.loads(files["goals"].read_text())["closed_loop"] is True
+    nav2 = yaml.safe_load(files["nav2"].read_text())
+    assert nav2["controller_server"]["ros__parameters"]["FollowPath"]["desired_linear_vel"] == 0.10
+    assert nav2["velocity_smoother"]["ros__parameters"]["max_velocity"] == [0.10, 0.0, 0.30]
+    shadow = {k: v for k, v in config.items() if k != "closed_loop"}
+    (tmp_path / "b").mkdir()
+    files = LiveSupervisor(tmp_path / "b", tmp_path / "b", shadow).prepare_shadow(nav2_config.NavProfile())
+    node = json.loads(files["gate"].read_text())
+    assert "clock" not in node and "require_base" not in node["gate"] and "enable_source_node" not in node["gate"]
+    assert json.loads(files["goals"].read_text())["closed_loop"] is False
+
+
+def test_the_base_bridge_is_stopped_first(tmp_path, monkeypatch):
+    from wc_navigation.live import supervisor
+    calls = []
+
+    class Process:
+        def __init__(self, name):
+            self.name, self.code = name, None
+
+        def poll(self):
+            return self.code
+
+    def fake_stop(process):
+        calls.append(process.name)
+        process.code = -2
+    monkeypatch.setattr(supervisor, "_stop_owned", fake_stop)
+    run = supervisor.LiveSupervisor(tmp_path, tmp_path, {})
+    run.processes = [(name, Process(name)) for name in ("recorder", "amcl", supervisor.BRIDGE, "safety_gate", "goals")]
+    run.stop_all()
+    assert calls == [supervisor.BRIDGE, "goals", "safety_gate", "amcl", "recorder"]
+
+
+def test_the_closed_loop_status_line_shows_what_holds_the_chair():
+    from wc_navigation.live.supervisor import (BASE_STATUS_TOPIC, GATE_STATUS_TOPIC, GOAL_STATUS_TOPIC,
+                                               closed_loop_line, closed_loop_report)
+    assert "闸门 未启动" in closed_loop_line({}) and "没有桥的状态" in closed_loop_line({})
+    status = {GATE_STATUS_TOPIC: {"state": "DISABLED", "reasons": ["OPERATOR_ENABLE_OFF"], "linear": 0.0,
+                                  "angular": 0.0, "gate_id": "gate_1", "seq": 40, "counts": {"DISABLED": 40},
+                                  "conditions": {"localization_ok": True, "localization_reason": ""}},
+              BASE_STATUS_TOPIC: {"auto_state": "NONE", "base_auto": False, "reason": "BASE_NOT_AUTO",
+                                  "enable": False, "estop": None, "estop_request": False},
+              GOAL_STATUS_TOPIC: {"state": "WAITING_FOR_GATE", "goal_index": 0, "goals": 1}}
+    line = closed_loop_line(status)
+    for part in ("闸门 DISABLED(OPERATOR_ENABLE_OFF)", "定位 可信", "底盘 NONE(BASE_NOT_AUTO)", "使能 否", "急停 否",
+                 "目标 WAITING_FOR_GATE 1/1"):
+        assert part in line
+    status[BASE_STATUS_TOPIC].update(estop_request=True)
+    status[GATE_STATUS_TOPIC]["conditions"] = {"localization_ok": False, "localization_reason": "MAP_TO_BASE_TF_STALE"}
+    line = closed_loop_line(status)
+    assert "急停 按下" in line and "定位 不可信(MAP_TO_BASE_TF_STALE)" in line
+    report = closed_loop_report(status)
+    assert (report["gate_id"], report["gate_seq"], report["base_status"]["auto_state"]) == ("gate_1", 40, "NONE")
+
+
+def test_closed_loop_goals_wait_for_the_gate_and_never_retry(monkeypatch):
+    """GoalSequence without ROS: a stand-in node, action client and TF lookup."""
+    import types
+    from wc_navigation.live import goals_node
+
+    class Future:
+        def __init__(self, value):
+            self.value = value
+
+        def done(self):
+            return True
+
+        def result(self):
+            return self.value
+
+    class Client:
+        sent = []
+
+        def __init__(self, *args):
+            pass
+
+        def server_is_ready(self):
+            return True
+
+        def send_goal_async(self, goal):
+            Client.sent.append(goal)
+            handle = types.SimpleNamespace(accepted=True, get_result_async=lambda: Future(
+                types.SimpleNamespace(status=6)), cancel_goal_async=lambda: None)
+            return Future(handle)
+
+    published, clock = [], [10.0]
+    node = types.SimpleNamespace(create_publisher=lambda *a: types.SimpleNamespace(publish=published.append),
+                                 create_subscription=lambda *a: None, create_timer=lambda *a: None,
+                                 get_clock=lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(
+                                     nanoseconds=int(clock[0] * 1e9), to_msg=lambda: None)))
+    monkeypatch.setattr("rclpy.action.ActionClient", Client)
+    monkeypatch.setattr("tf2_ros.Buffer", lambda: None)
+    monkeypatch.setattr("tf2_ros.TransformListener", lambda *a: None)
+    monkeypatch.setattr(goals_node, "lookup_pose", lambda *a: ((3.5, 0.0, 0.0), 10.0))   # 0.5 m from the goal
+    monkeypatch.setattr(goals_node, "pose_stamped", lambda *a: "pose")
+    monkeypatch.setattr(goals_node, "json_message", lambda value: value)
+    monkeypatch.setattr("nav2_msgs.action.NavigateToPose", types.SimpleNamespace(
+        Goal=lambda: types.SimpleNamespace(pose=None)))
+    sequence = goals_node.GoalSequence(node, {"goals": [[4.0, 0.0, 0.0]], "closed_loop": True})
+    for gate_state in (None, "DISABLED", "BASE_NOT_READY"):
+        sequence.gate_state = gate_state
+        sequence.tick()
+        clock[0] += 1.0
+    assert Client.sent == [] and published[-1]["state"] == "WAITING_FOR_GATE"
+    sequence.gate_state = "COMMAND_STALE"
+    sequence.tick()                         # sends, although the chair is within the advance radius of the last goal
+    assert len(Client.sent) == 1 and published[-1]["state"] == "NAVIGATING"
+    for _ in range(3):
+        clock[0] += 3.0
+        sequence.tick()                     # Nav2 aborted (status 6): the sequence ends, nothing is re-sent
+    assert len(Client.sent) == 1 and sequence.finished and published[-1]["state"] == "FAILED"

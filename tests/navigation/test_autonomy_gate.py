@@ -377,3 +377,156 @@ def test_simulation_navigate_records_the_covariance_mode_of_amcl_runs(tmp_path):
                 ["--gate-covariance-mode", "xy", "--gate-slow-limits", "0.5", "0.15"]):
         with pytest.raises(SystemExit):
             cli.arguments(base + bad)
+
+
+# ---- vehicle closed loop (velocity_channel.md 9.2; D.md 2026-11-10 16:45) -------------------------------------
+def _corridor_covariance(along_std, across_std=0.05, yaw_std=0.05):
+    """Covariance of a robot heading along map x: along_std along it, across_std across it."""
+    covariance = [0.0] * 36
+    covariance[0], covariance[7], covariance[35] = along_std ** 2, across_std ** 2, yaw_std ** 2
+    return covariance
+
+
+def test_closed_loop_settings_are_off_by_default():
+    config = GateConfig()
+    assert (config.require_base, config.base_status_timeout_s, config.enable_source_node) == (False, 0.3, "")
+    gate = active_gate()
+    assert gate.evaluate(0.1).state == "ACTIVE"            # no base status and no source check needed
+    for field, value in (("require_base", 1), ("base_status_timeout_s", 0.0), ("enable_source_node", "wc_auto_bridge"),
+                         ("enable_source_node", "/")):
+        with pytest.raises(ValueError):
+            GateConfig(**{field: value})
+
+
+def test_gate_command_carries_exactly_the_agreed_fields():
+    from wc_navigation.autonomy.safety_gate import GATE_COMMAND_FIELDS, GATE_COMMAND_SCHEMA, gate_command
+    config = GateConfig(max_linear=0.10, max_angular=0.30, slow_linear=0.05)
+    gate = active_gate(max_linear=0.10, max_angular=0.30, slow_linear=0.05)
+    decision = gate.evaluate(0.1)
+    document = gate_command(decision, config, "gate_0123456789ab", 7, 1_000_000_000, 5_000_000_000, "a" * 64)
+    assert set(document) == set(GATE_COMMAND_FIELDS) and len(GATE_COMMAND_FIELDS) == 11
+    assert document["schema"] == GATE_COMMAND_SCHEMA == "wc_gate_command_v1"
+    assert (document["state"], document["linear"], document["angular"]) == ("ACTIVE", 0.10, 0.1)
+    assert document["limits"] == {"max_linear": 0.10, "max_angular": 0.30, "linear_ceiling": 0.10,
+                                  "allow_reverse": False}
+    assert (document["seq"], document["stamp_ns"], document["mono_ns"]) == (7, 1_000_000_000, 5_000_000_000)
+    text = json.dumps(document, allow_nan=False)
+    # Window A's parser of the agreed interface (wc_motion.auto_protocol with GATE_COMMAND_FIELDS, motion branch
+    # 9e5d79dc) once it is merged: the same fields, and the document is accepted. The level 0 parser before it
+    # had no gate_id.
+    protocol = pytest.importorskip("wc_motion.auto_protocol")
+    if "gate_id" in getattr(protocol, "GATE_COMMAND_FIELDS", ()):
+        assert tuple(protocol.GATE_COMMAND_FIELDS) == GATE_COMMAND_FIELDS
+        parsed = protocol.parse_gate_command(text)
+        assert (parsed["seq"], parsed["state"], parsed["limits"]["linear_ceiling"]) == (7, "ACTIVE", 0.10)
+
+
+@pytest.mark.parametrize("settings", [{}, {"max_linear": 0.10, "max_angular": 0.30, "slow_linear": 0.05},
+                                      {"covariance_mode": "xy"}])
+def test_only_active_moves_and_linear_stays_under_its_ceiling(settings):
+    """What the wheel owner checks on every decision (9.2 item 1): nonzero only when ACTIVE, |linear| within
+    linear_ceiling, the ceiling within max_linear; over random inputs including the lateral slow-down's ramps."""
+    import random
+    from wc_navigation.autonomy.safety_gate import gate_command
+    rng = random.Random(20261110)
+    config = GateConfig(require_covariance=True, **settings)
+    gate = SafetyGate(config)
+    t, active, slowed = 0.0, 0, 0
+    for step in range(4000):
+        t += 0.05
+        if rng.random() < 0.9:
+            gate.on_enable(rng.random() < 0.95, t)
+        if rng.random() < 0.01:
+            gate.on_estop(rng.random() < 0.5, t)
+        gate.on_localization(rng.random() < 0.95, "MAP_TO_BASE_TF_STALE")
+        if rng.random() < 0.05:
+            gate.on_covariance(_corridor_covariance(rng.choice([0.1, 0.3, 0.52, 0.8])), 0.0)
+        if rng.random() < 0.6:
+            value = rng.choice([rng.uniform(-0.5, 0.8), math.nan, 2.0, -0.01])
+            gate.on_command(value, rng.uniform(-1.0, 1.0), t)
+        decision = gate.evaluate(t)
+        if decision.state != "ACTIVE":
+            assert decision.linear == 0.0 and decision.angular == 0.0
+        else:
+            active += 1
+            slowed += "LOCALIZATION_SLOW" in decision.reasons
+        assert decision.linear_ceiling is not None and decision.linear_ceiling <= config.max_linear
+        assert abs(decision.linear) <= decision.linear_ceiling and decision.linear >= 0.0
+        assert abs(decision.angular) <= config.max_angular
+        limits = gate_command(decision, config, "gate_x", step + 1, 1, 1)["limits"]
+        assert limits["linear_ceiling"] <= limits["max_linear"]
+    assert active > 100 and (slowed > 10 or config.covariance_mode == "xy")
+
+
+def test_base_not_ready_sits_between_enable_and_localization():
+    gate = active_gate(require_base=True)
+    decision = gate.evaluate(0.1)
+    assert (decision.state, decision.reasons, decision.linear) == ("BASE_NOT_READY", ("BASE_STATUS_STALE",), 0.0)
+    gate.on_base(False, "BASE_NOT_AUTO")
+    assert gate.evaluate(0.1).reasons == ("BASE_NOT_AUTO",)
+    gate.on_base(False, "SOMETHING_ELSE")
+    assert gate.evaluate(0.1).reasons == ("BASE_STATUS_INVALID",)
+    gate.on_localization(False, "MAP_TO_BASE_TF_STALE")
+    assert gate.evaluate(0.1).state == "BASE_NOT_READY"          # before LOCALIZATION_UNTRUSTED
+    assert gate.evaluate(1.2).state == "ENABLE_STALE"             # after ENABLE_STALE
+    gate.on_base(True)
+    assert gate.evaluate(0.1).state == "LOCALIZATION_UNTRUSTED"
+    gate.on_localization(True)
+    assert gate.evaluate(0.1).state == "ACTIVE"
+
+
+def test_base_status_verdict_uses_the_bridge_monotonic_stamp():
+    from wc_navigation.autonomy.gate_node import BASE_STATUS_SCHEMA, base_status_verdict
+    now = 10_000_000_000
+
+    def status(**changes):
+        return {"schema": BASE_STATUS_SCHEMA, "stamp_mono_ns": now - 50_000_000, "base_auto": True, "reason": None,
+                **changes}
+    assert base_status_verdict(status(), now, 0.3) == (True, "")
+    assert base_status_verdict(None, now, 0.3) == (False, "BASE_STATUS_STALE")
+    assert base_status_verdict(status(stamp_mono_ns=now - 310_000_000), now, 0.3) == (False, "BASE_STATUS_STALE")
+    assert base_status_verdict(status(stamp_mono_ns=now + 60_000_000), now, 0.3) == (False, "BASE_STATUS_INVALID")
+    assert base_status_verdict(status(stamp_mono_ns=True), now, 0.3) == (False, "BASE_STATUS_INVALID")
+    assert base_status_verdict(status(schema="other"), now, 0.3) == (False, "BASE_STATUS_INVALID")
+    assert base_status_verdict(status(base_auto="true"), now, 0.3) == (False, "BASE_STATUS_INVALID")
+    assert base_status_verdict(status(base_auto=False, reason="BASE_NOT_AUTO"), now, 0.3) == (False, "BASE_NOT_AUTO")
+    assert base_status_verdict(status(base_auto=False, reason="BASE_STATUS_STALE"), now, 0.3) == (
+        False, "BASE_STATUS_STALE")
+    assert base_status_verdict(status(base_auto=False, reason=None), now, 0.3) == (False, "BASE_NOT_AUTO")
+
+
+def test_enable_and_estop_need_the_one_allowed_publisher():
+    from wc_navigation.autonomy.gate_node import single_source
+    gate = active_gate(enable_source_node="/wc_auto_bridge")
+    decision = gate.evaluate(0.1)
+    assert (decision.state, decision.reasons) == ("DISABLED", ("ENABLE_SOURCE_AMBIGUOUS",))
+    gate.on_sources(True)
+    assert gate.evaluate(0.1).state == "ACTIVE"
+    gate.on_estop(True, 0.15)
+    gate.on_sources(False)
+    assert gate.evaluate(0.2).state == "ESTOP_LATCHED"           # the latch is reported first
+    assert single_source(["/wc_auto_bridge"], "/wc_auto_bridge")
+    for names in ([], ["/wc_live_supervisor"], ["/wc_auto_bridge", "/wc_auto_bridge"],
+                  ["/wc_auto_bridge", "/wc_live_supervisor"]):
+        assert not single_source(names, "/wc_auto_bridge")
+
+
+def test_negative_ages_are_stale_not_fresh():
+    gate = active_gate()
+    gate.on_enable(True, 9.95)
+    gate.on_command(0.2, 0.0, 10.0)
+    assert gate.evaluate(10.1).state == "ACTIVE"
+    assert gate.evaluate(9.97).state == "COMMAND_STALE"          # the clock went back past the command
+    assert gate.evaluate(9.0).state == "ENABLE_STALE"            # ... and past the enable
+
+
+def test_gate_configuration_hash_is_of_the_file_read(tmp_path):
+    import hashlib
+    from wc_navigation.autonomy.gate_node import read_config
+    path = tmp_path / "gate_config.json"
+    path.write_text(json.dumps({"gate": {"require_base": True}, "clock": "monotonic"}), encoding="utf-8")
+    value, sha = read_config(path)
+    assert value["clock"] == "monotonic" and sha == hashlib.sha256(path.read_bytes()).hexdigest()
+    path.write_text("[1]", encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_config(path)

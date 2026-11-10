@@ -5,10 +5,12 @@
 ``shadow``   live inputs + map_server/AMCL on a saved map + Nav2 + safety gate + operator goals + recorder.
              ``--source bag`` (recorded time) runs now; ``--source vehicle`` is prepared and refuses to start
              without the user's dated approval (see docs/operations/navigation_live_shadow.md).
+``shadow --closed-loop`` drives: window A's base bridge hands the gate's decisions to the wheel serial owner of
+             the running panel session (0.10 m/s, 0.30 rad/s; today's WC_AUTO_DRIVE_APPROVAL required).
 ``checklist`` prints the pre-flight checklist for a vehicle shadow run.
 ``relay-graph`` read-only query of the relay's entry node in the sensor domain (creates no endpoint there).
-Outputs go to reports/navigation_live_shadow/; nothing commands the wheelchair. The first Ctrl-C stops a run;
-later ones cannot interrupt the shutdown, and result.json is written either way.
+Outputs go to reports/navigation_live_shadow/. Without --closed-loop nothing commands the wheelchair. The first
+Ctrl-C stops a run; later ones cannot interrupt the shutdown, and result.json is written either way.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 import uuid
 
 import numpy as np
@@ -28,6 +31,15 @@ OUTPUT_PREFIX = "/wc_live/relayed"   # relay_node.OUTPUT_PREFIX (importing it he
 VEHICLE_SHADOW_DOMAIN = "100"     # user decision 2026-11-07; localhost only
 VEHICLE_SHADOW_NICENESS = 10      # 2026-11-09 field result: the panel's recording comes first, the relay ends at 19
 WORK_ROOT = Path("/dev/shm")      # where a run's processes write while it runs (see run_command)
+# Vehicle closed loop (BOARD 2026-11-10 14:40, D.md 16:45). The first closed loop runs at 0.10 m/s and 0.30 rad/s;
+# the gate slows to 0.05 m/s while the deviation along the heading is above 0.50 m (velocity_channel.md 9.2
+# item 8) and takes the enable as stale after 0.5 s (item 2). Higher speeds need new evidence and the user.
+CLOSED_LOOP_MAX_LINEAR, CLOSED_LOOP_MAX_ANGULAR = 0.10, 0.30
+CLOSED_LOOP_SLOW_LIMITS = (0.50, 0.05)
+CLOSED_LOOP_ENABLE_TIMEOUT_S = 0.5
+CLOSED_LOOP_START_CHECKS = ("block", "strict")
+AUTO_DRIVE_APPROVAL_ENV = "WC_AUTO_DRIVE_APPROVAL"   # the same variable as window A's base bridge and wheel owner
+BRIDGE_NODE = "/wc_auto_bridge"                      # wc_motion.auto_bridge: the only enable and estop publisher
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
  0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
@@ -51,6 +63,13 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
 11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）。结束时按一次 Ctrl-C 停止本命令：只停本命令启动的进程；收尾期间再按 Ctrl-C 不会打断，收尾完写出 result.json（supervisor.stopped = OPERATOR_INTERRUPT；车上模式这样结束是正常结束）。
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
+闭环（shadow --closed-loop，闸门输出经 A 的底盘桥交给面板会话的轮控所有者；现场步骤以 A 的步骤单为准）：
+13. 用户当天同意闭环，命令前另设 WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>（和桥、轮控所有者同一个变量，日期必须是今天）。面板会话已开自动控制源（会话目录对应的 auto.sock 存在），命令给 --panel-root、--session-root、--session-id。
+    固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器 gated、0.3 s；起点检查只能 block 或 strict；--monitor-base-shift 不给时为 off。
+14. 命令起来后先让车站着，看每秒一行的"闭环状态"：闸门 DISABLED（OPERATOR_ENABLE_OFF）、定位可信、底盘不在 AUTO、急停否。起点检查没通过或定位不可信，不要点"开始自动"。
+    使能和急停只能由桥发：订阅 /wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
+15. 点"开始自动"：底盘进 AUTO、闸门转 COMMAND_STALE 后，目标节点才发目标，车开始走。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。目标失败不自动重发。
+16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数和最后的底盘状态。
 """
 
 
@@ -141,6 +160,14 @@ def arguments(argv=None):
     shadow.add_argument("--footprint", nargs="+", type=finite)
     shadow.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     shadow.add_argument("--max-duration", type=finite, default=900.0, help="wall seconds")
+    # Vehicle closed loop (BOARD 2026-11-10 14:40; D.md 16:45)
+    shadow.add_argument("--closed-loop", action="store_true",
+                        help="drive: start window A's base bridge, which hands the gate's decisions to the wheel "
+                             "serial owner of the running panel session; 0.10 m/s and 0.30 rad/s; needs "
+                             + AUTO_DRIVE_APPROVAL_ENV + "=APPROVED_BY_USER_<today, YYYYMMDD>")
+    shadow.add_argument("--panel-root", type=Path, help="closed loop: the panel's checkout (its session sockets)")
+    shadow.add_argument("--session-root", type=Path, help="closed loop: directory of the running panel session")
+    shadow.add_argument("--session-id", help="closed loop: identity of that session")
     shadow_cli_options.add_live_arguments(shadow)
     sub.add_parser("checklist", help="print the pre-flight checklist")
     graph = sub.add_parser("relay-graph", help="read-only query of the relay's entry node in the sensor domain")
@@ -179,9 +206,25 @@ def arguments(argv=None):
         from .amcl_cross import CANDIDATES
         if args.amcl_params != "framework" and args.amcl_params not in CANDIDATES:
             parser.error("--amcl-params must be framework or one of " + ", ".join(CANDIDATES))
-        from ..autonomy.safety_gate import covariance_mode_settings
+        from ..autonomy.safety_gate import GateConfig, covariance_mode_settings
+        slow_limits, max_linear = args.gate_slow_limits, GateConfig.max_linear
+        if args.closed_loop:
+            if not (args.panel_root and args.session_root and args.session_id):
+                parser.error("--closed-loop needs --panel-root, --session-root and --session-id of the running "
+                             "panel session")
+            if args.start_check not in CLOSED_LOOP_START_CHECKS:
+                parser.error("--closed-loop needs --start-check " + " or ".join(CLOSED_LOOP_START_CHECKS))
+            max_linear = CLOSED_LOOP_MAX_LINEAR
+            if slow_limits is None and (args.gate_covariance_mode or GateConfig.covariance_mode) == "lateral":
+                slow_limits = CLOSED_LOOP_SLOW_LIMITS
+            # --monitor-base-shift off unless given (user 2026-11-09 23:50 for the next vehicle run)
+            given = sys.argv[1:] if argv is None else list(argv)
+            if not any(str(a).split("=", 1)[0].startswith("--monitor") for a in given):
+                args.monitor_base_shift = "off"
+        elif args.panel_root or args.session_root or args.session_id:
+            parser.error("--panel-root, --session-root and --session-id belong to --closed-loop")
         try:
-            args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
+            args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, slow_limits, max_linear)
         except ValueError as exc:
             parser.error(str(exc))
         from ..planning.stack import PlanningChoice
@@ -253,6 +296,45 @@ def main(argv=None):
         guard.restore()
 
 
+def closed_loop_settings(args):
+    """Checks before a closed-loop run, and its configuration block; nothing has been started yet.
+
+    Today's user approval in the same variable as window A's bridge and wheel owner, the bridge's domain, and the
+    panel session's automatic control socket (the owner creates it only with auto_controls, today's approval and
+    valid evidence). The panel root and the session directory are passed to the bridge as given here, so both
+    derive the same socket path.
+    """
+    import os
+    import stat
+    from wc_runtime.mapping_auto import auto_socket_path
+    today = datetime.now().strftime("%Y%m%d")
+    approval = os.environ.get(AUTO_DRIVE_APPROVAL_ENV, "")
+    if approval != "APPROVED_BY_USER_" + today:
+        print(CHECKLIST)
+        raise SystemExit("the closed loop needs the user's approval of today: %s=APPROVED_BY_USER_%s"
+                         % (AUTO_DRIVE_APPROVAL_ENV, today))
+    if os.environ.get("ROS_DOMAIN_ID") != VEHICLE_SHADOW_DOMAIN:
+        raise SystemExit("the closed loop runs in domain %s, like window A's base bridge; set WC_AUTONOMY_ROS_DOMAIN=%s"
+                         % (VEHICLE_SHADOW_DOMAIN, VEHICLE_SHADOW_DOMAIN))
+    panel = args.panel_root.expanduser().absolute()
+    session = args.session_root.expanduser().absolute()
+    if not session.is_dir():
+        raise SystemExit("no panel session directory " + str(session))
+    path = auto_socket_path(panel, session, args.session_id)
+    try:
+        is_socket = stat.S_ISSOCK(path.stat().st_mode)
+    except OSError:
+        is_socket = False
+    if not is_socket:
+        raise SystemExit("no automatic control socket %s: panel session %s does not offer automatic control (window "
+                         "A's wheel owner creates it only with auto_controls, today's approval and valid evidence)"
+                         % (path, args.session_id))
+    return {"panel_root": str(panel), "session_root": str(session), "session_id": args.session_id,
+            "auto_socket": str(path), "bridge_node": BRIDGE_NODE, "approval": approval,
+            "max_linear": CLOSED_LOOP_MAX_LINEAR, "max_angular": CLOSED_LOOP_MAX_ANGULAR,
+            "enable_timeout_s": CLOSED_LOOP_ENABLE_TIMEOUT_S}
+
+
 def relay_graph_command(args):
     """Print the relay entry node's graph in the sensor domain; creates no endpoint there (see entry_graph)."""
     import os
@@ -318,6 +400,7 @@ def run_command(args, guard):
         if os.environ.get("ROS_DOMAIN_ID") != VEHICLE_SHADOW_DOMAIN:
             raise SystemExit("the vehicle shadow runs in domain %s (user decision 2026-11-07); "
                              "set WC_AUTONOMY_ROS_DOMAIN=%s" % (VEHICLE_SHADOW_DOMAIN, VEHICLE_SHADOW_DOMAIN))
+    closed_loop = closed_loop_settings(args) if args.command == "shadow" and args.closed_loop else None
     storage = StoragePolicy(args.project_root)
     storage.check()
     live = load_live_config(args.cell, args.hardware_setup, args.gyro_bias)
@@ -344,7 +427,10 @@ def run_command(args, guard):
     if args.command == "shadow":
         from .amcl_cross import CANDIDATES
         map_yaml = args.map_yaml.expanduser().resolve(strict=True)
-        profile = nav2_config.NavProfile(footprint=args.footprint or (), **shadow_cli_options.live_profile_fields(args))
+        speeds = ({"max_linear": CLOSED_LOOP_MAX_LINEAR, "max_angular": CLOSED_LOOP_MAX_ANGULAR}
+                  if closed_loop else {})      # Nav2's controller, smoother and behaviours and the gate follow these
+        profile = nav2_config.NavProfile(footprint=args.footprint or (), **speeds,
+                                         **shadow_cli_options.live_profile_fields(args))
         goals = [[g[0], g[1], math.radians(g[2])] for g in (args.goal or [])]
         if args.goals_along_cell:
             goals += goals_along(args.goals_along_cell, args.map_alignment_json, args.goal_spacing)
@@ -364,6 +450,9 @@ def run_command(args, guard):
                       max_duration_s=args.max_duration)
         config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
         config["smoother_feedback"], config["smoother_timeout_s"] = args.smoother_feedback, args.smoother_timeout
+        if closed_loop:
+            config["closed_loop"] = closed_loop
+            config.update(open_loop=False, hardware_control=True, commands_sent=True)
         if args.source == "vehicle":
             # D5 (user 2026-11-10): with the 3D obstacle input the relay also reads the right lidar, four topics
             config["relay"] = {"source_domain": args.sensor_domain, "source_prefix": "", "output_prefix": OUTPUT_PREFIX,
@@ -397,7 +486,8 @@ def run_command(args, guard):
     interrupted = report.get("stopped") == INTERRUPTED
     result = {"schema_version": 1, "kind": args.command, "status": "INCOMPLETE", "config": config,
               "live_provenance": live["provenance"], "supervisor": report,
-              "hardware_control": False, "commands_sent": False, "physical_navigation_validated": False}
+              "hardware_control": closed_loop is not None, "commands_sent": closed_loop is not None,
+              "physical_navigation_validated": False}
     if args.command == "inputs":
         try:
             result["comparison"] = check_run(output, args.compare_cell or args.cell, config["lidar_time_offset_ms"])

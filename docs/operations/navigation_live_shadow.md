@@ -183,6 +183,28 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow freeze-config --c
 - 看核对结果：`hardware_setup_from_local_override` 必须是 true；轮参数是设备当前值；`confirmed_gyro_bias_configured` 为 false 时，影子命令必须用 `--gyro-bias` 显式给零偏；`against_reference_cell` 里外参、杆臂、主机滤波和设备编号应与最近的前端一致。
 - 影子命令用冻结目录作 `--cell`，其中的 `hardware_setup.json` 作 `--hardware-setup`（命令行打印的 `use` 一行）。
 
+## 实车闭环（--closed-loop，第一次闭环）
+
+闸门的决定经窗口 A 的底盘桥交给面板会话的轮控所有者，车自己走。现场步骤以 A 的步骤单为准；设计见[设计说明](../architecture/live_shadow.md#实车闭环模式第一次闭环2026-11-10)。
+
+```bash
+WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期> \
+  WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<今天，YYYYMMDD> \
+  bash scripts/navigation_live_shadow shadow --source vehicle --sensor-domain 83 --closed-loop \
+  --panel-root /home/nvidia/wheelchair --session-root <面板会话目录> --session-id <会话编号> \
+- 按一次 Ctrl-C 结束；运行后核对结果，面板录包不是 PARTIAL。
+- 闭环（第 13–16 条）：另要今天的 `WC_AUTO_DRIVE_APPROVAL` 和开了自动控制源的面板会话；先站着看状态行，再点“开始自动”。
+
+## 实车闭环（--closed-loop，第一次闭环）2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107
+```
+
+- 启动前命令自己查：`WC_AUTO_DRIVE_APPROVAL` 的日期是今天；域 100；面板会话的 `auto.sock` 存在。会话没开自动控制源时没有这个 socket，命令直接拒绝。
+- 固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器 gated、0.3 s；`--start-check` 只能 block 或 strict；`--monitor-base-shift` 不给时为 off。
+- 起来以后先站着看每秒一行的“闭环状态”。没点“开始自动”时应是：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`、定位可信、底盘不在 AUTO、急停否、目标 `WAITING_FOR_GATE`。
+- 点“开始自动”后底盘进 AUTO，闸门转 `COMMAND_STALE`，目标节点才发目标。急停、软件急停、“停止自动”、空格、WASD 都会停；急停以后要松开、再点一次“开始自动”。目标失败不重发。
+- 使能和急停只能由桥发：这两个话题有别的发布者时，闸门停在 `DISABLED(ENABLE_SOURCE_AMBIGUOUS)`。
+- 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）和闸门各状态的计数。
+
 上车前检查单：`bash scripts/navigation_live_shadow checklist`。内容与命令里的相同，要点：
 - 用户同意并记录。
 - 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。开障碍输入时面板要用两台雷达。

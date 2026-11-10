@@ -12,6 +12,12 @@ recorded time; ``--source vehicle`` (wall time, sensor topics relayed one way
 from the vehicle's sensor domain) is prepared but refuses to start without the
 explicit approval described in docs/operations/navigation_live_shadow.md.
 
+``shadow --closed-loop`` (D.md 2026-11-10 16:45) drives instead: window A's base bridge
+(``wc_motion.auto_bridge``) starts after the Nav2 readback and before the gate, the gate runs its closed-loop
+configuration (base in automatic control, the bridge as the only enable and estop source, monotonic ages), this
+supervisor publishes no enable at all, the goals wait for the operator's "start automatic", and the bridge is
+stopped first.
+
 Every process runs in WC_AUTONOMY_ROS_DOMAIN (96-101, localhost only) under the
 checkout's domain lock; only processes started here are stopped. The first
 Ctrl-C (or SIGTERM/SIGHUP) starts the shutdown; later ones cannot interrupt it
@@ -40,6 +46,12 @@ VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
 OBSTACLES_STATUS = "/wc_live/inputs_status/obstacles"   # perception.live_obstacles.STATUS_TOPIC (window C)
 INTERRUPTED = "OPERATOR_INTERRUPT"
+# Closed loop (D.md 2026-11-10 16:45): window A's base bridge, stopped first so the wheel owner ends automatic
+# control at once; its status topic (gate_node.BASE_STATUS_TOPIC).
+BRIDGE = "base_bridge"
+BASE_STATUS_TOPIC = "/wc_nav/base_status"
+GATE_STATUS_TOPIC = "/wc_nav/gate_status"
+GOAL_STATUS_TOPIC = "/wc_live/goal_status"
 
 
 class StartCheckStop(Exception):
@@ -127,9 +139,13 @@ def with_sim_time(params, value):
 
 
 class LiveMonitor:
-    """Supervisor node: statuses, parameter readback, operator start pose and the enable heartbeat."""
+    """Supervisor node: statuses, parameter readback, operator start pose and the enable heartbeat.
 
-    def __init__(self, context, use_sim_time):
+    In the closed loop there is no enable publisher here at all: the base bridge is the only source of
+    /wc_nav/enable (the gate checks that), and its /wc_nav/base_status is read for the operator's status line.
+    """
+
+    def __init__(self, context, use_sim_time, closed_loop=False):
         import rclpy
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from rclpy.executors import SingleThreadedExecutor
@@ -149,9 +165,15 @@ class LiveMonitor:
                       "/wc_live/goal_status", "/wc_live/relay_status", OBSTACLES_STATUS):
             self.node.create_subscription(String, topic, lambda m, t=topic: self.status.__setitem__(
                 t, json.loads(m.data)), latched_qos())
-        self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
+        self.enable_pub = None
+        if closed_loop:
+            # the bridge publishes it reliable and volatile at 10 Hz (a transient local reader would not match)
+            self.node.create_subscription(String, BASE_STATUS_TOPIC, lambda m: self.status.__setitem__(
+                BASE_STATUS_TOPIC, json.loads(m.data)), 10)
+        else:
+            self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
+            self.node.create_timer(0.25, self._heartbeat)
         self.initial_pub = self.node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
-        self.node.create_timer(0.25, self._heartbeat)
         # standing scans and the odometry pose for the start check (live/start_check.py)
         from collections import deque
         from nav_msgs.msg import Odometry
@@ -237,9 +259,9 @@ class LiveMonitor:
 
 
 class LiveSupervisor(Supervisor):
-    """Start order: recorder -> inputs (-> relay) -> [map_server + AMCL] -> source -> [start pose -> Nav2 ->
-    readback -> gate -> goals]. The bracketed steps are the shadow run; Nav2's costmaps only activate once
-    sensor data, odometry TF and AMCL's map->odom exist."""
+    """Start order: recorder -> inputs (-> relay) -> [map_server + AMCL] -> source -> [start pose -> start check ->
+    Nav2 -> readback -> smoother feedback (-> base bridge) -> gate -> goals]. The bracketed steps are the shadow
+    run; Nav2's costmaps only activate once sensor data, odometry TF and AMCL's map->odom exist."""
 
     def __init__(self, project_root, output_dir, config, guard=None):
         super().__init__(project_root, output_dir, config)
@@ -254,12 +276,16 @@ class LiveSupervisor(Supervisor):
             return super().launch(name, args)
 
     def stop_all(self):
-        """Stop this command's processes, newest first, each on its own: one failure does not skip the rest."""
+        """Stop this command's processes, newest first, each on its own: one failure does not skip the rest.
+
+        The closed loop's base bridge goes first: when its socket closes, the wheel owner ends automatic control
+        and writes zero, before the gate's decisions could only go stale.
+        """
         errors = {}
         running = sum(1 for _, process in self.processes if process.poll() is None)
         if running:
             _say("收尾：停本命令启动的 %d 个进程…" % running)
-        for name, process in reversed(self.processes):
+        for name, process in sorted(reversed(self.processes), key=lambda item: item[0] != BRIDGE):
             try:
                 _stop_owned(process)
             except Exception as exc:
@@ -337,13 +363,21 @@ class LiveSupervisor(Supervisor):
                    "max_yaw_rad": math.radians(limits["correction_yaw_deg"]), "hold_s": 3.0,
                    "reference": limits["correction_reference"]}
         covariance = {k: limits[k] for k in ("covariance_mode", "slow_std_m", "slow_linear") if k in limits}
-        files["gate"] = self.node_config("gate_config", {
-            "use_sim_time": sim, "correction_monitor": monitor,
-            "gate": {"max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": True,
-                     "covariance_xy_std_max_m": limits["covariance_xy_std_m"],
-                     "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"]), **covariance}})
+        gate = {"max_linear": profile.max_linear, "max_angular": profile.max_angular, "require_covariance": True,
+                "covariance_xy_std_max_m": limits["covariance_xy_std_m"],
+                "covariance_yaw_std_max_rad": math.radians(limits["covariance_yaw_std_deg"]), **covariance}
+        gate_node = {"use_sim_time": sim, "correction_monitor": monitor, "gate": gate}
+        closed = cfg.get("closed_loop")
+        if closed:
+            # velocity_channel.md 9.2: the base must run automatic control, the bridge is the only enable and estop
+            # source, the enable is stale after 0.5 s, and ages run on the monotonic clock
+            gate.update(require_base=True, enable_source_node=closed["bridge_node"],
+                        enable_timeout_s=closed["enable_timeout_s"])
+            gate_node["clock"] = "monotonic"
+        files["gate"] = self.node_config("gate_config", gate_node)
         files["goals"] = self.node_config("goals_config", {
-            "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"]})
+            "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"],
+            "closed_loop": bool(closed)})
         return files
 
     def planning(self):
@@ -384,8 +418,23 @@ class LiveSupervisor(Supervisor):
             self.launch_module("velocity_feedback", "wc_navigation.planning.velocity_feedback", files["feedback"])
             self.wait_for(monitor, lambda: monitor.node.count_publishers(FEEDBACK_TOPIC) > 0, 30,
                           "velocity_feedback_ready")
+        closed = self.config.get("closed_loop")
+        if closed:
+            self.start_bridge(monitor, closed)
         self.launch_module("safety_gate", "wc_navigation.autonomy.gate_node", files["gate"])
-        monitor.enabled = True
+        monitor.enabled = not closed               # the shadow's own enable heartbeat; none in the closed loop
+
+    def start_bridge(self, monitor, closed):
+        """Window A's base bridge (wc_motion.auto_bridge), before the gate: the gate needs it as the only publisher
+        of /wc_nav/enable and /wc_nav/estop. It refuses without today's WC_AUTO_DRIVE_APPROVAL and exits when the
+        wheel owner's socket closes; either ends the run (check_alive)."""
+        self.launch(BRIDGE, [sys.executable, "-B", "-s", "-m", "wc_motion.auto_bridge",
+                             "--project-root", closed["panel_root"], "--session-root", closed["session_root"],
+                             "--session-id", closed["session_id"]])
+        topics = (BASE_STATUS_TOPIC, "/wc_nav/enable", "/wc_nav/estop")
+        self.wait_for(monitor, lambda: all(monitor.node.count_publishers(t) > 0 for t in topics)
+                      and monitor.status.get(BASE_STATUS_TOPIC) is not None, 30, "bridge_ready")
+        _say(closed_loop_line(monitor.status))
 
     def initial_pose(self, monitor):
         cfg = self.config
@@ -499,8 +548,9 @@ class LiveSupervisor(Supervisor):
         context = Context()
         rclpy.init(args=[], context=context)
         monitor = None
+        closed = cfg.get("closed_loop")
         try:
-            monitor = LiveMonitor(context, cfg["use_sim_time"])
+            monitor = LiveMonitor(context, cfg["use_sim_time"], closed_loop=bool(closed))
             monitor.spin(2.0)
             foreign = monitor.foreign_nodes()
             if foreign:
@@ -515,14 +565,18 @@ class LiveSupervisor(Supervisor):
                 self.start_shadow(monitor, files, profile)
                 self.launch_module("goals", "wc_navigation.live.goals_node", files["goals"])
             budget = cfg.get("max_duration_s", 900.0)
+            last_line = 0.0
             while True:
                 if bag is not None and bag.poll() is not None:
                     break
                 if time.monotonic() - self.t0 > budget:
                     self.report["stopped"] = "DURATION_LIMIT"
                     break
-                self.check_alive(allow=("bag_play", "goals"))
+                self.check_alive(allow=("bag_play", "goals"))      # the bridge or the gate exiting ends the run
                 monitor.spin(0.2)
+                if closed and time.monotonic() - last_line >= 1.0:
+                    _say(closed_loop_line(monitor.status))         # also while standing before "start automatic"
+                    last_line = time.monotonic()
             self.report["stages"].append({"stage": "source_finished", "wall_s": round(time.monotonic() - self.t0, 2),
                                           "bag_exit_code": None if bag is None else bag.returncode})
             monitor.enabled = False
@@ -546,6 +600,8 @@ class LiveSupervisor(Supervisor):
                     monitor.spin(0.3)
                 except Exception:
                     pass
+                if closed:
+                    self.report["closed_loop"] = closed_loop_report(monitor.status)
             self.stop_all()
             try:
                 if monitor is not None:
@@ -554,6 +610,47 @@ class LiveSupervisor(Supervisor):
                     context.shutdown()
             except Exception as exc:
                 self.report["close_error"] = type(exc).__name__ + ": " + str(exc)
+
+
+def _switch(*values):
+    """按下 when any value is True, 否 when one is False and none True, else 未知 (null: not readable)."""
+    if any(v is True for v in values):
+        return "按下"
+    return "否" if any(v is False for v in values) else "未知"
+
+
+def closed_loop_line(status):
+    """The operator's one-line view of the closed loop (every second, also standing before "start automatic")."""
+    gate = status.get(GATE_STATUS_TOPIC) or {}
+    base = status.get(BASE_STATUS_TOPIC) or {}
+    goal = status.get(GOAL_STATUS_TOPIC) or {}
+    conditions = gate.get("conditions") or {}
+    reasons = ",".join(gate.get("reasons") or [])
+    parts = ["闭环状态：闸门 " + str(gate.get("state", "未启动")) + ("(" + reasons + ")" if reasons else "")]
+    if conditions:
+        parts.append("定位 " + ("可信" if conditions.get("localization_ok")
+                                else "不可信(%s)" % conditions.get("localization_reason")))
+    if base:
+        parts.append("底盘 %s%s" % (base.get("auto_state") or "未知",
+                                    "" if base.get("base_auto") else "(%s)" % base.get("reason")))
+        parts.append("使能 " + ("是" if base.get("enable") else "否"))
+        parts.append("急停 " + _switch(base.get("estop"), base.get("estop_request")))
+    else:
+        parts.append("底盘 没有桥的状态")
+    if gate:
+        parts.append("闸门输出 %.2f m/s %.2f rad/s" % (float(gate.get("linear") or 0.0), float(gate.get("angular") or 0.0)))
+    if goal:
+        parts.append("目标 %s %d/%d" % (goal.get("state"), int(goal.get("goal_index", 0)) + 1, int(goal.get("goals", 0))))
+    return "；".join(parts)
+
+
+def closed_loop_report(status):
+    """result.json's closed_loop block: the last bridge status (with its counters and the owner's status) and the
+    gate's identity and state counts as last published."""
+    gate = status.get(GATE_STATUS_TOPIC) or {}
+    return {"base_status": status.get(BASE_STATUS_TOPIC), "gate_id": gate.get("gate_id"), "gate_seq": gate.get("seq"),
+            "gate_state": gate.get("state"), "gate_counts": gate.get("counts"), "gate_sources": gate.get("sources"),
+            "goal_status": status.get(GOAL_STATUS_TOPIC)}
 
 
 def lower_priority(target):
