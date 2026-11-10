@@ -9,6 +9,7 @@
 - [auto_evidence.py](auto_evidence.py)：自动速度通道的证据文件格式和检查。
 - [auto_protocol.py](auto_protocol.py)：闸门决定、底盘桥和轮控所有者之间的消息格式。
 - [config_template.json](config_template.json)
+- [driver_readback.py](driver_readback.py)：驱动器寄存器只读回读（[速度通道设计](../../docs/architecture/velocity_channel.md) 7.3 第 7 步）：只发 FC03 读请求，寄存器白名单，经轮控用的同一个串口租约独占；没有用户当天的同意不开串口。
 - [feedback_transport.py](feedback_transport.py)
 - [history_preview.py](history_preview.py)
 - [manual_hardware.py](manual_hardware.py)
