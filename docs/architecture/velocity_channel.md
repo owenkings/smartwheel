@@ -56,7 +56,7 @@ flowchart LR
   7. 驱动器参数回读和审定值一致、没有故障码（第 5 节）。
   进了自动，速度从 0 按加速度上限爬升，不会跳到闸门当时的值。
 - 退出自动，任一条：
-  - 操作员：按任何 WASD 键或空格（接管）、点"停止自动"、松开使能开关（装了的话）、按急停。车上急停只作用在驱动器上，软件从轮速反馈看出来：任一轮的指令大于 0.05 m/s 而两轮反馈都为 0 超过 0.3 s，就立即写零、退出自动，下次"开始自动"先重新初始化，所以急停复位后驱动器不会按旧指令走；
+  - 操作员：按任何 WASD 键或空格（接管）、点"停止自动"、按面板的软件急停（立即停，按着时不能开始）、松开使能开关（装了的话）、按急停。车上急停只作用在驱动器上，软件从轮速反馈看出来：任一轮的指令大于 0.05 m/s 而两轮反馈都为 0 超过 0.3 s，就立即写零、退出自动，下次"开始自动"先重新初始化，所以急停复位后驱动器不会按旧指令走；
   - 连接：界面断开或心跳 0.25 s 没刷新，底盘桥断开，闸门决定 0.3 s 没刷新，闸门换了来源（`gate_id` 变了，即闸门重启过）或 `seq` 不增；
   - 闸门状态是急停锁存；
   - 设备：串口或驱动器故障；
@@ -149,7 +149,7 @@ flowchart LR
 
 ### 7.4 用户的方案（2026-11-09 23:50）
 - 不买新东西，不做硬件松手即停。第一次空车低速闭环（0.10 m/s、0.30 rad/s）用车上现有急停，人在车旁。键盘按住才走先不做（有闲置的有线 USB 键盘，以后坐人或提速再说）。
-- 使能来自面板的"开始自动"；"停止自动"、空格、WASD 都停。急停复位后要再点一次"开始自动"才走（闸门的使能 false→true）。代码里是显式的"开关未安装"配置 `hold_to_run_switch: NOT_INSTALLED`：状态里开关和急停报 null，证据文件里记下这条决定，不会固定报"开关按住"。
+- 使能来自面板的"开始自动"；"停止自动"、空格、WASD 都停。急停复位后要再点一次"开始自动"才走（闸门的使能 false→true）。面板的软件急停和轮速判出的急停都经桥发到 `/wc_nav/estop`，闸门照样锁存（D 2026-11-10 13:15 的意见，总管定）。代码里是显式的"开关未安装"配置 `hold_to_run_switch: NOT_INSTALLED`：状态里开关和急停报 null，证据文件里记下这条决定，不会固定报"开关按住"。
 - 软件要看得到硬件急停：急停按下时驱动器停车，自动通道却还在写原来的速度，急停一复位驱动器就可能直接按它走。所以轮控所有者用轮速反馈判断：任一轮的指令大于 0.05 m/s，而两轮反馈都为 0 超过 0.3 s，就立即写零、退出自动，下次"开始自动"先重新初始化。这一条不新增串口读；读 2003h 留到第 1 级（8030D 有没有这个寄存器要先确认）。
 - 急停盒在座下：人在车旁伸手能按到就不挪，够不到再用现有的线挪。
 - 绿色电机开关不挪，作最后一道。
@@ -239,9 +239,9 @@ flowchart LR
    - 桥：开关按住、没有急停时 10 Hz 发 true；松开时立即发一次 false 再停发，闸门下一个周期（≤ 0.05 s）就转 DISABLED，记录里也能分清"松手"和"心跳丢了"；轮控所有者的状态 0.3 s 没刷新或读不到开关时什么都不发。
    - 开关没装（`enable_source: OPERATOR_START`）时：使能跟轮控所有者状态里的 `enable_request` 走。操作员点"开始自动"并被接受后为 true，10 Hz 发 true；"停止自动"、空格、WASD 或任何退出让它变 false，立即发一次 false 再停发。闸门急停锁存时点"开始自动"，轮控所有者先报 `enable_request: true` 最多 1 s，用这一次新的使能（false→true）给闸门解锁。A.md 2026-11-10 11:55 登记，请 D 看。
    - 闸门：`enable_timeout_s` 默认 1.0 s 不改（仿真、影子用），实车闭环配置给 0.5 s；闭环配置下检查 `/wc_nav/enable` 和 `/wc_nav/estop` 的发布者是否恰好一个，不是就停车（`ENABLE_SOURCE_AMBIGUOUS`）。
-3. `/wc_nav/estop`：桥按物理急停发，按下期间 10 Hz 发 true，松开时发一次 false；reliable、transient local、depth 1，闸门重启后也能马上知道急停还按着。闸门的锁存规则不变：收到 false 不解锁，要松开急停、再来一次新的使能（false 到 true）才解锁，也就是陪同者要松开再按一次使能开关；面板的软件急停一样。开关没装时急停读不到，桥不发 `/wc_nav/estop`，面板的软件急停照旧；车上急停由轮控所有者从轮速反馈判断（第 4 节）。
+3. `/wc_nav/estop`：桥按物理急停发，按下期间 10 Hz 发 true，松开时发一次 false；reliable、transient local、depth 1，闸门重启后也能马上知道急停还按着。闸门的锁存规则不变：收到 false 不解锁，要松开急停、再来一次新的使能（false 到 true）才解锁，也就是陪同者要松开再按一次使能开关；面板的软件急停一样。开关没装时急停读不到，桥照样是 `/wc_nav/estop` 唯一的发布者，来源换成轮控所有者状态里的 `estop_request`：面板的软件急停（手动 socket 的 `estop` 包，按着期间为 true）和轮速判出的急停（`WHEELS_STOPPED_WHILE_COMMANDED`，至少报 0.5 s）。按下期间 10 Hz 发 true，松开时发一次 false；桥第一次拿到轮控所有者的状态就发一次当前状态。这样闸门照样锁存，闭环配置也有恰好一个发布者；解锁要松开、再点"开始自动"。D.md 2026-11-10 13:15 提出，总管 13:55 定。
 4. `/wc_nav/base_status`（桥发，10 Hz，`std_msgs/String` JSON，schema `wc_base_status_relay_v1`）。
-   - 字段：`base_auto`（轮控所有者在 `AUTO` 才为 true）、`reason`（null、`BASE_NOT_AUTO` 或 `BASE_STATUS_STALE`）、`stamp_mono_ns`（桥发出时的单调钟）、`source`、`auto_state`、`enable_source`、`enable_request`、`dead_man`、`estop`、`enable`、`feedback`、`owner`（轮控所有者的完整状态）、`counters`。
+   - 字段：`base_auto`（轮控所有者在 `AUTO` 才为 true）、`reason`（null、`BASE_NOT_AUTO` 或 `BASE_STATUS_STALE`）、`stamp_mono_ns`（桥发出时的单调钟）、`source`、`auto_state`、`enable_source`、`enable_request`、`estop_request`、`estop_reasons`、`dead_man`、`estop`、`enable`、`feedback`、`owner`（轮控所有者的完整状态）、`counters`。
    - `feedback` 是最近一次轮速反馈：两轮和车轴的速度、`sequence`、`stamp_mono_ns`（轮控所有者读到响应时的单调钟）、`age_s`。B 要用它量实车轮速反馈的频率和延迟。
    - 闸门：`GateConfig.require_base` 默认 false，仿真和影子不变；实车闭环给 true。为 true 时底盘不在 AUTO 就输出零，状态记为新状态 `BASE_NOT_READY`，原因 `BASE_NOT_AUTO`；超过 0.3 s 没收到 `base_status` 时原因 `BASE_STATUS_STALE`。`BASE_NOT_READY` 排在 `ENABLE_STALE` 之后、`LOCALIZATION_UNTRUSTED` 之前。上限只由轮控所有者核对，闸门不重复核对。
 5. 命令超时：实车先保持 0.5 s。D 实测非零速度后命令间隔 p99 0.19 s、p99.9 0.29 s、最大 0.31 s，用 0.3 s 时一次运行会误停 3 次；第一次闭环 0.10 m/s 时 0.5 s 比 0.3 s 只多走 0.02 m。要降到 0.3 s，先请 B、C 查碰撞监控为什么只有约 10 Hz，到 20 Hz 后在实车影子里重测，超时取 p99.9 的 2 倍以上。另外平滑器在控制器停发后还会按 `velocity_timeout`（Nav2 默认 1.0 s）继续发上一条速度，请 B 看实车上要不要减到 0.3 s 以下。
@@ -276,7 +276,7 @@ flowchart LR
 - 消息格式在 [auto_protocol.py](../../src/wc_motion/auto_protocol.py)。桥只接受 `wc_gate_command_v1`，字段正好是 9.2 第 1 条那些（11-09 晚按 D 的审查加了 `gate_id`，`limits` 改成四项），多一个、少一个都拒绝；`linear_ceiling` 不能大于 `max_linear`；`seq`、`stamp_ns` 是非负整数，`mono_ns` 是正整数；`state` 以大写字母开头，只含大写字母、数字和下划线，至多 48 个字符；`reasons` 是至多 16 条的短字符串列表；`config_sha256` 是 64 位小写十六进制或 null。只有 `ACTIVE` 可以带非零速度；其他状态带非零速度、负线速度、线速度超过批准上限或 `linear_ceiling` 0.005 m/s 以上、角速度超过批准上限 0.01 rad/s 以上、`allow_reverse` 为 true、闸门换了来源，都按软件减速上限停车并退出自动，不截断了照走。
 - 证据格式在 [auto_evidence.py](../../src/wc_motion/auto_evidence.py)，模板 [wheel_auto_drive_evidence.template.json](../../config/wheel_auto_drive_evidence.template.json) 总被拒绝。分三个阶段：`STAND_TEST`（架空，上限不超过 0.10 m/s、0.30 rad/s，要第 2 级 a–d 的停车记录：急停、松开使能、杀轮控所有者、拔 USB、断 Orin 电源）、`GROUND_TEST`（再加 e 软件零速和 f–g 自动通道架空检查）、`SUPERVISED_CLOSED_LOOP`（再加批准最高速度下四种停车方式的制动记录，每种至少 5 次，过 8.1 的通过线）。来源文件记路径和 sha256，只能在本检出或数据根里。按档提速写进了代码（第 5 节）。失联三项（杀轮控所有者、拔 USB、断 Orin 电源）的停车时间必须填，且不超过 `communication_timeout_s` 加 0.5 s。开关没装时要写明用户的决定，不要 `dead_man` 的停车记录和制动记录。
 - 底盘桥在 [auto_bridge.py](../../src/wc_motion/auto_bridge.py)：只在 `ROS_DOMAIN_ID=100`、`ROS_LOCALHOST_ONLY=1` 且有当天同意时启动；闸门决定格式不对或来自未来 50 ms 以上就退出（当故障），超过 0.3 s 的丢掉；`auto.sock` 断了就退出，不重连；使能、急停和 `base_status` 按 9.2 第 2–4 条发。
-- 11-10 按总管的审查（`~/wheelchair_coord/reviews/level0_review_20261110.md`）改：减速停车中出现急停类原因改立即停；闸门决定的新鲜度端到端算；退出路径保证写零；闸门急停锁存挡进入；拒绝原因单独放在 `refusal`；初始化写了使能就不再报手推；证据查失联停车时间；轮速反馈超速立即停；补了审查列出的测试缺口。同时按用户的决定加了"开关未安装"模式和轮速判急停。
+- 11-10 按总管的审查（`~/wheelchair_coord/reviews/level0_review_20261110.md`）改：减速停车中出现急停类原因改立即停；闸门决定的新鲜度端到端算；退出路径保证写零；闸门急停锁存挡进入；拒绝原因单独放在 `refusal`；初始化写了使能就不再报手推；证据查失联停车时间；轮速反馈超速立即停；补了审查列出的测试缺口。同时按用户的决定加了"开关未安装"模式和轮速判急停。之后按 D 13:15 的意见，没装开关时桥也发 `/wc_nav/estop`（面板软件急停、轮速判出的急停）。
 - 还没做：RViz 面板的"开始自动""停止自动"和状态显示（C++ 面板要重编，等用户审完代码再做）；驱动器参数回读、2003h 输入状态、故障码的低频读取（第 6 节表里的"新增"），都要新的 FC03 读，放第 1 级，在 `step()` 里和反馈读错开，开关和回读的函数只返回缓存值。
 - 第 0 级以后的代码在单独的 worktree 写（`~/wheelchair-wt/motion`，分支 `feature/velocity-channel-20261109`），主检出只放审过的代码。给用户审的一页说明见[第 0 级代码说明](velocity_channel_review.md)。
 

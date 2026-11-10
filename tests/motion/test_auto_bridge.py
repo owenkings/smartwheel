@@ -61,7 +61,7 @@ def connected(short_tmp, clock):
 def owner_status(**change):
     value = {'type': 'status', 'schema': p.STATUS_SCHEMA, 'session_id': 'session_a', 'source': 'AUTO',
              'auto_state': 'AUTO', 'dead_man': True, 'estop': False, 'enable_source': 'HOLD_TO_RUN_SWITCH',
-             'enable_request': True,
+             'enable_request': True, 'estop_request': False, 'estop_reasons': [],
              'feedback': {'sequence': 41, 'stamp_mono_ns': 4_990_000_000, 'age_s': 0.01, 'linear_m_s': 0.05}}
     value.update(change)
     return value
@@ -153,7 +153,7 @@ def test_without_the_switch_the_enable_follows_the_operator_start(short_tmp):
     clock = ClockNs()
     server, core, conn = connected(short_tmp, clock)
     deliver(core, conn, operator_status(enable_request=False, auto_state='NONE', source='NONE'))
-    assert core.switch_outputs(False) == [('enable', False)]   # known: not enabled; no estop topic at all
+    assert core.switch_outputs(False) == [('enable', False), ('estop', False)]   # known: not enabled, no estop
     assert core.switch_outputs(True) == []
     deliver(core, conn, operator_status(enable_request=True, auto_state='INITIALIZING'))
     assert core.switch_outputs(False) == [('enable', True)]    # the new start: false -> true, the gate's unlatch edge
@@ -163,7 +163,7 @@ def test_without_the_switch_the_enable_follows_the_operator_start(short_tmp):
     assert core.switch_outputs(True) == []
     relay = core.base_status()
     assert relay['enable_source'] == 'OPERATOR_START' and relay['enable_request'] is False
-    assert relay['dead_man'] is None and relay['estop'] is None
+    assert relay['dead_man'] is None and relay['estop'] is None and relay['estop_request'] is False
     clock.advance(0.31)
     assert core.switch_outputs(True) == [] and core.base_status()['enable_source'] is None
     core.close(); conn.close(); server.close()
@@ -306,7 +306,8 @@ def test_bridge_main_wires_qos_timers_switches_and_stops_on_a_malformed_gate_com
     assert (subscribed.depth, subscribed.reliability, subscribed.durability) == (1, 'RELIABLE', 'VOLATILE')
     estop = node.publishers['/wc_nav/estop'].qos
     assert (estop.depth, estop.reliability, estop.durability) == (1, 'RELIABLE', 'TRANSIENT_LOCAL')
-    assert node.publishers['/wc_nav/enable'].sent[:1] == [True] and node.publishers['/wc_nav/estop'].sent == []
+    assert node.publishers['/wc_nav/enable'].sent[:1] == [True]
+    assert node.publishers['/wc_nav/estop'].sent[:1] == [False]          # current state at once, no switch installed
     statuses = [json.loads(text) for text in node.publishers['/wc_nav/base_status'].sent]
     assert statuses and statuses[-1]['enable_source'] == 'OPERATOR_START' and statuses[-1]['bridge_id'] == 'bridge_main'
     hello = read_lines(owner_side['conn'], 1)[0]
@@ -350,3 +351,32 @@ def test_bridge_into_the_owner_socket_end_to_end(short_tmp):
     assert not env.auto.bridge_connected
     sock.close()
     assert not any(r[1] == 0x10 and r != m.ZERO_REQUEST for r in env.channel.requests)   # nothing ever drove
+
+
+def test_without_the_switch_the_panel_estop_and_the_inferred_stop_reach_the_gate(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    deliver(core, conn, operator_status(enable_request=True))
+    assert core.switch_outputs(False) == [('enable', True), ('estop', False)]   # first known state at once
+    deliver(core, conn, operator_status(enable_request=False, estop_request=True,
+                                        estop_reasons=['WHEELS_STOPPED_WHILE_COMMANDED'], auto_state='STOPPING'))
+    assert core.switch_outputs(False) == [('enable', False), ('estop', True)]  # the gate latches
+    assert core.switch_outputs(True) == [('estop', True)]                     # 10 Hz while requested
+    assert core.base_status()['estop_reasons'] == ['WHEELS_STOPPED_WHILE_COMMANDED']
+    deliver(core, conn, operator_status(enable_request=False, auto_state='NONE', source='NONE'))
+    assert core.switch_outputs(False) == [('estop', False)]                   # released: one false
+    deliver(core, conn, operator_status(enable_request=False, estop_request=True, estop_reasons=['PANEL_SOFTWARE_ESTOP']))
+    assert core.switch_outputs(False) == [('estop', True)]
+    deliver(core, conn, operator_status(enable_request=True))                 # released, then a new start
+    assert core.switch_outputs(False) == [('enable', True), ('estop', False)]
+    core.close(); conn.close(); server.close()
+
+
+def test_an_estop_request_never_enables_the_gate(short_tmp):
+    clock = ClockNs()
+    server, core, conn = connected(short_tmp, clock)
+    deliver(core, conn, operator_status(enable_request=True, estop_request=True, estop_reasons=['PANEL_SOFTWARE_ESTOP']))
+    assert core.enable() is False and core.switch_outputs(False) == [('enable', False), ('estop', True)]
+    deliver(core, conn, owner_status(estop_request=True, estop_reasons=['PANEL_SOFTWARE_ESTOP']))   # switch installed
+    assert core.enable() is False and core.switch_outputs(True) == [('estop', True)]
+    core.close(); conn.close(); server.close()

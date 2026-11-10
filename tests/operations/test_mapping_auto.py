@@ -1081,3 +1081,57 @@ def test_main_attaches_auto_only_when_the_session_configuration_has_auto_control
         assert calls.index('auto_close') < calls.index('socket_close') < calls.index('owner_close') < \
             calls.index('lease_close')
         assert result == (1 if variant == 'close_fails' else 0)   # the session reports it, after writing zero
+
+
+def software_estop(env, pressed):
+    o = env.owner
+    o.command({'type': 'estop', 'session_id': o.session_id, 'sequence': o.last_key_sequence+1, 'pressed': pressed})
+
+
+def test_panel_software_estop_stops_at_once_blocks_starts_and_is_reported():
+    env = driving(make(hold='NOT_INSTALLED'))
+    start = len(env.channel.requests)
+    software_estop(env, True)
+    assert env.auto.reason == 'SOFTWARE_ESTOP' and env.auto.immediate
+    run(env, 0.06)
+    assert speeds(env, start)[0] == (0, 0)
+    status = env.owner.status()['auto']
+    assert status['estop_request'] is True and status['estop_reasons'] == ['PANEL_SOFTWARE_ESTOP']
+    assert status['enable_request'] is False
+    run(env, 1.0)
+    assert env.auto.state == 'NONE'
+    request_auto(env)
+    assert env.auto.refusal == 'AUTO_REFUSED: SOFTWARE_ESTOP_PRESSED' and env.auto.state == 'NONE'
+    software_estop(env, False)
+    assert env.owner.status()['auto']['estop_request'] is False
+    request_auto(env)                                # released: a new start drives again
+    run(env, 1.5)
+    assert env.auto.state == 'AUTO'
+
+
+def test_panel_software_estop_also_stops_manual_driving():
+    env = make(hold='NOT_INSTALLED')
+    run(env, 1.0)
+    run(env, 1.0, held=['w'])
+    assert env.owner.state == 'ARMED'
+    software_estop(env, True)
+    assert env.owner.state == 'READY' and env.owner.reason == 'SOFTWARE_ESTOP'
+    run(env, 0.1)
+    assert speeds(env)[-1] == (0, 0)
+    with pytest.raises(m.FeedbackError):
+        env.owner.command({'type': 'estop', 'session_id': env.owner.session_id,
+                           'sequence': env.owner.last_key_sequence, 'pressed': True})   # sequence not increasing
+    with pytest.raises(m.FeedbackError):
+        env.owner.command({'type': 'estop', 'session_id': env.owner.session_id,
+                           'sequence': env.owner.last_key_sequence+1})                 # pressed missing
+
+
+def test_an_inferred_hardware_stop_is_reported_for_half_a_second_so_the_gate_latches():
+    env = driving(make(hold='NOT_INSTALLED'))
+    env.channel.words = (0, 0)
+    assert until(env, lambda: env.auto.reason == 'WHEELS_STOPPED_WHILE_COMMANDED', 0.7)
+    began = env.clock()
+    status = env.owner.status()['auto']
+    assert status['estop_request'] is True and status['estop_reasons'] == ['WHEELS_STOPPED_WHILE_COMMANDED']
+    assert until(env, lambda: not env.owner.status()['auto']['estop_request'], 1.0)
+    assert 0.5 - 0.011 <= env.clock() - began <= 0.5 + 0.011

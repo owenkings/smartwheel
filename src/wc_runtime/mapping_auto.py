@@ -19,6 +19,9 @@ reader; the status reports ``dead_man`` and ``estop`` as null and the gate's ena
 "start automatic" (``enable_source: OPERATOR_START``, ``enable_request``). The vehicle's emergency stop acts on the
 driver only; it is inferred here from the wheel feedback (a wheel commanded faster than 0.05 m/s while both wheels
 report zero for 0.3 s), which writes zero at once so that releasing the emergency stop cannot resume an old command.
+The status then reports ``estop_request`` for at least 0.5 s, and the bridge turns it into ``/wc_nav/estop`` so that
+the gate latches. The panel's software emergency stop (manual packet ``estop``) is reported the same way while it
+is pressed: the bridge is the only publisher of ``/wc_nav/estop`` (D.md 2026-11-10 13:15).
 
 While automatic control is active (or stopping) the manual state machine of ``MappingWheel`` is frozen: manual
 packets are intercepted here, where any key, Space or hand-push request ends automatic control, and
@@ -64,11 +67,12 @@ MOVING_AT_ZERO_S = 1.0
 COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driver, inferred from the feedback
 OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
 START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
+INFERRED_ESTOP_HOLD_S = 0.5       # an inferred hardware emergency stop is reported this long, so the gate latches
 ACTIVE_STATES = ('INITIALIZING', 'AUTO', 'STOPPING')
 # Exit reasons that write zero at once instead of decelerating at the software limit.
 IMMEDIATE = frozenset({'NO_SWITCH_INPUT', 'SWITCH_INPUT_STALE', 'ESTOP', 'DEAD_MAN_RELEASED', 'UI_NOT_FRESH',
                        'UI_CLOSED', 'USER_STOP', 'GATE_ESTOP_LATCHED', 'MOVING_BACKWARD', 'MANUAL_LAYER_STOP',
-                       'WHEELS_STOPPED_WHILE_COMMANDED', 'FEEDBACK_OVERSPEED'})
+                       'WHEELS_STOPPED_WHILE_COMMANDED', 'FEEDBACK_OVERSPEED', 'SOFTWARE_ESTOP'})
 
 
 class AutoFault(FeedbackError):
@@ -146,6 +150,8 @@ class AutoDrive:
         self.refusal = None              # last refused start; kept apart from the stop reason
         self.immediate_reason = None     # what made the current stop immediate
         self.start_pending_until = None
+        self.software_estop = False           # the panel's emergency stop button, pressed
+        self.inferred_estop_until = None      # report a stop inferred from the wheel feedback until then
         self.decision = self.decision_time = None
         self.last_decision_sequence = 0
         self.bridge_connected, self.bridge_id = False, None
@@ -212,6 +218,9 @@ class AutoDrive:
         if kind == 'auto':
             self._auto_packet(value)
             return True
+        if kind == 'estop':
+            self._estop_packet(value)
+            return True
         if self.start_pending_until is not None and (kind in ('disarm', 'close', 'push_mode') or
                                                      (kind == 'keys' and value.get('keys'))):
             self._cancel_pending('START_CANCELLED_BY_OPERATOR')
@@ -243,6 +252,26 @@ class AutoDrive:
                 self._begin_stop('USER_HAND_PUSH_REQUEST', immediate=False)
             return True
         return False
+
+    def _estop_packet(self, value):
+        """The panel's software emergency stop: pressed stops everything at once; released only allows a new start."""
+        owner = self.owner
+        sequence = value.get('sequence')
+        if type(sequence) is not int or sequence <= owner.last_key_sequence or type(value.get('pressed')) is not bool:
+            raise FeedbackError('software emergency stop requires an increasing sequence and pressed')
+        owner.last_key_sequence = sequence
+        pressed = value['pressed']
+        if pressed != self.software_estop:
+            self._log({'event': 'auto_software_estop', 'pressed': pressed}, required=False)
+        self.software_estop = pressed
+        if not pressed:
+            return
+        if self.start_pending_until is not None:
+            self._cancel_pending('SOFTWARE_ESTOP')
+        if self.state in ACTIVE_STATES:
+            self._begin_stop('SOFTWARE_ESTOP', immediate=True)
+        elif owner.keys or owner.state in ('INITIALIZING', 'ARMED'):
+            owner.disarm('SOFTWARE_ESTOP')   # manual driving stops too; the manual layer writes zero
 
     def _auto_packet(self, value):
         owner = self.owner
@@ -390,6 +419,8 @@ class AutoDrive:
             out.append('MANUAL_KEYS_HELD')
         if owner.push_mode_requested:
             out.append('HAND_PUSH_PENDING')
+        if self.software_estop:
+            out.append('SOFTWARE_ESTOP_PRESSED')
         if not owner._ui_fresh():
             out.append('UI_NOT_FRESH')
         problem = self._switch_problem(now, entry=True)
@@ -438,6 +469,8 @@ class AutoDrive:
     # ---------------------------------------------------------------- running and stopping
     def _immediate_reason(self, now):
         """Conditions that write zero at once, also while a controlled stop is still decelerating."""
+        if self.software_estop:
+            return 'SOFTWARE_ESTOP'
         problem = self._switch_problem(now)
         if problem:
             return problem
@@ -562,6 +595,8 @@ class AutoDrive:
 
     def _begin_stop(self, reason, *, immediate):
         self.start_pending_until = None
+        if reason == 'WHEELS_STOPPED_WHILE_COMMANDED':
+            self.inferred_estop_until = self.owner.clock() + INFERRED_ESTOP_HOLD_S
         if self.state == 'STOPPING':
             if immediate and not self.immediate:
                 self.immediate, self.immediate_reason = True, reason
@@ -667,8 +702,17 @@ class AutoDrive:
             return 'DEAD_MAN_NOT_HELD' if entry else 'DEAD_MAN_RELEASED'
         return None
 
+    def estop_reasons(self, now):
+        """Why the bridge must report an emergency stop now (empty: none)."""
+        out = ['PANEL_SOFTWARE_ESTOP'] if self.software_estop else []
+        if self.inferred_estop_until is not None and now < self.inferred_estop_until:
+            out.append('WHEELS_STOPPED_WHILE_COMMANDED')
+        return out
+
     def enable_request(self, now):
         """The operator's start in effect: running, initializing, or held while the gate unlatches."""
+        if self.software_estop:
+            return False
         return self.state in ('INITIALIZING', 'AUTO') or \
             (self.start_pending_until is not None and now <= self.start_pending_until)
 
@@ -706,6 +750,7 @@ class AutoDrive:
                 'feedback': feedback, 'stationary_samples': self.stationary,
                 'hold_to_run_switch': self.hold_to_run_switch, 'enable_source': self.enable_source,
                 'enable_request': self.enable_request(now), 'start_pending': self.start_pending_until is not None,
+                'estop_request': bool(self.estop_reasons(now)), 'estop_reasons': self.estop_reasons(now),
                 'switch_input': self.switches is not None,
                 'dead_man': None if switches is None else switches['dead_man'],
                 'estop': None if switches is None else switches['estop'],

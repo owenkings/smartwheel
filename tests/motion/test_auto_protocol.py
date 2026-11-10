@@ -90,14 +90,15 @@ def test_hello_and_status_checks():
         p.hello_packet('bad id', 'bridge_1')
     status = {'type': 'status', 'schema': p.STATUS_SCHEMA, 'session_id': 'session_a', 'source': 'AUTO',
               'auto_state': 'AUTO', 'dead_man': True, 'estop': False, 'enable_source': 'HOLD_TO_RUN_SWITCH',
-              'enable_request': True}
+              'enable_request': True, 'estop_request': False}
     assert p.parse_status(status, 'session_a') is status
     not_installed = {**status, 'dead_man': None, 'estop': None, 'enable_source': 'OPERATOR_START'}
     assert p.parse_status(not_installed, 'session_a') is not_installed
     for bad in ({**status, 'dead_man': 'yes'}, {**status, 'source': 'NAV'}, {**status, 'session_id': 'other'},
                 {k: v for k, v in status.items() if k != 'auto_state'}, {**status, 'enable_source': 'PANEL'},
                 {k: v for k, v in status.items() if k != 'enable_source'}, {**status, 'enable_request': 1},
-                {k: v for k, v in status.items() if k != 'enable_request'}):
+                {k: v for k, v in status.items() if k != 'enable_request'}, {**status, 'estop_request': None},
+                {k: v for k, v in status.items() if k != 'estop_request'}):
         with pytest.raises(p.ProtocolError):
             p.parse_status(bad, 'session_a')
 

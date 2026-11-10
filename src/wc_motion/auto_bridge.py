@@ -10,7 +10,10 @@ agreed with window D on 2026-11-09:
   while the owner status is stale or the switch input is missing, so the gate's enable times out on its own.
   With the switch not installed (``enable_source: OPERATOR_START``) the same rules follow the owner's
   ``enable_request``: true from the operator's accepted "start automatic" until any stop.
-- estop: ``true`` at 10 Hz while pressed, one ``false`` when released; reliable and transient local.
+- estop: ``true`` at 10 Hz while pressed, one ``false`` when released; reliable and transient local. Pressed means
+  the physical emergency stop when it can be read, or the owner's ``estop_request`` (the panel's software emergency
+  stop, or a stop inferred from the wheel feedback, held for at least 0.5 s). The first known state is sent at once.
+  The bridge is the only publisher, also without the hold-to-run switch (D.md 2026-11-10 13:15).
 
 A malformed gate command (unknown schema, missing or extra field, non-finite number) or one stamped in the future is
 a fault: the bridge stops and the owner, seeing the socket close, ends automatic control. A stale gate command
@@ -150,13 +153,24 @@ class BridgeCore:
             return None
         status = self.status
         dead_man, estop = status.get('dead_man'), status.get('estop')
-        if estop is True:
+        if estop is True or status.get('estop_request') is True:
             return False
         if status.get('enable_source') == 'OPERATOR_START':
             return status.get('enable_request') is True
         if dead_man is True and estop is False:
             return True
         return False if dead_man is False else None
+
+    def estop_decision(self):
+        """True (pressed or requested), False (released: say so once) or None (unknown: say nothing)."""
+        if not self.fresh():
+            return None
+        status = self.status
+        if status.get('estop') is True or status.get('estop_request') is True:
+            return True
+        if status.get('estop') is False or status.get('enable_source') == 'OPERATOR_START':
+            return False
+        return None
 
     def enable(self):
         """True only while a fresh owner status says the gate may be enabled (switch held, or operator start)."""
@@ -174,7 +188,7 @@ class BridgeCore:
         elif enabled is False and self.enable_state is not False:
             out.append(('enable', False))       # released or stopped: tell the gate at once, then stay silent
         self.enable_state = enabled             # None: unknown, publish nothing, the gate's enable goes stale
-        _, estop = self.switches()
+        estop = self.estop_decision()
         if estop is True:
             if heartbeat or self.estop_state is not True:
                 out.append(('estop', True))
@@ -202,6 +216,8 @@ class BridgeCore:
                 'auto_state': None if owner is None else owner.get('auto_state'),
                 'enable_source': None if owner is None else owner.get('enable_source'),
                 'enable_request': None if owner is None else owner.get('enable_request'),
+                'estop_request': None if owner is None else owner.get('estop_request'),
+                'estop_reasons': None if owner is None else owner.get('estop_reasons'),
                 'dead_man': dead_man, 'estop': estop, 'enable': self.enable(),
                 'feedback': None if owner is None else owner.get('feedback'),
                 'owner': self.status, 'counters': dict(self.counters)}

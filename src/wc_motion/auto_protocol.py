@@ -198,4 +198,6 @@ def parse_status(value, session_id):
         raise ProtocolError('enable_source must be one of ' + ', '.join(ENABLE_SOURCES))
     if type(value.get('enable_request')) is not bool:
         raise ProtocolError('enable_request must be a boolean')
+    if type(value.get('estop_request')) is not bool:
+        raise ProtocolError('estop_request must be a boolean')
     return value
