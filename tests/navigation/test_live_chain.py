@@ -305,6 +305,7 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     from wc_navigation.live import config as live_config, supervisor
     monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
     monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "shm")
     monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
     runs = iter(range(10))
     monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve",
@@ -555,8 +556,15 @@ def test_result_json_is_written_after_an_operator_stop(tmp_path, monkeypatch):
     monkeypatch.setenv("ROS_DOMAIN_ID", "100")
     monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
     monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
-    monkeypatch.setattr(supervisor.LiveSupervisor, "run", lambda self: {
-        "stages": [], "process_exit_codes": {"amcl": -15}, "stopped": supervisor.INTERRUPTED, "signals": ["SIGINT"]})
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "shm")
+
+    def fake_run(self):
+        # the run's processes write under the work directory; result.json must point into the run directory
+        (self.output / "logs").mkdir()
+        (self.output / "logs" / "amcl.log").write_text("amcl log\n")
+        return {"stages": [], "process_exit_codes": {"amcl": -15}, "stopped": supervisor.INTERRUPTED,
+                "signals": ["SIGINT"], "logs": {"amcl": str(self.output / "logs" / "amcl.log")}}
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
     summaries = iter([{"commands": {"count": 3}}, RuntimeError("bad csv"), {"commands": {"count": 3}}])
 
     def fake_summary(config, output):
@@ -579,6 +587,9 @@ def test_result_json_is_written_after_an_operator_stop(tmp_path, monkeypatch):
     assert cli.main(vehicle) == 0                    # Ctrl-C is how a vehicle run ends
     result = json.loads((tmp_path / "run0" / "result.json").read_text())
     assert result["status"] == "COMPLETE" and result["supervisor"]["stopped"] == "OPERATOR_INTERRUPT"
+    assert (tmp_path / "run0" / "logs" / "amcl.log").read_text() == "amcl log\n"     # copied in from the work dir
+    assert result["supervisor"]["logs"]["amcl"] == str(tmp_path / "run0" / "logs" / "amcl.log")
+    assert result["supervisor"]["run_files"]["copied_files"] == 1 and not list((tmp_path / "shm").iterdir())
     assert cli.main(vehicle) == 1                    # the summary failed: result.json is written anyway
     result = json.loads((tmp_path / "run1" / "result.json").read_text())
     assert result["status"] == "INCOMPLETE" and result["summary_error"] == "RuntimeError: bad csv"
@@ -591,6 +602,7 @@ def test_a_run_stopped_by_the_start_check_is_incomplete(tmp_path, monkeypatch):
     from wc_navigation.live import cli, config as live_config, shadow_summary, supervisor
     monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
     monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "shm")
     seen = {}
 
     def fake_run(self):
@@ -693,3 +705,29 @@ def test_start_check_reports_a_corridor_view_as_ambiguous():
     assert not start_check.stops_run("INITIAL_POSE_MISMATCH", "warn")
     assert start_check.evaluate(scorer, along[:3], (0.0, 0.0), (-3.0, 0.0, 0.0))["status"] == "START_CHECK_NO_DATA"
     assert start_check.moved((0.0, 0.0, 0.0), (0.06, 0.0, 0.0)) and not start_check.moved((0, 0, 0), (0.02, 0, 0.01))
+
+
+def test_run_files_are_copied_from_the_work_directory_and_kept_when_a_copy_fails(tmp_path, monkeypatch):
+    import shutil
+    from wc_navigation.live.cli import move_run_files
+    work, output = tmp_path / "shm" / "wc_live_x", tmp_path / "run"
+    (work / "logs").mkdir(parents=True)
+    (work / "ros_logs" / "a").mkdir(parents=True)
+    (work / "logs" / "gate.log").write_text("g")
+    (work / "ros_logs" / "a" / "x.log").write_text("x")
+    (work / "commands.csv").write_text("time_s\n1\n")
+    output.mkdir()
+    (output / "run_config.json").write_text("{}")
+    moved = move_run_files(work, output)
+    assert moved["copied_files"] == 3 and moved["work_dir_removed"] and not work.exists()
+    assert (output / "ros_logs" / "a" / "x.log").read_text() == "x" and (output / "run_config.json").exists()
+    (work / "logs").mkdir(parents=True)
+    (work / "logs" / "a.log").write_text("a")
+    real_copy = shutil.copy2
+
+    def failing_copy(source, target):
+        raise OSError("disk full")
+    monkeypatch.setattr(shutil, "copy2", failing_copy)
+    kept = move_run_files(work, output)
+    assert not kept["work_dir_removed"] and kept["errors"] and (work / "logs" / "a.log").exists()
+    monkeypatch.setattr(shutil, "copy2", real_copy)

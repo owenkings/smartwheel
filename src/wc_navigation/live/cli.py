@@ -27,6 +27,7 @@ from .scan_adapter import LIDAR_TIME_OFFSET_CONFIG, LIDAR_TIME_OFFSET_SNAPSHOT, 
 OUTPUT_PREFIX = "/wc_live/relayed"   # relay_node.OUTPUT_PREFIX (importing it here would pull in rclpy)
 VEHICLE_SHADOW_DOMAIN = "100"     # user decision 2026-11-07; localhost only
 VEHICLE_SHADOW_NICENESS = 10      # 2026-11-09 field result: the panel's recording comes first, the relay ends at 19
+WORK_ROOT = Path("/dev/shm")      # where a run's processes write while it runs (see run_command)
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
  0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
@@ -253,6 +254,29 @@ def relay_graph_command(args):
     return 0 if report["status"] == "PASS" else 1
 
 
+def move_run_files(work, output):
+    """Copy everything a run wrote under ``work`` into its run directory, then remove ``work``.
+
+    A file that cannot be copied is listed and ``work`` is kept, so nothing is lost.
+    """
+    import shutil
+    copied, errors = 0, []
+    for path in sorted(Path(work).rglob("*")):
+        target = Path(output) / path.relative_to(work)
+        try:
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied += 1
+        except OSError as exc:
+            errors.append("%s: %s" % (path, exc))
+    if not errors:
+        shutil.rmtree(work, ignore_errors=True)
+    return {"work_dir": str(work), "copied_files": copied, "errors": errors[:20], "work_dir_removed": not errors}
+
+
 def _report_line(text):
     try:
         print(text, flush=True)
@@ -322,19 +346,29 @@ def run_command(args, guard):
                                "wait_for_panel_consumers": True}
             config["source_prefix"] = OUTPUT_PREFIX
             config["niceness"] = VEHICLE_SHADOW_NICENESS
+    # While the run goes, its processes write logs and records under /dev/shm: a large file copied to the data disk
+    # (NTFS through FUSE) blocks every other write there for seconds (2026-11-10). They are copied in afterwards.
+    work = WORK_ROOT / ("wc_live_" + run_id)
     with domain_lock(args.project_root):
         output.mkdir(parents=True, exist_ok=False)
+        work.mkdir(parents=True, exist_ok=False)
         try:
-            if config.get("relay") is not None and config["relay"]["source_domain"] is None:
-                import os
-                config["relay"]["source_domain"] = int(os.environ["ROS_DOMAIN_ID"])
-            (output / "live_config.json").write_text(json.dumps(live, ensure_ascii=False, indent=1), encoding="utf-8")
-            (output / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-            report = LiveSupervisor(args.project_root, output, config, guard=guard).run()
-        except KeyboardInterrupt:  # stopped before the supervisor ran: nothing was started
-            guard.begin_shutdown()
-            report = {"stages": [], "process_exit_codes": {}, "stopped": INTERRUPTED, "signals": list(guard.received)}
-    guard.begin_shutdown()         # the summary and result.json are written even if Ctrl-C is pressed again
+            try:
+                if config.get("relay") is not None and config["relay"]["source_domain"] is None:
+                    import os
+                    config["relay"]["source_domain"] = int(os.environ["ROS_DOMAIN_ID"])
+                (output / "live_config.json").write_text(json.dumps(live, ensure_ascii=False, indent=1), encoding="utf-8")
+                (output / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+                report = LiveSupervisor(args.project_root, work, config, guard=guard).run()
+            except KeyboardInterrupt:  # stopped before the supervisor ran: nothing was started
+                guard.begin_shutdown()
+                report = {"stages": [], "process_exit_codes": {}, "stopped": INTERRUPTED,
+                          "signals": list(guard.received)}
+        finally:
+            guard.begin_shutdown()  # the copy, the summary and result.json go on even if Ctrl-C is pressed again
+            run_files = move_run_files(work, output)
+    report = json.loads(json.dumps(report, default=float).replace(str(work), str(output)))
+    report["run_files"] = run_files
     storage.check()
     interrupted = report.get("stopped") == INTERRUPTED
     result = {"schema_version": 1, "kind": args.command, "status": "INCOMPLETE", "config": config,

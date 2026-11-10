@@ -91,6 +91,14 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
+运行中的文件（2026-11-10 起）：
+- `inputs` 和 `shadow` 运行时，各进程的日志、ROS 日志和记录器的 CSV 先写在 `/dev/shm/wc_live_<运行编号>/`。所有进程停了以后拷进运行目录、删掉临时目录，再汇总、写 `result.json`。运行目录里的文件和以前一样，`supervisor.run_files` 记拷了多少个、有没有出错。
+- 原因：数据盘是 NTFS，经 FUSE 挂载。往它拷大文件并 fsync 的几秒里，其他进程往这块盘写一行也要等。
+  - 实测拷 700 MB 时，一次写等了 4.15 s。
+  - 2026-11-09 第一次实车影子，面板失败后把约 660 MB 的录包拷到数据盘。正在写日志的 collision_monitor 因此 4 s 没心跳，Nav2 被整体重置。
+  - 改了以后，同样拷 700 MB，记录器的行间隔最长 0.13 s（改之前 4.2 s）。
+- 监督进程被 SIGKILL 或断电时，文件只留在 `/dev/shm`，重启前要手动拷出来。
+
 停止、优先级和面板域查询（2026-11-09 实车影子之后）：
 - 停止：`inputs` 和 `shadow` 收到第一次 Ctrl-C（或 SIGTERM、SIGHUP）就开始收尾。
   - 逐个停本命令启动的进程，一个停失败记进 `supervisor.stop_errors`，接着停下一个。
