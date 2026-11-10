@@ -34,10 +34,11 @@ from ..autonomy import nav2_config
 from ..autonomy.bringup import EXECUTABLES, PACKAGES, RunError, Supervisor, _parameter_value, _same
 from ..autonomy.ros_util import json_message, latched_qos, lookup_pose, require_isolated_domain, simulation_domain
 from ..nav2_planner import _stop_owned
-from .config import SOURCE_TOPICS
+from .config import source_topics
 
 VEHICLE_APPROVAL_ENV = "WC_LIVE_SHADOW_VEHICLE_APPROVAL"
 INPUT_ROLES = ("scan", "odometry")          # separate processes: lidar work never delays wheel/IMU callbacks
+OBSTACLES_STATUS = "/wc_live/inputs_status/obstacles"   # perception.live_obstacles.STATUS_TOPIC (window C)
 INTERRUPTED = "OPERATOR_INTERRUPT"
 
 
@@ -145,7 +146,7 @@ class LiveMonitor:
         self.enabled = False
         self.Bool, self.Pose = Bool, PoseWithCovarianceStamped
         for topic in ("/wc_live/inputs_status/scan", "/wc_live/inputs_status/odometry", "/wc_nav/gate_status",
-                      "/wc_live/goal_status", "/wc_live/relay_status"):
+                      "/wc_live/goal_status", "/wc_live/relay_status", OBSTACLES_STATUS):
             self.node.create_subscription(String, topic, lambda m, t=topic: self.status.__setitem__(
                 t, json.loads(m.data)), latched_qos())
         self.enable_pub = self.node.create_publisher(Bool, "/wc_nav/enable", 10)
@@ -282,10 +283,11 @@ class LiveSupervisor(Supervisor):
 
     def start_bag(self):
         cfg = self.config
+        topics = source_topics(bool(cfg.get("obstacles")))
         command = ["ros2", "bag", "play", cfg["bag"], "--clock", "100", "--rate", str(cfg.get("bag_rate", 1.0)),
-                   "--topics", *SOURCE_TOPICS]
+                   "--topics", *topics]
         if cfg.get("bag_remap_prefix"):
-            command += ["--remap"] + ["%s:=%s%s" % (t, cfg["bag_remap_prefix"], t) for t in SOURCE_TOPICS]
+            command += ["--remap"] + ["%s:=%s%s" % (t, cfg["bag_remap_prefix"], t) for t in topics]
         return self.launch("bag_play", command)
 
     def start_common(self, monitor, files):
@@ -304,6 +306,12 @@ class LiveSupervisor(Supervisor):
             self.report["relay_self_check"] = (monitor.status.get("/wc_live/relay_status") or {}).get("self_check")
         self.wait_for(monitor, lambda: all(monitor.state("/wc_live/inputs_status/" + role) is not None
                                            for role in INPUT_ROLES), 30, "inputs_ready")
+        if files.get("obstacles"):
+            # window C's 3D obstacle input (off by default), waited for on its own; +10 on the command's niceness
+            # like the relay (vehicle: 10 -> 19), so its ~0.6 core yields to the inputs' odometry
+            self.launch("obstacles", ["nice", "-n", "10", sys.executable, "-B", "-s", "-m",
+                                      "wc_navigation.perception.obstacles_node", "--config", files["obstacles"]])
+            self.wait_for(monitor, lambda: monitor.state(OBSTACLES_STATUS) is not None, 30, "obstacles_ready")
 
     def prepare_shadow(self, profile):
         from ..autonomy.shadow_localization import amcl_parameters
@@ -455,6 +463,10 @@ class LiveSupervisor(Supervisor):
                      "record_scan_ranges": cfg.get("record_scan_ranges", False)})})
         if cfg.get("relay"):
             files["relay"] = self.node_config("relay_config", cfg["relay"])
+        if cfg.get("obstacles"):
+            files["obstacles"] = self.node_config("obstacles_config", {
+                "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"], "obstacles": cfg["obstacles"],
+                "source_prefix": cfg.get("source_prefix", ""), "output_dir": str(self.output)})
         profile = nav2_config.NavProfile(**cfg["profile"]) if cfg["kind"] == "shadow" else None
         if profile is not None:
             for name in (*nav2_config.NAV2_NODES, "lifecycle_manager", "map_server", "amcl"):

@@ -16,6 +16,9 @@ dropped while a real overhang, seen from frame to frame at the same place, stays
 
 Everything here works in one planar frame (the frame being filtered): points of
 other captures are moved there with the recorded axle poses of both capture times.
+``BoxWitness`` gives the same verdicts as ``Witness`` with less work, for the live
+input: the whole frame filter took about 62 -> 24 ms per frame on the ZL1107
+validation recording, with outputs equal on all 971 frames (and 2905 mapping frames).
 """
 from __future__ import annotations
 
@@ -94,6 +97,81 @@ class Witness:
         codes = _codes(keys)
         hit = np.isin(codes, self.occupied) if len(self.occupied) else np.zeros(len(codes), dtype=bool)
         through = (np.isin(codes, self.free) if len(self.free) else np.zeros(len(codes), dtype=bool)) & ~hit
+        return float(through.mean()), float(hit.mean())
+
+
+class BoxWitness(Witness):
+    """``Witness`` with the same verdicts, answered around each queried cluster only (used by the live input).
+
+    ``Witness`` samples every ray of the other lidar (about 8000 rays, up to 120 samples each) and sorts all those
+    voxel codes once per frame, mostly for voxels no cluster touches. Here a ``shares`` query samples only the rays
+    whose sampled segment can enter the cluster's voxel box (slab test on the box grown by 1 um) and looks only at
+    returns next to the box. The samples use the same arithmetic as ``Witness``, so the free and occupied voxels of
+    the box, and with them the shares, are the same.
+    """
+
+    _GROW = np.array([[i, j, k] for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)], dtype=np.int64)
+    _PAD_M = 1e-6
+
+    def _prepare(self):
+        points_base, origin_base, step_m, stop_short_m, max_range_m = self._inputs
+        p = np.asarray(points_base, dtype=float).reshape(-1, 3)
+        o = np.asarray(origin_base, dtype=float).reshape(3)
+        d = p - o
+        length = np.linalg.norm(d, axis=1)
+        ok = np.isfinite(length) & (length > stop_short_m + step_m)
+        d, length, p = d[ok], length[ok], p[ok]
+        self.rays = int(len(p))
+        self._origin = o
+        if len(p):
+            self._unit = d / length[:, None]
+            self._reach = np.minimum(length - stop_short_m, max_range_m)
+            self._samples = np.arange(step_m, float(self._reach.max()) + step_m, step_m)
+        else:
+            self._unit, self._reach, self._samples = np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+        self._returns = np.floor(p / self.voxel).astype(np.int64)
+
+    def _crossing(self, lo, hi):
+        """Rays whose sampled segment [first sample, reach] can enter the box of voxels lo..hi."""
+        box_lo, box_hi = lo * self.voxel - self._PAD_M, (hi + 1) * self.voxel + self._PAD_M
+        u, o = self._unit, self._origin
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1, t2 = (box_lo - o) / u, (box_hi - o) / u
+        tmin, tmax = np.minimum(t1, t2), np.maximum(t1, t2)
+        parallel = u == 0
+        inside = (o >= box_lo) & (o <= box_hi)
+        tmin = np.where(parallel, np.where(inside, -np.inf, np.inf), tmin)
+        tmax = np.where(parallel, np.where(inside, np.inf, -np.inf), tmax)
+        enter, leave = tmin.max(axis=1), tmax.min(axis=1)
+        return np.flatnonzero((enter <= leave) & (leave >= self._samples[0] - self._PAD_M)
+                              & (enter <= self._reach + self._PAD_M))
+
+    def shares(self, points_base):
+        if not hasattr(self, "_unit"):
+            self._prepare()
+        keys = np.unique(np.floor(np.asarray(points_base, dtype=float).reshape(-1, 3) / self.voxel).astype(np.int64),
+                         axis=0)
+        if not len(keys):
+            return 0.0, 0.0
+        codes = _codes(keys)
+        lo, hi = keys.min(axis=0), keys.max(axis=0)
+        near = np.all((self._returns >= lo - 1) & (self._returns <= hi + 1), axis=1)
+        if near.any():
+            grown = (self._returns[near][:, None, :] + self._GROW[None, :, :]).reshape(-1, 3)
+            hit = np.isin(codes, np.unique(_codes(grown)))
+        else:
+            hit = np.zeros(len(codes), dtype=bool)
+        through = np.zeros(len(codes), dtype=bool)
+        if len(self._unit):
+            chosen = self._crossing(lo, hi)
+            if len(chosen):
+                unit, reach = self._unit[chosen], self._reach[chosen]
+                valid = self._samples[None, :] <= reach[:, None]
+                pts = self._origin + unit[:, None, :] * self._samples[None, :, None]
+                sample_keys = np.floor(pts[valid] / self.voxel)
+                sample_keys = sample_keys[np.all((sample_keys >= lo) & (sample_keys <= hi), axis=1)]
+                if len(sample_keys):
+                    through = np.isin(codes, _codes(sample_keys)) & ~hit
         return float(through.mean()), float(hit.mean())
 
 

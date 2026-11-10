@@ -102,6 +102,8 @@ def arguments(argv=None):
     inputs.add_argument("--compare-cell", type=Path,
                         help="frozen frontend of the same recording to compare with (default --cell; give it when "
                              "--cell is a frozen live configuration)")
+    from ..perception import shadow_cli_options        # window C: the 3D obstacle input, off by default
+    shadow_cli_options.add_live_arguments(inputs, inputs=True)
     shadow = sub.add_parser("shadow", help="live shadow run (bag now; vehicle only with approval)")
     _common(shadow)
     shadow.add_argument("--source", choices=["bag", "vehicle"], required=True)
@@ -134,6 +136,7 @@ def arguments(argv=None):
     shadow.add_argument("--footprint", nargs="+", type=finite)
     shadow.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     shadow.add_argument("--max-duration", type=finite, default=900.0, help="wall seconds")
+    shadow_cli_options.add_live_arguments(shadow)
     sub.add_parser("checklist", help="print the pre-flight checklist")
     graph = sub.add_parser("relay-graph", help="read-only query of the relay's entry node in the sensor domain")
     graph.add_argument("--sensor-domain", type=int, required=True, help="domain the relay reads from (panel: 83)")
@@ -185,6 +188,7 @@ def arguments(argv=None):
     from .scan_adapter import MAX_LIDAR_TIME_OFFSET_MS
     if args.lidar_time_offset_ms is not None and abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
         parser.error("--lidar-time-offset-ms must be within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
+    shadow_cli_options.check_live_arguments(parser, args)
     return args
 
 
@@ -289,6 +293,7 @@ def run_command(args, guard):
     from wc_runtime.storage_policy import StoragePolicy
     from ..autonomy import nav2_config
     from ..autonomy.bringup import domain_lock
+    from ..perception import shadow_cli_options
     from .bag_check import check_run
     from .config import load_live_config
     from .supervisor import INTERRUPTED, LiveSupervisor, VEHICLE_APPROVAL_ENV, vehicle_approved
@@ -314,6 +319,11 @@ def run_command(args, guard):
               "lidar_time_offset_ms": lidar_offset_ms, "lidar_time_offset_source": lidar_offset_source,
               "live_config_file": str(output / "live_config.json"), "record_scan_ranges": args.command == "inputs",
               "hardware_control": False, "commands_sent": False, "open_loop": True}
+    # The 3D obstacle input (window C) uses the offset resolved above for /scan, never its own.
+    obstacles = shadow_cli_options.live_entries(args, args.cell, live, config["lidar_time_offset_ms"],
+                                                config["lidar_time_offset_source"])
+    if obstacles is not None:
+        config["obstacles"] = obstacles
     if args.relay_test:
         config["bag_remap_prefix"] = "/relay_source"
         config["relay"] = {"source_domain": None, "source_prefix": "/relay_source", "output_prefix": OUTPUT_PREFIX,
@@ -322,7 +332,7 @@ def run_command(args, guard):
     if args.command == "shadow":
         from .amcl_cross import CANDIDATES
         map_yaml = args.map_yaml.expanduser().resolve(strict=True)
-        profile = nav2_config.NavProfile(footprint=args.footprint or ())
+        profile = nav2_config.NavProfile(footprint=args.footprint or (), **shadow_cli_options.live_profile_fields(args))
         goals = [[g[0], g[1], math.radians(g[2])] for g in (args.goal or [])]
         if args.goals_along_cell:
             goals += goals_along(args.goals_along_cell, args.map_alignment_json, args.goal_spacing)
@@ -380,8 +390,14 @@ def run_command(args, guard):
             scans = result["comparison"]["scans"]
             odometry = result["comparison"]["odometry"]
             # a bag check stopped by the operator covers only part of the recording
-            result["status"] = ("COMPLETE" if "error" not in report and not interrupted and scans["matched_frames"] > 0
-                                and odometry.get("status") == "COMPARED" else "INCOMPLETE")
+            complete = ("error" not in report and not interrupted and scans["matched_frames"] > 0
+                        and odometry.get("status") == "COMPARED")
+            if config.get("obstacles"):             # only then the obstacle check must pass as well
+                from ..perception.live_check import check_run as check_obstacles
+                result["obstacles"] = check_obstacles(output, config, args.compare_cell or args.cell,
+                                                      args.compare_right_cell)
+                complete = complete and result["obstacles"]["status"] == "PASS"
+            result["status"] = "COMPLETE" if complete else "INCOMPLETE"
         except Exception as exc:
             result["summary_error"] = type(exc).__name__ + ": " + str(exc)
     else:
@@ -406,6 +422,8 @@ def run_command(args, guard):
         brief["odometry"] = result["comparison"]["odometry"]
     elif args.command == "shadow":
         brief.update({k: result.get(k) for k in ("outcomes_while_moving", "gate_untrusted_s", "localization")})
+    if "obstacles" in result:
+        brief["obstacles"] = {"status": result["obstacles"].get("status"), "reasons": result["obstacles"].get("reasons")}
     _report_line(json.dumps(brief, ensure_ascii=True, default=float))
     return 0 if result["status"] == "COMPLETE" else 1
 

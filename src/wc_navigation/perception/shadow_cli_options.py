@@ -48,6 +48,14 @@ def add_arguments(parser):
                              "(/scan, both obstacle clouds, their clearing rays and the filtered scan) is paired "
                              "with the recorded pose of stamp - MS (default 0 = as recorded), as in the live chain "
                              "and the AMCL replay")
+    _add_monitor_base_shift(group)
+
+
+def _add_monitor_base_shift(group):
+    group.add_argument("--monitor-base-shift", choices=("on", "off"), default="on",
+                       help="collision monitor base_shift_correction: on (default) moves the points by odom->base_link "
+                            "from their stamp to now and waits up to 0.3 s for that transform; off uses the static "
+                            "sensor transform only (no wait for the odometry)")
 
 
 def _monitor(args):
@@ -123,13 +131,17 @@ def recording_entries(args):
     return {"lidar_time_offset_s": np.float64(args.lidar_time_offset_ms * 1e-3)}
 
 
+def _base_shift_field(args):
+    return {"monitor_base_shift": False} if getattr(args, "monitor_base_shift", "on") == "off" else {}
+
+
 def profile_fields(args):
     if _off(args):
-        return {}
+        return _base_shift_field(args)
     monitor = _monitor(args)
     return {"obstacle_input": args.obstacle_input, "obstacle_clouds": _sides(args),
             "obstacle_scan": args.obstacle_scan,
-            **({"obstacle_monitor": monitor} if monitor != args.obstacle_input else {})}
+            **({"obstacle_monitor": monitor} if monitor != args.obstacle_input else {}), **_base_shift_field(args)}
 
 
 def config_entries(args, recording):
@@ -158,3 +170,110 @@ def result_entries(recording, config, profile, window):
                                      "slowdown_polygon": nav2_config.slowdown_polygon(profile),
                                      "monitor_max_points": nav2_config.MONITOR_MAX_POINTS,
                                      "basis": "EACH_CLOUD_AT_ITS_CAPTURE_POSE_BASE_LINK"}}
+
+
+# -- live chain (navigation_live_shadow inputs|shadow; window D's live/cli.py calls these) -----------------------
+def add_live_arguments(parser, inputs=False):
+    """The live 3D obstacle input's options; all off or as before by default."""
+    from .live_obstacles import LiveObstacleConfig
+    group = parser.add_argument_group("3D obstacle input (window C; off by default)")
+    group.add_argument("--obstacle-input", choices=OBSTACLE_INPUTS, default="scan",
+                       help="local costmap and collision monitor input: scan (default, unchanged), cloud or "
+                            "scan_and_cloud (both lidars' filtered 3D obstacle points)")
+    group.add_argument("--obstacle-monitor", choices=OBSTACLE_INPUTS,
+                       help="collision monitor input when it should differ from --obstacle-input, e.g. "
+                            "--obstacle-input scan --obstacle-scan filtered --obstacle-monitor cloud")
+    group.add_argument("--obstacle-scan", choices=OBSTACLE_SCANS, default="raw",
+                       help="LaserScan of the costmaps' obstacle layers: raw /scan (default) or filtered "
+                            "(/obstacles/left/scan from the left lidar's filtered points)")
+    group.add_argument("--obstacle-sides", nargs="+", choices=SIDES,
+                       help="lidars whose obstacle points are published (default both; left for the filtered scan "
+                            "alone, the right lidar then only judges as the witness)")
+    group.add_argument("--obstacle-filter", default="{}", help="JSON object of ObstacleFilter overrides")
+    group.add_argument("--obstacle-rate-hz", type=float, default=LiveObstacleConfig.rate_hz,
+                       help="lidar cycles processed per second (both lidars run at 10 Hz; default 5)")
+    group.add_argument("--obstacle-no-witness", action="store_true",
+                       help="do not read the other lidar to judge unsupported clusters")
+    if inputs:
+        group.add_argument("--compare-right-cell", type=Path,
+                           help="frozen single-right frontend of the same recording: checks the right lidar's clouds "
+                                "against it as well")
+        group.add_argument("--footprint", nargs="+", type=float, metavar="X Y",
+                           help="body outline for the obstacle filter (default: the assumed 0.55 m circle)")
+        group.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
+    else:
+        _add_monitor_base_shift(group)
+
+
+def check_live_arguments(parser, args):
+    """Validates the live obstacle options; sets ``args.obstacle_live`` (None while off)."""
+    from .live_obstacles import LiveObstacleConfig, output_plan
+    args.obstacle_live = None
+    monitor = args.obstacle_monitor or args.obstacle_input
+    if getattr(args, "command", None) == "inputs" and args.footprint is not None:      # shadow: D's own check
+        if len(args.footprint) < 6 or len(args.footprint) % 2:
+            parser.error("--footprint needs at least three x y pairs")
+        args.footprint = [args.footprint[k:k + 2] for k in range(0, len(args.footprint), 2)]
+    if args.obstacle_input == "scan" and args.obstacle_scan == "raw" and monitor == "scan":
+        if (args.obstacle_sides or getattr(args, "compare_right_cell", None) or args.obstacle_filter != "{}"
+                or args.obstacle_no_witness or args.obstacle_rate_hz != LiveObstacleConfig.rate_hz):
+            parser.error("the --obstacle-* settings need an obstacle input: --obstacle-input or --obstacle-monitor "
+                         "cloud|scan_and_cloud, or --obstacle-scan filtered")
+        return
+    if getattr(args, "source", None) == "vehicle":
+        # user 2026-11-10: allowed on the vehicle once the relay forwards the right lidar (D5, window D)
+        parser.error("the 3D obstacle input on the vehicle waits for the relay of the right lidar (D5, window D); "
+                     "until then it runs on recordings only")
+    sides = args.obstacle_sides or (["left"] if args.obstacle_input == "scan" and monitor == "scan"
+                                    else ["left", "right"])
+    try:
+        plan = output_plan(args.obstacle_input, tuple(sides), args.obstacle_scan, args.obstacle_monitor or "",
+                           witness=not args.obstacle_no_witness)
+        timing = LiveObstacleConfig(rate_hz=args.obstacle_rate_hz)
+        settings = ObstacleFilter(**json.loads(args.obstacle_filter))
+    except (TypeError, ValueError) as exc:
+        parser.error("3D obstacle input: " + str(exc))
+    args.obstacle_live = {"plan": plan, "config": timing, "filter": settings}
+
+
+def live_profile_fields(args):
+    """NavProfile fields of the live shadow command (obstacle input and the monitor's base shift)."""
+    fields = _base_shift_field(args)
+    live = getattr(args, "obstacle_live", None)
+    if live is None:
+        return fields
+    plan = live["plan"]
+    return {"obstacle_input": plan["obstacle_input"], "obstacle_clouds": tuple(plan["published"]),
+            "obstacle_scan": plan["obstacle_scan"],
+            **({"obstacle_monitor": plan["obstacle_monitor"]} if plan["obstacle_monitor"] else {}), **fields}
+
+
+def live_entries(args, cell, live, lidar_time_offset_ms, lidar_time_offset_source):
+    """run_config's ``obstacles`` entry for the live command, or None while the input is off.
+
+    The lidar time offset is the one the command already resolved for /scan (passed in, not read again), so /scan
+    and the obstacle clouds always use the same value and run_config names one source. Each lidar's mount and
+    sensor id come from the cell's runtime_config.json; the left one must equal the live chain's.
+    """
+    import hashlib
+    from .live_obstacles import LOG_NAME, SCHEMA_VERSION, STATUS_TOPIC, check_left_geometry, side_geometry
+    from .obstacle_cloud import body_outline
+    obstacles = getattr(args, "obstacle_live", None)
+    if obstacles is None:
+        return None
+    plan = obstacles["plan"]
+    path = Path(cell).expanduser().resolve(strict=True) / "runtime_config.json"
+    raw = path.read_bytes()
+    runtime = json.loads(raw)
+    geometry = {side: side_geometry(runtime, side) for side in plan["read"]}
+    if "left" in geometry:
+        check_left_geometry(geometry["left"], live)
+    footprint = [tuple(p) for p in (getattr(args, "footprint", None) or ())]
+    body = body_outline(footprint, None if footprint else 0.55)
+    return {"schema_version": SCHEMA_VERSION, "plan": plan, "config": obstacles["config"].as_dict(),
+            "filter": obstacles["filter"].as_dict(), "geometry": geometry,
+            "runtime_config": {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()},
+            "body": [list(p) for p in body],
+            "body_source": ("POLYGON_" + args.footprint_source) if footprint else "CIRCLE_ASSUMED_NOT_MEASURED",
+            "lidar_time_offset_ms": float(lidar_time_offset_ms), "lidar_time_offset_source": lidar_time_offset_source,
+            "status_topic": STATUS_TOPIC, "log": LOG_NAME}

@@ -133,6 +133,37 @@ def test_scan_source_checks_side_frame_sensor_and_representation():
             check_source(frame, "XT-LEFT")
 
 
+def test_the_obstacle_input_checks_the_right_lidar_by_its_own_side_frame_and_sensor():
+    from wc_navigation.live.scan_adapter import ScanRejected, check_source
+    cloud = organized_cloud(np.ones((4, 3)), 2, 2)
+    cloud.header.frame_id = "lidar_right"
+    check_source(source_frame(cloud, side="right", sensor="XT-RIGHT"), "XT-RIGHT", side="right")
+    for frame, sensor in ((source_frame(cloud, side="right", sensor="XT-LEFT"), "XT-RIGHT"),
+                          (source_frame(cloud, side="left", sensor="XT-RIGHT"), "XT-RIGHT")):
+        with pytest.raises(ScanRejected):
+            check_source(frame, sensor, side="right")
+    with pytest.raises(ScanRejected):                   # a right frame never feeds the left (/scan) side
+        check_source(source_frame(cloud, side="right", sensor="XT-RIGHT"), "XT-RIGHT")
+
+
+def test_reference_points_are_the_clouds_the_scan_is_projected_from():
+    from wc_navigation.amcl_replay import build_scan
+    from wc_navigation.live.scan_adapter import reference_points, scan_from_source
+    angles = np.linspace(-0.9, 0.9, 40)
+    points = np.column_stack([3 * np.cos(angles), 3 * np.sin(angles), np.full(40, 0.1)])
+    points[7] = np.nan
+    message = source_frame(organized_cloud(points, 4, 10))
+    rotation = np.array([[math.cos(0.2), -math.sin(0.2), 0], [math.sin(0.2), math.cos(0.2), 0], [0, 0, 1]])
+    config = {"cloud_filter": {"enabled": False}, "mapping_enabled": True}
+    reference, _ = reference_points(message, config, {"T_base_axle": np.eye(4).tolist()}, rotation)
+    finite = np.isfinite(points).all(axis=1)
+    assert reference.dtype == np.float32 and len(reference) == finite.sum()
+    np.testing.assert_array_equal(reference, (points[finite].astype(np.float32).astype(float) @ rotation.T)
+                                  .astype(np.float32))
+    ranges, _ = scan_from_source(message, config, {"T_base_axle": np.eye(4).tolist()}, rotation)
+    np.testing.assert_array_equal(ranges, build_scan(reference.astype(float))[0])
+
+
 def test_unfiltered_scan_is_the_offline_projection_of_the_rotated_points():
     from wc_navigation.amcl_replay import build_scan
     from wc_navigation.live.scan_adapter import scan_from_source

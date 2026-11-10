@@ -100,6 +100,9 @@ def summarize_shadow(config, output):
     reference = config.get("reference")
     if reference:
         result["localization"]["vs_aligned_reference"] = compare_with_reference(reference, odom, localization)
+    if config.get("obstacles"):                     # window C's 3D obstacle input; absent while it is off
+        from ..perception.live_check import summarize_run
+        result["obstacles"] = summarize_run(output, config)
     return result
 
 

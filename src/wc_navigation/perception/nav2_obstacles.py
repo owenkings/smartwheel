@@ -1,12 +1,14 @@
 """Nav2 parameter fragments for the obstacle clouds (local costmap and collision monitor only).
 
-Topics and frames (shadow replay; a live publisher must use the same):
+Topics and frames (shadow replay and the live input, ``live_obstacles``):
 ``/obstacles/<side>/points`` (filtered obstacles, marking and clearing) and
 ``/obstacles/<side>/clearing`` (free-space ray ends, clearing only), both
-sensor_msgs/PointCloud2 x y z float32 in frame ``lidar_<side>``, placed by a static
-transform at each lidar's origin with base_link's axes. The cloud frame is the ray
-origin for clearing, so each lidar is its own observation source. Without the
-clearing topic, marks in front of open space (a long corridor) would only be
+sensor_msgs/PointCloud2 x y z float32 in frame ``obstacles_lidar_<side>``, placed by a
+static transform at each lidar's origin with base_link's axes. (The SourceFrames' own
+``lidar_<side>`` is the device frame with the lidar's mount rotation; the obstacle
+frames are named apart so the two are never mixed up, e.g. in RViz.) The cloud frame
+is the ray origin for clearing, so each lidar is its own observation source. Without
+the clearing topic, marks in front of open space (a long corridor) would only be
 cleared by the footprint or the rolling window.
 
 ``obstacle_input`` selects what the local costmap and the collision monitor use:
@@ -26,6 +28,8 @@ The global costmap's layers and plugins are not touched here.
 """
 from __future__ import annotations
 
+import numpy as np
+
 from .obstacle_cloud import ObstacleFilter
 
 OBSTACLE_INPUTS = ("scan", "cloud", "scan_and_cloud")
@@ -35,10 +39,26 @@ CLOUD_TOPICS = {"left": "/obstacles/left/points", "right": "/obstacles/right/poi
 CLEAR_TOPICS = {"left": "/obstacles/left/clearing", "right": "/obstacles/right/clearing"}
 # The left lidar's filtered obstacle points in the 161 bins of /scan (frame "laser", like /scan).
 FILTERED_SCAN_TOPIC = "/obstacles/left/scan"
-CLOUD_FRAMES = {"left": "lidar_left", "right": "lidar_right"}
+CLOUD_FRAMES = {"left": "obstacles_lidar_left", "right": "obstacles_lidar_right"}
 VOXEL_Z_RESOLUTION_M = 0.10
 VOXEL_Z_CELLS = 16          # the Humble VoxelLayer maximum
 CLEAR_RANGE_MARGIN_M = 0.5
+
+
+def pointcloud2(message_type, field_type, points, frame_id, stamp):
+    """x y z float32 PointCloud2 of an Nx3 array (message classes passed in: this module imports no ROS)."""
+    pts = np.ascontiguousarray(np.asarray(points, dtype="<f4").reshape(-1, 3))
+    message = message_type()
+    message.header.stamp = stamp
+    message.header.frame_id = frame_id
+    message.height, message.width = 1, int(len(pts))
+    message.fields = [field_type(name=n, offset=4 * k, datatype=field_type.FLOAT32, count=1)
+                      for k, n in enumerate("xyz")]
+    message.is_bigendian = False
+    message.point_step, message.row_step = 12, 12 * int(len(pts))
+    message.is_dense = True
+    message.data = pts.tobytes()
+    return message
 
 
 def check(obstacle_input, sides, obstacle_scan="raw", obstacle_monitor=""):

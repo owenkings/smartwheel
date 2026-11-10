@@ -17,8 +17,8 @@ subscribes to a velocity command, so the recorded motion never reacts to Nav2.
 Only when the recording carries obstacle clouds (shadow ``--obstacle-input``
 cloud or scan_and_cloud), each lidar's filtered cloud is also published on
 ``/obstacles/<side>/points`` and its clearing rays on ``/obstacles/<side>/clearing``,
-in frame ``lidar_<side>`` at its own capture time, with static
-``base_link->lidar_<side>`` at the frozen 3D lever arm; held frames repeat the
+in frame ``obstacles_lidar_<side>`` at its own capture time, with static
+``base_link->obstacles_lidar_<side>`` at the frozen 3D lever arm; held frames repeat the
 first or last cloud like the scan. With ``--obstacle-scan filtered`` the left
 lidar's filtered 161-bin scan goes out on ``/obstacles/left/scan`` in ``laser``
 with each left cloud.
@@ -35,26 +35,10 @@ import argparse
 import numpy as np
 
 from ..perception import shadow_obstacles
-from ..perception.nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC
+from ..perception.nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC, pointcloud2
 from .ros_util import json_message, latched_qos, load_config, require_isolated_domain, yaw_to_quaternion
 from .shadow import interpolate_poses, segment_twist
 from .sim_node import _time_msg
-
-
-def pointcloud2(message_type, field_type, points, frame_id, stamp):
-    """x y z float32 PointCloud2 of an Nx3 array."""
-    pts = np.ascontiguousarray(np.asarray(points, dtype="<f4").reshape(-1, 3))
-    message = message_type()
-    message.header.stamp = stamp
-    message.header.frame_id = frame_id
-    message.height, message.width = 1, int(len(pts))
-    message.fields = [field_type(name=n, offset=4 * k, datatype=field_type.FLOAT32, count=1)
-                      for k, n in enumerate("xyz")]
-    message.is_bigendian = False
-    message.point_step, message.row_step = 12, 12 * int(len(pts))
-    message.is_dense = True
-    message.data = pts.tobytes()
-    return message
 
 
 def window_frames(recording, window):

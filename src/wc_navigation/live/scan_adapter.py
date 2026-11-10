@@ -10,6 +10,8 @@ nearest return per bin, 0.30-8.0 m, height band -0.5..0.5 m in that frame.
 Bins without a return stay +inf; nothing invents an obstacle or free space.
 The ``laser`` frame is ``mapping_reference``: base_link -> laser is the planar
 lever arm without rotation, as in the recorded shadow runs.
+``reference_points`` is the cloud step alone; the 3D obstacle input (window C,
+``perception/live_obstacles.py``) uses it for both lidars, each with its own mount.
 """
 from __future__ import annotations
 
@@ -59,12 +61,13 @@ def scan_stamp_ns(source_stamp_ns, lidar_time_offset_ms=0.0):
 
 
 class ScanRejected(ValueError):
-    """The frame is not a left host-filtered lidar frame of the configured sensor."""
+    """The frame is not a host-filtered lidar frame of the expected lidar and sensor."""
 
 
-def check_source(message, sensor_id):
-    if message.side != "left" or message.cloud.header.frame_id != "lidar_left":
-        raise ScanRejected("left lidar frame required")
+def check_source(message, sensor_id, side="left"):
+    """``side``: the lidar the frame must come from (frame id lidar_<side>); the scan is always the left one."""
+    if message.side != side or message.cloud.header.frame_id != "lidar_" + side:
+        raise ScanRejected(side + " lidar frame required")
     if sensor_id and message.sensor_id != sensor_id:
         raise ScanRejected("unexpected lidar sensor " + message.sensor_id)
     flags = [flag for flag in message.diagnostic_flags if flag.startswith("representation=")]
@@ -72,10 +75,14 @@ def check_source(message, sensor_id):
         raise ScanRejected("host-filtered cloud required, got " + repr(flags))
 
 
-def scan_from_source(message, filter_config, transforms, rotation, height_band=SCAN_HEIGHT_M):
-    """Return (ranges float32[161], stats) for one SourceFrame; the message is not modified."""
+def reference_points(message, filter_config, transforms, rotation):
+    """(float32 N x 3 points in mapping_reference, host filter report) of one SourceFrame; not modified.
+
+    The production host filter with this lidar's ``T_base_axle``, the finite points, rotated into the axle-aligned
+    frame at the lidar origin and rounded to float32 as prepare_cloud does: the frozen frontend's cloud. Also used
+    for the right lidar by the 3D obstacle input, with the right lidar's own transform and rotation.
+    """
     from wc_runtime.mapping_filter import filter_cloud
-    from ..amcl_replay import build_scan
     from ..rebuild import pointcloud_xyz
     filtered, report = filter_cloud(message.cloud, [(message, {})], transforms, filter_config)
     if not report.get("publishable", True):
@@ -85,8 +92,14 @@ def scan_from_source(message, filter_config, transforms, rotation, height_band=S
     if not finite.any():
         raise ScanRejected("cloud has no finite points after filtering")
     # prepare_cloud writes the rotated coordinates back into the cloud's FLOAT32 fields; keep that rounding.
-    reference = (xyz[finite] @ np.asarray(rotation, dtype=float).T).astype(np.float32).astype(np.float64)
-    ranges, stats = build_scan(reference, *height_band)
+    return (xyz[finite] @ np.asarray(rotation, dtype=float).T).astype(np.float32), report
+
+
+def scan_from_source(message, filter_config, transforms, rotation, height_band=SCAN_HEIGHT_M):
+    """Return (ranges float32[161], stats) for one SourceFrame; the message is not modified."""
+    from ..amcl_replay import build_scan
+    reference, report = reference_points(message, filter_config, transforms, rotation)
+    ranges, stats = build_scan(reference.astype(np.float64), *height_band)
     stats["filter_retained_points"] = report.get("retained_points")
     return ranges, stats
 
