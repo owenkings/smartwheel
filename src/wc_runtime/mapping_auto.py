@@ -20,7 +20,9 @@ read-only whitelist of ``wc_motion.driver_readback``); every start of automatic 
 reader; the status reports ``dead_man`` and ``estop`` as null and the gate's enable follows the operator's
 "start automatic" (``enable_source: OPERATOR_START``, ``enable_request``). The vehicle's emergency stop acts on the
 driver only; it is inferred here from the wheel feedback (a wheel commanded faster than 0.05 m/s while both wheels
-report zero for 0.3 s), which writes zero at once so that releasing the emergency stop cannot resume an old command.
+report less than 20 % of that command for 0.3 s: at least 0.01 m/s, about 5 feedback words, so a wheel that still
+reads a word or two counts as stopped), which writes zero at once so that releasing the emergency stop cannot
+resume an old command.
 The status then reports ``estop_request`` for at least 0.5 s, and the bridge turns it into ``/wc_nav/estop`` so that
 the gate latches. The panel's software emergency stop (manual packet ``estop``) is reported the same way while it
 is pressed: the bridge is the only publisher of ``/wc_nav/estop`` (D.md 2026-11-10 13:15).
@@ -74,6 +76,7 @@ FUTURE_TOLERANCE_S = 0.05         # a gate or bridge stamp further ahead of this
 BACKWARD_M_S, BACKWARD_S = -0.02, 0.2
 MOVING_AT_ZERO_S = 1.0
 COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driver, inferred from the feedback
+WHEELS_STOPPED_SHARE = 0.2        # ... when both wheels read below this share of the faster wheel's command
 OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
 START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
 OPERATOR_WAIT_S = 10.0            # a command-line start waits this long for the RViz window to have the focus
@@ -208,7 +211,7 @@ class AutoDrive:
         self.immediate, self.zero_reached, self.zero_since = False, None, None
         self.init_step, self.next_init = 0, 0.0
         self.seen_sequence, self.stationary, self.backward_since, self.feedback = owner.sequence, 0, None, None
-        self.commanded_since = self.zero_feedback_since = self.overspeed_since = None
+        self.commanded_since = self.slow_feedback_since = self.overspeed_since = None
         self.settled = 0   # consecutive zero samples taken after the zero command of the current stop
         self.takeover_latch = False
         self.counters = {name: 0 for name in ('decisions', 'decisions_rejected', 'writes', 'zero_writes',
@@ -564,8 +567,8 @@ class AutoDrive:
             return 'MOVING_BACKWARD'
         if self.overspeed_since is not None and now - self.overspeed_since > OVERSPEED_S:
             return 'FEEDBACK_OVERSPEED'
-        if self.commanded_since is not None and self.zero_feedback_since is not None and self._feedback_fresh(now) \
-                and now - max(self.commanded_since, self.zero_feedback_since) > WHEELS_STOPPED_S:
+        if self.commanded_since is not None and self.slow_feedback_since is not None and self._feedback_fresh(now) \
+                and now - max(self.commanded_since, self.slow_feedback_since) > WHEELS_STOPPED_S:
             return 'WHEELS_STOPPED_WHILE_COMMANDED'
         return None
 
@@ -720,10 +723,6 @@ class AutoDrive:
         self.stationary = self.stationary + 1 if zero else 0
         if self.zero_reached is not None and stamp > self.zero_reached:
             self.settled = self.settled + 1 if zero else 0
-        if zero:
-            self.zero_feedback_since = stamp if self.zero_feedback_since is None else self.zero_feedback_since
-        else:
-            self.zero_feedback_since = None
         wheel = owner.wheel
         signed = [value - 65536 if value >= 32768 else value for value in words]
         if max(abs(value) for value in signed) * wheel['register_to_wheel_rpm'] > \
@@ -735,6 +734,16 @@ class AutoDrive:
         left, right = signed[0] * scale * wheel['left_sign'], signed[1] * scale * wheel['right_sign']
         self.feedback = {'left_m_s': left, 'right_m_s': right, 'linear_m_s': (left + right) / 2, 'stamp': stamp,
                          'sequence': owner.sequence - 1}
+        # The vehicle's emergency stop seen from the wheels: both read less than WHEELS_STOPPED_SHARE of the faster
+        # wheel's current command. Not only exact zero: a wheel still settling, wobbling or held by the servo may
+        # read a word or two (second review of 2026-11-10, item 1).
+        linear, angular = self.command
+        half = wheel['track_width_m'] / 2
+        commanded = max(abs(linear - angular * half), abs(linear + angular * half))
+        if max(abs(left), abs(right)) < WHEELS_STOPPED_SHARE * commanded:
+            self.slow_feedback_since = stamp if self.slow_feedback_since is None else self.slow_feedback_since
+        else:
+            self.slow_feedback_since = None
         if self.feedback['linear_m_s'] < BACKWARD_M_S:
             self.backward_since = stamp if self.backward_since is None else self.backward_since
         else:

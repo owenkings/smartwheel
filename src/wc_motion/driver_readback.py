@@ -246,6 +246,10 @@ def main(argv=None, *, environ=None, today=None):
         value = (' '.join('0x%s(%d)' % (text, word) for text, word in zip(row['words_hex'], row['words_u16']))
                  if row['status'] == 'WORDS' else 'exception %d' % row['exception_code']
                  if row['status'] == 'MODBUS_EXCEPTION' else row['status'])
+        if row.get('exchange_completed_monotonic_ns') is not None:
+            # The wheel owner's own readback at session start waits at most 0.1 s per read.
+            elapsed = row['exchange_completed_monotonic_ns'] - row['exchange_started_monotonic_ns']
+            value += '  %.1f ms' % (elapsed / 1e6)
         print('%s  %s' % (row['start_register'], value), flush=True)
     print('%s: %s' % (record['status'], folder/'result.json'), flush=True)
     if record.get('error'):
