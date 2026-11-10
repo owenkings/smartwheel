@@ -348,9 +348,13 @@ class LiveSupervisor(Supervisor):
                                          nav2_config.behavior_tree_xml(through_poses=True))
         sim = cfg["use_sim_time"]
         planning = self.planning()
-        files["nav2"] = self.write("nav2_params.yaml", with_sim_time(nav2_config.navigation_parameters(
+        nav2_params = nav2_config.navigation_parameters(
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"],
-            bt_through_poses_path=files["bt_through"], planning=planning), sim))
+            bt_through_poses_path=files["bt_through"], planning=planning)
+        if cfg.get("closed_loop"):
+            # window B 2026-11-10: the rotation speeds are not in Nav2's readback list; the closed loop checks them
+            self.closed_readback = closed_loop_rotation_readback(nav2_params, profile.max_angular)
+        files["nav2"] = self.write("nav2_params.yaml", with_sim_time(nav2_params, sim))
         if planning.smoother_feedback == "gated":
             # window B's relay: the gate's output as the smoother's feedback (restart from rest after a gate stop)
             from ..planning.velocity_feedback import node_config as feedback_config
@@ -380,6 +384,14 @@ class LiveSupervisor(Supervisor):
             "closed_loop": bool(closed)})
         return files
 
+    def readback_expectations(self, profile):
+        """Nav2's readback list for this run; the closed loop adds the two rotation speeds (prepare_shadow)."""
+        expected = {node: dict(values) for node, values in nav2_config.readback_expectations(
+            profile, "navigate", planning=self.planning()).items()}
+        for node, values in (getattr(self, "closed_readback", None) or {}).items():
+            expected.setdefault(node, {}).update(values)
+        return expected
+
     def planning(self):
         """Window B's planning choice for the shadow's Nav2: only the smoother feedback and timeout are set here."""
         from ..planning.stack import PlanningChoice
@@ -405,8 +417,7 @@ class LiveSupervisor(Supervisor):
         self.wait_for(monitor, lambda: monitor.trigger("/lifecycle_manager_navigation/is_active") is True,
                       120, "nav2_active")
         readback = {}
-        for node_name, expected in nav2_config.readback_expectations(profile, "navigate",
-                                                                     planning=self.planning()).items():
+        for node_name, expected in self.readback_expectations(profile).items():
             actual = monitor.get_parameters(node_name, list(expected))
             readback[node_name] = {"expected": expected, "actual": actual}
             bad = [k for k in expected if not _same(actual.get(k), expected[k])]
@@ -610,6 +621,28 @@ class LiveSupervisor(Supervisor):
                     context.shutdown()
             except Exception as exc:
                 self.report["close_error"] = type(exc).__name__ + ": " + str(exc)
+
+
+def closed_loop_rotation_readback(params, max_angular):
+    """Readback of the closed loop's rotation speeds, taken from the Nav2 parameters this run writes.
+
+    RPP turns in place at ``FollowPath.rotate_to_heading_angular_vel`` and the behaviour server's Spin is limited by
+    ``max_rotational_vel``; Nav2's readback list has neither (window B, 2026-11-10). Both must be given and must not
+    exceed the closed loop's angular limit, else the run does not start (RunError).
+    """
+    def value(node, *path):
+        found = (params.get(node) or {}).get("ros__parameters") or {}
+        for key in path:
+            found = found.get(key) if isinstance(found, dict) else None
+        if isinstance(found, bool) or not isinstance(found, (int, float)):
+            raise RunError("closed loop: %s %s missing in the Nav2 parameters" % (node, ".".join(path)))
+        if not 0.0 < float(found) <= float(max_angular) + 1e-9:
+            raise RunError("closed loop: %s %s = %s above the angular limit %s rad/s"
+                           % (node, ".".join(path), found, max_angular))
+        return float(found)
+    return {"controller_server": {"FollowPath.rotate_to_heading_angular_vel":
+                                  value("controller_server", "FollowPath", "rotate_to_heading_angular_vel")},
+            "behavior_server": {"max_rotational_vel": value("behavior_server", "max_rotational_vel")}}
 
 
 def _switch(*values):

@@ -226,7 +226,9 @@ def arguments(argv=None):
                              % CLOSED_LOOP_SMOOTHER)
             if args.smoother_timeout != CLOSED_LOOP_SMOOTHER_TIMEOUT_S:
                 parser.error("--closed-loop uses --smoother-timeout %g" % CLOSED_LOOP_SMOOTHER_TIMEOUT_S)
-            if any(a.startswith("--monitor") for a in given) and args.monitor_base_shift != "off":
+            # only --monitor-base-shift (or an abbreviation of it, --monitor-b...) given as on is refused; other
+            # --monitor-* options such as window C's --monitor-slow-margin go with the closed loop
+            if any(a.startswith("--monitor-b") for a in given) and args.monitor_base_shift != "off":
                 parser.error("--closed-loop runs the collision monitor with --monitor-base-shift off")
             args.smoother_feedback, args.monitor_base_shift = CLOSED_LOOP_SMOOTHER, "off"
         elif args.panel_root or args.session_root or args.session_id:

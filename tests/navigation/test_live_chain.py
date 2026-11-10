@@ -862,9 +862,14 @@ def test_closed_loop_options_fix_the_first_closed_loop_settings(tmp_path):
     assert cli.arguments(_closed_argv(tmp_path, "--smoother-feedback", "open_loop")).smoother_feedback == "open_loop"
     assert cli.arguments(_closed_argv(tmp_path, "--start-check", "strict")).start_check == "strict"
     for bad in (["--start-check", "warn"], ["--start-check", "off"], ["--gate-slow-limits", "0.5", "0.15"],
-                ["--monitor-base-shift", "on"], ["--smoother-feedback", "gated"], ["--smoother-timeout", "0.5"]):
+                ["--monitor-base-shift", "on"], ["--monitor-b=on"], ["--smoother-feedback", "gated"],
+                ["--smoother-timeout", "0.5"]):
         with pytest.raises(SystemExit):
             cli.arguments(_closed_argv(tmp_path, *bad))       # 0.15 m/s is above the closed loop's 0.10 m/s
+    # window C's slowdown-box margin goes with the closed loop, with or without an explicit --monitor-base-shift off
+    for extra in (["--monitor-slow-margin", "0.15"], ["--monitor-slow-margin", "0.15", "--monitor-base-shift", "off"]):
+        margin = cli.arguments(_closed_argv(tmp_path, *extra))
+        assert (margin.monitor_slow_margin, margin.monitor_base_shift) == (0.15, "off")
     argv = _closed_argv(tmp_path)
     with pytest.raises(SystemExit):
         cli.arguments(argv[:argv.index("--session-id")])       # the session must be named
@@ -899,11 +904,12 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
         cli.closed_loop_settings(args)
     path.unlink()
     server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
-    server.bind(str(path))
     try:
+        server.bind(str(path))
         settings = cli.closed_loop_settings(args)
     finally:
         server.close()
+        path.unlink(missing_ok=True)    # the test runner archives tmp_path and refuses special files (sockets)
     assert settings["auto_socket"] == str(path) and settings["bridge_node"] == "/wc_auto_bridge"
     assert (settings["max_linear"], settings["max_angular"], settings["enable_timeout_s"]) == (0.10, 0.30, 0.5)
     assert seen[-1] == (tmp_path / "panel", tmp_path / "session", "capture_x")
@@ -928,7 +934,13 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
               "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
                               "session_root": "/s", "session_id": "capture_x"}}
     profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
-    files = LiveSupervisor(tmp_path, tmp_path, config).prepare_shadow(profile)
+    run = LiveSupervisor(tmp_path, tmp_path, config)
+    files = run.prepare_shadow(profile)
+    # window B 2026-11-10: the rotation speeds are read back in the closed loop on top of Nav2's list
+    expected = run.readback_expectations(profile)
+    assert expected["controller_server"]["FollowPath.rotate_to_heading_angular_vel"] == 0.30
+    assert expected["behavior_server"]["max_rotational_vel"] == 0.30
+    assert expected["controller_server"]["FollowPath.desired_linear_vel"] == 0.10      # Nav2's own list kept
     node = json.loads(files["gate"].read_text())
     gate = GateConfig(**node["gate"])
     assert node["clock"] == "monotonic" and node["use_sim_time"] is False
@@ -944,10 +956,30 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
         [0.10, 0.0, 0.30], "OPEN_LOOP", 0.3)
     shadow = {k: v for k, v in config.items() if k != "closed_loop"}
     (tmp_path / "b").mkdir()
-    files = LiveSupervisor(tmp_path / "b", tmp_path / "b", shadow).prepare_shadow(nav2_config.NavProfile())
+    plain = LiveSupervisor(tmp_path / "b", tmp_path / "b", shadow)
+    files = plain.prepare_shadow(nav2_config.NavProfile())
+    assert plain.readback_expectations(nav2_config.NavProfile()) == nav2_config.readback_expectations(
+        nav2_config.NavProfile(), "navigate", planning=plain.planning())                  # the shadow's list as before
     node = json.loads(files["gate"].read_text())
     assert "clock" not in node and "require_base" not in node["gate"] and "enable_source_node" not in node["gate"]
     assert json.loads(files["goals"].read_text())["closed_loop"] is False
+
+
+def test_closed_loop_rotation_speeds_must_be_given_and_within_the_angular_limit():
+    from wc_navigation.autonomy.bringup import RunError
+    from wc_navigation.live.supervisor import closed_loop_rotation_readback
+
+    def params(rotate, spin):
+        return {"controller_server": {"ros__parameters": {"FollowPath": {"rotate_to_heading_angular_vel": rotate}}},
+                "behavior_server": {"ros__parameters": {"max_rotational_vel": spin}}}
+    assert closed_loop_rotation_readback(params(0.3, 0.25), 0.30) == {
+        "controller_server": {"FollowPath.rotate_to_heading_angular_vel": 0.3},
+        "behavior_server": {"max_rotational_vel": 0.25}}
+    for rotate, spin in ((0.4, 0.3), (0.3, 0.31), (None, 0.3), (0.3, True), (0.0, 0.3)):
+        with pytest.raises(RunError):
+            closed_loop_rotation_readback(params(rotate, spin), 0.30)
+    with pytest.raises(RunError, match="missing"):
+        closed_loop_rotation_readback({"controller_server": {"ros__parameters": {}}}, 0.30)
 
 
 def test_the_base_bridge_is_stopped_first(tmp_path, monkeypatch):
