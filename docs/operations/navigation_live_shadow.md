@@ -110,7 +110,10 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   - 它只在面板域建一个没有任何端点的只读节点（和转发入口同一个类），读发现缓存，打印后退出。
   - `status` 为 `PASS` 的条件：入口节点没有发布者、服务、客户端，正好三个订阅，都是 best effort、volatile；查询节点自己也没有端点。
   - 不要在面板域用 `ros2 node info`、`ros2 topic list` 这类 ros2 命令：它们会在面板域起 ros2 daemon，那是一个有发布者和服务、命令结束后还留着的节点。
-- 初始位姿的朝向：车头朝向必须和 `--initial-pose` 的 YAW_DEG 一致。2026-11-09 两次实车影子车头都朝西，给的却是 0°（朝东）。走廊两边对称，AMCL 和闸门在前 4–5 m 都没发现；分析见 `reports/navigation_live_shadow/20261109T152258Z_vehicle_shadow_start_heading/`。起步前在 RViz 里看扫描和地图的墙是否重合。
+- 初始位姿的朝向：车头朝向必须和 `--initial-pose` 的 YAW_DEG 一致。
+  - 给用户的检查单和提示一律按看板地图说方向：右 = 地图 +x，左 = 地图 −x。不用东西南北：用户 2026-11-10 说明，现实里地图 −x 是东。
+  - ZL1107 地图的起点 (−0.323, −0.229, 0°) 是车头朝看板地图的右边。
+  - 2026-11-09 两次实车影子车头都朝左（地图 −x），给的却是 0°（地图 +x）。走廊两边对称，AMCL 和闸门在前 4–5 m 都没发现。分析见 `reports/navigation_live_shadow/20261109T152258Z_vehicle_shadow_start_heading/`。
 
 ## 闸门协方差判据：默认只看横向（2026-11-09）
 
