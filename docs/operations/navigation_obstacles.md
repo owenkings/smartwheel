@@ -75,7 +75,7 @@ nice -n 10 bash scripts/navigation_obstacle_tracks \
 
 ## 实时链路的三维障碍输入
 
-`navigation_live_shadow inputs|shadow`（D 的实时链路，见[实车影子操作说明](navigation_live_shadow.md)）加上障碍选项，就多起一个 obstacles 进程（`perception/obstacles_node.py`，nice 10）。默认不开，不给这些选项时命令、回放的话题、Nav2 参数和 `result.json` 都和以前一样。
+`navigation_live_shadow inputs|shadow`（D 的实时链路，见[实车影子操作说明](navigation_live_shadow.md)）加上障碍选项，就多起一个 obstacles 进程（`perception/obstacles_node.py`，和转发一样在命令的 nice 上再加 10，车上模式下是 19）。默认不开，不给这些选项时命令、回放的话题、Nav2 参数和 `result.json` 都和以前一样。
 
 ```bash
 WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-root "$PWD" \
@@ -94,7 +94,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
 | `--obstacle-no-witness` | 不读另一台雷达判悬空团。 |
 | `--compare-right-cell`（只 `inputs`） | 右雷达的冻结前端，也核对右雷达的点云。 |
 | `--footprint`、`--footprint-source`（只 `inputs`；`shadow` 用它自己的外形） | 过滤用的车体外形，不给时按 0.55 m 假设圆。 |
-| `--monitor-base-shift on\|off`（只 `shadow`，和障碍输入无关） | 碰撞监控的 base_shift_correction。on（默认）时每个周期都要等里程计发出“现在”的 odom→base_link，最多 0.3 s，等不到就这一周期不看传感器；off 只用静态外参。 |
+| `--monitor-base-shift on\|off`（只 `shadow`，和障碍输入无关） | 碰撞监控的 base_shift_correction。on（默认）时每个周期都要等里程计发出“现在”的 odom→base_link，最多 0.3 s，等不到就这一周期不看传感器；off 只用静态外参。用户 2026-11-10 同意实车影子用 off，默认值不改。 |
 
 - 处理：每对帧（两台雷达同一周期，相差几毫秒）先过 D 的 `scan_adapter.reference_points`（生产主机滤波、转到 mapping_reference，和冻结前端逐点相同），每台雷达用自己的外参和设备编号。再等 /odom 覆盖 stamp − 偏移的时刻（最多 0.3 s），然后按影子运行的规则过滤，另一台雷达作见证（`consensus.BoxWitness`，结论和 `Witness` 相同）。等不到位姿的帧照样发，只是没有见证和持续性检查，状态里计数。
 - 输出：`/obstacles/<left|right>/points`（坐标系 `obstacles_lidar_<side>`，静态变换在雷达原点、轴和 base_link 一致），VoxelLayer 时还有 `/clearing`，过滤扫描时有 `/obstacles/left/scan`。时间戳和 /scan 一样是雷达时间戳减偏移，偏移就是命令为 /scan 解析出的那一个。状态在 `/wc_live/inputs_status/obstacles`（RUNNING/STALE/FAILED、计数、耗时）。每处理一帧，运行目录的 `obstacles.jsonl` 写一行：位姿、配对、输入和输出的 sha256、各级计数、耗时。
@@ -103,7 +103,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
   - 输出：按 `obstacles.jsonl` 记下的配对和位姿，用录包里的同一批帧离线重算，点、射线和过滤扫描都要相同。
   - 频率：每台雷达不低于 0.8 × `--obstacle-rate-hz`；等不到位姿的周期不超过 5%；进程没有 FAILED。
 - `shadow` 的 `result.json` 多一节 `obstacles`：频率、配对、见证、等待、耗时和各级计数，不重算。
-- 车上（`--source vehicle`）现在拒绝开障碍输入：转发要多一个右雷达话题，得先由用户和总管重新同意。
+- 车上（`--source vehicle`）：用户 2026-11-10 同意开，转发要多转右雷达（D5，窗口 D）。D5 进来之前命令仍拒绝开障碍输入；运行时照常要用户当次同意。
 
 ## 仿真里的移动行人
 

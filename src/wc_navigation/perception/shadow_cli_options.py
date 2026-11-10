@@ -221,8 +221,9 @@ def check_live_arguments(parser, args):
                          "cloud|scan_and_cloud, or --obstacle-scan filtered")
         return
     if getattr(args, "source", None) == "vehicle":
-        parser.error("the 3D obstacle input on the vehicle needs the relay of the right lidar (D5) and a new approval "
-                     "by the user and the coordinator; it runs on recordings only")
+        # user 2026-11-10: allowed on the vehicle once the relay forwards the right lidar (D5, window D)
+        parser.error("the 3D obstacle input on the vehicle waits for the relay of the right lidar (D5, window D); "
+                     "until then it runs on recordings only")
     sides = args.obstacle_sides or (["left"] if args.obstacle_input == "scan" and monitor == "scan"
                                     else ["left", "right"])
     try:

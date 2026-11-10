@@ -426,7 +426,7 @@ def test_the_live_obstacle_input_is_off_by_default_and_the_options_need_it(tmp_p
             arguments(common + extra)
     shadow = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
               "--map", "m.yaml", "--initial-pose", "0", "0", "0", "--goal", "1", "2", "0"]
-    with pytest.raises(SystemExit):                    # not on the vehicle before the relay change is approved
+    with pytest.raises(SystemExit):                    # not on the vehicle before the relay forwards the right lidar
         arguments(shadow + ["--source", "vehicle", "--sensor-domain", "83", "--obstacle-monitor", "cloud"])
     args = arguments(shadow + ["--source", "bag", "--bag", "x", "--monitor-base-shift", "off"])
     assert args.obstacle_live is None and live_profile_fields(args) == {"monitor_base_shift": False}

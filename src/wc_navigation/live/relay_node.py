@@ -135,6 +135,77 @@ def self_check(node, expected, timeout_s=3.0):
     return result
 
 
+ENTRY_NODE = "wc_live_relay_in"
+QUERY_NODE = "wc_live_relay_graph"
+
+
+def _endpoints(infos):
+    """Node and QoS of each endpoint (discovery carries no history depth)."""
+    return sorted(({"node": (info.node_namespace.rstrip("/") + "/" + info.node_name),
+                    "reliability": info.qos_profile.reliability.name, "durability": info.qos_profile.durability.name}
+                   for info in infos), key=lambda e: e["node"])
+
+
+def _node_graph(node, name, namespace, expected):
+    return graph_check(node.get_publisher_names_and_types_by_node(name, namespace),
+                       node.get_subscriber_names_and_types_by_node(name, namespace),
+                       node.get_service_names_and_types_by_node(name, namespace),
+                       node.get_client_names_and_types_by_node(name, namespace), expected)
+
+
+def entry_graph(sensor_domain, source_prefix="", wait_s=3.0):
+    """The relay entry node's graph entry and the relayed topics' endpoints, as seen in the sensor domain.
+
+    One participant joins the sensor domain. Its node has no endpoint at all: the relay's read-only class (no
+    publisher, service or client; /parameter_events stays out of DDS), no rosout, no parameter services and no
+    subscriptions; everything reported comes from the local discovery cache, and the query node's own graph
+    entry is checked to be empty. ``ros2 node info`` is not a read-only query: it starts the ros2 daemon, a
+    node with publishers and services that stays in the domain after the command.
+    """
+    import rclpy
+    from rclpy.context import Context
+    context = Context()
+    rclpy.init(args=[], context=context, domain_id=int(sensor_domain))
+    node = read_only_node_class()(QUERY_NODE, context=context, enable_rosout=False, start_parameter_services=False,
+                                  use_global_arguments=False)
+    topics = [source_prefix + topic for topic in RELAYED_TOPICS]
+    try:
+        end = time.monotonic() + float(wait_s)
+        entry, names = None, []
+        while True:
+            names = node.get_node_names_and_namespaces()
+            if (ENTRY_NODE, "/") in names:
+                try:
+                    entry = _node_graph(node, ENTRY_NODE, "/", topics)
+                except Exception as error:  # listed, endpoints not discovered yet
+                    entry = {"status": "FAIL", "error": type(error).__name__ + ": " + str(error)}
+                if entry["status"] == "PASS":
+                    break
+            if time.monotonic() >= end:
+                break
+            time.sleep(0.2)
+        own = _node_graph(node, QUERY_NODE, "/", [])
+        report = {"sensor_domain": int(sensor_domain), "source_prefix": source_prefix, "entry_node": "/" + ENTRY_NODE,
+                  "entry": entry, "query_node": "/" + QUERY_NODE, "query_node_graph": own,
+                  "nodes": sorted(ns.rstrip("/") + "/" + n for n, ns in names),
+                  "topics": {topic: {"publishers": _endpoints(node.get_publishers_info_by_topic(topic)),
+                                     "subscribers": _endpoints(node.get_subscriptions_info_by_topic(topic))}
+                             for topic in topics}}
+        entry_readers = [e for t in topics for e in report["topics"][t]["subscribers"] if e["node"] == "/" + ENTRY_NODE]
+        best_effort = len(entry_readers) == len(topics) and all(e["reliability"] == "BEST_EFFORT" and
+                                                                 e["durability"] == "VOLATILE" for e in entry_readers)
+        report["entry_reads_best_effort_volatile"] = best_effort
+        if entry is None:
+            report["status"] = "NOT_FOUND"
+        else:
+            report["status"] = "PASS" if entry["status"] == "PASS" and own["status"] == "PASS" and best_effort else "FAIL"
+        return report
+    finally:
+        node.destroy_node()
+        if context.ok():
+            context.shutdown()
+
+
 class Relay:
     def __init__(self, source_node, target_node, prefix, output_prefix):
         from rclpy.qos import QoSProfile, ReliabilityPolicy
