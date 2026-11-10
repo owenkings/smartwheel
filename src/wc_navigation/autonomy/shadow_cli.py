@@ -572,6 +572,47 @@ def planner_report(action_results, records, times, poses, w0, start, conservativ
             "model": "STATIC_LAYER_THEN_RECORDED_GLOBAL_COSTMAP_NAVFN_LIKE_REACHABILITY"}
 
 
+# planner_server 1.1.20 names the plugin in both failure messages (empty path; exception from the plugin).
+PLANNER_FAILURE_LINE = re.compile(r"Planning algorithm (\S+) failed to generate a valid path|(\S+) plugin failed to plan")
+
+
+def planner_cycles(planner, log_path, tree_path):
+    """Plan success per planning cycle of the behaviour tree.
+
+    ``plan_success_fraction`` counts every ComputePathToPose action. With a
+    Fallback (and Rescue) planner, one cycle asks GridBased first and the next
+    planner only after a failure, so a GridBased failure that Fallback answers
+    counts there as one failure and one success. A cycle ends with the first
+    path or with a failure of the last planner; the planner_server log names
+    the failing plugin. Cycles halted by a goal update before either are left out.
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        ids = [node.get("planner_id") for node in ET.parse(tree_path).iter("ComputePathToPose")]
+        failed = {}
+        with open(log_path, encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                match = PLANNER_FAILURE_LINE.search(line)
+                if match:
+                    name = match.group(1) or match.group(2)
+                    failed[name] = failed.get(name, 0) + 1
+    except (OSError, TypeError, ET.ParseError):
+        return {"plan_cycle_success_fraction": None, "plan_cycles": {"status": "NO_PLANNER_LOG_OR_TREE"}}
+    if not ids:
+        return {"plan_cycle_success_fraction": None, "plan_cycles": {"status": "NO_COMPUTE_PATH_IN_TREE"}}
+    succeeded = ((planner.get("terminal_status_counts") or {}).get("compute_path_to_pose") or {}).get("SUCCEEDED", 0)
+    failures = {name: failed.get(name, 0) for name in ids}
+    ended = succeeded + failures[ids[-1]]
+    answered, asked = {}, ended
+    for name in ids:                       # each planner is asked once per failure of the one before it
+        answered[name] = max(0, asked - failures[name])
+        asked = failures[name]
+    return {"plan_cycle_success_fraction": succeeded / ended if ended else None,
+            "plan_cycles": {"planners": ids, "completed": ended, "failed": failures[ids[-1]],
+                            "failures_by_planner": failures, "answered_by": answered,
+                            "status": "COUNTED_FROM_PLANNER_SERVER_LOG"}}
+
+
 def summarize(config, report, output, recording):
     """Compare the recorded commands with the driver's motion; write result.json, samples.csv, preview.png."""
     from .replay_node import window_frames
@@ -636,6 +677,8 @@ def summarize(config, report, output, recording):
         costmaps = RecordedCostmaps(recorded.get("costmaps"))
         result["planner"] = planner_report(recorded.get("action_results", []), mission.get("records", []),
                                            times, poses, w0, float(start), conservative, occupied_only, costmaps)
+        result["planner"].update(planner_cycles(result["planner"], (report.get("logs") or {}).get("planner_server"),
+                                                (report.get("files") or {}).get("bt_to_pose")))
         result["planner"]["costmap_file"] = costmaps.save(output / "global_costmap_blocked.npz")
         failures = result["planner"]["failures"]
         commands = recorded.get("commands", {})
@@ -871,7 +914,8 @@ def main(argv=None):
                  "plans_compared", "max_deviation_m", "offset_to_latest_plan_m_while_moving",
                  "rotations_with_offset_over_0_3_m")},
              "planner": {k: (result.get("planner") or {}).get(k)
-                         for k in ("plan_requests", "plan_success_fraction", "failure_reasons", "plan_duration_s")},
+                         for k in ("plan_requests", "plan_success_fraction", "plan_cycle_success_fraction",
+                                   "failure_reasons", "plan_duration_s")},
              "static_map_audit": {k: result["static_map_audit"][k] for k in (
                  "fraction_within_lethal_of_occupied", "fraction_within_lethal_of_unknown",
                  "unknown_pinholes_within_lethal_of_path")},

@@ -37,6 +37,7 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
 - 运行前照常读回参数：规划器插件类型、未知区设置、不倒车相关设置和每一个覆盖项都要与请求一致，否则不开始。
 - 影子运行的 `result.json` 在 `planner.plan_duration_s` 里给出每次规划从受理到结束的时长（仿真时钟，1 倍速时等于墙钟）；`log_counts` 另计 Smac 的起终点无效和迭代超限、MPPI 的优化失败、控制循环超时。
+- 有 `--planner-fallback` 或 `--planner-rescue` 时，比规划成功率要看 `planner.plan_cycle_success_fraction`（按行为树的规划周期：任一规划器给出路径算成功，最后一个也失败才算失败；各规划器的失败数和接住的周期数在 `planner.plan_cycles`，从 planner_server 日志数）。`planner.plan_success_fraction` 按每次 ComputePathToPose 计数，GridBased 失败、Fallback 接住会记成一次失败加一次成功；只有一个规划器时两者相同。
 
 ## 仿真：用真值世界当地图
 
@@ -93,6 +94,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_planner_bench \
 ```
 
 仿真 navigate 的任务再加 `--goal-heading turn_at_goal`：复核里只前进的 Hybrid-A* 为终点朝向在小房间里绕弯是失败原因之一，见设计文档。影子运行的目标由录包给出，不用这个选项。
+
+11-10 的复核又加了 `--planner-rescue navfn`：AMCL 估计压进规划余量时，由只查中心格的 NavFn 接住（设计文档“复核（11-10）”一节）。rescue 算不算进推荐方案，等用户定。
 
 前提是规划用地图里，司机路线上没有伪占据格（例如 v2 那样把车开过的格清空）；路线旁还剩孤立伪点时，这个组合会把车带到伪点前停住。仿真里比较规划和控制时可以加 `--localization truth`；要得出系统级结论，就用默认的 AMCL 跑，设计文档里的 AMCL 结果都是在 D 的闸门新默认值下跑的。
 
