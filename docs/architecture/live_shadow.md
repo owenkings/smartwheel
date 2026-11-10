@@ -99,7 +99,7 @@ flowchart LR
 - 里程计：原样使用 `wc_runtime.mapping_prior.MotionPrior`（平面 EKF、robot_localization 工作进程）和实时建图节点相同的输入检查。轮速记录和 H30 帧按到达时间进入，位姿只输出到 IMU 与轮速共同水位线为止、不外推，每 20 ms 一个，输出后立即作为先验的检查点，历史保持有界。先验的时钟取消息里最新的主机单调时间，所以录包晚些回放时行为和录制时一样；输入停止由节点另外监视（状态话题报 STALE，里程计不再延伸，TF 变旧后闸门停车）。
 - 配置：外参、主机滤波、运动先验和设备编号取自 `--cell`；轮参数取自 `--hardware-setup` 的 `wheel_odometry`，陀螺零偏取自 `--gyro-bias`，和前端命令的同名参数一样替换。录包检验用同一录包的冻结前端作 `--cell`；ZL1107 系列录包冻结的是旧轮参数 0.172/0.61，回放时必须给覆盖文件（0.1646/0.599）和零偏文件。上车时不用录包前端（它的轮参数来自覆盖文件，还带离线时间锚点和旧会话），而用 `freeze-config` 冻结的面板当前配置（见下面“上车配置”）。IMU 用到达时间；冻结前端用的设备相对时间模型只能离线拟合，A 确认实时第一步不需要设备时间。
 - 两个进程：扫描和里程计分开运行。放在一个进程时，点云处理会挡住轮速和 IMU 回调，里程计平均晚 0.27 s、最多 0.54 s；分开后平均 0.09 s、最多 0.17 s（主要是 10 Hz 轮速的水位线），扫描平均晚 0.06 s。
-- 上车时传感器话题在面板的域里。影子框架不进那个域发布；由单向转发进程（`relay_node`）只订阅这三个话题的序列化消息，原样在影子自己的隔离域里重发，细节见下面“实车影子模式的单向转发”。
+- 上车时传感器话题在面板的域里。影子框架不进那个域发布；由单向转发进程（`relay_node`）只订阅这三个话题（开三维障碍输入时再加右雷达，共四个）的序列化消息，原样在影子自己的隔离域里重发，细节见下面“实车影子模式的单向转发”。
 
 验证包 ZL21107 的原始 rosbag2 用 `ros2 bag play --clock` 按录包时间回放到域 100（只放这三个话题，不启动任何驱动或面板节点），与冻结前端逐帧比较（`reports/navigation_live_shadow/20261107T132206Z_inputs_dc29134f`）：
 
@@ -112,7 +112,7 @@ wc_runtime 的实时建图链路（`mapping_input` → `mapping_prior` → RTAB-
 三维障碍输入（窗口 C，默认不开）：给了 `--obstacle-input`、`--obstacle-scan filtered` 或 `--obstacle-monitor` 时，多一个 obstacles 进程。
 - 它读两台雷达的 host_filtered 帧和 /odom，按影子运行的过滤规则发 `/obstacles/<left|right>/points`（坐标系 `obstacles_lidar_<side>`），需要时也发 `/obstacles/left/scan`。
 - 右雷达用自己的外参和设备编号（`--cell` 的 runtime_config 里 `mounts.right`、`sensor_ids.right`）。时间偏移就是上面给 /scan 解析出的那一个。
-- 录包回放多放右雷达这一个话题。实车上转发要多转右雷达（D5）；用户 2026-11-10 同意实车上开，D5 进来之前 `--source vehicle` 仍拒绝开障碍输入。
+- 录包回放多放右雷达这一个话题。实车上转发多转右雷达（D5，2026-11-10 起；用户 2026-11-10 同意实车上开）。这时面板要用两台雷达录制或建图（11-09 两次都是），否则右雷达没有发布者，转发会一直等到超时。
 - 进程约用 0.6 个核。它和转发一样在命令的 nice 上再加 10（车上模式下是 19），CPU 紧时先让里程计输入。
 - 设计、检验和用法见[障碍感知与避障](obstacle_avoidance.md)和[障碍感知操作说明](../operations/navigation_obstacles.md#实时链路的三维障碍输入)。
 
@@ -212,28 +212,38 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
 ## 实车影子启动器（任务 4，只准备，未上车）
 
-`navigation_live_shadow shadow` 一条命令按序启动记录器、扫描与里程计进程（上车时再加单向转发）、map_server + AMCL、传感器源、操作员初始位姿、Nav2 各服务器（参数读回核对）、安全闸门和操作员目标序列。顺序有讲究：Nav2 的代价地图要等到 `map→base_link` 存在才激活，所以传感器、里程计和 AMCL 必须先跑起来。闸门输出 `/wc_nav/cmd_vel_gated` 没有任何订阅者，也没有进程发布 `/cmd_vel`；监督进程发使能心跳只是为了记录“闸门会放行什么”。记录器逐行落盘四级指令、人推的实际运动（实时里程计）、AMCL 位姿与 `map→odom`、全局路径和各状态变化，运行中断也留得下记录。
+`navigation_live_shadow shadow` 一条命令按序启动记录器、扫描与里程计进程（上车时再加单向转发）、map_server + AMCL、传感器源、操作员初始位姿、Nav2 各服务器（参数读回核对）、平滑器反馈节点、安全闸门和操作员目标序列。顺序有讲究：Nav2 的代价地图要等到 `map→base_link` 存在才激活，所以传感器、里程计和 AMCL 必须先跑起来。闸门输出 `/wc_nav/cmd_vel_gated` 只有平滑器反馈节点订阅（见下），没有进程发布 `/cmd_vel`；监督进程发使能心跳只是为了记录“闸门会放行什么”。记录器逐行落盘四级指令、人推的实际运动（实时里程计）、AMCL 位姿与 `map→odom`、全局路径和各状态变化，运行中断也留得下记录。
 
 用验证包按录包时间整套跑了一次（`reports/navigation_live_shadow/20261107T133006Z_shadow_fbaeefd2`，实测外形，框架 AMCL 参数，闸门用上面建议的条件，起点 (−0.331, 1.902) m、−85°，沿路线每 8 m 一个目标共 7 个）：启动后 6 s 有 AMCL 定位、8 s Nav2 全部激活；7 个目标都在推车经过时依次切换；推车行驶时框架前进 27%、原地转向 34%、没有指令 33%、碰撞监控停车 3%，闸门没有在行驶时停车，定位不可信共 12 s（航向协方差，终点门内）；AMCL 车位与对齐的冻结路线的差中位 0.21 m、p90 0.39 m（含门内）。与录包影子运行的同类结果一致，说明实时输入、定位和整套框架能按录包时间连起来工作。
+
+平滑器反馈（2026-11-10 起默认，用户决定；窗口 B 的 `planning/velocity_feedback.py`，原理见[规划与控制](planning_control.md)）：
+- 实时影子的 Nav2 参数和读回核对都用 `PlanningChoice(smoother_feedback="gated", smoother_timeout_s=0.3)`：平滑器闭环，反馈话题 `/wc_nav/smoother_feedback`，速度超时 0.3 s。
+- 反馈节点 `wc_velocity_feedback` 在 Nav2 读回之后、闸门之前启动；监督进程等反馈话题有发布者（阶段 `velocity_feedback_ready`）再起闸门。它的 use_sim_time 和其他进程一样：车上 false，录包 true。
+- 它订阅闸门输出：闸门放行时，反馈就是平滑器自己上一次的输出；闸门输出为零或断了时，反馈是零，停车后平滑器从静止重新起步。逐周期的记录在运行目录的 `velocity_feedback.csv`。
+- `--smoother-feedback open_loop` 退回开环，`--smoother-timeout` 改速度超时；`run_config.json` 记实际用的值。
+- 录包检验（`reports/navigation_live_shadow/20261110T063930Z_shadow_2211f044`，经转发、开障碍输入，跑 60 s 后 Ctrl-C）：读回 CLOSED_LOOP、反馈话题和 0.3 s 都对上。反馈节点 39 s 记了 770 个周期：744 个反馈等于平滑器的输出；另 26 个平滑器有输出、闸门输出为零或断了，反馈为零。
 
 车上运行（`--source vehicle`）2026-11-09 第一次在车上跑了两次，结果见下一节末尾：墙钟时间，影子框架在域 100（用户 2026-11-07 同意，`ROS_LOCALHOST_ONLY=1`），传感器话题经单向转发从面板域进入。命令要求 `ROS_DOMAIN_ID=100`，并要求用户当次同意的环境变量，否则拒绝启动；检查单见操作说明。
 
 ## 实车影子模式的单向转发（第一次上车前由总管和用户评审）
 
-转发是影子框架和车上面板之间唯一的接触点。它订阅、只订阅下面三个话题：
+转发是影子框架和车上面板之间唯一的接触点。它订阅、只订阅下面的话题：默认是前三个；开三维障碍输入时加第四个，共四个（D5，用户 2026-11-10 同意）。
 
 | 话题（面板域） | 类型 | 约频率 | 订阅方式 |
 |---|---|---|---|
 | `/wc_mapping/lidar_left/source_frame_filtered` | `wc_interfaces/msg/SourceFrame` | 10 Hz，每帧约 150 KB | best effort、volatile、keep last 3，序列化字节 |
 | `/wc_mapping/imu/source_frame` | `wc_interfaces/msg/H30Frame` | 200 Hz | best effort、volatile、keep last 100，序列化字节 |
 | `/wc_mapping/wheel/feedback_raw` | `std_msgs/msg/String` | 10 Hz | best effort、volatile、keep last 20，序列化字节 |
+| `/wc_mapping/lidar_right/source_frame_filtered`（只在开障碍输入时） | `wc_interfaces/msg/SourceFrame` | 10 Hz，每帧约 150 KB | best effort、volatile、keep last 3，序列化字节 |
 
-不订阅右雷达、相机、TF、面板状态或任何控制话题，也不调用面板的任何服务。在影子域里，转发后的三个话题改名为 `/wc_live/relayed/...`，扫描和里程计进程订阅改名后的话题，不会和面板的话题混淆。
+- 两档话题写死在 `relay_node.py` 里。转发配置只有一个布尔值 `obstacles` 选档，命令开了障碍输入就是 true。
+- 不订阅相机、TF、面板状态或任何控制话题，也不调用面板的任何服务；不开障碍输入时也不订阅右雷达。
+- 在影子域里，转发后的话题改名为 `/wc_live/relayed/...`，扫描、里程计和 obstacles 进程订阅改名后的话题，不会和面板的话题混淆。
 
 和面板录制的关系（A 2026-11-08 读代码的结论）：面板录制时这三个源是 reliable 发布；驱动启动时等到“至少 1 个订阅者”才开始发，不管是谁；结束时等所有 reliable 读者确认，超时就把录包标成 PARTIAL。所以：
 
 - 转发的订阅全是 best effort、volatile、keep last，不参与结束时的确认等待，转发慢、卡住或进程退出都不会让录包变成 PARTIAL。
-- 车上模式下，转发先只查询面板域的图（不建任何端点），等三个话题都已有发布者和至少一个别的订阅者（面板自己的录制或实时建图输入）后才订阅，状态 `WAITING_FOR_PANEL_SOURCES`；这样转发不会先于录制器满足驱动的启动条件，录制不会漏掉开头的帧。监督进程最多等 600 s。操作上仍是先在面板里开始录制或建图、看到设备就绪，再启动影子命令。
+- 车上模式下，转发先只查询面板域的图（不建任何端点），等要转发的话题都已有发布者和至少一个别的订阅者（面板自己的录制或实时建图输入）后才订阅，状态 `WAITING_FOR_PANEL_SOURCES`；这样转发不会先于录制器满足驱动的启动条件，录制不会漏掉开头的帧。监督进程最多等 600 s。操作上仍是先在面板里开始录制或建图、看到设备就绪，再启动影子命令。
 - 转发进程在命令的优先级上再降 10。车上模式下整个命令以 nice 10 运行（2026-11-09 起），转发因此是 19。面板侧每多一个读者，发布方就多发一份本机回环拷贝（雷达约 1.5 MB/s）；录制器是单线程，CPU 紧时会受影响。
 - 影子域启动前的外来节点检查在转发的输出节点启动之前完成。
 
@@ -242,17 +252,17 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 1. 进程边界：只有转发进程的“入口节点”进入面板域。影子框架的其他进程（扫描、里程计、AMCL、Nav2、闸门、目标、记录器、监督）都在域 100，启动时由 `require_isolated_domain` 检查 `ROS_DOMAIN_ID` 和 `ROS_LOCALHOST_ONLY=1`。转发进程的第二个节点在域 100 里把字节原样重发，并发布 `/wc_live/relay_status`。
 2. 入口节点不能写：它的类（`read_only_node_class`）创建发布者、服务、客户端都会抛错；rclpy 在每个节点里自建的 `/parameter_events` 发布者被换成不进 DDS 的空对象（否则声明 `use_sim_time` 时会在面板域发一条参数事件）；rosout 日志和参数服务关闭；不接受全局 ROS 参数，重映射不会作用到它。
 3. 订阅都是 best effort、volatile、keep last：读者不向面板的发布者回送确认（ACK/NACK），不参与结束录制时的确认等待，也不会造成反压；消息不反序列化、不修改，原样转出。
-4. 启动自检：入口节点建好订阅后，从本地图查询自己的条目，必须是 0 个发布者、0 个服务、0 个客户端、恰好这三个订阅；否则转发进程退出，影子运行随之停止。自检结果写进 `/wc_live/relay_status`、`result.json` 的 `supervisor.relay_self_check` 和 `events.jsonl`。
-5. 面板域里能看到的只有一个 DDS 参与者（发现报文）和它的三个读者，没有任何写者。面板侧每多一个读者，发布方多发一份数据（雷达约 1.5 MB/s，本机回环）。
+4. 启动自检：入口节点建好订阅后，从本地图查询自己的条目，必须是 0 个发布者、0 个服务、0 个客户端、恰好当前这一档的订阅（三个，开障碍输入时四个）；否则转发进程退出，影子运行随之停止。自检结果写进 `/wc_live/relay_status`、`result.json` 的 `supervisor.relay_self_check` 和 `events.jsonl`。
+5. 面板域里能看到的只有一个 DDS 参与者（发现报文）和它的三个（开障碍输入时四个）读者，没有任何写者。面板侧每多一个读者，发布方多发一份数据（雷达约 1.5 MB/s，本机回环）。
 6. 转发非隔离域（96–101 以外）需要用户当次同意：`WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则进程拒绝启动；同域测试必须用话题前缀，防止回环。
 
-在同一个域里用前缀做的录包检验（`--relay-test`，录包放在 `/relay_source` 下，不等面板订阅者）里，自检通过，转发后的扫描和里程计与直接回放完全相同。还需要上车前在车上核实（评审时一起看）：
+在同一个域里用前缀做的录包检验（`--relay-test`，录包放在 `/relay_source` 下，不等面板订阅者）里，自检通过，转发后的扫描和里程计与直接回放完全相同。开障碍输入的同样检验（2026-11-10，`20261110T063930Z_shadow_2211f044`）：自检要求并查到四个订阅，四路分别转了 487、9813、467、487 条；运行中在同一域执行 `relay-graph --obstacles --source-prefix /relay_source`，结果 PASS（入口节点四个订阅都是 best effort、volatile，没有别的端点，查询节点自己也没有端点）。还需要上车前在车上核实（评审时一起看）：
 - 面板域的参与者是否只在本机回环（决定入口节点能否发现它们）。
 - 从面板域看，入口节点的发布者和服务是否为空。
 - 面板的录制和预览在多一个订阅者时是否照常，录包结束后不是 PARTIAL。
 
-从面板域查入口节点用 `navigation_live_shadow relay-graph --sensor-domain <面板域>`，需要和转发相同的用户同意环境变量。
-- 它在面板域只建一个参与者，节点用入口节点同一个只读类，不建任何订阅，不发 rosout，不开参数服务。读完本地发现缓存，打印入口节点的条目和三个话题的发布者、订阅者（含 QoS）就退出，并核对查询节点自己的条目为空。
+从面板域查入口节点用 `navigation_live_shadow relay-graph --sensor-domain <面板域>`（开障碍输入的运行加 `--obstacles`），需要和转发相同的用户同意环境变量。
+- 它在面板域只建一个参与者，节点用入口节点同一个只读类，不建任何订阅，不发 rosout，不开参数服务。读完本地发现缓存，打印入口节点的条目和要转发的话题的发布者、订阅者（含 QoS）就退出，并核对查询节点自己的条目为空。
 - 不要用 `ros2 node info`：它会在面板域起 ros2 daemon。那是一个有发布者和服务的节点，命令结束后还留在域里，所以不是只读查询。
 
 2026-11-09 两次实车影子（用户在车上同意）：
@@ -281,5 +291,74 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 `navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照、那个检出的 `config/calibration/lidar_time_offset.json` 副本，和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`，时间偏移也取其中的副本。
 
 核对项：`hardware_setup` 是否来自本机覆盖（否则会悄悄退回仓库基础值，例如轮半径 0.185 m）、轮参数、实时配置里有没有确认过的零偏、和给出的最近前端比外参、主机滤波和设备编号。2026-11-08 对主检出的一次冻结（`reports/navigation_live_shadow/20261108T053419Z_config_31995662`）：硬件配置来自 `config/local/project/hardware_setup.json`，轮参数 0.1646/0.599；`mapping_live.json` 没有配零偏，所以上车时 `--gyro-bias` 必须显式给（现场开头静止做一次 10+10+10，或先用 ZL1107 的零偏文件）；外参、杆臂、主机滤波和设备编号与验证包前端完全相同。先验和前端的差别只在离线字段（离线时间模型、bootstrap 记录、offline_experiment）和实时选项的显式默认值。带上时间偏移副本的一次冻结（`20261108T055023Z_config_0ec08885`，75 ms）作 `--cell` 跑验证包录包检验（`20261108T055103Z_inputs_ac76574c`）：偏移取自副本，484/484 帧扫描逐格相同，里程计与用前端配置时完全相同。
+
+## 实车闭环模式（第一次闭环，2026-11-10）
+
+`navigation_live_shadow shadow --closed-loop` 让车自己走：闸门的决定经窗口 A 的底盘桥（`wc_motion.auto_bridge`）交给面板会话的轮控所有者，由它写驱动器。接口按 A 的速度通道设计 9.2 节（`velocity_channel.md`，D 2026-11-09 审过）。总管 2026-11-10 14:40 把这一步排进关键路径；现场步骤以 A 的步骤单为准。
+
+闸门（`autonomy/safety_gate.py`、`gate_node.py`）：
+- 每个周期发 `/wc_nav/gate_command`（`std_msgs/String` JSON，schema `wc_gate_command_v1`），和 `/wc_nav/cmd_vel_gated` 出自同一个决定。
+  - 字段正好 11 个：`schema`、`gate_id`、`seq`、`stamp_ns`、`mono_ns`、`state`、`reasons`、`linear`、`angular`、`limits`、`config_sha256`。
+  - `gate_id` 在进程启动时生成，`seq` 每个周期加 1，`stamp_ns` 用节点时钟，`mono_ns` 用 `time.monotonic_ns()`。
+  - `limits` 四项：配置的 `max_linear`、`max_angular`，这个决定实际用的 `linear_ceiling`，`allow_reverse`。`config_sha256` 是闸门配置文件的 sha256。
+  - QoS 是 reliable、volatile、keep last 1。仿真和影子里也发，只是没有订阅者。
+  - 单元测试保证两条：只有 ACTIVE 有非零速度；|linear| 不超过 `linear_ceiling`，`linear_ceiling` 不超过 `max_linear`。另外，A 的解析器（motion 分支 9e5d79dc）接受了 6000 个随机输入下的决定。
+  - 这一条不属于闭环配置，所有模式都发；闸门的判断不受它影响。
+- 闭环配置另开三项，默认都关，仿真和影子不受影响：
+
+  | 配置 | 作用 |
+  |---|---|
+  | `require_base` | 订阅桥的 `/wc_nav/base_status`。新状态 `BASE_NOT_READY`，排在 `ENABLE_STALE` 之后、`LOCALIZATION_UNTRUSTED` 之前。轮控所有者不在 AUTO 时原因是 `BASE_NOT_AUTO`；按桥的单调钟时间戳超过 0.3 s 时是 `BASE_STATUS_STALE`；读不懂，或时间戳超前 50 ms 以上时是 `BASE_STATUS_INVALID`。 |
+  | `enable_source_node`（闭环给 `/wc_auto_bridge`） | `/wc_nav/enable` 和 `/wc_nav/estop` 都必须恰好一个发布者，而且就是桥，否则 `DISABLED`（`ENABLE_SOURCE_AMBIGUOUS`）。每个周期查一次。这时 `/wc_nav/estop` 用 transient local 订阅，和桥的发布方式一致。 |
+  | 节点配置 `clock: monotonic` | 使能和命令的年龄、周期定时器都用单调钟。TF 的时间戳是节点时钟，所以 TF 年龄照旧用节点时钟算，时间戳超前 0.05 s 以上也算过期。 |
+
+- 不在闭环配置时，闸门的判断和以前完全一样（总管 14:40：默认都不变）。单调钟下使能、命令的年龄不会是负数，所以“负的年龄当过期”只在 TF 年龄上做，见上表。
+- `gate_status` 加了 `gate_id`、`seq`、`clock`、`linear_ceiling`、`conditions`、`command` 和 `preview`。`conditions` 列出定位、底盘、使能来源各自的判断，前面的条件挡着时也看得到定位可不可信；`preview` 见下面“点‘开始自动’之前”。
+
+监督进程（闭环模式）：
+- 启动前查三件事：今天的 `WC_AUTO_DRIVE_APPROVAL`（和桥同一个变量）；域 100；面板会话的 `auto.sock` 存在。socket 路径按 `--panel-root`、`--session-root`、`--session-id` 算，和桥用同样的参数。车上另外还要实车影子的同意。
+- 固定值：
+  - NavProfile 是 0.10 m/s、0.30 rad/s，RPP、平滑器、行为服务器和闸门都跟着降。
+  - 闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s，命令超时 0.5 s。
+  - 平滑器反馈开环、`velocity_timeout` 0.3 s（B 的 `PlanningChoice(smoother_feedback="open_loop", smoother_timeout_s=0.3)`）；`--monitor-base-shift off`；起点检查 block（也可以更严的 strict）。这些是总管 2026-11-10 14:40 定的，给别的值命令拒绝启动。
+- 启动顺序：Nav2 读回 → 桥 → 闸门（闭环配置）→ 目标。
+  - 起桥后，要等 `base_status`、`enable`、`estop` 都有发布者，并收到第一条 `base_status`（阶段 `bridge_ready`），才起闸门。
+  - 监督进程不建 `/wc_nav/enable` 发布者。
+- 点“开始自动”之前的一段代替单独的实车影子：
+  - 目标和影子一样一开始就发，Nav2 照常规划、出指令；闸门没有使能，输出零。
+  - `gate_status` 多一节 `preview`：使能、底盘、使能来源都就绪时闸门会放行什么。急停锁存、定位和指令照常算，lateral 限速用目标值、不爬升，不改闸门自己的状态。另有 `command`：最近一条指令和它的年龄。
+  - 状态行里的“影子判断”就是这一节。记录器把 `preview` 的状态变化也记进 `events.jsonl`。
+- 目标节点：
+  - 闸门 ACTIVE 过以前（车站着），目标失败照影子的做法重发，因为站着时 Nav2 的进度检查会让目标失败。
+  - 车动过以后，目标失败不再重发。
+  - 最后一个目标只按 Nav2 报到达结束，不按 advance radius 提前取消。
+- 运行中每秒打印一行“闭环状态”：闸门状态和原因、影子判断、定位、底盘、使能、急停、闸门输出、目标。桥或闸门进程退出，整个运行就停。
+- 收尾先停桥：轮控所有者看到 socket 断开就退出自动、写零。
+- 记录：记录器把 `base_status` 的变化写进 `events.jsonl`。`result.json` 多一节 `closed_loop`：最后一条 `base_status`（含桥的计数和轮控所有者的状态），闸门的 `gate_id`、`seq` 和各状态计数；`hardware_control`、`commands_sent` 记为 true。
+- 没改：命令超时（0.5 s）；放行爬升（9.2 第 7 条，要用户同意）。
+
+录包加假轮控所有者的闭环干跑（2026-11-10，总管 14:40 第 3 项的五种情况，`reports/navigation_live_shadow/20261110T111056Z_shadow_a561a812`）：
+- 条件：验证包按录包时间，域 100。临时检出合并了 A 的 motion 分支（3f575fd9），用 A 真的底盘桥；闭环模式按上面的固定值（平滑器开环、0.3 s）。
+- 假轮控所有者在 `/dev/shm` 的临时会话目录建 `auto.sock`，不开串口、不连面板。它按 A 的协议收决定，逐条做轮控所有者的核对，速度只按 0.30 m/s² 爬升、0.60 m/s² 减速记下来。
+- 时间从闸门第一个决定算起：10 s 开始自动；20 s 轮控所有者 1 s 不发状态（桥因此停发使能）；30 s 软件急停（按 1 s）；35 s 再开始；50 s 停止自动；55 s 再开始；65 s 把扫描进程暂停 2 s（AMCL 的 map→odom 跟着过期，闸门停车）；75 s 用 SIGKILL 杀掉桥。
+- 结果：
+  - 假轮控所有者收到 1502 个决定，没有一条违反核对：非零速度 887 个都在 ACTIVE；|linear| ≤ linear_ceiling；最大 0.10 m/s、0.30 rad/s。
+  - 一个 gate_id；决定到达时最老 0.022 s。桥转发 1502 条，丢弃 0 条。
+  - 开始自动前 200 个决定都是 DISABLED。这时目标已经发出，状态行显示“影子判断 会放行 …”和目标 NAVIGATING。
+  - 各种情况：
+
+    | 情况 | 闸门和轮控所有者 |
+    |---|---|
+    | 停发使能（20 s） | 0.40 s 后 BASE_NOT_READY（BASE_STATUS_STALE），0.79 s 后 ENABLE_STALE。轮控所有者留在 AUTO，指令减到零。状态恢复后 0.09 s 闸门重新 ACTIVE。 |
+    | 软件急停（30 s） | 0.04 s 后 ESTOP_LATCHED，轮控所有者立即写零、退出自动 |
+    | 急停后再开始（35 s） | 轮控所有者等闸门解锁：0.14 s 后解锁，0.30 s 后 ACTIVE |
+    | 停止自动（50 s） | 0.16 s 后 DISABLED，轮控所有者按减速度停 |
+    | 再开始（55 s） | 0.19 s 后 ACTIVE |
+    | 闸门停车（65 s 扫描暂停） | 0.94 s 后 LOCALIZATION_UNTRUSTED（MAP_TO_BASE_TF_STALE）。轮控所有者留在 AUTO，指令为零。扫描恢复后 1.05 s 闸门重新 ACTIVE。 |
+    | 桥退出（75 s） | 0.05 s 后轮控所有者发现断开、停车。监督进程发现桥退出，停下所有进程，写出 result.json（INCOMPLETE，error 记“base_bridge exited with -9”），没有残留进程。 |
+
+  - 开始自动后第一次非零速度晚了约 7 s。录包里的车是人推着走的，目标节点按 advance radius 换目标，Nav2 有几秒没出指令（COMMAND_STALE），接着 AMCL 修正突变，闸门停了 3 s（MAP_CORRECTION_CHANGING_FAST）。这是录包回放才有的情况；现场车站着，目标不换。
+- 更早的一次（`…090604Z_shadow_51bc2451`，目标等闸门就绪才发、平滑器 gated）也没有违反核对，那一版已按总管 14:40 改掉。
+- 这次没有覆盖的：A 真的轮控所有者（进自动的全部条件、驱动器初始化、轮速判出的急停）。A 正在做假串口的轮控入口，给出来后再跑一遍。
 
 返回[系统设计](README.md)。

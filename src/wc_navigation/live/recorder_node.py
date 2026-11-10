@@ -20,6 +20,9 @@ from ..autonomy.ros_util import latched_qos, load_config, lookup_pose, quaternio
 
 STAGES = (("nav", nav2_config.CMD_NAV), ("smoothed", nav2_config.CMD_SMOOTHED),
           ("monitored", nav2_config.CMD_MONITORED), ("gated", nav2_config.CMD_GATED))
+BASE_STATUS_TOPIC = "/wc_nav/base_status"        # closed loop: window A's base bridge (wc_base_status_relay_v1)
+BASE_STATUS_KEYS = ("connected", "base_auto", "reason", "source", "auto_state", "enable_source", "enable_request",
+                    "estop_request", "dead_man", "estop", "enable")
 
 
 class _Writer:
@@ -68,6 +71,8 @@ class ShadowRecorder:
                       "/wc_live/inputs_status/odometry", "/wc_live/goal_status", "/wc_live/relay_status",
                       "/wc_live/inputs_status/obstacles"):          # window C's 3D obstacle input, when started
             node.create_subscription(String, topic, lambda m, t=topic: self.on_status(t, m), latched_qos())
+        # closed loop: window A's base bridge publishes it reliable and volatile at 10 Hz; changes are recorded
+        node.create_subscription(String, BASE_STATUS_TOPIC, self.on_base_status, 10)
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, node)
         self.last_map_odom = None
@@ -114,11 +119,28 @@ class ShadowRecorder:
             value = json.loads(message.data)
         except ValueError:
             value = {"raw": message.data}
-        key = (value.get("state"), tuple(value.get("reasons") or ()), value.get("stale_inputs") and tuple(value["stale_inputs"]))
+        preview = value.get("preview") if isinstance(value.get("preview"), dict) else {}
+        # the gate's preview (closed loop, before "start automatic") counts as a change too
+        key = (value.get("state"), tuple(value.get("reasons") or ()), value.get("stale_inputs") and tuple(value["stale_inputs"]),
+               preview.get("state"), tuple(preview.get("reasons") or ()))
         if self.last.get(topic) == key:
             return
         self.last[topic] = key
         self.events.write(json.dumps({"time_s": round(self.now(), 3), "topic": topic, "value": value}) + "\n")
+        self.events.flush()
+
+    def on_base_status(self, message):
+        """The bridge's status when what the gate and the operator act on changes (not every 10 Hz copy)."""
+        try:
+            value = json.loads(message.data)
+        except ValueError:
+            value = {"raw": message.data}
+        key = tuple(value.get(k) for k in BASE_STATUS_KEYS) if isinstance(value, dict) else ("INVALID",)
+        if self.last.get(BASE_STATUS_TOPIC) == key:
+            return
+        self.last[BASE_STATUS_TOPIC] = key
+        self.events.write(json.dumps({"time_s": round(self.now(), 3), "topic": BASE_STATUS_TOPIC, "value": value})
+                          + "\n")
         self.events.flush()
 
     def close(self):

@@ -220,10 +220,7 @@ def check_live_arguments(parser, args):
             parser.error("the --obstacle-* settings need an obstacle input: --obstacle-input or --obstacle-monitor "
                          "cloud|scan_and_cloud, or --obstacle-scan filtered")
         return
-    if getattr(args, "source", None) == "vehicle":
-        # user 2026-11-10: allowed on the vehicle once the relay forwards the right lidar (D5, window D)
-        parser.error("the 3D obstacle input on the vehicle waits for the relay of the right lidar (D5, window D); "
-                     "until then it runs on recordings only")
+    # On the vehicle (user 2026-11-10) the relay then also reads the right lidar (D5, window D: relay_node).
     sides = args.obstacle_sides or (["left"] if args.obstacle_input == "scan" and monitor == "scan"
                                     else ["left", "right"])
     try:

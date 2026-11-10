@@ -3,7 +3,9 @@
 The relay process holds two ROS contexts. In the sensor (source) domain it has
 one read-only node that subscribes, as serialized bytes, to exactly three
 topics: the left lidar host-filtered frames, the H30 frames and the wheel
-feedback records (best effort, volatile, keep last 3 / 100 / 20). In its own
+feedback records (best effort, volatile, keep last 3 / 100 / 20); with the 3D
+obstacle input (configuration ``obstacles: true``) also to the right lidar's
+host-filtered frames (keep last 3), exactly four then. In its own
 isolated domain a second node republishes those bytes unchanged under
 ``/wc_live/relayed``, plus a status JSON on ``/wc_live/relay_status``. On the
 vehicle the subscriptions are created only once every topic already has a
@@ -19,7 +21,8 @@ must not be the first one. Nothing is ever published in the source domain:
   end-of-recording wait for all reliable readers and cannot slow the panel's
   publishers down;
 * after subscribing, the node checks its own graph entry: no publisher, no
-  service, no client and exactly the three subscriptions, or the relay exits.
+  service, no client and exactly the configured subscriptions (three, or four
+  with the obstacle input), or the relay exits.
 
 On the vehicle the source is the panel's sensor domain and the relay needs
 the user's dated approval in the environment; in tests the source is this
@@ -32,15 +35,23 @@ import os
 import time
 
 from ..autonomy.ros_util import SIMULATION_DOMAINS, json_message, latched_qos, load_config
-from .config import IMU_TOPIC, LEFT_FILTERED_TOPIC, WHEEL_TOPIC
+from .config import IMU_TOPIC, LEFT_FILTERED_TOPIC, RIGHT_FILTERED_TOPIC, WHEEL_TOPIC
 from .supervisor import VEHICLE_APPROVAL_ENV, require_live_domain, vehicle_approved
 
 RELAYED_TOPICS = (LEFT_FILTERED_TOPIC, IMU_TOPIC, WHEEL_TOPIC)
+# With the 3D obstacle input (window C) the relay also reads the right lidar's host-filtered frames: exactly these
+# two sets, chosen by one boolean of the relay configuration (user 2026-11-10).
+OBSTACLE_RELAYED_TOPICS = RELAYED_TOPICS + (RIGHT_FILTERED_TOPIC,)
 # Source side (the panel's domain), per window A 2026-11-08: best effort, volatile, keep last. Best-effort readers
 # take no part in the drivers' end-of-recording acknowledgement wait, so the relay cannot make a recording PARTIAL.
-SOURCE_DEPTH = {LEFT_FILTERED_TOPIC: 3, IMU_TOPIC: 100, WHEEL_TOPIC: 20}
-TARGET_DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50}
+SOURCE_DEPTH = {LEFT_FILTERED_TOPIC: 3, IMU_TOPIC: 100, WHEEL_TOPIC: 20, RIGHT_FILTERED_TOPIC: 3}
+TARGET_DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50, RIGHT_FILTERED_TOPIC: 5}
 OUTPUT_PREFIX = "/wc_live/relayed"
+
+
+def relayed_topics(obstacles=False):
+    """The relay's topic set: the live chain's three, plus the right lidar when the 3D obstacle input is on."""
+    return OBSTACLE_RELAYED_TOPICS if obstacles else RELAYED_TOPICS
 
 
 def source_qos(topic):
@@ -63,6 +74,8 @@ def check_relay_config(config, own_domain):
         raise ValueError("source_prefix and output_prefix must start with / (output_prefix is required)")
     if type(config.get("wait_for_panel_consumers", False)) is not bool:
         raise ValueError("wait_for_panel_consumers must be a boolean")
+    if type(config.get("obstacles", False)) is not bool:
+        raise ValueError("obstacles must be a boolean (relay the right lidar for the 3D obstacle input)")
     return source, prefix, output
 
 
@@ -153,7 +166,7 @@ def _node_graph(node, name, namespace, expected):
                        node.get_client_names_and_types_by_node(name, namespace), expected)
 
 
-def entry_graph(sensor_domain, source_prefix="", wait_s=3.0):
+def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False):
     """The relay entry node's graph entry and the relayed topics' endpoints, as seen in the sensor domain.
 
     One participant joins the sensor domain. Its node has no endpoint at all: the relay's read-only class (no
@@ -168,7 +181,7 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0):
     rclpy.init(args=[], context=context, domain_id=int(sensor_domain))
     node = read_only_node_class()(QUERY_NODE, context=context, enable_rosout=False, start_parameter_services=False,
                                   use_global_arguments=False)
-    topics = [source_prefix + topic for topic in RELAYED_TOPICS]
+    topics = [source_prefix + topic for topic in relayed_topics(obstacles)]
     try:
         end = time.monotonic() + float(wait_s)
         entry, names = None, []
@@ -185,7 +198,8 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0):
                 break
             time.sleep(0.2)
         own = _node_graph(node, QUERY_NODE, "/", [])
-        report = {"sensor_domain": int(sensor_domain), "source_prefix": source_prefix, "entry_node": "/" + ENTRY_NODE,
+        report = {"sensor_domain": int(sensor_domain), "source_prefix": source_prefix, "obstacles": bool(obstacles),
+                  "entry_node": "/" + ENTRY_NODE,
                   "entry": entry, "query_node": "/" + QUERY_NODE, "query_node_graph": own,
                   "nodes": sorted(ns.rstrip("/") + "/" + n for n, ns in names),
                   "topics": {topic: {"publishers": _endpoints(node.get_publishers_info_by_topic(topic)),
@@ -207,11 +221,13 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0):
 
 
 class Relay:
-    def __init__(self, source_node, target_node, prefix, output_prefix):
+    def __init__(self, source_node, target_node, prefix, output_prefix, obstacles=False):
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
         from wc_interfaces.msg import H30Frame, SourceFrame
-        types = {LEFT_FILTERED_TOPIC: SourceFrame, IMU_TOPIC: H30Frame, WHEEL_TOPIC: String}
+        kinds = {LEFT_FILTERED_TOPIC: SourceFrame, IMU_TOPIC: H30Frame, WHEEL_TOPIC: String,
+                 RIGHT_FILTERED_TOPIC: SourceFrame}
+        types = {topic: kinds[topic] for topic in relayed_topics(obstacles)}
         self.counts = {topic: 0 for topic in types}
         self.publishers = {}
         for topic, kind in types.items():
@@ -234,6 +250,7 @@ def main(argv=None):
     require_live_domain(config)
     source, prefix, output_prefix = check_relay_config(config, os.environ["ROS_DOMAIN_ID"])
     wait_for_panel = config.get("wait_for_panel_consumers", False)
+    obstacles = config.get("obstacles", False)
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
@@ -248,9 +265,9 @@ def main(argv=None):
     executor = SingleThreadedExecutor(context=source_context)
     executor.add_node(source_node)
     code = 0
-    topics = [prefix + topic for topic in RELAYED_TOPICS]
+    topics = [prefix + topic for topic in relayed_topics(obstacles)]
     base = {"source_domain": source, "source_prefix": prefix, "output_prefix": output_prefix,
-            "wait_for_panel_consumers": wait_for_panel, "publishes_in_source_domain": False}
+            "wait_for_panel_consumers": wait_for_panel, "obstacles": obstacles, "publishes_in_source_domain": False}
     try:
         # Vehicle: subscribe only once the panel's own consumers are there (graph queries create nothing).
         waited = time.monotonic()
@@ -263,7 +280,7 @@ def main(argv=None):
                                              "publishers_subscribers": {t: list(c) for t, c in counts.items()}}))
             rclpy.spin_once(target_node, timeout_sec=0.0)
             time.sleep(1.0)
-        relay = Relay(source_node, target_node, prefix, output_prefix)
+        relay = Relay(source_node, target_node, prefix, output_prefix, obstacles)
         check = self_check(source_node, topics)
         state = "RUNNING" if check["status"] == "PASS" else "FAILED"
         last_status = 0.0

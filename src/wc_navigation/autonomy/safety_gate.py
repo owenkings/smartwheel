@@ -2,9 +2,11 @@
 
 The gate passes a command only while every condition holds: no latched
 emergency stop, a fresh operator enable, trusted localization and a fresh
-command. Otherwise it outputs an explicit zero twist. It also clamps speeds and
-blocks reverse motion because the wheelchair has no rear-facing range sensor.
-The gate is a software layer; it does not replace a validated physical stop.
+command; in the vehicle closed loop also a base that runs automatic control and
+a single enable source. Otherwise it outputs an explicit zero twist. It also
+clamps speeds and blocks reverse motion because the wheelchair has no
+rear-facing range sensor. The gate is a software layer; it does not replace a
+validated physical stop.
 """
 from __future__ import annotations
 
@@ -13,8 +15,17 @@ import math
 
 from ..geometry import _number
 
-STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "LOCALIZATION_UNTRUSTED",
+STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "BASE_NOT_READY", "LOCALIZATION_UNTRUSTED",
           "COMMAND_STALE", "ACTIVE")
+# BASE_NOT_READY (only with GateConfig.require_base): the base bridge's /wc_nav/base_status does not say that the
+# wheel serial owner runs automatic control, or it is stale or unreadable (velocity_channel.md 9.2 item 4).
+BASE_REASONS = ("BASE_NOT_AUTO", "BASE_STATUS_STALE", "BASE_STATUS_INVALID")
+# The gate's decision of every cycle for the base bridge, next to /wc_nav/cmd_vel_gated (velocity_channel.md 9.2
+# item 1; the same field list as window A's wc_motion.auto_protocol.GATE_COMMAND_FIELDS).
+GATE_COMMAND_TOPIC = "/wc_nav/gate_command"
+GATE_COMMAND_SCHEMA = "wc_gate_command_v1"
+GATE_COMMAND_FIELDS = ("schema", "gate_id", "seq", "stamp_ns", "mono_ns", "state", "reasons", "linear", "angular",
+                       "limits", "config_sha256")
 # "lateral" (default since 2026-11-09, user decision): only the deviation across the heading and the heading
 # deviation stop the robot; a large deviation in another direction (in a corridor: along it) slows it instead,
 # see GateConfig. "xy" (the default until 2026-11-09, still selectable): the larger of the map-axis position
@@ -70,15 +81,26 @@ class GateConfig:
     slow_linear: float = 0.15
     slow_decel: float = 0.6
     slow_accel: float = 0.3
+    # Vehicle closed loop (velocity_channel.md 9.2 items 2 and 4; D.md 2026-11-10 16:45), all off by default:
+    # require_base holds the robot (BASE_NOT_READY) unless the base bridge's /wc_nav/base_status, at most
+    # base_status_timeout_s old, says the wheel serial owner runs automatic control; enable_source_node is the one
+    # node allowed to publish /wc_nav/enable and /wc_nav/estop ("" = not checked).
+    require_base: bool = False
+    base_status_timeout_s: float = 0.3
+    enable_source_node: str = ""
 
     def __post_init__(self):
         for name in ("max_linear", "max_angular", "command_timeout_s", "enable_timeout_s",
                      "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad",
-                     "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel"):
+                     "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel",
+                     "base_status_timeout_s"):
             object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
-        for name in ("allow_reverse", "require_covariance"):
+        for name in ("allow_reverse", "require_covariance", "require_base"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(name + " must be a boolean")
+        node = self.enable_source_node
+        if not isinstance(node, str) or (node and (not node.startswith("/") or len(node) < 2)):
+            raise ValueError("enable_source_node must be empty or a fully qualified node name like /wc_auto_bridge")
         if self.covariance_mode not in COVARIANCE_MODES:
             raise ValueError("covariance_mode must be one of " + ", ".join(COVARIANCE_MODES))
         if self.slow_hysteresis_m >= self.slow_std_m:
@@ -285,6 +307,9 @@ class GateDecision:
     angular: float
     state: str
     reasons: tuple
+    # The linear speed limit of this decision (velocity_channel.md 9.2 item 1): the lateral slow-down's ceiling
+    # (ramped) or max_linear; |linear| never exceeds it. None only for a decision built outside SafetyGate.
+    linear_ceiling: float = None
 
 
 class SafetyGate:
@@ -300,6 +325,9 @@ class SafetyGate:
         self._latched = False
         self._localization_ok = False
         self._localization_reason = "NO_LOCALIZATION_INPUT"
+        # closed loop only (require_base, enable_source_node); the node feeds both on every cycle
+        self._base_ok, self._base_reason = False, "BASE_STATUS_STALE"
+        self._sources_ok = not self.config.enable_source_node
         # lateral covariance mode: slow-down state, last assessed spread and the ramped speed ceiling
         self._slow = False
         self._spread = None
@@ -332,6 +360,34 @@ class SafetyGate:
     def on_localization(self, ok, reason=""):
         self._localization_ok = bool(ok)
         self._localization_reason = str(reason) if not ok else ""
+
+    def on_base(self, ok, reason=""):
+        """Whether the wheel serial owner runs automatic control (require_base); ``reason`` one of BASE_REASONS."""
+        self._base_ok = bool(ok)
+        self._base_reason = "" if ok else (reason if reason in BASE_REASONS else "BASE_STATUS_INVALID")
+
+    def on_sources(self, ok):
+        """Whether /wc_nav/enable and /wc_nav/estop each have exactly the one allowed publisher (enable_source_node)."""
+        self._sources_ok = bool(ok)
+
+    def command_status(self, now):
+        """The last monitored command and its age, for the status topic (None before the first command)."""
+        if self._command is None:
+            return None
+        values = [float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+                  else None for v in self._command]
+        return {"linear": values[0], "angular": values[1], "age_s": round(now - self._command_time, 3)}
+
+    def conditions(self):
+        """The input conditions as last fed, also while an earlier one holds the robot (status topic: an operator
+        can see before "start automatic" whether localization is trusted)."""
+        value = {"localization_ok": self._localization_ok, "localization_reason": self._localization_reason,
+                 "estop_engaged": self._estop_engaged, "latched": self._latched, "enabled": self._enabled}
+        if self.config.require_base:
+            value.update(base_ok=self._base_ok, base_reason=self._base_reason)
+        if self.config.enable_source_node:
+            value["sources_ok"] = self._sources_ok
+        return value
 
     def check_covariance(self, covariance, yaw=None):
         """Necessary-only covariance condition; small values never prove trust.
@@ -400,40 +456,100 @@ class SafetyGate:
         self._last_active = float(now)
         return self._ceiling
 
-    def evaluate(self, now):
+    def _held(self):
+        """The linear limit in force while the output is zero: the lateral slow-down's target, else max_linear."""
+        return self.config.slow_linear if self.slow else self.config.max_linear
+
+    def _command_stop(self, now, held):
+        """The decision when the command itself is missing, stale or invalid, else None."""
         cfg = self.config
-        if self._latched:
-            return GateDecision(0.0, 0.0, "ESTOP_LATCHED", ("ESTOP_ENGAGED" if self._estop_engaged else "ESTOP_RESET_REQUIRED",))
-        if not self._enabled:
-            return GateDecision(0.0, 0.0, "DISABLED", ("OPERATOR_ENABLE_OFF",))
-        if now - self._enable_time > cfg.enable_timeout_s:
-            return GateDecision(0.0, 0.0, "ENABLE_STALE", ("ENABLE_HEARTBEAT_TIMEOUT",))
-        if not self._localization_ok:
-            return GateDecision(0.0, 0.0, "LOCALIZATION_UNTRUSTED", (self._localization_reason or "LOCALIZATION_FAILED",))
         if self._command is None or now - self._command_time > cfg.command_timeout_s:
-            return GateDecision(0.0, 0.0, "COMMAND_STALE", ("NO_FRESH_COMMAND",))
+            return GateDecision(0.0, 0.0, "COMMAND_STALE", ("NO_FRESH_COMMAND",), held)
         linear, angular = self._command
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (linear, angular)):
-            return GateDecision(0.0, 0.0, "ACTIVE", ("INVALID_COMMAND_ZEROED",))
-        linear, angular = float(linear), float(angular)
-        if not (math.isfinite(linear) and math.isfinite(angular)):
-            return GateDecision(0.0, 0.0, "ACTIVE", ("NONFINITE_COMMAND_ZEROED",))
+            return GateDecision(0.0, 0.0, "ACTIVE", ("INVALID_COMMAND_ZEROED",), held)
+        if not (math.isfinite(float(linear)) and math.isfinite(float(angular))):
+            return GateDecision(0.0, 0.0, "ACTIVE", ("NONFINITE_COMMAND_ZEROED",), held)
+        return None
+
+    def _limit(self, ceiling):
+        """The valid command within the limits: no reverse, the linear ceiling (both speeds scaled together, so the
+        curvature stays), max_linear and max_angular."""
+        cfg = self.config
+        linear, angular = (float(v) for v in self._command)
         reasons = []
         if linear < 0 and not cfg.allow_reverse:
             linear = 0.0
             reasons.append("REVERSE_BLOCKED")
-        if cfg.covariance_mode == "lateral":
-            ceiling = self._speed_ceiling(now)
-            if ceiling < cfg.max_linear:
-                reasons.append("LOCALIZATION_SLOW")
-                if abs(linear) > ceiling:
-                    # same factor for both: the robot keeps the commanded curvature, only slower
-                    scale = ceiling / abs(linear)
-                    linear, angular = linear * scale, angular * scale
+        if ceiling < cfg.max_linear:
+            reasons.append("LOCALIZATION_SLOW")
+            if abs(linear) > ceiling:
+                scale = ceiling / abs(linear)
+                linear, angular = linear * scale, angular * scale
         if abs(linear) > cfg.max_linear:
             linear = math.copysign(cfg.max_linear, linear)
             reasons.append("LINEAR_CLAMPED")
+        if abs(linear) > ceiling:        # rounding of the scaling above; the base checks |linear| <= linear_ceiling
+            linear = math.copysign(ceiling, linear)
         if abs(angular) > cfg.max_angular:
             angular = math.copysign(cfg.max_angular, angular)
             reasons.append("ANGULAR_CLAMPED")
-        return GateDecision(linear, angular, "ACTIVE", tuple(reasons))
+        return GateDecision(linear, angular, "ACTIVE", tuple(reasons), ceiling)
+
+    def evaluate(self, now):
+        cfg = self.config
+        held = self._held()
+
+        def stop(state, reason):
+            return GateDecision(0.0, 0.0, state, (reason,), held)
+        if self._latched:
+            return stop("ESTOP_LATCHED", "ESTOP_ENGAGED" if self._estop_engaged else "ESTOP_RESET_REQUIRED")
+        if not self._sources_ok:
+            return stop("DISABLED", "ENABLE_SOURCE_AMBIGUOUS")
+        if not self._enabled:
+            return stop("DISABLED", "OPERATOR_ENABLE_OFF")
+        if now - self._enable_time > cfg.enable_timeout_s:
+            return stop("ENABLE_STALE", "ENABLE_HEARTBEAT_TIMEOUT")
+        if cfg.require_base and not self._base_ok:
+            return stop("BASE_NOT_READY", self._base_reason)
+        if not self._localization_ok:
+            return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
+        stopped = self._command_stop(now, held)
+        if stopped is not None:
+            return stopped
+        ceiling = cfg.max_linear
+        if cfg.covariance_mode == "lateral":
+            ceiling = min(self._speed_ceiling(now), cfg.max_linear)
+        return self._limit(ceiling)
+
+    def preview(self, now):
+        """What the gate would pass if the operator's enable, the base and the enable sources were all in order:
+        the shadow's view while the chair stands before "start automatic" in the closed loop. The emergency stop
+        latch, localization and the command count as in ``evaluate``; the lateral slow-down's target is used
+        without its ramp. Changes no state, so ``evaluate`` is not affected."""
+        held = self._held()
+        if self._latched:
+            return GateDecision(0.0, 0.0, "ESTOP_LATCHED", ("ESTOP_ENGAGED" if self._estop_engaged
+                                                            else "ESTOP_RESET_REQUIRED",), held)
+        if not self._localization_ok:
+            return GateDecision(0.0, 0.0, "LOCALIZATION_UNTRUSTED",
+                                (self._localization_reason or "LOCALIZATION_FAILED",), held)
+        stopped = self._command_stop(now, held)
+        return stopped if stopped is not None else self._limit(held)
+
+
+def gate_command(decision, config, gate_id, seq, stamp_ns, mono_ns, config_sha256=None):
+    """The ``/wc_nav/gate_command`` document of one decision (std_msgs/String JSON, schema wc_gate_command_v1).
+
+    Exactly GATE_COMMAND_FIELDS: ``gate_id`` is drawn when the gate process starts, ``seq`` increases by one per
+    cycle, ``stamp_ns`` is the node clock and ``mono_ns`` time.monotonic_ns() (the base bridge and the wheel owner
+    judge freshness by it). ``limits`` gives the configured max_linear / max_angular, the decision's
+    linear_ceiling and allow_reverse; ``config_sha256`` identifies the gate configuration file (or None).
+    """
+    ceiling = config.max_linear if decision.linear_ceiling is None else decision.linear_ceiling
+    return {"schema": GATE_COMMAND_SCHEMA, "gate_id": str(gate_id), "seq": int(seq), "stamp_ns": int(stamp_ns),
+            "mono_ns": int(mono_ns), "state": decision.state, "reasons": list(decision.reasons),
+            "linear": float(decision.linear), "angular": float(decision.angular),
+            "limits": {"max_linear": float(config.max_linear), "max_angular": float(config.max_angular),
+                       "linear_ceiling": float(ceiling), "allow_reverse": bool(config.allow_reverse)},
+            "config_sha256": config_sha256}
