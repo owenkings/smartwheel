@@ -89,10 +89,13 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107
 ```
 
-一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`）、Nav2 各服务器（参数读回核对）、安全闸门，然后由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°），再启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`、`--gate-covariance-mode`、`--gate-slow-limits`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 没有任何订阅者；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
+一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`），由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°）并做起点检查（见下），再起 Nav2 各服务器（参数读回核对）、平滑器反馈节点和安全闸门，最后启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`、`--gate-covariance-mode`、`--gate-slow-limits`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 只有平滑器反馈节点订阅；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
 
+- 平滑器反馈（2026-11-10 起默认，用户决定）：`--smoother-feedback gated` 时，Nav2 读回之后起窗口 B 的反馈节点 `wc_velocity_feedback`，等 `/wc_nav/smoother_feedback` 有发布者再起闸门。它把闸门输出转成平滑器的反馈：闸门停车后平滑器从静止重新起步。
+  - `--smoother-feedback open_loop` 退回开环；`--smoother-timeout S` 是平滑器的速度超时（默认 0.3 s，0.2–5 s）。
+  - 读回核对包括平滑器的 `feedback`、`odom_topic`、`velocity_timeout`；逐周期记录在 `velocity_feedback.csv`，实际用的值在 `run_config.json`。
 - `--source bag`：上面的录包检验，录包时间，域 100。
-- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间，影子框架在域 100（`WC_AUTONOMY_ROS_DOMAIN=100`，用户 2026-11-07 同意）；三个传感器话题经单向转发从面板域进影子域，转发的订阅范围和只读保证见[设计说明](../architecture/live_shadow.md#实车影子模式的单向转发第一次上车前由总管和用户评审)。第一次上车前总管和用户先评审这一部分；之后只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。
+- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间，影子框架在域 100（`WC_AUTONOMY_ROS_DOMAIN=100`，用户 2026-11-07 同意）；三个传感器话题（开三维障碍输入时加右雷达，共四个）经单向转发从面板域进影子域，转发的订阅范围和只读保证见[设计说明](../architecture/live_shadow.md#实车影子模式的单向转发第一次上车前由总管和用户评审)。第一次上车前总管和用户先评审这一部分；之后只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
@@ -122,6 +125,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
   - 它只在面板域建一个没有任何端点的只读节点（和转发入口同一个类），读发现缓存，打印后退出。
   - `status` 为 `PASS` 的条件：入口节点没有发布者、服务、客户端，正好三个订阅，都是 best effort、volatile；查询节点自己也没有端点。
+  - 开三维障碍输入的运行要加 `--obstacles`：这时入口节点应正好四个订阅，多的是右雷达 host_filtered。
   - 不要在面板域用 `ros2 node info`、`ros2 topic list` 这类 ros2 命令：它们会在面板域起 ros2 daemon，那是一个有发布者和服务、命令结束后还留着的节点。
 - 初始位姿的朝向：车头朝向必须和 `--initial-pose` 的 YAW_DEG 一致。
   - 给用户的检查单和提示一律按看板地图说方向：右 = 地图 +x，左 = 地图 −x。不用东西南北：用户 2026-11-10 说明，现实里地图 −x 是东。
@@ -181,10 +185,10 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow freeze-config --c
 
 上车前检查单：`bash scripts/navigation_live_shadow checklist`。内容与命令里的相同，要点：
 - 用户同意并记录。
-- 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。
-- 整个命令以 nice 10 运行；转发 RUNNING 后用 `relay-graph` 查入口节点。
-- 物理急停可用；在影子域确认没有任何进程订阅闸门输出或发布 `/cmd_vel`。
-- 传感器频率。
+- 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。开障碍输入时面板要用两台雷达。
+- 整个命令以 nice 10 运行；转发 RUNNING 后用 `relay-graph` 查入口节点（开障碍输入时加 `--obstacles`）。
+- 物理急停可用；在影子域确认订阅闸门输出的只有平滑器反馈节点，没有进程发布 `/cmd_vel`。
+- 传感器频率；开障碍输入时两台雷达的 host_filtered 都约 10 Hz。
 - 用 `freeze-config` 冻结并核对当前配置，零偏二选一。
 - 起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差，车头朝向和给定航向一致。
 - 目标；记录空间。

@@ -321,9 +321,15 @@ class LiveSupervisor(Supervisor):
         files["bt_through"] = self.write("bt_navigate_through_poses.xml",
                                          nav2_config.behavior_tree_xml(through_poses=True))
         sim = cfg["use_sim_time"]
+        planning = self.planning()
         files["nav2"] = self.write("nav2_params.yaml", with_sim_time(nav2_config.navigation_parameters(
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"],
-            bt_through_poses_path=files["bt_through"]), sim))
+            bt_through_poses_path=files["bt_through"], planning=planning), sim))
+        if planning.smoother_feedback == "gated":
+            # window B's relay: the gate's output as the smoother's feedback (restart from rest after a gate stop)
+            from ..planning.velocity_feedback import node_config as feedback_config
+            files["feedback"] = self.node_config("velocity_feedback_config", feedback_config(self.output,
+                                                                                             use_sim_time=sim))
         localization = amcl_parameters(profile, {"map_yaml": cfg["map_yaml"], "amcl": cfg["amcl"]})
         files["localization"] = self.write("localization_params.yaml", with_sim_time(localization, sim))
         limits = cfg["gate_limits"]
@@ -339,6 +345,14 @@ class LiveSupervisor(Supervisor):
         files["goals"] = self.node_config("goals_config", {
             "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"]})
         return files
+
+    def planning(self):
+        """Window B's planning choice for the shadow's Nav2: only the smoother feedback and timeout are set here."""
+        from ..planning.stack import PlanningChoice
+        cfg = self.config
+        defaults = PlanningChoice()
+        return PlanningChoice(smoother_feedback=cfg.get("smoother_feedback", defaults.smoother_feedback),
+                              smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)))
 
     def start_localization(self, monitor, files):
         self.launch_ros("map_server", "map_server", files["localization"])
@@ -357,13 +371,19 @@ class LiveSupervisor(Supervisor):
         self.wait_for(monitor, lambda: monitor.trigger("/lifecycle_manager_navigation/is_active") is True,
                       120, "nav2_active")
         readback = {}
-        for node_name, expected in nav2_config.readback_expectations(profile, "navigate").items():
+        for node_name, expected in nav2_config.readback_expectations(profile, "navigate",
+                                                                     planning=self.planning()).items():
             actual = monitor.get_parameters(node_name, list(expected))
             readback[node_name] = {"expected": expected, "actual": actual}
             bad = [k for k in expected if not _same(actual.get(k), expected[k])]
             if bad:
                 raise RunError(f"parameter readback mismatch on {node_name}: {bad} -> {actual}")
         self.report["parameter_readback"] = readback
+        if "feedback" in files:                     # --smoother-feedback gated (default since 2026-11-10)
+            from ..planning.stack import FEEDBACK_TOPIC
+            self.launch_module("velocity_feedback", "wc_navigation.planning.velocity_feedback", files["feedback"])
+            self.wait_for(monitor, lambda: monitor.node.count_publishers(FEEDBACK_TOPIC) > 0, 30,
+                          "velocity_feedback_ready")
         self.launch_module("safety_gate", "wc_navigation.autonomy.gate_node", files["gate"])
         monitor.enabled = True
 

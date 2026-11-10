@@ -31,12 +31,12 @@ WORK_ROOT = Path("/dev/shm")      # where a run's processes write while it runs 
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
  0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
- 2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；面板域（现为 83）用 --sensor-domain 给出。影子框架只经单向转发读三个传感器话题（best effort、volatile、keep last，不参与驱动结束录制时的确认等待），从不在面板域发布。
- 3. 先在面板里开始录制或实时建图，等面板显示所有设备就绪、数据在走，再启动影子命令。转发会等到三个话题都已有面板自己的订阅者才订阅（状态 WAITING_FOR_PANEL_SOURCES），自检通过才继续：驱动见到第一个订阅者就开始发，转发不能先于面板的录制连上。
+ 2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；面板域（现为 83）用 --sensor-domain 给出。影子框架只经单向转发读三个传感器话题（best effort、volatile、keep last，不参与驱动结束录制时的确认等待），从不在面板域发布。开三维障碍输入时多读右雷达 host_filtered，共四个话题（用户 2026-11-10 同意）。
+ 3. 先在面板里开始录制或实时建图，等面板显示所有设备就绪、数据在走，再启动影子命令。转发会等到要转发的话题都已有面板自己的订阅者才订阅（状态 WAITING_FOR_PANEL_SOURCES），自检通过才继续：驱动见到第一个订阅者就开始发，转发不能先于面板的录制连上。开障碍输入时面板要用两台雷达录制或建图，否则右雷达没有发布者，转发会一直等。
     优先级：面板的录制优先。车上模式整个影子命令以 nice 10 运行，命令自己会把 nice 调到不低于 10，转发再降到 19（2026-11-09 第二次这样跑：录包 COMPLETE，里程计落后最大 0.43 s）。result.json 的 supervisor.niceness 记实际值。
-    转发 RUNNING 后，另开终端，用同样的环境变量运行 navigation_live_shadow relay-graph --sensor-domain <面板域>。status 应为 PASS：入口节点只有三个订阅，都是 best effort、volatile；没有发布者、服务、客户端；查询节点自己也没有端点。不要在面板域用 ros2 命令（ros2 node info、ros2 topic list 等），它们会在面板域起 ros2 daemon，那是一个有发布者和服务的节点。
- 4. 物理急停可用、轮控所有者照常由面板管理；在影子域（100）里用 ros2 topic info 确认没有任何进程订阅 /wc_nav/cmd_vel_gated，也没有进程发布 /cmd_vel。
- 5. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz（面板里看，或在影子域看转发后的 /wc_live/relayed/... 话题）。
+    转发 RUNNING 后，另开终端，用同样的环境变量运行 navigation_live_shadow relay-graph --sensor-domain <面板域>（开障碍输入时加 --obstacles）。status 应为 PASS：入口节点只有三个订阅（开障碍时四个），都是 best effort、volatile；没有发布者、服务、客户端；查询节点自己也没有端点。不要在面板域用 ros2 命令（ros2 node info、ros2 topic list 等），它们会在面板域起 ros2 daemon，那是一个有发布者和服务的节点。
+ 4. 物理急停可用、轮控所有者照常由面板管理；在影子域（100）里用 ros2 topic info 确认：订阅 /wc_nav/cmd_vel_gated 的只有平滑器反馈节点 wc_velocity_feedback（--smoother-feedback gated，默认；它只把闸门输出转成平滑器的反馈），没有进程发布 /cmd_vel。
+ 5. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz；开障碍输入时右雷达 host_filtered 也要约 10 Hz（面板里看，或在影子域看转发后的 /wc_live/relayed/... 话题）。
  6. 配置：上车前运行 navigation_live_shadow freeze-config --config-root /home/nvidia/wheelchair --compare-cell <同一台车最近的单左前端> --gyro-bias <零偏文件>，冻结面板当前的实时配置并记 sha256。确认 hardware_setup 来自 config/local/project/hardware_setup.json（否则会退回仓库基础值）、轮参数是设备当前值（2026-11-07 20:19 起 0.1646/0.599）、外参和主机滤波与最近的前端一致。影子命令用冻结目录作 --cell、其中的 hardware_setup.json 作 --hardware-setup。
  7. 陀螺零偏二选一：现场开头静止做一次 10+10+10 确认，或先用 ZL1107 的零偏文件（同一个 IMU H30-5B8E666933，温度和时间不同）；用 --gyro-bias 给出，IMU 编号必须一致。实时 IMU 用到达时间，暂不需要设备时间模型。雷达时间偏移取冻结目录里的 lidar_time_offset.json（来自 config/calibration/，2026-11-08 用户批准 75 ms，按到达时间估计），freeze-config 的核对结果里应能看到这个值。
  8. 地图：--map 用要导航的那张地图的 map_nav.yaml；起点在地图覆盖范围内，雷达能看到已建图的墙（门内或地图空白处起步时，先推到走廊里再给初始位姿）。
@@ -117,6 +117,11 @@ def arguments(argv=None):
                         help="standing scans against the map at the start pose before Nav2 and the gate start: block "
                              "stops on INITIAL_POSE_MISMATCH and warns on AMBIGUOUS (default), strict stops on both, "
                              "warn only reports, off skips it")
+    # Window B's smoother feedback (user 2026-11-10: gated by default; velocity timeout 0.3 s on the vehicle chain)
+    shadow.add_argument("--smoother-feedback", choices=["open_loop", "gated"], default="gated",
+                        help="gated: planning/velocity_feedback.py feeds the gate's output back to the smoother")
+    shadow.add_argument("--smoother-timeout", type=finite, default=0.3, metavar="S",
+                        help="the smoother's velocity_timeout (0.2-5 s)")
     shadow.add_argument("--goal", action="append", nargs=3, type=finite, metavar=("X_M", "Y_M", "YAW_DEG"))
     shadow.add_argument("--goals-along-cell", type=Path,
                         help="bag test: goals every --goal-spacing m along this frontend's path, placed by --map-alignment-json")
@@ -142,6 +147,8 @@ def arguments(argv=None):
     graph.add_argument("--sensor-domain", type=int, required=True, help="domain the relay reads from (panel: 83)")
     graph.add_argument("--source-prefix", default="", help="prefix of the relayed topics there (bag test: /relay_source)")
     graph.add_argument("--wait", type=_finite, default=3.0, help="seconds to wait for discovery (1..30)")
+    graph.add_argument("--obstacles", action="store_true",
+                       help="the run has the 3D obstacle input: the relay must read four topics (with the right lidar)")
     graph.add_argument("--project-root", type=Path, help=argparse.SUPPRESS)   # added by the wrapper; not used
     freeze = sub.add_parser("freeze-config", help="freeze the panel's current live configuration (files only)")
     freeze.add_argument("--project-root", type=Path, required=True)
@@ -177,6 +184,11 @@ def arguments(argv=None):
             args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, args.gate_slow_limits)
         except ValueError as exc:
             parser.error(str(exc))
+        from ..planning.stack import PlanningChoice
+        try:
+            PlanningChoice(smoother_feedback=args.smoother_feedback, smoother_timeout_s=args.smoother_timeout)
+        except ValueError as exc:
+            parser.error("smoother: " + str(exc))
         if args.footprint is not None:
             from ..autonomy import nav2_config
             if len(args.footprint) < 6 or len(args.footprint) % 2:
@@ -253,7 +265,7 @@ def relay_graph_command(args):
         raise SystemExit("ROS_LOCALHOST_ONLY must be 1: the panel's domain and the relay are localhost only")
     os.environ["ROS_LOCALHOST_ONLY"] = "1"
     from .relay_node import entry_graph
-    report = entry_graph(args.sensor_domain, args.source_prefix, args.wait)
+    report = entry_graph(args.sensor_domain, args.source_prefix, args.wait, obstacles=args.obstacles)
     print(json.dumps(report, ensure_ascii=False, indent=1), flush=True)
     return 0 if report["status"] == "PASS" else 1
 
@@ -327,7 +339,7 @@ def run_command(args, guard):
     if args.relay_test:
         config["bag_remap_prefix"] = "/relay_source"
         config["relay"] = {"source_domain": None, "source_prefix": "/relay_source", "output_prefix": OUTPUT_PREFIX,
-                           "wait_for_panel_consumers": False}
+                           "wait_for_panel_consumers": False, "obstacles": bool(config.get("obstacles"))}
         config["source_prefix"] = OUTPUT_PREFIX
     if args.command == "shadow":
         from .amcl_cross import CANDIDATES
@@ -351,9 +363,11 @@ def run_command(args, guard):
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)
         config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
+        config["smoother_feedback"], config["smoother_timeout_s"] = args.smoother_feedback, args.smoother_timeout
         if args.source == "vehicle":
+            # D5 (user 2026-11-10): with the 3D obstacle input the relay also reads the right lidar, four topics
             config["relay"] = {"source_domain": args.sensor_domain, "source_prefix": "", "output_prefix": OUTPUT_PREFIX,
-                               "wait_for_panel_consumers": True}
+                               "wait_for_panel_consumers": True, "obstacles": bool(config.get("obstacles"))}
             config["source_prefix"] = OUTPUT_PREFIX
             config["niceness"] = VEHICLE_SHADOW_NICENESS
     # While the run goes, its processes write logs and records under /dev/shm: a large file copied to the data disk

@@ -350,7 +350,9 @@ def test_vehicle_relay_waits_for_the_panel_and_the_inputs_read_the_renamed_topic
     with pytest.raises(Stop):
         cli.main(argv)
     assert captured["relay"] == {"source_domain": 83, "source_prefix": "", "output_prefix": cli.OUTPUT_PREFIX,
-                                 "wait_for_panel_consumers": True}
+                                 "wait_for_panel_consumers": True, "obstacles": False}
+    # window B's smoother feedback, gated by default with a 0.3 s velocity timeout (user 2026-11-10)
+    assert (captured["smoother_feedback"], captured["smoother_timeout_s"]) == ("gated", 0.3)
     assert captured["source_prefix"] == cli.OUTPUT_PREFIX and captured["lidar_time_offset_ms"] == 75.0
     assert captured["niceness"] == cli.VEHICLE_SHADOW_NICENESS == 10      # the panel's recording comes first
     # the gate's covariance mode is recorded: lateral by default since 2026-11-09, xy when asked
@@ -762,3 +764,79 @@ def test_run_files_are_copied_from_the_work_directory_and_kept_when_a_copy_fails
     kept = move_run_files(work, output)
     assert not kept["work_dir_removed"] and kept["errors"] and (work / "logs" / "a.log").exists()
     monkeypatch.setattr(shutil, "copy2", real_copy)
+
+
+# -- D5: the relay reads the right lidar too when the 3D obstacle input is on -------------------------------------
+def test_the_relay_reads_four_topics_only_with_the_obstacle_input(monkeypatch):
+    from wc_navigation.live import relay_node
+    from wc_navigation.live.config import RIGHT_FILTERED_TOPIC
+    assert relay_node.relayed_topics() == relay_node.RELAYED_TOPICS and len(relay_node.RELAYED_TOPICS) == 3
+    four = relay_node.relayed_topics(True)
+    assert four == relay_node.RELAYED_TOPICS + (RIGHT_FILTERED_TOPIC,)
+    assert relay_node.source_qos(RIGHT_FILTERED_TOPIC).depth == 3
+    with pytest.raises(ValueError, match="obstacles"):
+        relay_node.check_relay_config({"source_domain": 100, "source_prefix": "/p", "obstacles": "yes"}, "100")
+    expected = ["/p" + t for t in four]
+    subscriptions = [(t, ["type"]) for t in expected]
+    assert relay_node.graph_check([], subscriptions, [], [], expected)["status"] == "PASS"
+    assert relay_node.graph_check([], subscriptions[:3], [], [], expected)["status"] == "FAIL"    # right lidar missing
+    three = ["/p" + t for t in relay_node.RELAYED_TOPICS]
+    assert relay_node.graph_check([], subscriptions, [], [], three)["status"] == "FAIL"           # one too many
+
+
+def test_vehicle_runs_with_the_obstacle_input_relay_the_right_lidar(tmp_path, monkeypatch):
+    from wc_navigation.live import cli, config as live_config, supervisor
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_run(self):
+        captured.update(self.config)
+        raise Stop()
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261110")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "100")
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+    monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "shm")
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve", lambda self, value: tmp_path / "run0")
+    monkeypatch.setattr("wc_navigation.perception.shadow_cli_options.live_entries", lambda *a: {"plan": "stub"})
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
+    argv = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--source", "vehicle", "--sensor-domain", "83", "--map", str(map_yaml), "--initial-pose", "0", "0", "0",
+            "--goal", "1", "2", "0", "--obstacle-input", "scan", "--obstacle-scan", "filtered",
+            "--obstacle-monitor", "cloud"]
+    with pytest.raises(Stop):
+        cli.main(argv)
+    assert captured["relay"]["obstacles"] is True and captured["obstacles"] == {"plan": "stub"}
+    assert cli.arguments(["relay-graph", "--sensor-domain", "83", "--obstacles"]).obstacles is True
+    with pytest.raises(SystemExit):
+        cli.arguments(argv[:-2] + ["--smoother-timeout", "0.1"])             # outside window B's 0.2-5 s
+
+
+def test_the_shadow_wires_the_gated_smoother_feedback(tmp_path):
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.live.supervisor import LiveSupervisor
+    config = {"use_sim_time": False, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
+              "gate_limits": {"correction_translation_m": 0.25, "correction_yaw_deg": 10.0,
+                              "correction_reference": "robot", "covariance_xy_std_m": 0.5,
+                              "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
+                              "slow_linear": 0.15},
+              "goals": [[1.0, 2.0, 0.0]], "advance_radius_m": 1.0,
+              "smoother_feedback": "gated", "smoother_timeout_s": 0.3}
+    run = LiveSupervisor(tmp_path, tmp_path, config)
+    files = run.prepare_shadow(nav2_config.NavProfile())
+    feedback = json.loads(files["feedback"].read_text())
+    assert feedback["use_sim_time"] is False and feedback["log_csv"] == str(tmp_path / "velocity_feedback.csv")
+    import yaml
+    smoother = yaml.safe_load(files["nav2"].read_text())["velocity_smoother"]["ros__parameters"]
+    assert (smoother["feedback"], smoother["velocity_timeout"], smoother["use_sim_time"]) == ("CLOSED_LOOP", 0.3, False)
+    expected = nav2_config.readback_expectations(nav2_config.NavProfile(), "navigate", planning=run.planning())
+    assert expected["velocity_smoother"]["feedback"] == "CLOSED_LOOP"
+    open_loop = LiveSupervisor(tmp_path / "b", tmp_path / "b", {**config, "smoother_feedback": "open_loop"})
+    (tmp_path / "b").mkdir()
+    assert "feedback" not in open_loop.prepare_shadow(nav2_config.NavProfile())
