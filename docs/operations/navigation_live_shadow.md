@@ -199,9 +199,14 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
 ```
 
 - 启动前命令自己查：`WC_AUTO_DRIVE_APPROVAL` 的日期是今天；域 100；面板会话的 `auto.sock` 存在。会话没开自动控制源时没有这个 socket，命令直接拒绝。
-- 固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器 gated、0.3 s；`--start-check` 只能 block 或 strict；`--monitor-base-shift` 不给时为 off。
-- 起来以后先站着看每秒一行的“闭环状态”。没点“开始自动”时应是：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`、定位可信、底盘不在 AUTO、急停否、目标 `WAITING_FOR_GATE`。
-- 点“开始自动”后底盘进 AUTO，闸门转 `COMMAND_STALE`，目标节点才发目标。急停、软件急停、“停止自动”、空格、WASD 都会停；急停以后要松开、再点一次“开始自动”。目标失败不重发。
+- 固定值（总管 2026-11-10 14:40）：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、`velocity_timeout` 0.3 s；`--monitor-base-shift off`；`--start-check` 默认 block（也可以给更严的 strict）。给了别的值，命令拒绝启动。
+- 起来以后先让车站着跑约 30 s，看每秒一行的“闭环状态”。这一段代替单独的实车影子：目标已经发出，Nav2 照常规划、出指令，闸门因为没有使能输出零。
+  - 没点“开始自动”时应是：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`，底盘不在 AUTO，急停否，目标 `NAVIGATING`。
+  - “影子判断”是使能、底盘都就绪时闸门会放行什么，例如“会放行 0.10 m/s 0.00 rad/s”，或者“LOCALIZATION_UNTRUSTED(…)”。
+  - 起点检查没通过、定位不可信，或影子判断的方向不对，不要点“开始自动”。
+- 点“开始自动”后底盘进 AUTO，闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。
+  - 急停、软件急停、“停止自动”、空格、WASD 都会停；急停以后要松开、再点一次“开始自动”。
+  - 站着时 Nav2 的目标失败会照影子的做法重发；车动过以后（闸门 ACTIVE 过），目标失败不再重发。
 - 使能和急停只能由桥发：这两个话题有别的发布者时，闸门停在 `DISABLED(ENABLE_SOURCE_AMBIGUOUS)`。
 - 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）和闸门各状态的计数。
 

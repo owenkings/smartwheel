@@ -627,6 +627,15 @@ def closed_loop_line(status):
     conditions = gate.get("conditions") or {}
     reasons = ",".join(gate.get("reasons") or [])
     parts = ["闭环状态：闸门 " + str(gate.get("state", "未启动")) + ("(" + reasons + ")" if reasons else "")]
+    preview = gate.get("preview") or {}
+    if preview:      # what it would pass with the enable and the base in order: the shadow's view while standing
+        why = ",".join(preview.get("reasons") or [])
+        if preview.get("state") == "ACTIVE":
+            parts.append("影子判断 会放行 %.2f m/s %.2f rad/s%s" % (float(preview.get("linear") or 0.0),
+                                                              float(preview.get("angular") or 0.0),
+                                                              "(" + why + ")" if why else ""))
+        else:
+            parts.append("影子判断 %s%s" % (preview.get("state"), "(" + why + ")" if why else ""))
     if conditions:
         parts.append("定位 " + ("可信" if conditions.get("localization_ok")
                                 else "不可信(%s)" % conditions.get("localization_reason")))

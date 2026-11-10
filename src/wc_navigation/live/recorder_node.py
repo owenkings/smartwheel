@@ -119,7 +119,10 @@ class ShadowRecorder:
             value = json.loads(message.data)
         except ValueError:
             value = {"raw": message.data}
-        key = (value.get("state"), tuple(value.get("reasons") or ()), value.get("stale_inputs") and tuple(value["stale_inputs"]))
+        preview = value.get("preview") if isinstance(value.get("preview"), dict) else {}
+        # the gate's preview (closed loop, before "start automatic") counts as a change too
+        key = (value.get("state"), tuple(value.get("reasons") or ()), value.get("stale_inputs") and tuple(value["stale_inputs"]),
+               preview.get("state"), tuple(preview.get("reasons") or ()))
         if self.last.get(topic) == key:
             return
         self.last[topic] = key

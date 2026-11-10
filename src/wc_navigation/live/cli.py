@@ -38,6 +38,7 @@ CLOSED_LOOP_MAX_LINEAR, CLOSED_LOOP_MAX_ANGULAR = 0.10, 0.30
 CLOSED_LOOP_SLOW_LIMITS = (0.50, 0.05)
 CLOSED_LOOP_ENABLE_TIMEOUT_S = 0.5
 CLOSED_LOOP_START_CHECKS = ("block", "strict")
+CLOSED_LOOP_SMOOTHER, CLOSED_LOOP_SMOOTHER_TIMEOUT_S = "open_loop", 0.3   # window B's PlanningChoice; gated later
 AUTO_DRIVE_APPROVAL_ENV = "WC_AUTO_DRIVE_APPROVAL"   # the same variable as window A's base bridge and wheel owner
 BRIDGE_NODE = "/wc_auto_bridge"                      # wc_motion.auto_bridge: the only enable and estop publisher
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
@@ -65,10 +66,10 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
 闭环（shadow --closed-loop，闸门输出经 A 的底盘桥交给面板会话的轮控所有者；现场步骤以 A 的步骤单为准）：
 13. 用户当天同意闭环，命令前另设 WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>（和桥、轮控所有者同一个变量，日期必须是今天）。面板会话已开自动控制源（会话目录对应的 auto.sock 存在），命令给 --panel-root、--session-root、--session-id。
-    固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器 gated、0.3 s；起点检查只能 block 或 strict；--monitor-base-shift 不给时为 off。
-14. 命令起来后先让车站着，看每秒一行的"闭环状态"：闸门 DISABLED（OPERATOR_ENABLE_OFF）、定位可信、底盘不在 AUTO、急停否。起点检查没通过或定位不可信，不要点"开始自动"。
-    使能和急停只能由桥发：订阅 /wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
-15. 点"开始自动"：底盘进 AUTO、闸门转 COMMAND_STALE 后，目标节点才发目标，车开始走。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。目标失败不自动重发。
+    固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、velocity_timeout 0.3 s；--monitor-base-shift off；起点检查 block（或更严的 strict）。
+14. 命令起来后先让车站着跑约 30 s，看每秒一行的"闭环状态"（这一段代替单独的实车影子）：闸门 DISABLED（OPERATOR_ENABLE_OFF）、"影子判断"是它放行时会发的速度（例如 会放行 0.10 m/s）、定位可信、底盘不在 AUTO、急停否、目标 NAVIGATING。起点检查没通过、定位不可信，或影子判断的方向不对，不要点"开始自动"。
+    使能和急停只能由桥发：/wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
+15. 点"开始自动"：底盘进 AUTO 后闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。车动过以后，目标失败不自动重发。
 16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数和最后的底盘状态。
 """
 
@@ -217,10 +218,17 @@ def arguments(argv=None):
             max_linear = CLOSED_LOOP_MAX_LINEAR
             if slow_limits is None and (args.gate_covariance_mode or GateConfig.covariance_mode) == "lateral":
                 slow_limits = CLOSED_LOOP_SLOW_LIMITS
-            # --monitor-base-shift off unless given (user 2026-11-09 23:50 for the next vehicle run)
-            given = sys.argv[1:] if argv is None else list(argv)
-            if not any(str(a).split("=", 1)[0].startswith("--monitor") for a in given):
-                args.monitor_base_shift = "off"
+            # Fixed for the first closed loop (BOARD 2026-11-10 14:40): the smoother's feedback stays open loop with
+            # velocity_timeout 0.3 s, and the collision monitor runs with base_shift off (user 2026-11-09 23:50).
+            given = [str(a).split("=", 1)[0] for a in (sys.argv[1:] if argv is None else argv)]
+            if any(a.startswith("--smoother-f") for a in given) and args.smoother_feedback != CLOSED_LOOP_SMOOTHER:
+                parser.error("--closed-loop keeps the smoother feedback %s for the first closed loop"
+                             % CLOSED_LOOP_SMOOTHER)
+            if args.smoother_timeout != CLOSED_LOOP_SMOOTHER_TIMEOUT_S:
+                parser.error("--closed-loop uses --smoother-timeout %g" % CLOSED_LOOP_SMOOTHER_TIMEOUT_S)
+            if any(a.startswith("--monitor") for a in given) and args.monitor_base_shift != "off":
+                parser.error("--closed-loop runs the collision monitor with --monitor-base-shift off")
+            args.smoother_feedback, args.monitor_base_shift = CLOSED_LOOP_SMOOTHER, "off"
         elif args.panel_root or args.session_root or args.session_id:
             parser.error("--panel-root, --session-root and --session-id belong to --closed-loop")
         try:

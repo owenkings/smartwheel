@@ -7,9 +7,11 @@ ahead of the person pushing. A failed or rejected goal is re-sent after
 ``retry_s``. Status JSON goes to ``/wc_live/goal_status``; nothing here touches
 a velocity topic.
 
-Closed loop (``closed_loop: true``, D.md 2026-11-10 16:45): the first goal waits until the safety gate is ready
-(COMMAND_STALE or ACTIVE, i.e. the operator started automatic control and the base runs it); a failed goal ends the
-sequence instead of being re-sent; the last goal ends only when Nav2 reports it reached.
+Closed loop (``closed_loop: true``; BOARD 2026-11-10 14:40, D.md 19:10): goals go out at once, as in the shadow,
+so Nav2 already plans and commands while the chair stands before "start automatic" and the gate shows what it
+would pass. A goal that fails before the gate was ever ACTIVE (standing, Nav2's progress checker) is re-sent as in
+the shadow; once the chair has driven (gate ACTIVE, i.e. started and the base in AUTO), a failed goal ends the
+sequence and is not re-sent. The last goal ends only when Nav2 reports it reached.
 """
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ import math
 from ..autonomy.ros_util import json_message, latched_qos, load_config, lookup_pose, pose_stamped
 
 SUCCEEDED = 4
-GATE_READY = ("COMMAND_STALE", "ACTIVE")    # every condition holds; a command is either missing or passes
 
 
 class GoalSequence:
@@ -48,16 +49,19 @@ class GoalSequence:
         self.closed_loop = config.get("closed_loop", False)
         if type(self.closed_loop) is not bool:
             raise ValueError("closed_loop must be a boolean")
-        self.gate_state, self.started, self.last_wait = None, not self.closed_loop, -math.inf
+        self.drove = False                 # closed loop: the gate has been ACTIVE (the operator started)
         if self.closed_loop:
             node.create_subscription(String, "/wc_nav/gate_status", self.on_gate_status, latched_qos())
         node.create_timer(0.25, self.tick)
 
     def on_gate_status(self, message):
         try:
-            self.gate_state = json.loads(message.data).get("state")
+            state = json.loads(message.data).get("state")
         except (ValueError, AttributeError):
-            self.gate_state = None
+            return
+        if state == "ACTIVE" and not self.drove:
+            self.drove = True
+            self.records.append({"index": self.index, "reason": "GATE_ACTIVE_FIRST", "time_s": round(self.now(), 3)})
 
     def now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -91,15 +95,6 @@ class GoalSequence:
         now = self.now()
         if now <= 0 or not self.client.server_is_ready():
             return
-        if not self.started:
-            if self.gate_state not in GATE_READY:
-                if now - self.last_wait >= 1.0:
-                    self.publish("WAITING_FOR_GATE", gate_state=self.gate_state)
-                    self.last_wait = now
-                return
-            self.started = True
-            self.records.append({"index": self.index, "reason": "GATE_READY", "gate_state": self.gate_state,
-                                 "time_s": round(now, 3)})
         found = lookup_pose(self.buffer, "map", "base_link")
         if found is not None:
             x, y, _ = found[0]
@@ -124,7 +119,7 @@ class GoalSequence:
             if status == SUCCEEDED:
                 return self.advance_to_next(now, "NAV2_REPORTED_REACHED")
             self.active = None
-            if self.closed_loop:                  # the chair drives: a failed goal is not tried again by itself
+            if self.closed_loop and self.drove:   # the chair has driven: a failed goal is not tried again by itself
                 self.records.append({"index": self.index, "reason": "NAV2_FAILED", "status": status,
                                      "time_s": round(now, 3)})
                 self.finished = True

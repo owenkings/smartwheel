@@ -856,10 +856,13 @@ def test_closed_loop_options_fix_the_first_closed_loop_settings(tmp_path):
     from wc_navigation.live import cli
     args = cli.arguments(_closed_argv(tmp_path))
     assert args.closed_loop and args.monitor_base_shift == "off" and args.start_check == "block"
+    assert (args.smoother_feedback, args.smoother_timeout) == ("open_loop", 0.3)     # BOARD 2026-11-10 14:40
     assert args.gate_covariance == {"covariance_mode": "lateral", "slow_std_m": 0.5, "slow_linear": 0.05}
-    assert cli.arguments(_closed_argv(tmp_path, "--monitor-base-shift", "on")).monitor_base_shift == "on"
+    assert cli.arguments(_closed_argv(tmp_path, "--monitor-base-shift", "off")).monitor_base_shift == "off"
+    assert cli.arguments(_closed_argv(tmp_path, "--smoother-feedback", "open_loop")).smoother_feedback == "open_loop"
     assert cli.arguments(_closed_argv(tmp_path, "--start-check", "strict")).start_check == "strict"
-    for bad in (["--start-check", "warn"], ["--start-check", "off"], ["--gate-slow-limits", "0.5", "0.15"]):
+    for bad in (["--start-check", "warn"], ["--start-check", "off"], ["--gate-slow-limits", "0.5", "0.15"],
+                ["--monitor-base-shift", "on"], ["--smoother-feedback", "gated"], ["--smoother-timeout", "0.5"]):
         with pytest.raises(SystemExit):
             cli.arguments(_closed_argv(tmp_path, *bad))       # 0.15 m/s is above the closed loop's 0.10 m/s
     argv = _closed_argv(tmp_path)
@@ -868,6 +871,7 @@ def test_closed_loop_options_fix_the_first_closed_loop_settings(tmp_path):
     shadow = argv[:argv.index("--closed-loop")]
     plain = cli.arguments(shadow)
     assert not plain.closed_loop and plain.monitor_base_shift == "on" and plain.gate_covariance["slow_linear"] == 0.15
+    assert plain.smoother_feedback == "gated"                  # the shadow keeps its default
     with pytest.raises(SystemExit):
         cli.arguments(shadow + ["--session-id", "capture_x"])  # closed-loop options without --closed-loop
 
@@ -919,7 +923,8 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
                               "correction_reference": "robot", "covariance_xy_std_m": 0.5,
                               "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
                               "slow_linear": 0.05},
-              "goals": [[4.0, 0.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "gated", "smoother_timeout_s": 0.3,
+              "goals": [[4.0, 0.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
+              "smoother_timeout_s": 0.3,
               "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
                               "session_root": "/s", "session_id": "capture_x"}}
     profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
@@ -931,9 +936,12 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
         True, "/wc_auto_bridge", 0.5, 0.5)
     assert (gate.max_linear, gate.max_angular, gate.slow_linear, gate.slow_std_m) == (0.10, 0.30, 0.05, 0.5)
     assert json.loads(files["goals"].read_text())["closed_loop"] is True
+    assert "feedback" not in files                                 # open loop: no velocity_feedback node
     nav2 = yaml.safe_load(files["nav2"].read_text())
     assert nav2["controller_server"]["ros__parameters"]["FollowPath"]["desired_linear_vel"] == 0.10
-    assert nav2["velocity_smoother"]["ros__parameters"]["max_velocity"] == [0.10, 0.0, 0.30]
+    smoother = nav2["velocity_smoother"]["ros__parameters"]
+    assert (smoother["max_velocity"], smoother["feedback"], smoother["velocity_timeout"]) == (
+        [0.10, 0.0, 0.30], "OPEN_LOOP", 0.3)
     shadow = {k: v for k, v in config.items() if k != "closed_loop"}
     (tmp_path / "b").mkdir()
     files = LiveSupervisor(tmp_path / "b", tmp_path / "b", shadow).prepare_shadow(nav2_config.NavProfile())
@@ -969,23 +977,27 @@ def test_the_closed_loop_status_line_shows_what_holds_the_chair():
     assert "闸门 未启动" in closed_loop_line({}) and "没有桥的状态" in closed_loop_line({})
     status = {GATE_STATUS_TOPIC: {"state": "DISABLED", "reasons": ["OPERATOR_ENABLE_OFF"], "linear": 0.0,
                                   "angular": 0.0, "gate_id": "gate_1", "seq": 40, "counts": {"DISABLED": 40},
-                                  "conditions": {"localization_ok": True, "localization_reason": ""}},
+                                  "conditions": {"localization_ok": True, "localization_reason": ""},
+                                  "preview": {"state": "ACTIVE", "reasons": ["LINEAR_CLAMPED"], "linear": 0.1,
+                                              "angular": 0.02}},
               BASE_STATUS_TOPIC: {"auto_state": "NONE", "base_auto": False, "reason": "BASE_NOT_AUTO",
                                   "enable": False, "estop": None, "estop_request": False},
-              GOAL_STATUS_TOPIC: {"state": "WAITING_FOR_GATE", "goal_index": 0, "goals": 1}}
+              GOAL_STATUS_TOPIC: {"state": "NAVIGATING", "goal_index": 0, "goals": 1}}
     line = closed_loop_line(status)
-    for part in ("闸门 DISABLED(OPERATOR_ENABLE_OFF)", "定位 可信", "底盘 NONE(BASE_NOT_AUTO)", "使能 否", "急停 否",
-                 "目标 WAITING_FOR_GATE 1/1"):
+    for part in ("闸门 DISABLED(OPERATOR_ENABLE_OFF)", "影子判断 会放行 0.10 m/s 0.02 rad/s(LINEAR_CLAMPED)", "定位 可信",
+                 "底盘 NONE(BASE_NOT_AUTO)", "使能 否", "急停 否", "目标 NAVIGATING 1/1"):
         assert part in line
     status[BASE_STATUS_TOPIC].update(estop_request=True)
     status[GATE_STATUS_TOPIC]["conditions"] = {"localization_ok": False, "localization_reason": "MAP_TO_BASE_TF_STALE"}
+    status[GATE_STATUS_TOPIC]["preview"] = {"state": "LOCALIZATION_UNTRUSTED", "reasons": ["MAP_TO_BASE_TF_STALE"]}
     line = closed_loop_line(status)
     assert "急停 按下" in line and "定位 不可信(MAP_TO_BASE_TF_STALE)" in line
+    assert "影子判断 LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)" in line
     report = closed_loop_report(status)
     assert (report["gate_id"], report["gate_seq"], report["base_status"]["auto_state"]) == ("gate_1", 40, "NONE")
 
 
-def test_closed_loop_goals_wait_for_the_gate_and_never_retry(monkeypatch):
+def test_closed_loop_goals_go_out_at_once_and_are_not_retried_once_the_chair_drove(monkeypatch):
     """GoalSequence without ROS: a stand-in node, action client and TF lookup."""
     import types
     from wc_navigation.live import goals_node
@@ -1029,15 +1041,17 @@ def test_closed_loop_goals_wait_for_the_gate_and_never_retry(monkeypatch):
     monkeypatch.setattr("nav2_msgs.action.NavigateToPose", types.SimpleNamespace(
         Goal=lambda: types.SimpleNamespace(pose=None)))
     sequence = goals_node.GoalSequence(node, {"goals": [[4.0, 0.0, 0.0]], "closed_loop": True})
-    for gate_state in (None, "DISABLED", "BASE_NOT_READY"):
-        sequence.gate_state = gate_state
-        sequence.tick()
-        clock[0] += 1.0
-    assert Client.sent == [] and published[-1]["state"] == "WAITING_FOR_GATE"
-    sequence.gate_state = "COMMAND_STALE"
-    sequence.tick()                         # sends, although the chair is within the advance radius of the last goal
+    sequence.tick()                         # at once, although the chair is within the advance radius of the last goal
     assert len(Client.sent) == 1 and published[-1]["state"] == "NAVIGATING"
+    sequence.tick()                         # Nav2 aborted (status 6) while standing before the start: re-sent
+    assert published[-1]["state"] == "FAILED_RETRYING" and not sequence.finished
+    clock[0] += 3.0
+    sequence.tick()
+    assert len(Client.sent) == 2
+    status = types.SimpleNamespace(data=json.dumps({"state": "ACTIVE"}))
+    sequence.on_gate_status(status)         # the operator started, the gate passed a command: the chair drove
     for _ in range(3):
         clock[0] += 3.0
-        sequence.tick()                     # Nav2 aborted (status 6): the sequence ends, nothing is re-sent
-    assert len(Client.sent) == 1 and sequence.finished and published[-1]["state"] == "FAILED"
+        sequence.tick()                     # aborted again: the sequence ends, nothing is re-sent
+    assert len(Client.sent) == 2 and sequence.finished and published[-1]["state"] == "FAILED"
+    assert [r["reason"] for r in sequence.records] == ["GATE_ACTIVE_FIRST", "NAV2_FAILED"]
