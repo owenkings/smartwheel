@@ -6,6 +6,7 @@ extra arrays in the recording, no extra topics, unchanged Nav2 parameters and re
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 from pathlib import Path
@@ -56,6 +57,18 @@ def _add_monitor_base_shift(group):
                        help="collision monitor base_shift_correction: on (default) moves the points by odom->base_link "
                             "from their stamp to now and waits up to 0.3 s for that transform; off uses the static "
                             "sensor transform only (no wait for the odometry)")
+    group.add_argument("--monitor-slow-margin", type=_slow_margin, metavar="M",
+                       help="how far the collision monitor's slowdown box reaches beyond the body's front, in metres "
+                            "(default 0.65; the box does not scale with the speed). 0.15 keeps the left lidar's "
+                            "floating bands of 2026-11-07/09 out of it at 0.10 m/s")
+
+
+def _slow_margin(value):
+    from ..autonomy.nav2_config import MAX_SLOW_MARGIN_M
+    margin = float(value)
+    if not 0.0 < margin <= MAX_SLOW_MARGIN_M:
+        raise argparse.ArgumentTypeError("must be within (0, %g] m" % MAX_SLOW_MARGIN_M)
+    return margin
 
 
 def _monitor(args):
@@ -132,7 +145,11 @@ def recording_entries(args):
 
 
 def _base_shift_field(args):
-    return {"monitor_base_shift": False} if getattr(args, "monitor_base_shift", "on") == "off" else {}
+    """NavProfile fields of the collision-monitor options (none while they are at their defaults)."""
+    fields = {"monitor_base_shift": False} if getattr(args, "monitor_base_shift", "on") == "off" else {}
+    if getattr(args, "monitor_slow_margin", None) is not None:
+        fields["monitor_slow_margin_m"] = args.monitor_slow_margin
+    return fields
 
 
 def profile_fields(args):

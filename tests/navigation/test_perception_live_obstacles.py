@@ -478,3 +478,31 @@ def test_the_monitor_base_shift_option_reaches_the_collision_monitor_and_its_rea
     assert "base_shift_correction" not in nav2_config.readback_expectations(default, "navigate")["collision_monitor"]
     with pytest.raises(ValueError):
         nav2_config.NavProfile(monitor_base_shift=0)
+
+
+def test_the_monitor_slow_margin_option_shortens_only_the_slowdown_box(tmp_path):
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.live.cli import arguments
+    from wc_navigation.perception.shadow_cli_options import live_profile_fields
+    default = nav2_config.NavProfile(footprint=MEASURED)
+    short = nav2_config.NavProfile(footprint=MEASURED, monitor_slow_margin_m=0.15)
+    assert "monitor_slow_margin_m" not in default.as_dict() and short.as_dict()["monitor_slow_margin_m"] == 0.15
+    assert nav2_config.slowdown_polygon(default)[0] == pytest.approx(0.81 + 0.65)     # unchanged default box
+    box = nav2_config.slowdown_polygon(short)
+    assert box[0] == pytest.approx(0.96) and box[2] == pytest.approx(0.96) and box[4:] == nav2_config.slowdown_polygon(default)[4:]
+    zones, base = nav2_config.monitor_polygons(short), nav2_config.monitor_polygons(default)
+    assert zones["FootprintStop"] == base["FootprintStop"] and zones["FootprintApproach"] == base["FootprintApproach"]
+    params = nav2_config.navigation_parameters(short, mode="navigate", bt_to_pose_path="a", bt_through_poses_path="b")
+    assert params["collision_monitor"]["ros__parameters"]["PolygonSlow"]["points"] == box
+    assert nav2_config.readback_expectations(short, "navigate")["collision_monitor"]["PolygonSlow.points"] == box
+    assert "PolygonSlow.points" not in nav2_config.readback_expectations(default, "navigate")["collision_monitor"]
+    for bad in (0.0, -0.1, 2.5):
+        with pytest.raises(ValueError):
+            nav2_config.NavProfile(monitor_slow_margin_m=bad)
+    shadow = ["shadow", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+              "--map", "m.yaml", "--initial-pose", "0", "0", "0", "--goal", "1", "2", "0", "--source", "bag", "--bag", "x"]
+    assert live_profile_fields(arguments(shadow + ["--monitor-slow-margin", "0.15"])) == {"monitor_slow_margin_m": 0.15}
+    assert live_profile_fields(arguments(shadow)) == {}
+    for bad in ("0", "2.5", "nan"):
+        with pytest.raises(SystemExit):
+            arguments(shadow + ["--monitor-slow-margin", bad])
