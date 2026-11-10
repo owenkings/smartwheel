@@ -11,6 +11,10 @@ import re
 
 CIRCLE_LABEL = "CIRCLE_ASSUMED_NOT_MEASURED"
 DEFAULT_FOOTPRINT_SOURCE = "EXAMPLE_NOT_MEASURED"
+# Simulation and recorded shadow runs (these options) default to the gated smoother feedback (user decision
+# 2026-11-10). The parameter set itself (stack.PlanningChoice, used without options by the live chain) keeps
+# Nav2's open loop until window D starts the feedback relay there.
+CLI_SMOOTHER_FEEDBACK = "gated"
 
 
 def _finite(value):
@@ -82,12 +86,16 @@ def add_planning_arguments(parser):
     parser.add_argument("--local-padding", type=float, default=0.0, metavar="M",
                         help="footprint padding of the local costmap, i.e. of the controller's collision checks "
                              "(default 0, unchanged); e.g. 0.10 keeps the planning margin while driving too")
-    from .stack import DEFAULT_SMOOTHER_FEEDBACK, SMOOTHER_FEEDBACK
-    parser.add_argument("--smoother-feedback", choices=SMOOTHER_FEEDBACK, default=DEFAULT_SMOOTHER_FEEDBACK,
-                        help="open_loop (default, unchanged): the velocity smoother ramps from its own last output; "
-                             "gated: it ramps from rest after the gate or the collision monitor stopped the chair "
-                             "(planning/velocity_feedback.py); odom: Nav2's closed loop on /odom, comparison only "
-                             "(crawls through the monitor's slowdown zones)")
+    from .stack import DEFAULT_SMOOTHER_TIMEOUT_S, SMOOTHER_FEEDBACK
+    parser.add_argument("--smoother-feedback", choices=SMOOTHER_FEEDBACK, default=CLI_SMOOTHER_FEEDBACK,
+                        help="gated (default for simulation and recorded shadow runs since 2026-11-10, user "
+                             "decision): the velocity smoother ramps from rest after the gate or the collision "
+                             "monitor stopped the chair (planning/velocity_feedback.py); open_loop: Nav2's open loop, "
+                             "it ramps from its own last output (the live chain's setting); odom: Nav2's closed loop "
+                             "on /odom, comparison only (crawls through the monitor's slowdown zones)")
+    parser.add_argument("--smoother-timeout", type=float, default=DEFAULT_SMOOTHER_TIMEOUT_S, metavar="S",
+                        help="velocity smoother velocity_timeout: how long it keeps sending the last command after "
+                             "the controller stops (default 1.0 s, unchanged; 0.3 s approved for the real chair)")
     parser.add_argument("--people-reaction", action="store_true",
                         help="react to people in the obstacle tracks (planning/people_node.py): slow down near them "
                              "and yield (speed limit); default off. Simulation only, with --tracks truth")
@@ -108,6 +116,7 @@ def resolve_planning_arguments(parser, args):
                                        global_live_scans=args.global_costmap == "live",
                                        fallback_planner="" if args.planner_fallback == "none" else args.planner_fallback,
                                        local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback,
+                                       smoother_timeout_s=args.smoother_timeout,
                                        people_reaction=args.people_reaction, people_keepout=args.people_keepout)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:

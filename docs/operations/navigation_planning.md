@@ -29,7 +29,8 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--local-padding M` | 局部代价地图的外形余量，也就是 RPP 和 RotationShim 自己碰撞检查用的余量（默认 0，不变；最大 0.3 m）。设成和规划余量一样（0.10），控制器就不会把车开进规划器不接受的位姿；碰撞监控不受影响 |
 | `--people-reaction` | 对航迹里的人做反应（减速、让行，靠速度上限），默认不开；只能和仿真的 `--tracks truth` 一起用，见下面“仿真”一节 |
 | `--people-keepout` | 和 `--people-reaction` 一起用：站着不动满 3 s 的人在两个代价地图里另加禁行区，默认不开 |
-| `--smoother-feedback open_loop\|gated\|odom` | 速度平滑器以为的当前速度。`open_loop`（默认，不变）：自己上一次的输出。`gated`：同上，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
+| `--smoother-feedback gated\|open_loop\|odom` | 速度平滑器以为的当前速度。`gated`（仿真和录包影子的默认，11-10 用户决定）：平滑器自己上一次的输出，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`open_loop`：Nav2 的开环，只用自己上一次的输出，实时链路现在还是这样。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
+| `--smoother-timeout S` | 平滑器的 velocity_timeout：控制器停发后，平滑器还继续发上一条速度多久（默认 1.0 s，不变；实车用 0.3 s，用户 11-10 同意；允许 0.2–5 s） |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。

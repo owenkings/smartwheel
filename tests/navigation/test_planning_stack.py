@@ -259,9 +259,13 @@ def test_simulation_and_shadow_configs_record_the_choice(tmp_path):
     assert config["planning"] == {"planner": "smac_hybrid", "controller": "rpp",
                                   "planner_params": [["minimum_turning_radius", 0.5]], "controller_params": [],
                                   "server_params": [], "recovery_retries": 4, "recovery_wait_s": 3.0,
-                                  "global_live_scans": True, "fallback_planner": ""}
+                                  "global_live_scans": True, "fallback_planner": "", "smoother_feedback": "gated"}
     default = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms"]))
-    assert stack.PlanningChoice.from_dict(default["planning"]).is_default
+    # the command line defaults to the gated smoother feedback (user decision 2026-11-10); the rest is the stack's
+    assert stack.PlanningChoice.from_dict(default["planning"]) == stack.PlanningChoice(smoother_feedback="gated")
+    open_loop = cli.build_config(cli.arguments(["--project-root", str(PROJECT), "explore", "--world", "two_rooms",
+                                                "--smoother-feedback", "open_loop"]))
+    assert stack.PlanningChoice.from_dict(open_loop["planning"]).is_default
     args = shadow_cli.arguments(["--project-root", str(PROJECT), "--source-cell", str(tmp_path),
                                  "--map", str(tmp_path / "m.yaml"), "--planner", "theta_star"])
     assert args.planning.planner == "theta_star" and args.planning.controller == "rpp"

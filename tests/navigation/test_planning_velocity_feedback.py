@@ -123,16 +123,20 @@ def test_gated_feedback_starts_the_relay_and_pause_is_explicit(tmp_path):
     from wc_navigation.autonomy import cli
     from wc_navigation.autonomy.bringup import Supervisor
     runs = {}
-    for name, extra in (("default", []), ("gated", ["--smoother-feedback", "gated", "--enable-pause", "30", "3"])):
+    for name, extra in (("open_loop", ["--smoother-feedback", "open_loop"]), ("default", []),
+                        ("gated", ["--smoother-feedback", "gated", "--enable-pause", "30", "3"])):
         config = cli.build_config(_arguments(extra))
         out = tmp_path / name
         out.mkdir()
         cli.write_world_map(config, out)
         _, files = Supervisor(PROJECT, out, config).prepare()
         runs[name] = (config, files)
-    config, files = runs["default"]
+    config, files = runs["open_loop"]
     assert "feedback" not in files and "enable_pause" not in config
     assert "smoother_feedback" not in config["planning"]
+    # simulation and recorded shadow runs default to the gated feedback (user decision 2026-11-10)
+    config, files = runs["default"]
+    assert config["planning"]["smoother_feedback"] == "gated" and "feedback" in files and "enable_pause" not in config
     config, files = runs["gated"]
     assert config["planning"]["smoother_feedback"] == "gated"
     assert config["enable_pause"] == {"after_s": 30.0, "duration_s": 3.0}
@@ -143,6 +147,34 @@ def test_gated_feedback_starts_the_relay_and_pause_is_explicit(tmp_path):
     with pytest.raises(SystemExit):
         _arguments(["--enable-pause", "30", "3"], mode="explore")
     assert _arguments(["--smoother-feedback", "odom"], mode="explore").planning.smoother_feedback == "odom"
+
+
+def test_smoother_timeout_is_an_explicit_choice():
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.autonomy.bringup import _same
+
+    def params(choice):
+        return nav2_config.navigation_parameters(nav2_config.NavProfile(), mode="navigate",
+                                                 bt_to_pose_path="/tmp/a.xml", bt_through_poses_path="/tmp/b.xml",
+                                                 planning=choice)
+    base = params(None)
+    assert base["velocity_smoother"]["ros__parameters"]["velocity_timeout"] == stack.DEFAULT_SMOOTHER_TIMEOUT_S == 1.0
+    choice = stack.PlanningChoice(smoother_timeout_s=0.3)
+    p = params(choice)
+    assert p["velocity_smoother"]["ros__parameters"]["velocity_timeout"] == 0.3
+    rest = {k: v for k, v in p["velocity_smoother"]["ros__parameters"].items() if k != "velocity_timeout"}
+    assert rest == {k: v for k, v in base["velocity_smoother"]["ros__parameters"].items() if k != "velocity_timeout"}
+    expected = nav2_config.readback_expectations(nav2_config.NavProfile(), "navigate", planning=choice)
+    assert _same(expected["velocity_smoother"]["velocity_timeout"], 0.3)
+    assert stack.PlanningChoice.from_dict(json.loads(json.dumps(choice.as_dict()))) == choice
+    assert "smoother_timeout_s" not in stack.PlanningChoice().as_dict() and not choice.is_default
+    for bad in (0.1, 6.0, float("nan")):
+        with pytest.raises(ValueError):
+            stack.PlanningChoice(smoother_timeout_s=bad)
+    assert _arguments(["--smoother-timeout", "0.3"]).planning.smoother_timeout_s == 0.3
+    assert _arguments([]).planning.smoother_timeout_s == 1.0
+    with pytest.raises(SystemExit):
+        _arguments(["--smoother-timeout", "0.1"])
 
 
 def test_enable_pause_sends_false_only_inside_its_window():

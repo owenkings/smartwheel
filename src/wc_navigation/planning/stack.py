@@ -64,6 +64,11 @@ SMOOTHER_FEEDBACK = ("open_loop", "odom", "gated")
 DEFAULT_SMOOTHER_FEEDBACK = "open_loop"
 FEEDBACK_TOPIC = "/wc_nav/smoother_feedback"     # planning/velocity_feedback.py, --smoother-feedback gated
 FEEDBACK_DURATION_S = 0.02                        # only the latest relay message counts (one per smoother output)
+# Smoother velocity_timeout: how long it keeps sending the last command after the controller stops sending.
+# The stack (Nav2's default) uses 1.0 s; the user approved 0.3 s for the real chair (11-10) as an explicit choice:
+# the controller's longest gap in 11 live shadow runs was 0.14 s.
+DEFAULT_SMOOTHER_TIMEOUT_S = 1.0
+SMOOTHER_TIMEOUT_RANGE_S = (0.2, 5.0)
 PEOPLE_FILTER = "people_keepout"                  # KeepoutFilter of both costmaps, fed by planning/people_node.py
 PEOPLE_FILTER_INFO = {"global_costmap": "/wc_nav/people/global_filter_info",
                       "local_costmap": "/wc_nav/people/local_filter_info"}
@@ -110,6 +115,7 @@ class PlanningChoice:
     # open_loop keeps the smoother as it is; gated adds planning/velocity_feedback.py (restart from rest after a
     # gate or monitor stop); odom is Nav2's own closed loop on /odom, for comparison only.
     smoother_feedback: str = DEFAULT_SMOOTHER_FEEDBACK
+    smoother_timeout_s: float = DEFAULT_SMOOTHER_TIMEOUT_S
     # People reaction (planning/people_node.py): the speed limit; with people_keepout also a KeepoutFilter in both
     # costmaps around people who stand still (off by default: in the ZL1107 corridor it closes the way, 11-09).
     people_reaction: bool = False
@@ -140,6 +146,11 @@ class PlanningChoice:
         object.__setattr__(self, "local_padding_m", padding)
         if self.smoother_feedback not in SMOOTHER_FEEDBACK:
             raise ValueError("smoother feedback must be one of " + ", ".join(SMOOTHER_FEEDBACK))
+        timeout = float(self.smoother_timeout_s)
+        low, high = SMOOTHER_TIMEOUT_RANGE_S
+        if not low <= timeout <= high:
+            raise ValueError("smoother timeout must be %g..%g s" % (low, high))
+        object.__setattr__(self, "smoother_timeout_s", timeout)
         if not isinstance(self.people_reaction, bool) or not isinstance(self.people_keepout, bool):
             raise ValueError("people_reaction and people_keepout must be true or false")
         if self.people_keepout and not self.people_reaction:
@@ -151,7 +162,8 @@ class PlanningChoice:
                 and not self.planner_params and not self.controller_params and not self.server_params
                 and self.recovery_retries == DEFAULT_RECOVERY_RETRIES and self.recovery_wait_s == DEFAULT_RECOVERY_WAIT_S
                 and self.global_live_scans and not self.fallback_planner and not self.local_padding_m
-                and self.smoother_feedback == DEFAULT_SMOOTHER_FEEDBACK and not self.people_reaction)
+                and self.smoother_feedback == DEFAULT_SMOOTHER_FEEDBACK and not self.people_reaction
+                and self.smoother_timeout_s == DEFAULT_SMOOTHER_TIMEOUT_S)
 
     def as_dict(self):
         value = {"planner": self.planner, "controller": self.controller,
@@ -164,6 +176,8 @@ class PlanningChoice:
             value["local_padding_m"] = self.local_padding_m
         if self.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
             value["smoother_feedback"] = self.smoother_feedback
+        if self.smoother_timeout_s != DEFAULT_SMOOTHER_TIMEOUT_S:
+            value["smoother_timeout_s"] = self.smoother_timeout_s
         if self.people_reaction:
             value["people_reaction"] = True
         if self.people_keepout:
@@ -189,6 +203,7 @@ class PlanningChoice:
                    fallback_planner=str(value.get("fallback_planner", "")),
                    local_padding_m=float(value.get("local_padding_m", 0.0)),
                    smoother_feedback=str(value.get("smoother_feedback", DEFAULT_SMOOTHER_FEEDBACK)),
+                   smoother_timeout_s=float(value.get("smoother_timeout_s", DEFAULT_SMOOTHER_TIMEOUT_S)),
                    people_reaction=bool(value.get("people_reaction", False)),
                    people_keepout=bool(value.get("people_keepout", False)))
 
@@ -334,6 +349,8 @@ def apply(params, profile, choice, *, exploring):
         params["local_costmap"]["local_costmap"]["ros__parameters"]["footprint_padding"] = choice.local_padding_m
     if choice.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
         params["velocity_smoother"]["ros__parameters"].update(smoother_feedback_parameters(choice.smoother_feedback))
+    if choice.smoother_timeout_s != DEFAULT_SMOOTHER_TIMEOUT_S:
+        params["velocity_smoother"]["ros__parameters"]["velocity_timeout"] = choice.smoother_timeout_s
     if choice.people_keepout:             # filters only; layers and observation sources stay as they are
         for name in PEOPLE_FILTER_INFO:
             costmap = params[name][name]["ros__parameters"]
@@ -394,6 +411,8 @@ def adjust_readback(expected, choice, profile, *, exploring):
         expected.setdefault("local_costmap/local_costmap", {})["footprint_padding"] = choice.local_padding_m
     if choice.smoother_feedback != DEFAULT_SMOOTHER_FEEDBACK:
         expected.setdefault("velocity_smoother", {}).update(smoother_feedback_parameters(choice.smoother_feedback))
+    if choice.smoother_timeout_s != DEFAULT_SMOOTHER_TIMEOUT_S:
+        expected.setdefault("velocity_smoother", {})["velocity_timeout"] = choice.smoother_timeout_s
     if choice.people_keepout:
         for name in PEOPLE_FILTER_INFO:
             values = people_filter_parameters(name)
