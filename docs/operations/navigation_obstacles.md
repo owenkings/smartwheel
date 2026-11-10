@@ -23,6 +23,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 nice -n 10 bash scripts/navigation_nav2_shadow --mode 
 | `--obstacle-scan raw\|filtered` | 代价地图里 ObstacleLayer 读的扫描（全局代价地图总有一个，`scan` 和 `scan_and_cloud` 时局部也有）：`raw`（默认）是 /scan；`filtered` 是 `/obstacles/left/scan`，左雷达过滤后的障碍点按 /scan 同样的 161 个方位格取最近距离（frame laser，8 m 内）。和 `--obstacle-input scan` 一起用时两个代价地图都还是二维 ObstacleLayer，只是换成过滤后的扫描，碰撞监控仍用 /scan，只准备左雷达点云（右前端只作见证）。和 B 的 `--global-costmap static` 一起用时，`cloud` 输入下没有代价地图读它，直接报错。 |
 | `--obstacle-monitor scan\|cloud\|scan_and_cloud` | 碰撞监控单独用什么（默认和 `--obstacle-input` 相同）。例如 `--obstacle-input scan --obstacle-scan filtered --obstacle-monitor cloud`：两个代价地图是二维过滤扫描，监控用两台雷达的当前帧点云，没有体素记忆。 |
 | `--monitor-base-shift on\|off` | 碰撞监控的 base_shift_correction（默认 on，和以前一样）。off 只用静态外参，不按里程计把点移到当前时刻。录包影子的 TF 总跟着时钟，这里两种差不多；实时链路里 on 会让碰撞监控每个周期等里程计（见[设计说明](../architecture/obstacle_avoidance.md#第一次实车影子碰撞监控11-09)）。 |
+| `--monitor-slow-margin M` | 碰撞监控减速框伸出车头多远（默认 0.65 m，不随速度变）。0.10 m/s 时用 0.15，见[设计说明](../architecture/obstacle_avoidance.md#010-ms-第一次闭环的碰撞监控11-10)。 |
 | `--lidar-time-offset-ms MS` | 雷达时间戳比轮速/IMU 晚 MS：每帧（/scan、两台雷达的障碍点、清除射线、过滤扫描）配 stamp − MS 处的录包位姿，回放时把这些消息的时间戳提前 MS 发出；语义和实时链路、AMCL 回放的同名选项一致。默认 0（按录包原样）；用 75 ms 重建的地图上要给 75。 |
 | `--obstacle-right-cell` | 同一录包的单右冻结前端。给了才有右雷达障碍点，也才有两台雷达互相见证。 |
 | `--obstacle-sides left right` | 发布哪几台的障碍点（默认：左，给了右前端时左右都发）。 |
@@ -95,6 +96,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
 | `--compare-right-cell`（只 `inputs`） | 右雷达的冻结前端，也核对右雷达的点云。 |
 | `--footprint`、`--footprint-source`（只 `inputs`；`shadow` 用它自己的外形） | 过滤用的车体外形，不给时按 0.55 m 假设圆。 |
 | `--monitor-base-shift on\|off`（只 `shadow`，和障碍输入无关） | 碰撞监控的 base_shift_correction。on（默认）时每个周期都要等里程计发出“现在”的 odom→base_link，最多 0.3 s，等不到就这一周期不看传感器；off 只用静态外参。用户 2026-11-10 同意实车影子用 off，默认值不改。 |
+| `--monitor-slow-margin M`（只 `shadow`，和障碍输入无关） | 碰撞监控减速框伸出车头多远，默认 0.65 m，不随速度变。0.10 m/s 的第一次闭环用 0.15：11-07、11-09 的左雷达悬空薄带就进不了框。读回会核对 PolygonSlow.points。 |
 
 - 处理：每对帧（两台雷达同一周期，相差几毫秒）先过 D 的 `scan_adapter.reference_points`（生产主机滤波、转到 mapping_reference，和冻结前端逐点相同），每台雷达用自己的外参和设备编号。再等 /odom 覆盖 stamp − 偏移的时刻（最多 0.3 s），然后按影子运行的规则过滤，另一台雷达作见证（`consensus.BoxWitness`，结论和 `Witness` 相同）。等不到位姿的帧照样发，只是没有见证和持续性检查，状态里计数。
 - 输出：`/obstacles/<left|right>/points`（坐标系 `obstacles_lidar_<side>`，静态变换在雷达原点、轴和 base_link 一致），VoxelLayer 时还有 `/clearing`，过滤扫描时有 `/obstacles/left/scan`。时间戳和 /scan 一样是雷达时间戳减偏移，偏移就是命令为 /scan 解析出的那一个。状态在 `/wc_live/inputs_status/obstacles`（RUNNING/STALE/FAILED、计数、耗时）。每处理一帧，运行目录的 `obstacles.jsonl` 写一行：位姿、配对、输入和输出的 sha256、各级计数、耗时。

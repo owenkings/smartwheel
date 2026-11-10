@@ -74,7 +74,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow inputs \
 - 三维障碍输入（窗口 C，默认不开）：`inputs` 和 `shadow` 都可以加 `--obstacle-input`、`--obstacle-scan filtered`、`--obstacle-monitor` 等选项。
   - 这时录包多放右雷达的 host_filtered 帧，多起一个 obstacles 进程。
   - `inputs` 的 `result.json` 多一节 `obstacles`，这一节通过才算 COMPLETE；`--compare-right-cell` 给出右雷达的冻结前端。
-  - `shadow` 另有 `--monitor-base-shift on|off`（碰撞监控是否按里程计移动点，默认 on）。
+  - `shadow` 另有 `--monitor-base-shift on|off`（碰撞监控是否按里程计移动点，默认 on）和 `--monitor-slow-margin M`（碰撞监控减速框伸出车头多远，默认 0.65 m）。
   - 用法见[障碍感知操作说明](navigation_obstacles.md#实时链路的三维障碍输入)。
 
 ## 实车影子运行

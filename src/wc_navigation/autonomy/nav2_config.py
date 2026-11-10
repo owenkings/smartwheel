@@ -26,6 +26,8 @@ NAV2_NODES = ("controller_server", "planner_server", "behavior_server", "bt_navi
 STOP_RING_M = 0.02  # collision-monitor stop circle: assumed body radius plus this ring
 # Humble collision monitor: a zone acts once it holds more than this many points.
 MONITOR_MAX_POINTS = 3
+DEFAULT_SLOW_MARGIN_M = 0.65   # slowdown box beyond the body's front (NavProfile.monitor_slow_margin_m)
+MAX_SLOW_MARGIN_M = 2.0
 MAPPERS = ("odom_grid", "odom_icp", "slam_toolbox")
 LOCALIZATION_NODES = ("map_server", "amcl")
 
@@ -85,6 +87,10 @@ class NavProfile:
     # stamp to now. False uses the static source->base_link transform only: no wait for the live odometry, which
     # does not extrapolate (window C, status/C.md 11-09 21:50).
     monitor_base_shift: bool = True
+    # How far the collision monitor's slowdown box reaches beyond the body's front (see slowdown_polygon). The box
+    # does not scale with the speed; 0.15 m keeps the left lidar's floating bands of 2026-11-07/09 out of it at
+    # 0.10 m/s (window C, status/C.md 11-10).
+    monitor_slow_margin_m: float = DEFAULT_SLOW_MARGIN_M
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
@@ -93,6 +99,8 @@ class NavProfile:
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if not isinstance(self.monitor_base_shift, bool):
             raise ValueError("monitor_base_shift must be a boolean")
+        if self.monitor_slow_margin_m > MAX_SLOW_MARGIN_M:
+            raise ValueError("monitor_slow_margin_m must be within (0, %g] m" % MAX_SLOW_MARGIN_M)
         if self.max_linear > 1.0 or self.max_angular > 1.5:
             raise ValueError("navigation speed limits exceed the supported simulation range")
         object.__setattr__(self, "footprint", _convex_footprint(self.footprint))
@@ -141,6 +149,8 @@ class NavProfile:
                 values.pop("obstacle_monitor")      # profiles recorded before the option stay identical
         if self.monitor_base_shift:
             values.pop("monitor_base_shift")        # the default: recorded profile unchanged
+        if self.monitor_slow_margin_m == DEFAULT_SLOW_MARGIN_M:
+            values.pop("monitor_slow_margin_m")     # likewise
         return values
 
 
@@ -209,7 +219,8 @@ def slowdown_polygon(profile):
     else:
         front, side = profile.radius_m, profile.radius_m * 0.8
     start = min(0.40, front - 0.15)
-    return [front + 0.65, side + 0.20, front + 0.65, -side - 0.20, start, -side - 0.20, start, side + 0.20]
+    end = front + profile.monitor_slow_margin_m
+    return [end, side + 0.20, end, -side - 0.20, start, -side - 0.20, start, side + 0.20]
 
 
 def monitor_polygons(profile):
@@ -636,6 +647,8 @@ def _readback_expectations(profile, mode):
             local_body = dict(local_body, **topic)
     if not profile.monitor_base_shift:
         stop = dict(stop, base_shift_correction=False)
+    if profile.monitor_slow_margin_m != DEFAULT_SLOW_MARGIN_M:   # a shortened (or longer) slowdown box is really set
+        stop = dict(stop, **{"PolygonSlow.points": zones["PolygonSlow"]["points"]})
     return {
         "controller_server": {"FollowPath.desired_linear_vel": profile.max_linear,
                               "FollowPath.allow_reversing": False,
