@@ -32,6 +32,7 @@ R=/media/nvidia/tiany-USB/wheelchair
 ## 0. 开始前（不动车）
 1. 代码：主检出 `~/wheelchair` 11-10 23:15 已快进到 e54c8860，第 1–5 步用它就行。第二次审查的修改（轮速判急停、证据新字段）总管复看后再快进一次，第 6 步以前一定要进来；快进只在两段录制之间做。第 9 步还要 `~/wheelchair_coord/field/run_closed_loop.sh`（总管按 D 的闭环准备）。
 2. 关掉面板，在 Orin 的桌面上（NoMachine 看到的就是它）开终端，带当天同意重新打开：`WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<当天> bash ~/wheelchair/scripts/panel`。当天不用再重启；本机硬件配置里没有 `auto_controls` 时它不起任何作用。
+   - 重新打开面板以前，先核对两台雷达的成像参数（11-11 晚 A 试改过，两台断电前停在 int1 = int4 = 800 µs）：`bash $R/reports/lidar_frequency/20261111T1445Z_room/restore/restore_s0.sh`。两台都显示"和原设置一致（含原始配置 78 字节）"才往下做。它不是原设置时会自动改回再核对；第一次读回是什么（800 还是 1600）记下来发给总管，这能说明设置断电后还在不在。详见同目录上一级的 `README.md`。
 3. 有线键盘插到 Orin、固定在车上（见"通用"）。
 4. `sync`。
 
