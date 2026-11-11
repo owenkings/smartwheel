@@ -11,7 +11,7 @@
 ### 2.1 轮控所有者
 - 进程：面板的实时建图或"数据录制"会话带轮反馈、人工驾驶时，会话启动 `python -m wc_runtime.mapping_wheel`（[mapping_wheel.py](../../src/wc_runtime/mapping_wheel.py)），它是这个会话唯一的轮串口所有者。串口用 wc_motion 的 `FeedbackSerialLease` 打开（[feedback_transport.py](../../src/wc_motion/feedback_transport.py)）：共享锁文件加 `flock`、`TIOCEXCL`，再查没有别的进程打开，跨工作区有效。设备 `/dev/smartwheel_zlac8030`（CH34x USB 转 485，115200 波特，从站 1）。
 - 读：每 0.1 s 用 FC03 读一次 0x20AB/0x20AC（两轮实际转速），发布 `/wc_mapping/wheel/feedback_raw` 并写进录包。一次只做一个 RTU 交换，超时 80 ms；出错不重试、不重连，进入 FAULT。
-- 写（只在用户按 WASD 时）：第一次非零按键先做旧程序的初始化：0x200D=3、0x200F=0、0x200E=6，等 0.2 s，速度清零，0x200E=8，等 0.2 s。之后每 0.05 s 用 FC10 写 0x2088/0x2089（左右目标转速，旧程序的比例 8.9 寄存器/rpm）。松键先写零速，连续 3 次读到两轮为 0 才算停稳；空闲后写 0x200E=7 释放伺服，供手推。这些寄存器的含义都来自旧程序，没有独立核实。
+- 写（只在用户按 WASD 时）：第一次非零按键先做旧程序的初始化：0x200D=3、0x200F=0、0x200E=6，等 0.2 s，速度清零，0x200E=8，等 0.2 s。之后每 0.05 s 用 FC10 写 0x2088/0x2089（左右目标转速，旧程序的比例 8.9 寄存器/rpm）。按住键时速度按斜坡走向目标（11-11 加，和自动通道同样的 0.30 m/s²、0.60 m/s²、0.80 rad/s²），松开全部键仍立即写零。松键先写零速，连续 3 次读到两轮为 0 才算停稳；空闲后写 0x200E=7 释放伺服，供手推。这些寄存器的含义都来自旧程序，没有独立核实。
 - 手动输入：RViz 里的 WASD 经本机 Unix socket 进来（同 UID、单客户端、会话编号、递增序号）。按键 0.25 s 没刷新就停，界面心跳 0.25 s 没刷新就停。限速 0.10 m/s、0.20 rad/s；配置上限 0.15 m/s、0.30 rad/s，每轮 30 rpm。可以按 S 后退。细节见[运行限制](../operations/runtime_limits_zh.md)。
 - 退出：会话结束时最多约 0.9 s 等零速停稳；通信出错时只补发一次零速，不当作已确认。会话进程由带 PDEATHSIG 的包装器管理（`wc_runtime/component.py`）：面板退出时先给它发 SIGINT，它写零速、等停稳再退出；宽限时间过了才升级到 SIGTERM、SIGKILL（建图会话的宽限是 120 s）。被 SIGKILL 或卡死时不会再发零速。
 - wc_motion 里另有 [manual_hardware.py](../../src/wc_motion/manual_hardware.py)：独立的 WASD 工具，面板不用。它在实机运行前要一份审定的证据文件，证明命令寄存器和方向、断线停车、零速保持、物理停车和抱闸都实测过，还要回读固件、使能、速度模式、看门狗、停车策略。[证据模板](../../config/wheel_manual_stop_evidence.template.json)至今全是 false 或 null。自动通道要的证据和它一样，只多制动距离。
@@ -145,7 +145,7 @@ flowchart LR
 4. 通电只量电压（开绿色开关，不按 WASD）：直流电压档量 J4 的 X1 对 Xcom（或 X1 对 GND），四种组合各记一次。表笔只碰端子螺丝，不要让 5V 和 GND 碰在一起。
 5. 急停按下时轮子怎么停、复位后会不会自己走：用现有手动通道 0.10 m/s，按住 W 让轮子转，按急停，看轮子是减速后停住保持、立刻停住，还是自由滑转；看 ALM、PWR 灯，录视频记下停车时间。然后两种复位各做一次：先松开 W 再复位急停（手动通道已写零），以及按着 W 复位急停（驱动器还在收原来的速度，这正是自动通道要防的情况），看轮子会不会自己转、复位后要不要重新初始化。每种 3 次。蓝色按钮同样做一遍。
 6. 失联停车：按住 W 让轮子转（0.10 m/s），拔掉 USB 转换器，看驱动器停不停、多久停（轮速反馈这时断了，录视频对时间）。3 次。这一条直接测 2000h 的效果；停不下来就按急停。
-7. 只读回读（第 1 级）：用 `python3 -m wc_motion.driver_readback --project-root ~/wheelchair --label <标签>`。它只发 FC03，寄存器白名单就是下面这些，经轮控用的同一个串口租约独占：面板的轮控占着串口时它拒绝，所以先在面板结束轮控。总管审过、用户当天同意（`WC_DRIVER_READBACK_APPROVAL=APPROVED_BY_USER_<当天 YYYYMMDD>`）再用；先加 `--dry-run` 看一遍要发的请求。读 2000h、2003h（四种组合各一次：`--registers 2003`，每次换一个 `--label`）、2007h、2008h、2011h、2016h–2018h、2084h、2085h、20A0h（软件版本）、20A5h、20A6h（故障码）。只读不写。结果在数据盘 `reports/driver_readback/<UTC>_<标签>/result.json`，记的是原始 16 位值，单位和含义都还要对 8030D 手册。
+7. 只读回读（第 1 级）：用 `python3 -m wc_motion.driver_readback --project-root ~/wheelchair --label <标签>`。它只发 FC03，寄存器白名单就是下面这些，经轮控用的同一个串口租约独占：面板的轮控占着串口时它拒绝，所以先在面板结束轮控。总管审过、用户当天同意（`WC_DRIVER_READBACK_APPROVAL=APPROVED_BY_USER_<当天 YYYYMMDD>`）再用；先加 `--dry-run` 看一遍要发的请求。读 2000h、2003h（四种组合各一次：`--registers 2003`，每次换一个 `--label`）、2007h、2008h、2011h、2016h–2018h、2084h、2085h、20A0h（软件版本）、20A5h、20A6h（故障码）。11-11 为比较左右两轮加了：左电机参数 2030h–2040h、2043h–204Ah，右电机 2060h–2070h、2073h–207Ah（电流上限、速度环和电流环增益、平滑系数、观测器等），2080h–2087h（左右加减速、快速停车减速时间、转矩斜率），20A1h–20A4h（电压、电机状态、霍尔、温度），20ADh–20AEh（左右实际电流）；读完逐项打印左右对照，`result.json` 里是 `left_right`。只读不写。结果在数据盘 `reports/driver_readback/<UTC>_<标签>/result.json`，记的是原始 16 位值，单位和含义都还要对 8030D 手册。
 8. 急停盒的位置：在座下。人在车旁伸手能按到就不挪；够不到再用现有的线挪。
 9. 结束：关绿色开关，`sync`，结果写进证据文件（STAND_TEST 的 estop、usb_unplugged 等记录）。
 

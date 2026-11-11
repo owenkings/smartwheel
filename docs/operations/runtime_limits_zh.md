@@ -33,6 +33,7 @@
 | UI 状态新鲜度 | 500 ms 状态失鲜时清键；本地控制连接恢复后可重新按键，无 10 秒放弃限制 | `mapping_teleop.cpp` |
 | UI 连接重试 | 一次连接或首次状态等待超过 2 秒就放弃本次连接；每 500 ms 继续重试。后端接受连接后 hello 握手限 1 秒 | `mapping_teleop.cpp` → `tick()`；`mapping_wheel.ManualSocket.pump()`；只清键/断开当前客户端，反馈继续，不是整次建图 2 秒或 1 秒时限 |
 | 软件指令速度 | 线速度 0.10 m/s，角速度 0.20 rad/s；配置允许区间分别 0.001–0.15 m/s、0.001–0.30 rad/s。轮指令另有 30 rpm 与有符号 16 位寄存器范围检查 | `hardware_setup.json` → `manual_controls`；`mapping_wheel.velocity_request()` |
+| 按住键时的斜坡（2026-11-11 加） | 从上一次写的速度往按键目标走：线速度加速 0.30 m/s²、减速 0.60 m/s²（W 换 S 时先按减速降到零再反向），角速度 0.80 rad/s²，和自动通道批准的值一样；约 0.33 s 到 0.10 m/s。松开全部键照旧立即写零，不按斜坡减速：没有按着的键就不写非零速度 | `manual_controls` 的 `max_linear_accel_m_s2`、`max_linear_decel_m_s2`、`max_angular_accel_rad_s2`（上限 1.0、2.0、2.0）；`mapping_wheel.MappingWheel.ramped()` |
 | 反馈/控制频率 | 轮反馈目标 10 Hz，控制发送间隔 0.05 秒；发送控制前轮反馈须在 0.25 秒内 | `mapping_wheel.py` → `FEEDBACK_PERIOD_S`、`CONTROL_PERIOD_S`、`FEEDBACK_FRESH_S` |
 | 串口错误 | 建图统一轮适配器实际使用 `min(feedback_timeout_s, 0.08)`，当前 **80 ms**；单独的反馈工具读取配置时是 0.2 秒。CRC/回包不符、断线、超时等真错误进入 `FAULT`，不能靠再次按键消除真实硬件通信故障 | `config/wheel_feedback_current.json` → `timeout_s`；`mapping_wheel.MappingWheel.__init__()` → `self.timeout`、通道校验 |
 | 控制连接边界 | 本机 Unix socket、同 UID、单客户端、会话身份与递增按键序号校验；输入缓冲 8,192 B、单行 4,096 B、每轮最多 8 行、待发送状态 16,384 B。协议错误/溢出拒绝客户端并清键，反馈继续 | `mapping_wheel.py` → `ManualSocket`；不是开放网络驾驶接口 |

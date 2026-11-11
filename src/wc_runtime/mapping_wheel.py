@@ -30,6 +30,10 @@ from wc_motion.protocol import FeedbackError, checked_frame, crc16, parse_exchan
 KEY_TIMEOUT_S = .25
 FEEDBACK_PERIOD_S = .1
 CONTROL_PERIOD_S = .05
+# Held-key ramp (coordinator 2026-11-11, item 2): defaults are the automatic channel's approved limits.
+# (default, upper bound) per manual_controls field.
+MANUAL_RAMP = {'max_linear_accel_m_s2': (.30, 1.), 'max_linear_decel_m_s2': (.60, 2.),
+               'max_angular_accel_rad_s2': (.80, 2.)}
 FEEDBACK_FRESH_S = .25
 DISABLED_REASON = '尚未确认控制器 USB/RS485 物理通信中断时的停车行为；本次只读反馈'
 CONTROL_CONTEXT = 'user_manual_mapping'
@@ -70,7 +74,8 @@ def validate_manual_controls(value=None):
     if not isinstance(value, dict):
         raise FeedbackError('manual_controls must be an object')
     allowed = {'arm_allowed', 'reason', 'max_linear_m_s', 'max_angular_rad_s',
-               'command_rpm_to_register_scale', 'operation_evidence', 'interaction_policy', 'note', '_help'}
+               'command_rpm_to_register_scale', 'operation_evidence', 'interaction_policy', 'note', '_help',
+               *MANUAL_RAMP}
     if set(value) - allowed:
         raise FeedbackError('unknown manual_controls fields')
     value.setdefault('arm_allowed', False)
@@ -79,6 +84,8 @@ def validate_manual_controls(value=None):
     value.setdefault('max_angular_rad_s', .20)
     value.setdefault('command_rpm_to_register_scale', 8.9)
     value.setdefault('interaction_policy', 'explicit_push')
+    for name, (default, _) in MANUAL_RAMP.items():
+        value.setdefault(name, default)
     if value['interaction_policy'] not in ('explicit_push', 'hybrid_manual'):
         raise FeedbackError('interaction_policy must be explicit_push or hybrid_manual')
     if type(value['arm_allowed']) is not bool or not isinstance(value['reason'], str):
@@ -86,6 +93,8 @@ def validate_manual_controls(value=None):
     bounded(value['max_linear_m_s'], 'manual linear limit', .001, .15)
     bounded(value['max_angular_rad_s'], 'manual angular limit', .001, .3)
     bounded(value['command_rpm_to_register_scale'], 'legacy command register/rpm scale', .01, 100)
+    for name, (_, cap) in MANUAL_RAMP.items():
+        bounded(value[name], 'manual ' + name, .01, cap)
     if value['arm_allowed'] and (not isinstance(value.get('operation_evidence'), dict) or
             value['operation_evidence'].get('status') != 'USER_REPORTED_LEGACY_OPERATION'):
         raise FeedbackError('manual operation must retain its user-reported evidence classification')
@@ -282,6 +291,8 @@ class MappingWheel:
         self.servo_release_acknowledged = False
         self.published_feedback_count = self.publication_failures = 0
         self.closed = self.closing = False
+        # Last written held-key command (linear, angular) and its write time; zero again after every stop.
+        self.drive_command, self.drive_written_at = (0., 0.), None
         self.auto = None  # optional automatic control source (mapping_auto); None keeps manual-only behaviour
 
     def _log(self, record, *, required=True):
@@ -305,6 +316,8 @@ class MappingWheel:
         normal_release = reason == 'ALL_KEYS_RELEASED' and self.hybrid_manual and self._ui_fresh()
         self.keys.clear()
         self.last_keys = None
+        # Every disarm ends in a zero write (or there was no motion): the next held key ramps up from standstill.
+        self.drive_command, self.drive_written_at = (0., 0.), None
         self.arm_generation += 1
         self.reason = reason
         if self.state != 'FAULT':
@@ -451,6 +464,21 @@ class MappingWheel:
         return ((int('w' in self.keys)-int('s' in self.keys))*self.control['max_linear_m_s'],
                 (int('a' in self.keys)-int('d' in self.keys))*self.control['max_angular_rad_s'])
 
+    def ramped(self, target, now):
+        """Next held-key command: from the last written one toward the key target at the manual_controls rates.
+
+        Linear speeds up at max_linear_accel and slows down (also through zero, W to S) at max_linear_decel;
+        angular moves at max_angular_accel. Releasing every key still writes zero at once (no nonzero write
+        without a held key), so the ramp only shapes starts and changes between held keys."""
+        dt = CONTROL_PERIOD_S if self.drive_written_at is None else min(max(now-self.drive_written_at, 0.), .1)
+        linear, angular = self.drive_command
+        faster = abs(target[0]) > abs(linear) and target[0]*linear >= 0
+        step = self.control['max_linear_accel_m_s2' if faster else 'max_linear_decel_m_s2']*dt
+        linear += max(-step, min(step, target[0]-linear))
+        turn = self.control['max_angular_accel_rad_s2']*dt
+        angular += max(-turn, min(turn, target[1]-angular))
+        return (0. if abs(linear) < 1e-9 else linear), (0. if abs(angular) < 1e-9 else angular)
+
     def _guard(self, *, initialization=False, expected=None):
         self.before_control()
         now = self.clock()
@@ -520,6 +548,7 @@ class MappingWheel:
 
     def _stop(self):
         self.stop_requested = False
+        self.drive_command, self.drive_written_at = (0., 0.), None
         if not self.channel.motion_may_exist and not self.push_mode_requested:
             return
         if self.channel.failed:
@@ -629,8 +658,11 @@ class MappingWheel:
                     self.keys.clear()
                     self.stop_requested = self.channel.motion_may_exist
                 else:
-                    self.channel.exchange(velocity_request(self.wheel, self.control, *target), self.timeout,
+                    command = self.ramped(target, now)
+                    # The guard checks the held keys' target; the ramp only decides how far toward it to go.
+                    self.channel.exchange(velocity_request(self.wheel, self.control, *command), self.timeout,
                                           guard=lambda: self._guard(expected=target))
+                    self.drive_command, self.drive_written_at = command, self.clock()
                     self.next_command = self.clock()+CONTROL_PERIOD_S
                     self.reason = 'USER_KEYBOARD_INTENT'
         except Superseded:

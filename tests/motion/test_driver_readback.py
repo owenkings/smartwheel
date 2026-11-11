@@ -70,7 +70,8 @@ def test_whitelist_is_the_design_list_and_only_exact_fc03_reads_of_slave_1_pass(
     entries = dr.plan()
     assert [(start, count) for start, count, _, _ in entries] == [
         (0x2000, 1), (0x2003, 1), (0x2007, 1), (0x2008, 1), (0x2011, 1), (0x2016, 3),
-        (0x2084, 1), (0x2085, 1), (0x20A0, 1), (0x20A5, 1), (0x20A6, 1)]
+        (0x2084, 1), (0x2085, 1), (0x20A0, 1), (0x20A5, 1), (0x20A6, 1),
+        (0x2030, 17), (0x2043, 8), (0x2060, 17), (0x2073, 8), (0x2080, 8), (0x20A1, 4), (0x20AD, 2)]
     assert all(request == read_request(1, start, count) and dr.whitelisted(request) == (start, count)
                for start, count, _, request in entries)
     write = bytes((1, 6, 0x20, 0x0e, 0, 8)); write += crc16(write)
@@ -115,7 +116,7 @@ def test_transport_failure_stops_the_run_without_retry(second, match):
     finally:
         driver.close()
     assert error.startswith('2003h') and match in error and lease.failed
-    assert [row['status'] for row in reads] == ['WORDS', 'TRANSPORT_FAILED'] + ['NOT_READ']*9
+    assert [row['status'] for row in reads] == ['WORDS', 'TRANSPORT_FAILED'] + ['NOT_READ']*16
     assert driver.requests == [entries[0][3], entries[1][3]]
 
 
@@ -146,7 +147,7 @@ def cli(root, *extra, environ=None):
 def test_dry_run_missing_or_stale_approval_and_other_registers_never_open_the_port(tmp_path, no_port, capsys):
     assert cli(tmp_path, '--dry-run') == 0
     printed = capsys.readouterr().out
-    assert '01 03 20 03 00 01' in printed and 'nothing sent' in printed and printed.count(' x') == 11
+    assert '01 03 20 03 00 01' in printed and 'nothing sent' in printed and printed.count(' x') == 18
     assert cli(tmp_path) == 2
     assert cli(tmp_path, environ={dr.APPROVAL_ENV: 'APPROVED_BY_USER_20261110'}) == 2
     assert 'APPROVED_BY_USER_20261111' in capsys.readouterr().out
@@ -198,15 +199,44 @@ def test_cli_writes_a_result_for_a_refused_port_and_for_a_complete_run(tmp_path,
         driver.close()
     result = json.loads((folders[1]/'result.json').read_text(encoding='utf-8'))
     assert result['status'] == 'COMPLETE' and result['error'] is None and result['approval'] == 'APPROVED_BY_USER_20261111'
-    assert result['function_codes_sent'] == [3] and result['control_transmissions'] == 0 and len(result['reads']) == 11
-    assert result['reads'][-1]['status'] == 'MODBUS_EXCEPTION' and result['device_id'] == leases[1].config['device_id']
+    assert result['function_codes_sent'] == [3] and result['control_transmissions'] == 0 and len(result['reads']) == 18
+    by_start = {row['start_register']: row for row in result['reads']}
+    assert by_start['20A6h']['status'] == 'MODBUS_EXCEPTION' and result['device_id'] == leases[1].config['device_id']
     assert driver.requests == [entry[3] for entry in entries] and leases[1].closed
+    # the scripted answers count up from each block's low byte, so every left/right pair differs
+    assert len(result['left_right']) == 33 and not any(pair['equal'] for pair in result['left_right'])
+    printed = capsys.readouterr().out
     # each read shows how long it took: the owner's own readback at session start waits at most 0.1 s
-    assert re.search(r'^2000h  0x[0-9A-F]{4}\(\d+\)  \d+\.\d ms$', capsys.readouterr().out, re.M)
+    assert re.search(r'^2000h  0x[0-9A-F]{4}\(\d+\)  \d+\.\d ms$', printed, re.M)
+    assert re.search(r'^  velocity loop Ki +203Dh +61  != +109  206Dh$', printed, re.M)
+    assert '33 of 33 per-wheel items differ' in printed
     lock.seek(0)
     note = json.loads(lock.read())
-    assert note['purpose'] == 'driver_readback_fc03_only' and len(note['request_hex']) == 11
+    assert note['purpose'] == 'driver_readback_fc03_only' and len(note['request_hex']) == 18
     lock.close()
+
+
+def test_left_right_table_pairs_block_words_and_bytes_and_skips_what_was_not_read():
+    def row(start, values, status='WORDS'):
+        return {'start_register': '%04Xh' % start, 'status': status, 'words_u16': list(values)}
+    left = list(range(100, 117))
+    right = list(left)
+    right[0x0d] = 300   # velocity loop Ki differs
+    reads = [row(0x2030, left), row(0x2060, right), row(0x2080, [500, 500, 500, 600, 10, 10, 300, 300]),
+             row(0x20A1, [4800, 0x0100, 0x0305, 0x1E21]), row(0x20AD, [12, 65530]),
+             {'start_register': '2043h', 'status': 'MODBUS_EXCEPTION', 'exception_code': 2}]
+    pairs = {pair['name']: pair for pair in dr.wheel_pairs(reads)}
+    assert pairs['velocity loop Ki'] == {'name': 'velocity loop Ki', 'left_register': '203Dh',
+                                         'right_register': '206Dh', 'left': 113, 'right': 300, 'equal': False}
+    assert pairs['velocity loop Kp']['equal'] and pairs['maximum current']['left'] == 104
+    assert not pairs['deceleration time']['equal'] and pairs['acceleration time']['equal']
+    assert (pairs['motor state']['left'], pairs['motor state']['right']) == (1, 0)
+    assert (pairs['motor temperature']['left'], pairs['motor temperature']['right']) == (0x1E, 0x21)
+    assert pairs['motor temperature']['left_register'] == '20A4h high byte'
+    assert (pairs['actual torque (current)']['left'], pairs['actual torque (current)']['right']) == (12, 65530)
+    # 2043h answered with an exception and 2073h was not read: those items are left out, not guessed
+    assert 'motor poles' not in pairs and 'initial velocity, velocity mode' not in pairs
+    assert len(pairs) == 17 + 4 + 4
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux PTY/termios acceptance, no real serial device')
