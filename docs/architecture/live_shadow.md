@@ -322,6 +322,7 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
   - 闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s，命令超时 0.5 s。
   - 平滑器反馈开环、`velocity_timeout` 0.3 s（B 的 `PlanningChoice(smoother_feedback="open_loop", smoother_timeout_s=0.3)`）；`--monitor-base-shift off`；起点检查 block（也可以更严的 strict）。这些是总管 2026-11-10 14:40 定的，给别的值命令拒绝启动。
 - 启动顺序：Nav2 读回 → 桥 → 闸门（闭环配置）→ 目标。
+  - Nav2 读回之外，闭环另核对两个转向速度（窗口 B 2026-11-10 提醒，它们不在 Nav2 的读回清单里）：controller_server 的 `FollowPath.rotate_to_heading_angular_vel`（RPP 原地转向）和 behavior_server 的 `max_rotational_vel`（Spin）。期望值取自这次写出的参数，两者都不能超过 0.30 rad/s，否则不启动。读回不一致时运行停止，和其他读回项一样。
   - 起桥后，要等 `base_status`、`enable`、`estop` 都有发布者，并收到第一条 `base_status`（阶段 `bridge_ready`），才起闸门。
   - 监督进程不建 `/wc_nav/enable` 发布者。
 - 点“开始自动”之前的一段代替单独的实车影子：
@@ -359,6 +360,30 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
   - 开始自动后第一次非零速度晚了约 7 s。录包里的车是人推着走的，目标节点按 advance radius 换目标，Nav2 有几秒没出指令（COMMAND_STALE），接着 AMCL 修正突变，闸门停了 3 s（MAP_CORRECTION_CHANGING_FAST）。这是录包回放才有的情况；现场车站着，目标不换。
 - 更早的一次（`…090604Z_shadow_51bc2451`，目标等闸门就绪才发、平滑器 gated）也没有违反核对，那一版已按总管 14:40 改掉。
-- 这次没有覆盖的：A 真的轮控所有者（进自动的全部条件、驱动器初始化、轮速判出的急停）。A 正在做假串口的轮控入口，给出来后再跑一遍。
+- 这次没有覆盖 A 真的轮控所有者，见下一段。
+
+用 A 真的轮控所有者再跑一次（2026-11-11，集成点 6 加 11418729，`reports/navigation_live_shadow/20261110T164407Z_shadow_6dc85a9e`）：
+- 轮控所有者是窗口 A 的 `wc_runtime.auto_dry_run.DryRun`：车上用的 MappingWheel、自动控制源和 `auto.sock`，只有串口换成模拟驱动器（socket pair），面板换成 50 ms 一次的界面心跳；不开设备、不起 ROS。状态里 `dry_run: true`。
+- 操作员由脚本按面板的方式发包（开始自动、停止自动、软件急停）。另外注入两种故障：轮控所有者 1 s 不发状态（桥因此停发使能）；模拟驱动器的急停（不管写什么，两轮滑到零，和车上急停只作用在驱动器上一样）。
+- 桥和现场一样不加 `--dry-run`，由闭环命令自己起；命令另给了窗口 C 的 `--monitor-slow-margin 0.15`。
+- 时间从闸门第一个决定算起：10 s 开始；20 s 状态停 1 s；30 s 软件急停（按 1 s）；35 s 再开始；45 s 起，等车在动时按下驱动器急停（按 2 s）；55 s 再开始；65 s 停止自动；70 s 再开始；80 s 扫描进程暂停 2 s；90 s 杀掉桥。
+- 结果：
+  - 闸门发了 1801 个决定，轮控所有者全部接受，违反 0 次，拒绝开始 0 次。非零速度只在 ACTIVE；最大 0.10 m/s、0.30 rad/s；决定到达时最老 0.013 s；桥转发 1800 条，丢弃 0 条。
+  - 开始前 201 个决定都是 DISABLED。读回里两个转向速度都是 0.30。
+
+    | 情况 | 闸门和轮控所有者 |
+    |---|---|
+    | 开始自动 | 轮控所有者先做驱动器初始化（0.44 s）进 AUTO；闸门 0.10 s 后 BASE_NOT_READY，0.60 s 后 ACTIVE，0.90 s 后轮控所有者第一次写非零速度 |
+    | 停发使能 | 0.40 s 后 BASE_NOT_READY（BASE_STATUS_STALE），0.80 s 后 ENABLE_STALE；轮控所有者留在 AUTO，闸门停车后 0.41 s 内按自己的减速度减到零；状态恢复后 0.10 s 重新 ACTIVE |
+    | 软件急停 | 轮控所有者 0.02 s 内写零、退出自动；0.15 s 后闸门 ESTOP_LATCHED |
+    | 急停后再开始 | 轮控所有者等闸门解锁（start pending），0.14 s 后进 AUTO，0.30 s 后 ACTIVE |
+    | 驱动器急停（车在原地转，0.21 rad/s） | 0.89 s 后轮控所有者判出 WHEELS_STOPPED_WHILE_COMMANDED，立即写零、退出自动，报急停约 0.5 s；0.93 s 后闸门 ESTOP_LATCHED。松开驱动器急停后轮子不动 |
+    | 驱动器急停后再开始 | 闸门解锁，轮控所有者重新初始化后进 AUTO，0.70 s 后 ACTIVE |
+    | 停止自动 | 0.10 s 后 DISABLED，轮控所有者按减速度停，1.04 s 后回到 NONE |
+    | 再开始 | 0.20 s 后 ACTIVE |
+    | 闸门停车（扫描暂停 2 s） | 1.00 s 后 LOCALIZATION_UNTRUSTED（MAP_TO_BASE_TF_STALE），轮控所有者留在 AUTO、指令为零。扫描恢复后 AMCL 修正突变，闸门按规则又停 3 s，6.9 s 后重新 ACTIVE |
+    | 桥退出（SIGKILL） | 0.05 s 后轮控所有者发现断开，按减速度停，0.14 s 内指令到零；监督进程停下全部进程，result.json 记 INCOMPLETE、error “base_bridge exited with -9”，没有残留进程 |
+
+- 这次没有覆盖的：真的驱动器和串口（速度换算、通讯中断、急停的接法），要靠现场步骤单的架空和落地测试。
 
 返回[系统设计](README.md)。

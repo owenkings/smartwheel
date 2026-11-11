@@ -192,12 +192,15 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
   WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<今天，YYYYMMDD> \
   bash scripts/navigation_live_shadow shadow --source vehicle --sensor-domain 83 --closed-loop \
   --panel-root /home/nvidia/wheelchair --session-root <面板会话目录> --session-id <会话编号> \
-- 按一次 Ctrl-C 结束；运行后核对结果，面板录包不是 PARTIAL。
-- 闭环（第 13–16 条）：另要今天的 `WC_AUTO_DRIVE_APPROVAL` 和开了自动控制源的面板会话；先站着看状态行，再点“开始自动”。
-
-## 实车闭环（--closed-loop，第一次闭环）2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107
+  --cell <冻结目录> --hardware-setup <冻结目录>/hardware_setup.json --gyro-bias <零偏文件> \
+  --map <map_nav.yaml> --initial-pose X Y YAW_DEG --goal X Y YAW_DEG \
+  --footprint 0.81 0.2425 0.2 0.35 -0.255 0.35 -0.255 -0.35 0.2 -0.35 0.81 -0.2425 --footprint-source MEASURED_20261107 \
+  --monitor-base-shift off
 ```
 
+- 面板会话的 `--session-root`、`--session-id`：用窗口 A 的 `python3 -s -m wc_runtime.auto_operator --project-root /home/nvidia/wheelchair session` 查，它打印正在录制、开了自动控制源的会话，格式就是 `--session-root … --session-id …`。
+- 底盘桥由这个命令自己起，不要另起 `wc_motion.auto_bridge`：两个桥会让闸门停在 `DISABLED(ENABLE_SOURCE_AMBIGUOUS)`。
+- 其他选项照影子的写法，例如窗口 C 的 `--monitor-slow-margin M`（碰撞监控减速框伸出车头多远）可以一起给。`--monitor-base-shift` 只能是 off，不给时也按 off。
 - 启动前命令自己查：`WC_AUTO_DRIVE_APPROVAL` 的日期是今天；域 100；面板会话的 `auto.sock` 存在。会话没开自动控制源时没有这个 socket，命令直接拒绝。
 - 固定值（总管 2026-11-10 14:40）：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、`velocity_timeout` 0.3 s；`--monitor-base-shift off`；`--start-check` 默认 block（也可以给更严的 strict）。给了别的值，命令拒绝启动。
 - 起来以后先让车站着跑约 30 s，看每秒一行的“闭环状态”。这一段代替单独的实车影子：目标已经发出，Nav2 照常规划、出指令，闸门因为没有使能输出零。
@@ -220,5 +223,6 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
 - 起点在已建图区域；初始位姿带不小于 0.25 m、8.6° 的标准差，车头朝向和给定航向一致。
 - 目标；记录空间。
 - 按一次 Ctrl-C 结束；运行后核对结果，面板录包不是 PARTIAL。
+- 闭环（检查单第 13–16 条）：另要今天的 `WC_AUTO_DRIVE_APPROVAL` 和开了自动控制源的面板会话；先站着看状态行，再点“开始自动”。
 
 返回[操作导航](README.md)。
