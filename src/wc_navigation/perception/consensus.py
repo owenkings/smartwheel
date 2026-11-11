@@ -99,6 +99,12 @@ class Witness:
         through = (np.isin(codes, self.free) if len(self.free) else np.zeros(len(codes), dtype=bool)) & ~hit
         return float(through.mean()), float(hit.mean())
 
+    def seen_through(self, points_base, min_share, hit_veto):
+        """True when the other lidar saw through at least ``min_share`` of the cluster's voxels and hit fewer than
+        ``hit_veto`` of them (``obstacle_cloud`` stage ``seen_through``)."""
+        through, hit = self.shares(points_base)
+        return through >= min_share and hit < hit_veto
+
 
 class BoxWitness(Witness):
     """``Witness`` with the same verdicts, answered around each queried cluster only (used by the live input).
@@ -130,6 +136,7 @@ class BoxWitness(Witness):
         else:
             self._unit, self._reach, self._samples = np.zeros((0, 3)), np.zeros(0), np.zeros(0)
         self._returns = np.floor(p / self.voxel).astype(np.int64)
+        self._return_codes = np.unique(_codes(self._returns)) if len(p) else np.zeros(0, dtype=np.int64)
 
     def _crossing(self, lo, hi):
         """Rays whose sampled segment [first sample, reach] can enter the box of voxels lo..hi."""
@@ -146,21 +153,28 @@ class BoxWitness(Witness):
         return np.flatnonzero((enter <= leave) & (leave >= self._samples[0] - self._PAD_M)
                               & (enter <= self._reach + self._PAD_M))
 
-    def shares(self, points_base):
+    def _hit(self, points_base):
+        """(voxel keys, codes, box lo, box hi, hit per voxel) of a cluster; None for an empty one."""
         if not hasattr(self, "_unit"):
             self._prepare()
         keys = np.unique(np.floor(np.asarray(points_base, dtype=float).reshape(-1, 3) / self.voxel).astype(np.int64),
                          axis=0)
         if not len(keys):
-            return 0.0, 0.0
+            return None
         codes = _codes(keys)
         lo, hi = keys.min(axis=0), keys.max(axis=0)
-        near = np.all((self._returns >= lo - 1) & (self._returns <= hi + 1), axis=1)
-        if near.any():
-            grown = (self._returns[near][:, None, :] + self._GROW[None, :, :]).reshape(-1, 3)
-            hit = np.isin(codes, np.unique(_codes(grown)))
-        else:
-            hit = np.zeros(len(codes), dtype=bool)
+        # a voxel is hit when one of the other lidar's returns lies in it or next to it (as Witness.occupied): look
+        # up the 27 neighbours of each voxel among the returns' voxels (the neighbourhood is symmetric)
+        hit = np.zeros(len(codes), dtype=bool)
+        known = self._return_codes
+        if len(known):
+            for offset in self._GROW:
+                query = _codes(keys + offset)
+                at = np.minimum(np.searchsorted(known, query), len(known) - 1)
+                hit |= known[at] == query
+        return keys, codes, lo, hi, hit
+
+    def _through(self, codes, lo, hi, hit):
         through = np.zeros(len(codes), dtype=bool)
         if len(self._unit):
             chosen = self._crossing(lo, hi)
@@ -172,7 +186,25 @@ class BoxWitness(Witness):
                 sample_keys = sample_keys[np.all((sample_keys >= lo) & (sample_keys <= hi), axis=1)]
                 if len(sample_keys):
                     through = np.isin(codes, _codes(sample_keys)) & ~hit
-        return float(through.mean()), float(hit.mean())
+        return through
+
+    def shares(self, points_base):
+        found = self._hit(points_base)
+        if found is None:
+            return 0.0, 0.0
+        _, codes, lo, hi, hit = found
+        return float(self._through(codes, lo, hi, hit).mean()), float(hit.mean())
+
+    def seen_through(self, points_base, min_share, hit_veto):
+        """The decision of ``Witness.seen_through``; a cluster the other lidar hit often enough (walls, real objects)
+        is answered from the returns next to its box, without sampling the rays that cross the box."""
+        found = self._hit(points_base)
+        if found is None:
+            return 0.0 >= min_share and 0.0 < hit_veto        # as Witness for the shares (0, 0) of no voxels
+        _, codes, lo, hi, hit = found
+        if hit.mean() >= hit_veto:
+            return False
+        return self._through(codes, lo, hi, hit).mean() >= min_share
 
 
 class Recent:

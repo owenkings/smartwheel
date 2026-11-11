@@ -104,6 +104,74 @@ def test_witness_removes_what_it_saw_through_and_keeps_what_it_also_hit():
     assert stats["removed_contradicted"] == 0 and stats["removed_floating"] == 0 and len(kept) > 0
 
 
+def _through(points_base, other_lever, reach_m=6.0):
+    """A witness whose rays pass through every given point to returns ``reach_m`` from the other lidar."""
+    d = points_base - other_lever
+    return Witness(other_lever + reach_m * d / np.linalg.norm(d, axis=1)[:, None], other_lever)
+
+
+OTHER = np.array([0.41173, -0.23331, 0.55265])        # right lidar in base_link (frozen mount)
+
+
+def test_witness_scope_all_drops_a_supported_cluster_the_other_lidar_saw_through():
+    # a phase-wrap ghost hangs above the floor; low enough above the visible floor, stage 5 calls it supported
+    ghost = block(1.9, 1.94, 0.0, 0.15, 0.27, 1.0, step=0.03)
+    assert len(ghost) <= ObstacleFilter().unsupported_max_points
+    witness = _through(base_of(ghost), OTHER)
+    kept, stats = filter_points(ghost, LEVER, witness=witness)
+    assert len(kept) > 0 and stats["removed_contradicted"] == 0 and "removed_seen_through" not in stats
+    cfg = ObstacleFilter(witness_scope="all")
+    result = filter_frame(ghost, LEVER, cfg, witness=witness, clearing=True, scan=True)
+    stats = result["stats"]
+    assert len(result["points"]) == 0 and stats["removed_seen_through"] > 0 and stats["clusters_judged_by_witness"] == 1
+    assert not np.isfinite(result["scan"]).any() and len(result["rays"]) == 0
+    # the same cluster hit by the other lidar is real and stays; without a witness nothing is judged
+    kept, stats = filter_points(ghost, LEVER, cfg, witness=Witness(base_of(ghost), OTHER))
+    assert len(kept) > 0 and stats["removed_seen_through"] == 0
+    kept, stats = filter_points(ghost, LEVER, cfg)
+    assert len(kept) > 0 and stats["removed_seen_through"] == 0 and stats["clusters_judged_by_witness"] == 0
+
+
+def test_witness_scope_all_keeps_what_stands_on_the_floor_and_large_clusters():
+    cfg = ObstacleFilter(witness_scope="all")
+    # standing on the floor near the chair, seen through anyway (a wrong far reading of the other lidar)
+    near = block(1.9, 1.94, 0.0, 0.3, 0.06, 1.0, step=0.03)
+    kept, stats = filter_points(near, LEVER, cfg, witness=_through(base_of(near), OTHER))
+    assert len(kept) > 0 and stats["removed_seen_through"] == 0 and stats["clusters_judged_by_witness"] == 0
+    # 2.4 m from the lidar stage 3 drops everything below 0.5 m, yet the legs still show it stands on the floor
+    far = block(2.7, 2.76, -0.1, 0.2, 0.0, 1.6, step=0.03)
+    kept, stats = filter_points(far, LEVER, cfg, witness=_through(base_of(far), OTHER))
+    assert stats["removed_far_low"] > 0 and len(kept) > 0 and stats["removed_seen_through"] == 0
+    # more points than unsupported_max_points: never judged
+    big = block(1.9, 1.99, -0.5, 0.5, 0.27, 1.0, step=0.03)
+    assert len(big) > cfg.unsupported_max_points
+    kept, stats = filter_points(big, LEVER, cfg, witness=_through(base_of(big), OTHER))
+    assert len(kept) > 0 and stats["removed_seen_through"] == 0 and stats["clusters_judged_by_witness"] == 0
+
+
+def test_witness_scope_all_keeps_a_person_the_other_lidar_partly_sees_past():
+    person = block(1.9, 2.1, 0.0, 0.3, 0.0, 1.6, step=0.03)
+    pb = base_of(person)
+    edge = pb[pb[:, 1] > 0.24]                                      # the other lidar sees past one side of it
+    returns = np.vstack([pb[pb[:, 1] <= 0.24], _through(edge, OTHER)._inputs[0]])
+    kept, stats = filter_points(person, LEVER, ObstacleFilter(witness_scope="all"), witness=Witness(returns, OTHER))
+    assert stats["removed_seen_through"] == 0 and len(kept) > 0
+
+
+def test_witness_scope_setting():
+    assert ObstacleFilter().witness_scope == "unsupported" and "witness_scope" not in ObstacleFilter().as_dict()
+    assert ObstacleFilter(witness_scope="all").as_dict()["witness_scope"] == "all"
+    assert ObstacleFilter(**ObstacleFilter(witness_scope="all").as_dict()).witness_scope == "all"
+    assert "seen_through" not in ObstacleFilter().stage_order
+    assert "seen_through_floor_m" not in ObstacleFilter().as_dict()
+    assert ObstacleFilter(witness_scope="all").as_dict()["seen_through_floor_m"] == 0.25
+    order = ObstacleFilter(witness_scope="all").stage_order
+    assert order.index("floating") < order.index("seen_through") < order.index("transient")
+    for bad in ({"witness_scope": "everything"}, {"seen_through_floor_m": 0.05}, {"seen_through_floor_m": 1.5}):
+        with pytest.raises(ValueError):
+            ObstacleFilter(**bad)
+
+
 def test_clearing_rays_stop_short_of_surfaces_and_of_the_floor_layer():
     wall = block(4.0, 4.0, -0.5, 0.5, 0.3, 1.2, step=0.05)
     ground = floor(1.6, 3.5, -0.5, 0.5, step=0.05)

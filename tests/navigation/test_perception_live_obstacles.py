@@ -52,18 +52,28 @@ def test_box_witness_gives_the_same_shares_as_the_witness(seed):
     clusters += [axis[3:6] + [0.0, 0.0, 0.01], axis[-2:], np.zeros((0, 3)), returns[:5]]
     for points in clusters:
         assert fast.shares(points) == slow.shares(points)
+        for min_share, veto in ((0.5, 0.3), (0.0, 1.0), (1.0, 0.0), (0.3, 0.5)):
+            assert fast.seen_through(points, min_share, veto) == slow.seen_through(points, min_share, veto)
     assert BoxWitness(np.zeros((0, 3)), other).shares(clusters[0]) == (0.0, 0.0)
+    assert not BoxWitness(np.zeros((0, 3)), other).seen_through(clusters[0], 0.5, 0.3)
+    assert not BoxWitness(returns, other).seen_through(np.zeros((0, 3)), 0.5, 0.3)
 
 
-def test_filter_frame_is_the_same_with_either_witness():
+@pytest.mark.parametrize("scope", ["unsupported", "all"])
+def test_filter_frame_is_the_same_with_either_witness(scope):
     rng = np.random.default_rng(7)
     cloud = scene(LEFT, rng)
-    other = scene(RIGHT, rng, ghost=False).astype(float) + RIGHT
-    cfg = ObstacleFilter()
+    wrap = block(2.6, 2.63, -0.1, 0.2, 0.27, 1.0, LEFT)         # a supported phase-wrap ghost in the corridor
+    cloud = np.vstack([cloud, wrap.astype(np.float32)])
+    wb = wrap + LEFT
+    seen_past = RIGHT + 6.0 * (wb - RIGHT) / np.linalg.norm(wb - RIGHT, axis=1)[:, None]
+    other = np.vstack([scene(RIGHT, rng, ghost=False).astype(float) + RIGHT, seen_past])
+    cfg = ObstacleFilter(witness_scope=scope)
     body = body_outline(MEASURED)
     a = filter_frame(cloud, LEFT, cfg, body, Witness(other, RIGHT), clearing=True, scan=True)
     b = filter_frame(cloud, LEFT, cfg, body, BoxWitness(other, RIGHT), clearing=True, scan=True)
     assert a["stats"] == b["stats"] and a["stats"]["removed_contradicted"] > 0
+    assert (a["stats"].get("removed_seen_through", 0) > 0) == (scope == "all")
     for key in ("points", "rays", "scan"):
         np.testing.assert_array_equal(a[key], b[key])
 
