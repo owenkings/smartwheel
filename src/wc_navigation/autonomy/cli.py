@@ -53,6 +53,15 @@ def arguments(argv=None):
     common.add_argument("--max-angular", type=_positive, default=0.50)
     common.add_argument("--odometry-error", choices=["wheel_imu", "wheel_only", "ideal"], default="wheel_imu",
                         help="simulated odometry error model (default: wheel distance + gyro heading)")
+    # window C's collision-monitor options of the shadow runs (perception/shadow_cli_options.py), here so the
+    # simulation can use the live closed-loop monitor (base shift off, 0.15 m slowdown box); defaults unchanged
+    from ..perception import shadow_cli_options
+    shadow_cli_options._add_monitor_base_shift(common)
+    from .kinematics import DRIVE_RESPONSES                      # window B: measured wheel response (kinematics.py)
+    common.add_argument("--drive-response", choices=["ideal", *sorted(DRIVE_RESPONSES)], default="ideal",
+                        help="ideal (default): the base follows the command through its acceleration limits; "
+                             "zlac8030d_20261111: the chair's wheels as measured on 11-11 (wheel owner ramps, lag, "
+                             "slow start, the right wheel's shortfall when turning in place and its overshoot after)")
     common.add_argument("--real-time-factor", type=_positive, default=1.0)
     common.add_argument("--max-duration", type=_positive, default=900.0, help="simulated seconds for the task")
     common.add_argument("--seed", type=int, default=1)
@@ -178,9 +187,11 @@ def build_config(args):
     from .ros_util import compose, inverse
     from .world import CircleObstacle, LaserModel, auto_start, map_world, synthetic_world
     from ..planning.options import body_model_label
+    from ..perception import shadow_cli_options
     profile = NavProfile(radius_m=args.assumed_radius, margin_m=args.margin,
                          max_linear=args.max_linear, max_angular=args.max_angular,
-                         footprint=getattr(args, "footprint", None) or ())
+                         footprint=getattr(args, "footprint", None) or (),
+                         **shadow_cli_options._base_shift_field(args))
     obstacles = [list(o) for o in args.obstacle]
     for o in obstacles:
         CircleObstacle(*o)
@@ -193,6 +204,10 @@ def build_config(args):
               "seed": args.seed, "simulation_only": True, "hardware_control": False}
     if getattr(args, "gate_options", None):
         config["gate_options"] = dict(args.gate_options)   # GateConfig fields of the covariance mode (window D)
+    from .kinematics import drive_response_config         # window B: --drive-response (runs without it unchanged)
+    drive = drive_response_config(getattr(args, "drive_response", "ideal"))
+    if drive:
+        config["drive_response"] = drive
     if args.mode == "explore":
         if args.world:
             world, default_start = synthetic_world(args.world, obstacles)
@@ -300,6 +315,10 @@ def summarize(config, report, output):
     recorded = report.pop("recorded", {})
     rows = recorded.get("rows", [])
     metrics.write_trajectory(output / "trajectory.csv", rows)
+    plans = recorded.get("plans") or []             # window B: global plans (replanning and side-flip counts)
+    if plans:
+        with (output / "plans.json").open("x", encoding="utf-8") as stream:
+            json.dump({"frame": plans[0].get("frame"), "plans": plans}, stream)
     with (output / "events.jsonl").open("x", encoding="utf-8") as stream:
         for event in recorded.get("events", []):
             stream.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -314,6 +333,10 @@ def summarize(config, report, output):
                                                        body=body),
               "collisions": {"count": int(sim.get("collisions", 0)), "events": collisions},
               "distance_m": sim.get("distance_m"), "gate": {"final": gate, "tick_period_s": 0.05}}
+    if sim.get("drive_response"):                   # window B: --drive-response (wheel owner would stop on overspeed)
+        result["drive_response"] = sim["drive_response"]
+    if plans:
+        result["plans"] = {"count": len(plans), "file": str(output / "plans.json")}
     goals_plot = []
     map_layer = None
     if config["mode"] == "explore":

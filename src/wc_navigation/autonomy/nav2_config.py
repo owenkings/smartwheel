@@ -316,7 +316,7 @@ def _costmap(profile, *, global_map, inflate_around_unknown, plugins=None):
 
 
 def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fallback_planner=False,
-                      rescue_planner=False):
+                      rescue_planner=False, replanning="periodic"):
     """Replanning tree without Spin or BackUp recoveries.
 
     The wheelchair has no rear range sensor, so reversing is never used, and an
@@ -326,12 +326,18 @@ def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fa
     how long. With ``fallback_planner`` a second planner plugin named
     ``Fallback`` is asked only when ``GridBased`` finds no path; with
     ``rescue_planner`` a last one named ``Rescue`` only when all before it
-    found none (window B, planning/stack.py).
+    found none. ``replanning`` "periodic" plans again every second;
+    "on_invalid" keeps the path while the goal is unchanged and IsPathValid
+    (Humble: the padded outline along the path touches no lethal cell) holds,
+    as in Humble's navigate_w_replanning_only_if_path_becomes_invalid.xml
+    (window B, planning/stack.py).
     """
     retries = int(recovery_retries)
     wait = float(wait_s)
     if not 0 <= retries <= 20 or not 0.5 <= wait <= 30.0:
         raise ValueError("recovery retries must be 0..20 and the wait 0.5..30 s")
+    if replanning not in ("periodic", "on_invalid"):
+        raise ValueError("replanning must be periodic or on_invalid")
     wait_text = ("%g" % wait)
     if through_poses:
         template = '<ComputePathThroughPoses goals="{{goals}}" path="{{path}}" planner_id="{}"/>'
@@ -346,15 +352,26 @@ def behavior_tree_xml(*, through_poses=False, recovery_retries=4, wait_s=3.0, fa
     if len(ids) > 1:
         planner = ('<Fallback name="PlannerFallback">\n              '
                    + "\n              ".join(template.format(i) for i in ids) + "\n            </Fallback>")
+    plan = f"""<Sequence>
+            {head}{planner}
+            </Sequence>"""
+    if replanning == "on_invalid":
+        plan = f"""<Fallback name="ReplanWhenNeeded">
+            <ReactiveSequence name="KeepValidPath">
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{{path}}" server_timeout="100"/>
+            </ReactiveSequence>
+            {plan}
+            </Fallback>"""
     return f"""<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="{retries}" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePath">
-            <Sequence>
-            {head}{planner}
-            </Sequence>
+            {plan}
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

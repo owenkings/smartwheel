@@ -70,6 +70,13 @@ FEEDBACK_DURATION_S = 0.02                        # only the latest relay messag
 # the controller's longest gap in 11 live shadow runs was 0.14 s.
 DEFAULT_SMOOTHER_TIMEOUT_S = 1.0
 SMOOTHER_TIMEOUT_RANGE_S = (0.2, 5.0)
+# Behaviour-tree replanning: periodic (the stack as it is) plans again every second; on_invalid keeps the path
+# until the goal changes or Humble's IsPathValid finds it blocked (11-11: the 1 Hz plans flipped sides around a
+# blob of lidar points and every flip turned the chair in place). Humble's IsPathValid checks the padded outline
+# at each pose; a NavFn path within about 0.45 m of an obstacle always touches it, so there on_invalid replans
+# every second as well, and in the 11-11 simulations it did not reduce the flips (status/B.md 11-12).
+REPLANNING = ("periodic", "on_invalid")
+DEFAULT_REPLANNING = "periodic"
 PEOPLE_FILTER = "people_keepout"                  # KeepoutFilter of both costmaps, fed by planning/people_node.py
 PEOPLE_FILTER_INFO = {"global_costmap": "/wc_nav/people/global_filter_info",
                       "local_costmap": "/wc_nav/people/local_filter_info"}
@@ -125,6 +132,7 @@ class PlanningChoice:
     # costmaps around people who stand still (off by default: in the ZL1107 corridor it closes the way, 11-09).
     people_reaction: bool = False
     people_keepout: bool = False
+    replanning: str = DEFAULT_REPLANNING
 
     def __post_init__(self):
         if self.planner not in PLANNER_PLUGINS:
@@ -164,6 +172,8 @@ class PlanningChoice:
             raise ValueError("people_reaction and people_keepout must be true or false")
         if self.people_keepout and not self.people_reaction:
             raise ValueError("people_keepout needs people_reaction")
+        if self.replanning not in REPLANNING:
+            raise ValueError("replanning must be one of " + ", ".join(REPLANNING))
 
     @property
     def is_default(self):
@@ -173,7 +183,8 @@ class PlanningChoice:
                 and self.global_live_scans and not self.fallback_planner and not self.rescue_planner
                 and not self.local_padding_m
                 and self.smoother_feedback == DEFAULT_SMOOTHER_FEEDBACK and not self.people_reaction
-                and self.smoother_timeout_s == DEFAULT_SMOOTHER_TIMEOUT_S)
+                and self.smoother_timeout_s == DEFAULT_SMOOTHER_TIMEOUT_S
+                and self.replanning == DEFAULT_REPLANNING)
 
     def as_dict(self):
         value = {"planner": self.planner, "controller": self.controller,
@@ -194,6 +205,8 @@ class PlanningChoice:
             value["people_reaction"] = True
         if self.people_keepout:
             value["people_keepout"] = True
+        if self.replanning != DEFAULT_REPLANNING:
+            value["replanning"] = self.replanning
         return value
 
     def behavior_tree_options(self):
@@ -202,6 +215,8 @@ class PlanningChoice:
             options["fallback_planner"] = True
         if self.rescue_planner:
             options["rescue_planner"] = True
+        if self.replanning != DEFAULT_REPLANNING:
+            options["replanning"] = self.replanning
         return options
 
     @classmethod
@@ -220,7 +235,8 @@ class PlanningChoice:
                    smoother_feedback=str(value.get("smoother_feedback", DEFAULT_SMOOTHER_FEEDBACK)),
                    smoother_timeout_s=float(value.get("smoother_timeout_s", DEFAULT_SMOOTHER_TIMEOUT_S)),
                    people_reaction=bool(value.get("people_reaction", False)),
-                   people_keepout=bool(value.get("people_keepout", False)))
+                   people_keepout=bool(value.get("people_keepout", False)),
+                   replanning=str(value.get("replanning", DEFAULT_REPLANNING)))
 
 
 def _set(section, dotted, value):

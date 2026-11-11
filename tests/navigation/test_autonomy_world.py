@@ -166,6 +166,76 @@ def test_exact_arc_integration():
     assert (x, y, yaw) == pytest.approx((2 / math.pi, 2 / math.pi, math.pi / 2))
 
 
+# -- measured wheel response (--drive-response zlac8030d_20261111) -------------------------------------
+def _drive(steps, dt=0.01):
+    """Run a WheelDrive through [(seconds, left target, right target), ...]; returns (drive, samples)."""
+    from wc_navigation.autonomy.kinematics import WheelDrive, WheelResponse
+    drive, samples, t = WheelDrive(WheelResponse()), [], 0.0
+    for seconds, left, right in steps:
+        for _ in range(int(round(seconds / dt))):
+            samples.append((t,) + drive.step(left, right, dt, t))
+            t += dt
+    return drive, samples
+
+
+def test_wheel_response_turning_in_place_holds_the_right_wheel_back():
+    word = 0.00193                                        # m/s per feedback word (0.112 rpm, 0.1646 m wheel)
+    drive, samples = _drive([(3.0, 25 * word, -25 * word)])
+    assert samples[-1][1] == pytest.approx(0.93 * 25 * word, rel=0.05)
+    assert samples[-1][2] == pytest.approx(-0.37 * 25 * word, rel=0.05)
+    assert drive.pivot_s == pytest.approx(3.0, abs=0.02)
+    _, straight = _drive([(3.0, 52 * word, 52 * word)])  # both wheels the same way: no shortfall
+    assert straight[-1][1] == pytest.approx(52 * word) and straight[-1][2] == pytest.approx(52 * word)
+
+
+def test_wheel_response_overshoots_after_a_pivot_only_in_the_wound_up_direction():
+    word = 0.00193
+    # Turning left in place (right wheel forward) for 4 s, then straight ahead: the right wheel hangs back for
+    # stuck_s and then overshoots far past the target (11-11: 294-304 words for a 52-29 word target).
+    drive, samples = _drive([(4.0, -31 * word, 31 * word), (2.0, 52 * word, 52 * word)])
+    after = [s for s in samples if s[0] >= 4.0]
+    stuck = [s[2] for s in after if s[0] < 4.0 + 0.6]
+    assert max(stuck) < 0.5 * 52 * word
+    assert max(s[2] for s in after) > 4 * 52 * word
+    assert drive.releases == 1 and len(drive.overspeed) == 1
+    assert after[-1][2] == pytest.approx(52 * word, rel=0.1)
+    # Turning right (right wheel backward), then straight ahead: no overshoot, the windup is dropped.
+    drive, samples = _drive([(4.0, 31 * word, -31 * word), (2.0, 52 * word, 52 * word)])
+    assert max(s[2] for s in samples if s[0] >= 4.0) < 1.1 * 52 * word
+    assert drive.overspeed == [] and drive.windup == 0.0
+
+
+def test_wheel_response_is_slow_to_start_at_low_speed():
+    word = 0.00193
+    _, slow = _drive([(0.5, 12 * word, 12 * word)])
+    _, fast = _drive([(0.5, 52 * word, 52 * word)])
+    assert slow[-1][1] / (12 * word) < 0.6                # 11-11: 12 words from rest, half speed after 0.8 s
+    assert fast[-1][1] / (52 * word) > 0.95
+
+
+def test_base_with_wheel_response_ramps_like_the_wheel_owner_and_turns_slower_in_place():
+    from wc_navigation.autonomy.kinematics import (DRIVE_RESPONSES, WheelDrive, drive_response_config)
+    assert drive_response_config("ideal") is None
+    config = drive_response_config("zlac8030d_20261111")
+    response, ramps = DRIVE_RESPONSES["zlac8030d_20261111"]
+    assert config == {"wheel_response": response.as_dict(), "base_limits": ramps}
+    with pytest.raises(ValueError):
+        drive_response_config("unknown")
+    ideal = DiffDriveSim((0.0, 0.0, 0.0), BaseLimits(**ramps))
+    measured = DiffDriveSim((0.0, 0.0, 0.0), BaseLimits(**ramps), wheels=WheelDrive(response))
+    t = 0.0
+    for _ in range(400):                                   # 4 s of 0.3 rad/s in place
+        for base in (ideal, measured):
+            base.set_command(0.0, 0.3, t)
+            base.step(0.01, t)
+        t += 0.01
+    assert ideal.pose[2] == pytest.approx(1.2 - 0.3 ** 2 / (2 * 0.8), abs=0.01)
+    turned = measured.pose[2] / ideal.pose[2]
+    assert 0.55 < turned < 0.75                           # (0.93 + 0.37) / 2 of the turn rate
+    assert measured.pose[0] < -0.01                       # left turn with the right wheel short: drifts backward
+    assert DiffDriveSim((0.0, 0.0, 0.0)).wheels is None   # default unchanged
+
+
 # -- convex body outline (same polygon as NavProfile.footprint) ----------------------------------
 # Front from the blind-zone recording, half width and rear are examples (FRONT_FROM_BLIND_RECORDING_REST_EXAMPLE).
 OUTLINE = ((0.79, 0.35), (-0.35, 0.35), (-0.35, -0.35), (0.79, -0.35))

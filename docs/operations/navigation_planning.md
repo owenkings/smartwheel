@@ -32,6 +32,7 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim explore --world t
 | `--people-keepout` | 和 `--people-reaction` 一起用：站着不动满 3 s 的人在两个代价地图里另加禁行区，默认不开 |
 | `--smoother-feedback gated\|open_loop\|odom` | 速度平滑器以为的当前速度。`gated`（仿真和录包影子的默认，11-10 用户决定）：平滑器自己上一次的输出，但闸门输出为零时取零，停车以后从静止起步；多启动一个 planning/velocity_feedback.py 进程（话题 `/wc_nav/smoother_feedback`，运行目录里记 `velocity_feedback.csv`）。`open_loop`：Nav2 的开环，只用自己上一次的输出，实时链路现在还是这样。`odom`：Nav2 的 /odom 闭环，只作对比，减速区里会几乎停住（见设计文档） |
 | `--smoother-timeout S` | 平滑器的 velocity_timeout：控制器停发后，平滑器还继续发上一条速度多久（默认 1.0 s，不变；实车用 0.3 s，用户 11-10 同意；允许 0.2–5 s） |
+| `--replanning periodic\|on_invalid` | `periodic`（默认，不变）：行为树每秒重新规划一次。`on_invalid`：目标不变、而且 Humble 的 IsPathValid 认为路径没被挡（沿路径每个位姿，加余量的外形压不到致命格）时，一直沿用当前路径；目标变了或路径被挡才重新规划（同 Humble 的 navigate_w_replanning_only_if_path_becomes_invalid.xml）。本来是想避免每秒重规划时路线在障碍两侧来回翻（11-11 闭环每翻一次就原地转一次），但 11-11 仿真里没有减少翻转（来回横移的行人：两次各翻 1 次和 5 次，periodic 各 1 次），不建议闭环用。原因：NavFn 路径中间的位姿朝向都是 0°，而 NavFn 只要求车轴离障碍 0.355 m，加余量的外形半宽是 0.45 m；路线离障碍不到约 0.45 m 时 IsPathValid 会一直判“被挡”，那一段照样每秒重规划 |
 
 - `smac_hybrid`、`smac_lattice` 在每个朝向上检查外形（加余量）；`navfn`、`smac_2d`、`theta_star` 只按外形加余量后的内切半径通过，外形更长的车头和转向时扫出的范围不检查。Nav2 的外形检查只看外形的边和车轴处的膨胀代价，外形内部的孤立一两格看不到，所以地图里的孤立伪点要在规划用地图里先清掉（见设计文档）。
 - 不倒车不能被覆盖：插件类型、`allow_reversing`、`allow_unknown`、`allow_reverse_expansion`、`motion_model_for_search` 等由选项和模式决定，覆盖它们会被拒绝。
@@ -55,6 +56,17 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 `--localization truth`（只对 navigate）：仿真按真值发布 `map→odom`，只启动 map_server、不启动 AMCL，闸门不要求 AMCL 协方差（其余闸门条件照常）。用来在走廊地图上只比较规划和控制；默认 `amcl` 不变。走廊里 AMCL 的修正和协方差会单独决定结果（见设计文档），系统级结论仍要用 `amcl` 跑。
 
 `--tracks truth --people-reaction`（只对 navigate，默认都不开）：仿真把行人（`--actors`）按 C 的航迹格式发到 `/obstacles/tracks`（来源和 seen_by 都是 truth），planning/people_node.py 按 people.py 决定速度上限，发到 `/speed_limit`（控制器服务器自己会用）。相隔不到 5 s 的几次让行算一次等待，等满 20 s 后这些人按站着处理（间隙 0.3 m、不预测）。再加 `--people-keepout` 时，站着不动满 3 s 的人在两个代价地图的 KeepoutFilter 里另画禁行区，半径是人的半径加 0.3 m 再加距离滞后余量；走动的人（包括走一下停一下的人）不画。默认不开禁行区：11-09 仿真里，人站在走廊车道上时禁行区把路堵死，Nav2 规划失败，约 10 s 后放弃目标；把走动的人预测的位置画进去，人来回横穿时走廊一直是堵的。运行目录里记 `people.jsonl`（每次决定）和 `people_costmaps.npz`（每秒一张局部代价地图和全局代价地图车附近 10 m 的截图，用来查旧位置残留）。实时链路还没有接。
+
+`--drive-response ideal|zlac8030d_20261111`（仿真的 explore 和 navigate，默认 `ideal` 不变）：`zlac8030d_20261111` 让两只轮子按 11-11 实车数据（录制 ZLauto_loop_2026_1111_202618 和 ZLauto_stand_wasd_2026_1111_153154）的样子跟指令，模型在 autonomy/kinematics.py 的 `WheelResponse`：
+- 先按轮控所有者的斜坡（0.3 m/s²、减速 0.6 m/s²、0.8 rad/s²）走，再拆成左右轮；
+- 每只轮子按 0.12 s 跟上，低速起步更慢（目标低于 13 字时 0.8 s；1 字 = 0.112 rpm = 0.00193 m/s）；
+- 原地转（两轮反向）时左轮到 93%、右轮只到 37%；
+- 原地转结束后，右轮从第一个非零指令起再卡 0.7 s，然后按原地转时欠下的量冲过头（实车冲到 162–442 字，持续 0.4–0.6 s）。模型里，之后的指令和原地转时右轮同向才冲，反向只卡不冲。实车上反向时右轮也可能卡得更久再冲一下（20:27 右转原地转以后卡了约 2 s，冲到 281 字，只有一帧），从静止起步也会冲到 108–136 字（窗口 A 11-12 00:25 的报告），这两种模型都没有。
+- 有轮子超过 14.4 rpm（0.248 m/s）持续 0.2 s，记一次“超速”。实车上轮控所有者在这里停车（FEEDBACK_OVERSPEED），仿真只计数。
+- `result.json` 的 `drive_response` 段：原地转秒数、冲过头次数、超速次数和时刻、任意时长超限的次数、最快轮速。
+- 拿实车的指令回放这个模型（~/.kiro_work_planning/fit_wheel_model.py）：20:27 闭环的超速时刻对上了（模型 134.15 s 判超速，实车 134.18 s 停车，壁钟秒的末三位），峰值 259 字（实车 304 字）；手动驾驶那段 8 次超速对上 4 次。没对上的是倒车弯道和很短的原地转。所以模型偏乐观，仿真里的超速次数只能当下限。
+
+仿真也可以用窗口 C 的 `--monitor-base-shift off` 和 `--monitor-slow-margin M`（同影子运行），让碰撞监控和实车闭环一样（闭环模式是 base shift off、减速框伸出车头 0.15 m）。
 
 `--enable-pause AFTER_S DURATION_S`（只对 navigate，验证用，默认不开）：任务开始后 AFTER_S 仿真秒，监督进程的使能心跳改发 false，持续 DURATION_S（最多 30 s），闸门停车一次再放行，用来看放行后怎么起步（配合 `--smoother-feedback`）。时间窗写在 `result.json` 的 `supervisor.enable_pause_sim_s`。
 

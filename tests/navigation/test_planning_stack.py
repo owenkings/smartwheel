@@ -353,3 +353,34 @@ def test_local_padding_pads_only_the_controller_checks():
     with pytest.raises(SystemExit):
         cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
                        "--goal", "8.0", "1.4", "0.0", "--local-padding", "0.4"])
+
+
+def test_replanning_on_invalid_keeps_the_path_until_it_is_blocked_or_the_goal_changes():
+    import xml.etree.ElementTree as ET
+    from wc_navigation.autonomy import cli
+    default = stack.PlanningChoice()
+    assert default.replanning == "periodic" and "replanning" not in default.as_dict()
+    assert nav2_config.behavior_tree_xml(**default.behavior_tree_options()) == nav2_config.behavior_tree_xml()
+    assert "IsPathValid" not in nav2_config.behavior_tree_xml()
+    choice = stack.PlanningChoice(replanning="on_invalid", fallback_planner="smac_lattice", planner="smac_hybrid")
+    assert not choice.is_default and stack.PlanningChoice.from_dict(choice.as_dict()) == choice
+    for through in (False, True):
+        tree = ET.fromstring(nav2_config.behavior_tree_xml(through_poses=through, **choice.behavior_tree_options()))
+        rate = tree.find(".//RateController")
+        keep = rate.find(".//Fallback[@name='ReplanWhenNeeded']")
+        first, second = list(keep)
+        assert first.tag == "ReactiveSequence"                       # keep the path ...
+        assert [e.tag for e in first.iter()][1:] == ["Inverter", "GlobalUpdatedGoal", "IsPathValid"]
+        assert first.find("IsPathValid").get("path") == "{path}"
+        planners = [e.get("planner_id") for e in second.iter() if e.get("planner_id")]
+        assert planners == ["GridBased", "Fallback"]                 # ... or plan again
+        assert {e.tag for e in tree.iter()}.isdisjoint({"Spin", "BackUp", "DriveOnHeading"})
+    assert "nav2_is_path_valid_condition_bt_node" in nav2_config.BT_PLUGINS
+    assert "nav2_globally_updated_goal_condition_bt_node" in nav2_config.BT_PLUGINS
+    with pytest.raises(ValueError):
+        stack.PlanningChoice(replanning="sometimes")
+    with pytest.raises(ValueError):
+        nav2_config.behavior_tree_xml(replanning="sometimes")
+    args = cli.arguments(["--project-root", str(PROJECT), "navigate", "--world", "two_rooms",
+                          "--goal", "8.0", "1.4", "0.0", "--replanning", "on_invalid"])
+    assert args.planning.replanning == "on_invalid"
