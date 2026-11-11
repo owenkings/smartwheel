@@ -69,8 +69,10 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、velocity_timeout 0.3 s；--monitor-base-shift off；起点检查 block（或更严的 strict）。
 14. 命令起来后先让车站着跑约 30 s，看每秒一行的"闭环状态"（这一段代替单独的实车影子）：闸门 DISABLED（OPERATOR_ENABLE_OFF）、"影子判断"是它放行时会发的速度（例如 会放行 0.10 m/s）、定位可信、底盘不在 AUTO、急停否、目标 NAVIGATING。起点检查没通过、定位不可信，或影子判断的方向不对，不要点"开始自动"。
     使能和急停只能由桥发：/wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
+    车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points，默认 10）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
 15. 点"开始自动"：底盘进 AUTO 后闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。车动过以后，目标失败不自动重发。
-16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数和最后的底盘状态。
+16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数、最后的底盘状态和车前空地的点数。
+    桥自己退出时（例如轮控所有者 FAULT 结束了会话），运行停止，supervisor.stopped 是 BASE_BRIDGE_EXITED，supervisor.stop_reason 写一句原因（桥的退出原因、轮控所有者最后报的状态、会话轮控日志里的故障），终端也打印这一句。
 """
 
 
@@ -166,6 +168,15 @@ def arguments(argv=None):
                         help="drive: start window A's base bridge, which hands the gate's decisions to the wheel "
                              "serial owner of the running panel session; 0.10 m/s and 0.30 rad/s; needs "
                              + AUTO_DRIVE_APPROVAL_ENV + "=APPROVED_BY_USER_<today, YYYYMMDD>")
+    # 总管 2026-11-11 item 2: scan points in the map's free space ahead before "start automatic" (live/front_check.py)
+    from .front_check import MAX_POINTS as FRONT_MAX_POINTS, MODES as FRONT_MODES
+    shadow.add_argument("--front-check", choices=FRONT_MODES,
+                        help="scan points within 5 m ahead in the map's free space: block holds the gate at each start "
+                             "while there are more than --front-check-max-points (default with --closed-loop), warn "
+                             "only reports, off skips it (default without --closed-loop)")
+    shadow.add_argument("--front-check-max-points", type=int, default=FRONT_MAX_POINTS, metavar="N",
+                        help="most points still counted as clear (default %d, median of the last 10 scans)"
+                             % FRONT_MAX_POINTS)
     shadow.add_argument("--panel-root", type=Path, help="closed loop: the panel's checkout (its session sockets)")
     shadow.add_argument("--session-root", type=Path, help="closed loop: directory of the running panel session")
     shadow.add_argument("--session-id", help="closed loop: identity of that session")
@@ -233,6 +244,10 @@ def arguments(argv=None):
             args.smoother_feedback, args.monitor_base_shift = CLOSED_LOOP_SMOOTHER, "off"
         elif args.panel_root or args.session_root or args.session_id:
             parser.error("--panel-root, --session-root and --session-id belong to --closed-loop")
+        if args.front_check is None:
+            args.front_check = "block" if args.closed_loop else "off"
+        if not 0 <= args.front_check_max_points <= 161:
+            parser.error("--front-check-max-points must be within 0..161 (the scan has 161 bins)")
         try:
             args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, slow_limits, max_linear)
         except ValueError as exc:
@@ -459,6 +474,10 @@ def run_command(args, guard):
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)
         config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
+        from . import front_check
+        config["front_check"] = {"mode": args.front_check, "max_points": args.front_check_max_points,
+                                 "range_m": front_check.RANGE_M, "wall_tolerance_m": front_check.WALL_TOLERANCE_M,
+                                 "frames": front_check.FRAMES}
         config["smoother_feedback"], config["smoother_timeout_s"] = args.smoother_feedback, args.smoother_timeout
         if closed_loop:
             config["closed_loop"] = closed_loop

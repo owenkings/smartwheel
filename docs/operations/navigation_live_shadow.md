@@ -211,7 +211,14 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
   - 急停、软件急停、“停止自动”、空格、WASD 都会停；急停以后要松开、再点一次“开始自动”。
   - 站着时 Nav2 的目标失败会照影子的做法重发；车动过以后（闸门 ACTIVE 过），目标失败不再重发。
 - 使能和急停只能由桥发：这两个话题有别的发布者时，闸门停在 `DISABLED(ENABLE_SOURCE_AMBIGUOUS)`。
-- 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）和闸门各状态的计数。
+- 车前空地检查（总管 2026-11-11 第 2 条；`--front-check block|warn|off`，闭环默认 block；`--front-check-max-points N`，默认 10）：
+  - 状态行里的“车前空地 N 点”：车前 5 m 内、车体以外、落在地图空地里（离最近的占据格超过 0.30 m）的扫描点数，取最近 10 帧的中位数。
+  - 超过门限时写“车前空地 N 点 > 门限 10，最近 x m：不要开始自动”。先看车前有没有人或东西，有就挪开。车前其实是空的，就是雷达假点：停下来，按 A 的雷达设置处理，或者等 C 的过滤。
+  - block 下这时点“开始自动”，轮控所有者照常进 AUTO，闸门在 `START_BLOCKED(FRONT_NOT_CLEAR)` 输出零，车不动。挡着的人走开、判定变空，闸门放行，车起步。只在每次开始（使能上升）到第一次放行之间查；车动起来以后，前方的东西归 Nav2 和碰撞监控。
+  - 站着时“影子判断”也会显示 `START_BLOCKED(FRONT_NOT_CLEAR)`。warn 只提示，不拦。
+  - 2026-11-11 20:27 那次的录制上量是 34–40 点；11-07 验证录制的门口起点（朝走廊对面墙）是 8 点。
+- 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）、闸门各状态的计数和 `front_check`（开始前站着时的点数）。
+- 桥自己退出（例如轮控所有者 FAULT 结束了会话）时，运行停止：`supervisor.stopped` 是 `BASE_BRIDGE_EXITED`，`supervisor.stop_reason` 写一句原因，终端也打印这一句，例如“底盘桥退出（退出码 1：wheel owner closed the automatic control socket）；轮控所有者最后报 STOPPING（FEEDBACK_OVERSPEED）；会话轮控日志：NOT_STATIONARY_AFTER_STOP”。细节在 `closed_loop.bridge_exit`。
 
 上车前检查单：`bash scripts/navigation_live_shadow checklist`。内容与命令里的相同，要点：
 - 用户同意并记录。

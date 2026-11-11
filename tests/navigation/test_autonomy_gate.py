@@ -565,3 +565,64 @@ def test_gate_configuration_hash_is_of_the_file_read(tmp_path):
     path.write_text("[1]", encoding="utf-8")
     with pytest.raises(ValueError):
         read_config(path)
+
+
+# ---- front check hold (总管 2026-11-11 item 2; D.md 23:40) -------------------------------------------------
+def test_front_hold_is_off_by_default_and_holds_each_start_until_the_first_active():
+    assert GateConfig().front_hold is False and GateConfig().front_check_timeout_s == 1.0
+    plain = active_gate()
+    assert plain.evaluate(0.1).state == "ACTIVE"                   # no front check needed by default
+    gate = active_gate(front_hold=True)
+    decision = gate.evaluate(0.1)
+    assert (decision.state, decision.reasons, decision.linear) == ("START_BLOCKED", ("FRONT_CHECK_STALE",), 0.0)
+    gate.on_front(False, "FRONT_NOT_CLEAR", 0.1)
+    assert gate.evaluate(0.15).reasons == ("FRONT_NOT_CLEAR",)
+    gate.on_front(True, "", 0.2)
+    gate.on_command(0.2, 0.1, 0.2)
+    assert gate.evaluate(0.25).state == "ACTIVE"                   # the start passed
+    gate.on_front(False, "FRONT_NOT_CLEAR", 0.3)                   # something ahead while driving: Nav2's business
+    gate.on_command(0.2, 0.1, 0.3)
+    gate.on_enable(True, 0.3)
+    assert gate.evaluate(0.35).state == "ACTIVE"
+    gate.on_enable(False, 0.4)                                     # stop, then start again: checked again
+    assert gate.evaluate(0.45).state == "DISABLED"
+    gate.on_enable(True, 0.5)
+    gate.on_command(0.2, 0.1, 0.5)
+    assert gate.evaluate(0.55).reasons == ("FRONT_NOT_CLEAR",)
+    assert gate.evaluate(1.6).reasons == ("ENABLE_HEARTBEAT_TIMEOUT",)
+    gate.on_enable(True, 1.6)
+    gate.on_command(0.2, 0.1, 1.6)
+    assert gate.evaluate(1.65).reasons == ("FRONT_CHECK_STALE",)   # the verdict of 0.3 s is older than 1 s
+    gate.on_front(True, "", 1.7)
+    assert gate.evaluate(1.75).state == "ACTIVE"
+    with pytest.raises(ValueError):
+        GateConfig(front_hold=1)
+
+
+def test_front_hold_order_and_preview_before_the_operator_starts():
+    gate = active_gate(front_hold=True, require_base=True, enable_source_node="/wc_auto_bridge")
+    gate.on_sources(True)
+    gate.on_base(True)
+    gate.on_localization(False, "MAP_TO_BASE_TF_STALE")
+    assert gate.evaluate(0.1).state == "LOCALIZATION_UNTRUSTED"    # localization comes first: the count needs a pose
+    gate.on_localization(True)
+    gate.on_base(False, "BASE_NOT_AUTO")
+    assert gate.evaluate(0.1).state == "BASE_NOT_READY"
+    gate.on_base(True)
+    gate.on_front(False, "FRONT_NOT_CLEAR", 0.1)
+    gate.on_enable(False, 0.1)
+    decision, preview = gate.evaluate(0.12), gate.preview(0.12)
+    assert decision.state == "DISABLED" and (preview.state, preview.reasons) == ("START_BLOCKED", ("FRONT_NOT_CLEAR",))
+    gate.on_front(True, "", 0.2)
+    assert gate.preview(0.22).state == "ACTIVE"
+    assert gate.conditions()["front_clear"] is True and gate.conditions()["started"] is False
+    gate.on_front(False, "SOMETHING", 0.3)
+    assert gate.preview(0.32).reasons == ("FRONT_NOT_CLEAR",)      # unknown reasons are reported as not clear
+
+
+def test_the_front_check_message_is_parsed_strictly():
+    from wc_navigation.live.front_check import SCHEMA, parse
+    assert parse(json.dumps({"schema": SCHEMA, "clear": True})) == (True, "")
+    assert parse(json.dumps({"schema": SCHEMA, "clear": False, "reason": "FRONT_NOT_CLEAR"})) == (False, "FRONT_NOT_CLEAR")
+    for bad in ("{", "[]", json.dumps({"schema": "other", "clear": True}), json.dumps({"schema": SCHEMA, "clear": 1})):
+        assert parse(bad) == (False, "FRONT_CHECK_INVALID")

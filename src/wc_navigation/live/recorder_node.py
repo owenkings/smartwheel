@@ -69,7 +69,8 @@ class ShadowRecorder:
         node.create_subscription(PathMessage, "/plan", self.on_plan, 10)
         for topic in ("/wc_nav/gate_status", "/wc_live/inputs_status", "/wc_live/inputs_status/scan",
                       "/wc_live/inputs_status/odometry", "/wc_live/goal_status", "/wc_live/relay_status",
-                      "/wc_live/inputs_status/obstacles"):          # window C's 3D obstacle input, when started
+                      "/wc_live/inputs_status/obstacles",            # window C's 3D obstacle input, when started
+                      "/wc_live/front_check"):                       # the front check (--front-check), when started
             node.create_subscription(String, topic, lambda m, t=topic: self.on_status(t, m), latched_qos())
         # closed loop: window A's base bridge publishes it reliable and volatile at 10 Hz; changes are recorded
         node.create_subscription(String, BASE_STATUS_TOPIC, self.on_base_status, 10)
@@ -120,9 +121,9 @@ class ShadowRecorder:
         except ValueError:
             value = {"raw": message.data}
         preview = value.get("preview") if isinstance(value.get("preview"), dict) else {}
-        # the gate's preview (closed loop, before "start automatic") counts as a change too
+        # the gate's preview (closed loop, before "start automatic") and the front check's verdict count too
         key = (value.get("state"), tuple(value.get("reasons") or ()), value.get("stale_inputs") and tuple(value["stale_inputs"]),
-               preview.get("state"), tuple(preview.get("reasons") or ()))
+               preview.get("state"), tuple(preview.get("reasons") or ()), value.get("clear"), value.get("reason"))
         if self.last.get(topic) == key:
             return
         self.last[topic] = key
