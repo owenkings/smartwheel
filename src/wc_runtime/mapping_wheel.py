@@ -30,6 +30,9 @@ from wc_motion.protocol import FeedbackError, checked_frame, crc16, parse_exchan
 KEY_TIMEOUT_S = .25
 FEEDBACK_PERIOD_S = .1
 CONTROL_PERIOD_S = .05
+# A feedback read that got no answer at all is sent once more (coordinator 2026-11-11, item 3), after this long
+# without any late byte on the line; control writes are never resent.
+READ_RETRY_QUIET_S = .03
 # Held-key ramp (coordinator 2026-11-11, item 2): defaults are the automatic channel's approved limits.
 # (default, upper bound) per manual_controls field.
 MANUAL_RAMP = {'max_linear_accel_m_s2': (.30, 1.), 'max_linear_decel_m_s2': (.60, 2.),
@@ -133,6 +136,10 @@ def validate_response(request, response):
     return bytes(response)
 
 
+class ResponseTimeout(QueryFailure):
+    """No complete answer within the transaction timeout."""
+
+
 class Cancelled(FeedbackError):
     """An expired or cancelled user intent was rejected before writing."""
 
@@ -148,6 +155,7 @@ class WheelChannel:
         self.session_id = None
         self.failed = False
         self.control_transmissions = self.control_attempts = self.control_bytes = 0
+        self.read_retries = 0
         self.motion_may_exist = False
         self.recovery_attempted = False
         self.last_stop = None
@@ -161,6 +169,30 @@ class WheelChannel:
                 raise
 
     def exchange(self, request, timeout, *, guard=None):
+        """One transaction. A feedback read with no answer at all is sent once more if the line then stays quiet
+        for READ_RETRY_QUIET_S; any other failure, and a second timeout, fail the channel as before."""
+        if checked_frame(request) != QUERY:
+            return self._exchange(request, timeout, guard=guard, retryable=False)
+        try:
+            return self._exchange(request, timeout, guard=guard, retryable=True)
+        except ResponseTimeout as first:
+            late = bytearray()
+            if select.select([self.lease.fd], [], [], READ_RETRY_QUIET_S)[0]:
+                late.extend(os.read(self.lease.fd, 256))
+            if late:
+                self.failed = self.lease.failed = True
+                error = 'late RTU bytes after a feedback read timeout; no flush or retry'
+                self._log({'event': 'wheel_io_failed', 'request_hex': QUERY.hex(), 'response_hex': late.hex(),
+                           'transmitted_bytes': first.transmitted_bytes, 'control': False, 'error': error,
+                           'control_transmissions': self.control_transmissions,
+                           'control_write_attempts': self.control_attempts}, required=False)
+                raise QueryFailure(error, late, first.transmitted_bytes) from first
+            self.read_retries += 1
+            self._log({'event': 'wheel_read_retry', 'request_hex': QUERY.hex(), 'error': str(first),
+                       'transmitted_bytes': first.transmitted_bytes, 'read_retries': self.read_retries})
+            return self._exchange(request, timeout, guard=guard, retryable=False)
+
+    def _exchange(self, request, timeout, *, guard, retryable):
         request = checked_frame(request)
         control = request != QUERY
         if control and request not in (*INITIALIZATION_WRITES, RELEASE_REQUEST) and not (
@@ -198,7 +230,7 @@ class WheelChannel:
             while len(response) < expected:
                 remaining = deadline-self.clock()
                 if remaining <= 0 or not select.select([self.lease.fd], [], [], remaining)[0]:
-                    raise QueryFailure('wheel response timeout; no retry', response, sent)
+                    raise ResponseTimeout('wheel response timeout; no retry', response, sent)
                 chunk = os.read(self.lease.fd, 256)
                 if not chunk:
                     raise QueryFailure('wheel serial disconnected; no reconnect', response, sent)
@@ -213,6 +245,9 @@ class WheelChannel:
                        'exchange_started_monotonic_ns': started, 'exchange_completed_monotonic_ns': time.monotonic_ns()})
             return result
         except BaseException as error:
+            if retryable and isinstance(error, ResponseTimeout) and not response and sent == len(request):
+                # The whole read went out and nothing came back: the caller may send it once more.
+                raise ResponseTimeout('wheel response timeout', b'', sent) from error
             if not isinstance(error, Cancelled) or sent:
                 self.failed = self.lease.failed = True
             self._log({'event': 'wheel_io_failed', 'request_hex': request.hex(), 'response_hex': bytes(response).hex(),
@@ -693,6 +728,7 @@ class MappingWheel:
                 'target_linear_m_s': linear, 'target_angular_rad_s': angular,
                 'control_transmissions': self.channel.control_transmissions, 'control_write_attempts': self.channel.control_attempts,
                 'control_bytes_observed': self.channel.control_bytes,
+                'feedback_read_retries': getattr(self.channel, 'read_retries', 0),
                 'last_feedback_age_s': None if self.last_feedback is None else max(0, self.clock()-self.last_feedback),
                 'feedback_samples': self.sequence, 'feedback_rate_hz': 10, 'key_timeout_s': KEY_TIMEOUT_S,
                 'continuous_mapping': self.preview.continuous, 'feedback_gap_count': self.preview.gap_count,

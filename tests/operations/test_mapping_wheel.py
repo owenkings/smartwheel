@@ -1257,3 +1257,94 @@ def test_manual_ramp_rates_come_from_manual_controls_and_are_bounded():
                    {'max_linear_decel_m_s2': -.6}):
         with pytest.raises(m.FeedbackError):
             m.validate_manual_controls(change)
+
+
+class Line:
+    """Far end of a socket pair for WheelChannel: one scripted answer per request.
+
+    None stays silent; a (delay_s, bytes) pair answers late from a timer."""
+    def __init__(self, answers):
+        self.near, self.far = socket.socketpair()
+        self.answers, self.requests = list(answers), []
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while True:
+            try:
+                request = self.far.recv(64)
+            except OSError:
+                return
+            if not request:
+                return
+            self.requests.append(request)
+            answer = self.answers.pop(0) if self.answers else None
+            if isinstance(answer, tuple):
+                delay, payload = answer
+                threading.Timer(delay, lambda: self.far.sendall(payload)).start()
+            elif answer is not None:
+                self.far.sendall(answer)
+
+    def channel(self, records):
+        return m.WheelChannel(NS(fd=self.near.fileno(), failed=False), records.append)
+
+    def close(self):
+        self.near.close()
+        self.thread.join(timeout=2)
+        self.far.close()
+
+
+def test_a_feedback_read_without_any_answer_is_sent_once_more():
+    """Coordinator 2026-11-11 item 3: one read timeout no longer ends the recording."""
+    line, records = Line([None, response((3, 4))]), []
+    channel = line.channel(records)
+    try:
+        assert channel.exchange(m.QUERY, .05) == response((3, 4))
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY, m.QUERY] and not channel.failed and channel.read_retries == 1
+    events = [row['event'] for row in records]
+    assert events == ['wheel_io_planned', 'wheel_read_retry', 'wheel_io_planned', 'wheel_io_complete']
+    assert records[1]['error'] == 'wheel response timeout' and records[1]['read_retries'] == 1
+
+
+def test_a_second_read_timeout_still_fails_the_channel():
+    line, records = Line([None, None]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='timeout'):
+            channel.exchange(m.QUERY, .05)
+        with pytest.raises(m.QueryFailure, match='closed or failed'):
+            channel.exchange(m.QUERY, .05)
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY, m.QUERY] and channel.failed and channel.read_retries == 1
+    assert [row['event'] for row in records] == ['wheel_io_planned', 'wheel_read_retry', 'wheel_io_planned',
+                                                 'wheel_io_failed']
+
+
+def test_a_late_answer_after_a_read_timeout_fails_without_resending(monkeypatch):
+    monkeypatch.setattr(m, 'READ_RETRY_QUIET_S', .3)
+    line, records = Line([(.1, response((0, 0)))]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='late RTU bytes'):
+            channel.exchange(m.QUERY, .05)
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY] and channel.failed and channel.read_retries == 0
+    assert records[-1]['event'] == 'wheel_io_failed' and records[-1]['response_hex'] == response((0, 0)).hex()
+
+
+@pytest.mark.parametrize('request_kind', ['partial_answer', 'speed_write'])
+def test_partial_answers_and_control_writes_are_never_resent(request_kind):
+    request = m.QUERY if request_kind == 'partial_answer' else m.speed_write(-5, 5)
+    line, records = Line([response()[:4] if request_kind == 'partial_answer' else None]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='timeout'):
+            channel.exchange(request, .05, guard=None if request == m.QUERY else (lambda: None))
+    finally:
+        line.close()
+    assert line.requests == [request] and channel.failed and channel.read_retries == 0
+    assert 'wheel_read_retry' not in [row['event'] for row in records]

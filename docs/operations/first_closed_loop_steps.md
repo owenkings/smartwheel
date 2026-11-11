@@ -103,7 +103,7 @@ python3 -m wc_motion.auto_evidence --project-root ~/wheelchair --evidence config
 1. 终端 1：`python3 -m wc_runtime.auto_operator --project-root ~/wheelchair status`。预期：`auto NONE (IDLE) ... limits 0.1 m/s 0.3 rad/s, evidence STAND_TEST`。报 `found 0` 时后面会带上轮控所有者自己说的原因（例如 `EVIDENCE_REJECTED: ...`），发给总管。
 2. 软件零速，3 次。终端 1：`python3 -m wc_motion.auto_test_source --project-root ~/wheelchair --stop software_zero`（它最多等 60 s；下面的 `... --stop external` 等都是这条命令换 `--stop` 的值）；终端 2："开始自动"。预期：轮子朝前（和按 W 同向）转 3 s 后停住，终端 1 最后打印一行 `1. software_zero  指令 0.100 m/s，反馈 0.0xx m/s（xx%，左轮 xx%、右轮 xx%），... 停车 x.xx s、0.0xx m、航向变 x.x°`。必须停下：三个比有一个不在 90–110 %；轮子反转或只转一边。
 3. 自动中按急停，至少 1 次。终端 1：`... --stop external`；终端 2："开始自动"。轮子转起来 2 s 后按急停。预期：轮子停，停住后 1 s 内终端 1 打出 `OWNER_STOPPED: the owner left AUTO: WHEELS_STOPPED_WHILE_COMMANDED`，这以后才旋转复位急停：轮子不动。终端 1 最后报 `estop`，`status` 是 `auto NONE (AUTO_EXITED: WHEELS_STOPPED_WHILE_COMMANDED)`。必须停下：按了不停；没打出那一行（先按空格再复位）；复位后自己转。
-   - 录制要是在急停以后紧接着报错结束（`wheel.log` 里有 `NOT_STATIONARY_AFTER_STOP`）：急停以后有一只轮一直读到几个字，轮子停住后 1 s 内确认不了停稳。零速已经写了，复位急停时轮子应该不动。记下来发给总管，重开录制再做。
+   - 录制要是在急停以后紧接着报错结束（`wheel.log` 里有 `NOT_STATIONARY_AFTER_STOP`）：急停以后有一只轮一直读到 3 个字以上，轮子停住后 1 s 内确认不了停稳（11-11 起两轮都不超过 3 个字就算停稳）。零速已经写了，复位急停时轮子应该不动。记下来发给总管，重开录制再做。
 4. 结束录制以前：`python3 -m wc_motion.auto_stop_report --project-root ~/wheelchair --label stand_auto`（打印这段录制的全部试次，并存到 `$R/reports/auto_stop_tests/`）。然后结束录制，把输出、急停复位后轮子动没动发给总管。
 
 ## 6. 写落地阶段的证据（A 写、总管核对，约 5 分钟）

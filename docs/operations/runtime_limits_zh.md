@@ -35,7 +35,7 @@
 | 软件指令速度 | 线速度 0.10 m/s，角速度 0.20 rad/s；配置允许区间分别 0.001–0.15 m/s、0.001–0.30 rad/s。轮指令另有 30 rpm 与有符号 16 位寄存器范围检查 | `hardware_setup.json` → `manual_controls`；`mapping_wheel.velocity_request()` |
 | 按住键时的斜坡（2026-11-11 加） | 从上一次写的速度往按键目标走：线速度加速 0.30 m/s²、减速 0.60 m/s²（W 换 S 时先按减速降到零再反向），角速度 0.80 rad/s²，和自动通道批准的值一样；约 0.33 s 到 0.10 m/s。松开全部键照旧立即写零，不按斜坡减速：没有按着的键就不写非零速度 | `manual_controls` 的 `max_linear_accel_m_s2`、`max_linear_decel_m_s2`、`max_angular_accel_rad_s2`（上限 1.0、2.0、2.0）；`mapping_wheel.MappingWheel.ramped()` |
 | 反馈/控制频率 | 轮反馈目标 10 Hz，控制发送间隔 0.05 秒；发送控制前轮反馈须在 0.25 秒内 | `mapping_wheel.py` → `FEEDBACK_PERIOD_S`、`CONTROL_PERIOD_S`、`FEEDBACK_FRESH_S` |
-| 串口错误 | 建图统一轮适配器实际使用 `min(feedback_timeout_s, 0.08)`，当前 **80 ms**；单独的反馈工具读取配置时是 0.2 秒。CRC/回包不符、断线、超时等真错误进入 `FAULT`，不能靠再次按键消除真实硬件通信故障 | `config/wheel_feedback_current.json` → `timeout_s`；`mapping_wheel.MappingWheel.__init__()` → `self.timeout`、通道校验 |
+| 串口错误 | 建图统一轮适配器实际使用 `min(feedback_timeout_s, 0.08)`，当前 **80 ms**；单独的反馈工具读取配置时是 0.2 秒。CRC/回包不符、断线、超时等真错误进入 `FAULT`，不能靠再次按键消除真实硬件通信故障。例外（2026-11-11 加）：反馈读完整发出、一个字节都没回，并且之后 30 ms 线上安静，就重发一次，日志记 `wheel_read_retry`，状态里的 `feedback_read_retries` 计数；第二次超时才 `FAULT`。半帧、迟到字节和任何写都不重发 | `mapping_wheel.WheelChannel.exchange()`、`READ_RETRY_QUIET_S` | `config/wheel_feedback_current.json` → `timeout_s`；`mapping_wheel.MappingWheel.__init__()` → `self.timeout`、通道校验 |
 | 控制连接边界 | 本机 Unix socket、同 UID、单客户端、会话身份与递增按键序号校验；输入缓冲 8,192 B、单行 4,096 B、每轮最多 8 行、待发送状态 16,384 B。协议错误/溢出拒绝客户端并清键，反馈继续 | `mapping_wheel.py` → `ManualSocket`；不是开放网络驾驶接口 |
 | 控制退出收尾 | 已使用 WASD 后退出，最多约 0.9 秒等待已请求的零速/释放过程；无法完成记录 `shutdown servo release did not complete` 并进入失败 | `mapping_wheel.MappingWheel.close()`；不是会话运行时长 |
 

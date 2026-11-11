@@ -726,9 +726,11 @@ def test_inferred_emergency_stop_also_sees_wheels_that_read_a_word_or_two(patter
     assert env.auto.immediate and speeds(env, start)[0] == (0, 0)
     status = env.owner.status()['auto']
     assert status['estop_request'] is True and status['enable_request'] is False
-    # The stop is never confirmed while a wheel keeps reading: zero stays written and the owner faults.
-    assert until(env, lambda: env.owner.state == 'FAULT', 1.5)
-    assert 'NOT_STATIONARY_AFTER_STOP' in env.owner.failure and env.channel.requests[-1] == m.ZERO_REQUEST
+    # Wheels held by the servo that keep reading a word or two stand still (coordinator 2026-11-11, item 3; on the
+    # ground on 11-11 they read (1, -2) for good): the stop completes and the next start initializes again.
+    assert until(env, lambda: env.auto.state == 'NONE', 1.5), (env.auto.state, env.owner.failure)
+    assert env.owner.state != 'FAULT' and env.owner.failure is None
+    assert env.auto.reason == 'AUTO_EXITED: WHEELS_STOPPED_WHILE_COMMANDED' and env.owner.initialized_by_user is False
     assert not any(w != (0, 0) for w in speeds(env, start))
 
 
@@ -765,6 +767,54 @@ def test_wheels_still_turning_after_the_stop_faults_the_owner():
             break
     assert with_error and 'NOT_STATIONARY_AFTER_STOP' in env.owner.failure
     assert env.auto.state == 'FAULT' and env.channel.requests[-1] == m.ZERO_REQUEST
+
+
+@pytest.mark.parametrize('words, faults', [((0, 3), False), ((-3, 3), False), ((0, 4), True), ((-6, 0), True)])
+def test_after_a_stop_a_few_words_stand_still_and_more_still_fault(words, faults):
+    """Coordinator 2026-11-11 item 3: both wheels at most STATIONARY_WORDS (3) words is standing still."""
+    assert a.STATIONARY_WORDS == 3
+    env = driving(make())
+    env.auto.on_bridge_lost('TEST')               # controlled stop to zero
+    env.channel.words = words
+    for _ in range(250):
+        keys(env, [])
+        env.owner.step(); env.clock.advance(0.01)
+        if env.owner.state == 'FAULT' or env.auto.state == 'NONE':
+            break
+    if faults:
+        assert env.owner.state == 'FAULT' and 'NOT_STATIONARY_AFTER_STOP' in env.owner.failure
+        assert env.channel.requests[-1] == m.ZERO_REQUEST
+    else:
+        assert env.auto.state == 'NONE' and env.owner.failure is None, (env.auto.state, env.owner.failure)
+        assert env.auto.reason == 'AUTO_EXITED: BRIDGE_DISCONNECTED'
+
+
+@pytest.mark.parametrize('words, faults', [((2, -1), False), ((0, 5), True)])
+def test_a_gate_hold_tolerates_a_few_words_but_not_a_turning_wheel(words, faults):
+    env = driving(make())
+    env.state, env.linear = 'LOCALIZATION_UNTRUSTED', 0.0
+    run(env, 0.5)
+    env.channel.words = words                     # zero commanded for a while
+    if faults:
+        assert until(env, lambda: env.owner.state == 'FAULT', 2.0)
+        assert 'MOVING_WHILE_COMMANDED_ZERO' in env.owner.failure
+    else:
+        run(env, 2.0)
+        assert env.auto.state == 'AUTO' and env.owner.failure is None, (env.auto.reason, env.owner.failure)
+
+
+@pytest.mark.parametrize('words, accepted', [((1, -2), True), ((0, 4), False)])
+def test_entry_accepts_wheels_held_at_a_few_words(words, accepted):
+    env = make()
+    run(env, 1.0)
+    env.linear = 0.1
+    env.channel.words = words
+    run(env, 0.6)
+    request_auto(env)
+    if accepted:
+        assert env.auto.state in ('INITIALIZING', 'AUTO') and env.auto.refusal is None, env.auto.refusal
+    else:
+        assert env.auto.state == 'NONE' and env.auto.refusal == 'AUTO_REFUSED: NOT_STATIONARY'
 
 
 def test_wheels_turning_during_a_gate_hold_fault_the_owner():
