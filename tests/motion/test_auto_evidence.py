@@ -31,7 +31,8 @@ def project(tmp_path):
 
 def braking(source, speed, paths=tuple(e.BRAKING_LIMITS_M)):
     return [{'path': path, 'speed_m_s': speed, 'distances_m': [0.05, 0.05, 0.051, 0.052, 0.05],
-             'max_heading_change_deg': 1.0, 'sources': [source]} for path in paths]
+             'max_heading_change_deg': 1.0, 'sources': [source],
+             **({'moved_after_reset': False} if path == 'estop' else {})} for path in paths]
 
 
 def evidence(source, stage='STAND_TEST', hold=None):
@@ -44,7 +45,8 @@ def evidence(source, stage='STAND_TEST', hold=None):
                                   'word_index': 0, 'mask': 65535, 'equals': 300}],
              'stop_tests': {name: copy.deepcopy(test) for name in e.STOP_TESTS}}
     value['stop_tests']['estop']['moved_after_reset'] = False
-    value['stop_tests']['auto_stand_checks']['speed_ratios'] = [0.98, 1.0, 1.03]
+    value['stop_tests']['auto_stand_checks'].update(speed_ratios=[0.98, 1.0, 1.03], estop_trials=1,
+                                                    moved_after_reset=False)
     if stage == 'SUPERVISED_CLOSED_LOOP':
         value['braking'] = braking(source, 0.10)
     return value
@@ -129,6 +131,7 @@ def test_each_stage_needs_its_own_tests_and_the_others_are_optional(project):
         load(root, value)
     value['stop_tests']['owner_killed'] = {'verified': False, 'trials': 0, 'max_stop_time_s': None, 'sources': []}
     value['stop_tests']['auto_stand_checks'] = {'verified': True, 'trials': 3, 'speed_ratios': [1.0, 0.97, 1.02],
+                                                'estop_trials': 1, 'moved_after_reset': False,
                                                 'sources': [source]}
     assert load(root, value)['stage'] == 'GROUND_TEST'   # an optional test not done yet is ignored
     value['stage'] = 'SUPERVISED_CLOSED_LOOP'
@@ -148,6 +151,52 @@ def test_stand_checks_need_the_wheel_feedback_within_ten_percent_of_the_command(
         load(root, value)
     value['stop_tests']['auto_stand_checks']['speed_ratios'] = [0.9, 1.1, 1.0]
     assert load(root, value)['stage'] == 'GROUND_TEST'
+
+
+@pytest.mark.parametrize('change, message', [
+    (lambda v: v.pop('estop_trials'), 'auto_stand_checks.estop_trials'),
+    (lambda v: v.update(estop_trials=0), 'auto_stand_checks.estop_trials'),
+    (lambda v: v.pop('moved_after_reset'), 'auto_stand_checks.moved_after_reset must be false'),
+    (lambda v: v.update(moved_after_reset=True), 'auto_stand_checks.moved_after_reset must be false')])
+def test_stand_checks_need_an_emergency_stop_during_automatic_control_without_motion_on_the_reset(
+        project, change, message):
+    """Second review of 2026-11-10, item 2: field step 5.3, the stop the wheel feedback rule has to see."""
+    root, source = project
+    value = evidence(source, 'GROUND_TEST')
+    change(value['stop_tests']['auto_stand_checks'])
+    with pytest.raises(FeedbackError, match=message):
+        load(root, value)
+
+
+@pytest.mark.parametrize('moved', [None, True])
+def test_closed_loop_estop_rows_need_the_chair_still_after_the_reset(project, moved):
+    root, source = project
+    value = evidence(source, 'SUPERVISED_CLOSED_LOOP')
+    row = next(row for row in value['braking'] if row['path'] == 'estop')
+    if moved is None:
+        del row['moved_after_reset']
+    else:
+        row['moved_after_reset'] = moved
+    with pytest.raises(FeedbackError, match='estop braking row needs moved_after_reset false'):
+        load(root, value)
+
+
+def test_without_a_known_timeout_a_line_loss_stop_after_1_5_s_counts_as_not_stopped(project):
+    """Second review of 2026-11-10, item 6."""
+    root, source = project
+    value = evidence(source, 'STAND_TEST', hold=NOT_INSTALLED)
+    del value['stop_tests']['dead_man'], value['stop_tests']['owner_killed'], value['stop_tests']['orin_power_cut']
+    value['communication_timeout_s'] = None
+    value['driver_readback'][0].update(purpose='input_functions', request_hex=read_request(1, 0x2016, 3).hex())
+    value['stop_tests']['usb_unplugged'] = {'verified': True, 'trials': 3, 'driver_stopped': True,
+                                            'max_stop_time_s': 1.5, 'sources': [source]}
+    assert load(root, value)['communication_timeout_s'] is None
+    for stop in (1.6, 9.9):
+        value['stop_tests']['usb_unplugged']['max_stop_time_s'] = stop
+        with pytest.raises(FeedbackError, match='counts as not stopped'):
+            load(root, value)
+    value['stop_tests']['usb_unplugged'] = dict(DRIVER_KEPT_GOING, sources=[source])   # recorded as not stopped
+    assert load(root, value)['stage'] == 'STAND_TEST'
 
 
 @pytest.mark.parametrize('stage', e.STAGES)

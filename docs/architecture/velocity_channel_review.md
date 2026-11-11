@@ -16,10 +16,11 @@
 - 9e5d79dc：没装开关时桥照样发 `/wc_nav/estop`。3f575fd9：只读回读小工具。3631f11f：接口约定按你同意的那句改。
 - 977c69ec：给 D 的闭环干跑，真的轮控所有者配模拟驱动器。52065582：0.10 m/s 测试指令源和停车报告。
 - 其后一个提交：采集从本机硬件配置抄 `auto_controls`；轮控所有者在会话开始读一次证据列的驱动器参数；证据按减过的现场计划改（3 次、只做 0.10 m/s、拔 USB 驱动器不停时记下决定）。见设计 8.1 和第 11 节。
+- 再其后一个提交，按总管的第二次审查：轮速判急停改成两轮反馈都低于指令的 20 %（原来要正好为 0），证据加自动中急停复位的结果，停车报告加每轮的比，步骤单补了复位前先确认自动已退出、远程画面断开就按急停、`max_wheel_rpm` 12 和第 9 步的闭环脚本。
 
 ## 默认路径为什么不变
 1. `MappingWheel` 里新增的属性 `auto` 默认是 `None`。四处挂接（`command`、`fault`、`step`、`status`）都写成 `if self.auto is not None`，为 `None` 时一行旧代码都没跳过。
-2. `main()` 只在会话冻结配置里有 `auto_controls` 时才导入 `mapping_auto`、调用 `attach_auto`。采集只在本机硬件配置有 `auto_controls` 时才把它抄进会话配置（11-10 加），建图的配置生成器不写；仓库和车上现在的 `hardware_setup.json` 里都没有。所以现在的面板会话里自动控制源根本不挂，也不导入这个模块。这次在 `main()` 的收尾里给 `auto_socket.close()` 加了 try（审查第 4 条），也在 `auto_socket is not None` 的分支里。
+2. `main()` 只在会话冻结配置里有 `auto_controls` 时才导入 `mapping_auto`、调用 `attach_auto`。采集只在本机硬件配置有 `auto_controls` 时才把它抄进会话配置（11-10 加）；实时建图会话也会带上（`mapping_controller` 把硬件配置的解析结果整个并进建图配置，第二次审查第 5 条）。仓库和车上现在的 `hardware_setup.json` 里都没有。所以现在的面板会话里自动控制源根本不挂，也不导入这个模块。这次在 `main()` 的收尾里给 `auto_socket.close()` 加了 try（审查第 4 条），也在 `auto_socket is not None` 的分支里。
 3. 即使写了 `auto_controls`，也要 `allowed`、当天的 `WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>`、审过的证据文件（其中的 `hold_to_run_switch` 和配置一致）、装了开关时的开关读入、证据列的驱动器参数回读成功，才建 `auto.sock`。回读在前面几条都过了以后、会话开始时读一次（11-10 加，只发白名单里的 FC03）。
 4. 主循环原来是 `control_socket.pump(); owner.step()`，现在拆成两行，中间加一行 `if auto_socket is not None: auto_socket.pump()`，顺序不变。
 5. 现场证据：11-09 面板跑的就是 b46193c7（录包 ZL1108shadow_2026_1109_203823 的 `software_hashes.json` 里 mapping_wheel.py 的 sha256 是 681827af…）。会话配置里没有 `auto_controls`，事务日志里没有任何 `auto_*` 事件。那次的轮速超时是 USB 转 485 从 USB 上掉线，出在没改过的 `WheelChannel.exchange`（设计第 7.1 节）。总管审查也确认了这一条。

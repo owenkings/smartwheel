@@ -1,4 +1,5 @@
 """Automatic control source of the wheel owner (velocity_channel.md). Fake serial channel only: no device, no motion."""
+import itertools
 import json
 import math
 from pathlib import Path
@@ -709,6 +710,45 @@ def test_wheels_get_time_to_start_before_the_stopped_wheels_rule():
     env.channel.words = None                        # and then turn
     run(env, 0.6)
     assert env.auto.state == 'AUTO', env.auto.reason
+
+
+@pytest.mark.parametrize('pattern', [[(0, 1)], [(0, 0), (1, 0)], [(-1, 2)]], ids=['one_word', 'alternating', 'both'])
+def test_inferred_emergency_stop_also_sees_wheels_that_read_a_word_or_two(pattern):
+    """Second review of 2026-11-10, item 1: after the emergency stop a wheel may still read a word or two."""
+    env = driving(make(hold='NOT_INSTALLED'))
+    readings = itertools.cycle(pattern)
+    env.channel.feedback = lambda: next(readings)   # raw words; -1 is 0xffff on the line
+    run(env, 0.2)
+    assert env.auto.state == 'AUTO'
+    assert until(env, lambda: env.auto.reason == 'WHEELS_STOPPED_WHILE_COMMANDED', 0.4)
+    start = len(env.channel.requests)
+    run(env, 0.06)
+    assert env.auto.immediate and speeds(env, start)[0] == (0, 0)
+    status = env.owner.status()['auto']
+    assert status['estop_request'] is True and status['enable_request'] is False
+    # The stop is never confirmed while a wheel keeps reading: zero stays written and the owner faults.
+    assert until(env, lambda: env.owner.state == 'FAULT', 1.5)
+    assert 'NOT_STATIONARY_AFTER_STOP' in env.owner.failure and env.channel.requests[-1] == m.ZERO_REQUEST
+    assert not any(w != (0, 0) for w in speeds(env, start))
+
+
+def test_inferred_emergency_stop_needs_both_wheels_below_a_fifth_of_the_command():
+    env = driving(make(hold='NOT_INSTALLED'))
+    follow = env.channel.follow_factor
+    env.channel.follow_factor = follow * 0.3          # both wheels slow, but turning: a heavy load, not a stop
+    run(env, 1.0)
+    assert env.auto.state == 'AUTO', env.auto.reason
+    env.channel.follow_factor = follow
+    run(env, 0.3)
+    env.channel.words = (0, FORWARD[1])               # one wheel stopped, the other turning: not the emergency stop
+    run(env, 1.0)
+    assert env.auto.state == 'AUTO', env.auto.reason
+    env.channel.words = None
+    env.channel.follow_factor = follow * 0.15         # coasting down after the emergency stop
+    assert until(env, lambda: env.auto.reason == 'WHEELS_STOPPED_WHILE_COMMANDED', 0.6)
+    env.channel.follow_factor, env.channel.words = follow, (0, 0)
+    assert until(env, lambda: env.auto.state == 'NONE', 1.0)   # standing still: back to NONE, no fault
+    assert env.owner.state != 'FAULT' and env.owner.initialized_by_user is False
 
 
 # ---------------------------------------------------------------- faults and exits (section 6)

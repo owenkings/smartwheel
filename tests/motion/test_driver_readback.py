@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import sys
@@ -170,7 +171,7 @@ class FakeLease:
         self.fd, self.closed = None, True
 
 
-def test_cli_writes_a_result_for_a_refused_port_and_for_a_complete_run(tmp_path, monkeypatch):
+def test_cli_writes_a_result_for_a_refused_port_and_for_a_complete_run(tmp_path, monkeypatch, capsys):
     folders = []
     def folder(root, label):
         path = tmp_path/('run%d_%s' % (len(folders), label))
@@ -200,6 +201,8 @@ def test_cli_writes_a_result_for_a_refused_port_and_for_a_complete_run(tmp_path,
     assert result['function_codes_sent'] == [3] and result['control_transmissions'] == 0 and len(result['reads']) == 11
     assert result['reads'][-1]['status'] == 'MODBUS_EXCEPTION' and result['device_id'] == leases[1].config['device_id']
     assert driver.requests == [entry[3] for entry in entries] and leases[1].closed
+    # each read shows how long it took: the owner's own readback at session start waits at most 0.1 s
+    assert re.search(r'^2000h  0x[0-9A-F]{4}\(\d+\)  \d+\.\d ms$', capsys.readouterr().out, re.M)
     lock.seek(0)
     note = json.loads(lock.read())
     assert note['purpose'] == 'driver_readback_fc03_only' and len(note['request_hex']) == 11

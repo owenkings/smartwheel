@@ -2,8 +2,8 @@
 
 Reads <session>/sources/wheel_feedback.jsonl (or <session>/wheel_feedback.jsonl) and
 <session>/configuration/manual_runtime.json, during a recording or afterwards. Every AUTO run of the wheel owner is
-one trial: the commanded and the measured speed while steady (the speed conversion check: commanded 0.10 m/s should
-read back as 0.10 m/s), then how it stopped:
+one trial: the commanded and the measured speed while steady, for the axle and for each wheel (the speed conversion
+check: commanded 0.10 m/s should read back as 0.10 m/s on both wheels), then how it stopped:
 
 - software_zero: the command ramped down while the owner stayed in AUTO (the source sent zero);
 - source_lost: the owner left AUTO because its bridge or test source went away (kill -9) or fell silent;
@@ -55,27 +55,34 @@ def read_journal(path):
     return records
 
 
-def command_linear(request_hex, wheel, scale):
-    """Axle speed of one FC10 2088h speed write (inverse of the owner's encoding)."""
+def command_wheels(request_hex, wheel, scale):
+    """(left, right) wheel speeds, forward positive, of one FC10 2088h speed write (inverse of the owner's encoding)."""
     data = bytes.fromhex(request_hex)
     words = [int.from_bytes(data[7 + 2 * i:9 + 2 * i], 'big', signed=True) for i in range(2)]
-    speeds = [words[i] / (wheel[sign] * scale) * 2 * math.pi * wheel['wheel_radius_m'] / 60
-              for i, sign in enumerate(('left_sign', 'right_sign'))]
-    return sum(speeds) / 2
+    return tuple(words[i] / (wheel[sign] * scale) * 2 * math.pi * wheel['wheel_radius_m'] / 60
+                 for i, sign in enumerate(('left_sign', 'right_sign')))
+
+
+def command_linear(request_hex, wheel, scale):
+    """Axle speed of one FC10 2088h speed write."""
+    return sum(command_wheels(request_hex, wheel, scale)) / 2
 
 
 def timeline(records, wheel, scale):
     feedback, writes, states, failures = [], [], [], []
+    rpm_to_m_s = 2 * math.pi * wheel['wheel_radius_m'] / 60
     for record in records:
         event = record.get('event')
         if event == 'history_preview':
             feedback.append({'t': record['receive_monotonic_ns'] * 1e-9, 'wall_ns': record.get('stamp_ns'),
                              'v': record['linear_velocity_m_s'], 'd': record['signed_distance_m'],
                              'yaw': record['yaw_rad'],
+                             'left': record['left_wheel_rpm_candidate'] * rpm_to_m_s,
+                             'right': record['right_wheel_rpm_candidate'] * rpm_to_m_s,
                              'zero': record['left_raw_signed'] == 0 and record['right_raw_signed'] == 0})
         elif event == 'wheel_io_complete' and record.get('request_hex', '')[2:4] == '10':
-            writes.append((record['exchange_started_monotonic_ns'] * 1e-9,
-                           command_linear(record['request_hex'], wheel, scale)))
+            left, right = command_wheels(record['request_hex'], wheel, scale)
+            writes.append((record['exchange_started_monotonic_ns'] * 1e-9, (left + right) / 2, (left, right)))
         elif event == 'auto_state':
             states.append((record['journal_enqueued_monotonic_ns'] * 1e-9, record['state'], record.get('reason'),
                            record.get('immediate_reason')))
@@ -119,15 +126,15 @@ def _median(values):
 
 def trial(feedback, writes, failures, run):
     start, end, end_state, end_reason = run
-    commands = [(t, v) for t, v in writes if t >= start and (end is None or t <= end)]   # written while in AUTO
-    plateau = max((v for _, v in commands), default=0.0)
+    commands = [(t, v, w) for t, v, w in writes if t >= start and (end is None or t <= end)]   # written in AUTO
+    plateau = max((v for _, v, _ in commands), default=0.0)
     row = {'auto_start_mono_s': round(start, 3), 'commanded_m_s': round(plateau, 4), 'kind': None,
            'owner_exit_reason': end_reason}
     if plateau <= 0:
         row['kind'] = 'never_moved'
         return row
-    reached = next(t for t, v in commands if v >= plateau - 1e-6)
-    ramp_down = next((t for t, v in commands if t > reached and v < plateau - 1e-6), None)
+    reached, wheels = next((t, w) for t, v, w in commands if v >= plateau - 1e-6)
+    ramp_down = next((t for t, v, _ in commands if t > reached and v < plateau - 1e-6), None)
     moving = [s for s in feedback if s['t'] >= reached + 0.3]   # after the ramp and the driver's own lag
     failure = next(((t, reason) for t, reason in failures if t >= reached and (end is None or t <= end)), None)
     if ramp_down is not None and (end is None or ramp_down < end):
@@ -149,9 +156,14 @@ def trial(feedback, writes, failures, run):
     else:
         row['kind'] = 'running'
         return row
-    measured = _median([s['v'] for s in moving if trigger - STEADY_WINDOW_S <= s['t'] < trigger])
+    steady = [s for s in moving if trigger - STEADY_WINDOW_S <= s['t'] < trigger]
+    measured = _median([s['v'] for s in steady])
     row.update(kind=kind, measured_m_s=None if measured is None else round(measured, 4),
                speed_ratio=None if not measured else round(measured / plateau, 3))
+    for side, command in zip(('left', 'right'), wheels):
+        # One wheel at 80 % and the other at 120 % averages to 100 % on the axle (second review, item 6).
+        value = _median([s[side] for s in steady])
+        row[side + '_ratio'] = None if value is None or abs(command) < 1e-6 else round(value / command, 3)
     stop = None if kind == 'feedback_lost' else next((s for s in feedback if s['t'] >= trigger and s['zero']), None)
     row['trigger_mono_s'] = round(trigger, 3)
     wall = next((s['wall_ns'] for s in feedback if s['t'] >= trigger and s.get('wall_ns')), None)
@@ -186,7 +198,10 @@ def lines(result):
     for index, row in enumerate(result['trials'], 1):
         text = '%d. %s  指令 %.3f m/s' % (index, row['kind'], row['commanded_m_s'])
         if row.get('measured_m_s') is not None:
-            text += '，反馈 %.3f m/s（%.0f%%）' % (row['measured_m_s'], 100 * row['speed_ratio'])
+            text += '，反馈 %.3f m/s（%.0f%%' % (row['measured_m_s'], 100 * row['speed_ratio'])
+            if row.get('left_ratio') is not None and row.get('right_ratio') is not None:
+                text += '，左轮 %.0f%%、右轮 %.0f%%' % (100 * row['left_ratio'], 100 * row['right_ratio'])
+            text += '）'
         if row.get('trigger_local_time'):
             text += '，%s 起停' % row['trigger_local_time']
         if 'stop_time_s' in row:

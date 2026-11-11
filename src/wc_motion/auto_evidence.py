@@ -19,15 +19,18 @@ What each stage needs follows the coordinator's plan of 2026-11-10 14:40 for the
 - STAND_TEST, before automatic control runs on the stand: with the existing manual channel, the emergency stop (and
   no wheel motion after a reset with zero commanded) and the USB adapter pulled, 3 trials each.
 - GROUND_TEST adds ``auto_stand_checks``: the test command source at 0.10 m/s on the stand, with the wheel feedback
-  within 10 % of the command in every trial (the speed conversion).
+  within 10 % of the command in every trial (the speed conversion), and at least one emergency stop during
+  automatic control after which the wheels did not move on the reset (``estop_trials``, ``moved_after_reset``).
 - SUPERVISED_CLOSED_LOOP adds braking rows on the ground at the approved top speed, 3 trials each: software zero,
-  test source killed, emergency stop, and USB adapter pulled.
+  test source killed, emergency stop (again with ``moved_after_reset`` false), and USB adapter pulled.
 
 A driver that does not stop by itself when the USB adapter is pulled may be recorded as such (``driver_stopped``
 false) with the decision, by the user or the coordinator, only while the approved linear limit is 0.10 m/s: the
 person beside the chair presses the emergency stop (coordinator 2026-11-10 14:40). Then the communication-loss
 braking row is not required. Up to the same speed ``communication_timeout_s`` may be null (not known, for example
-when 2000h cannot be read); above it the timeout is needed and every line-loss stop must come within it plus 0.5 s.
+when 2000h cannot be read); then a driver that stopped by itself must have stopped within 1.5 s, a later stop counts
+as not stopped (second review of 2026-11-10, item 6). Above that speed the timeout is needed and every line-loss
+stop must come within it plus 0.5 s.
 The killed owner and the cut Orin power are optional now; when recorded as verified they are checked as before.
 """
 import hashlib
@@ -50,6 +53,7 @@ STOP_TESTS = ('estop', 'dead_man', 'owner_killed', 'usb_unplugged', 'orin_power_
               'source_killed', 'auto_stand_checks')
 LOSS_TESTS = ('owner_killed', 'usb_unplugged', 'orin_power_cut')   # stop by the driver's communication timeout
 LOSS_STOP_MARGIN_S = 0.5   # section 8.1, level 2: stopped within the communication timeout plus 0.5 s
+UNKNOWN_TIMEOUT_STOP_S = 1.5   # communication timeout not known: a later stop counts as the driver not stopping
 REQUIRED_STOP_TESTS = {
     # The existing manual channel on the stand (WASD at 0.10 m/s), before the automatic channel runs.
     'STAND_TEST': ('estop', 'dead_man', 'usb_unplugged'),
@@ -201,10 +205,14 @@ def check_stop_test(name, value, project_root, roots, communication_timeout_s, m
         if value.get('driver_stopped', True) is not True:
             raise FeedbackError(name + '.driver_stopped must be true or false')
         stop = _number(value.get('max_stop_time_s'), name + '.max_stop_time_s', 0.0, 10.0)
-        limit = None if communication_timeout_s is None else communication_timeout_s + LOSS_STOP_MARGIN_S
-        if limit is not None and stop > limit + 1e-9:
+        if communication_timeout_s is None:
+            if stop > UNKNOWN_TIMEOUT_STOP_S + 1e-9:
+                raise FeedbackError('stop test %s took %.2f s with the communication timeout not known: a stop after '
+                                    '%.1f s counts as not stopped (driver_stopped false, with the decision)'
+                                    % (name, stop, UNKNOWN_TIMEOUT_STOP_S))
+        elif stop > communication_timeout_s + LOSS_STOP_MARGIN_S + 1e-9:
             raise FeedbackError('stop test %s took %.2f s, more than the communication timeout plus %.1f s (%.2f s)'
-                                % (name, stop, LOSS_STOP_MARGIN_S, limit))
+                                % (name, stop, LOSS_STOP_MARGIN_S, communication_timeout_s + LOSS_STOP_MARGIN_S))
     elif value.get('max_stop_time_s') is not None:
         _number(value['max_stop_time_s'], name + '.max_stop_time_s', 0.0, 10.0)
     if name == 'estop' and value.get('moved_after_reset') is not False:
@@ -219,6 +227,11 @@ def check_stop_test(name, value, project_root, roots, communication_timeout_s, m
             if abs(ratio - 1.0) > SPEED_RATIO_TOLERANCE + 1e-9:
                 raise FeedbackError('speed conversion: wheel feedback %.0f %% of the command, outside %.0f %%'
                                     % (100 * ratio, 100 * SPEED_RATIO_TOLERANCE))
+        # The emergency stop during automatic control (field step 5.3): the stop the wheel feedback rule must see.
+        _integer(value.get('estop_trials'), 'auto_stand_checks.estop_trials', 1, 1000)
+        if value.get('moved_after_reset') is not False:
+            raise FeedbackError('auto_stand_checks.moved_after_reset must be false: after the emergency stop during '
+                                'automatic control the wheels must not move on the reset')
     return _sources(value.get('sources'), 'stop test ' + name, project_root, roots)
 
 
@@ -243,6 +256,9 @@ def check_braking(rows, paths, project_root, roots):
                                 % (BRAKING_SPREAD_FLOOR_M, row['path']))
         if _number(row.get('max_heading_change_deg'), 'braking heading change', 0.0, 180.0) > BRAKING_HEADING_DEG:
             raise FeedbackError('heading changed more than 5 degrees while braking on ' + row['path'])
+        if row['path'] == 'estop' and row.get('moved_after_reset') is not False:
+            raise FeedbackError('estop braking row needs moved_after_reset false: after the emergency stop on the '
+                                'ground the chair must not move on the reset')
         _sources(row.get('sources'), 'braking row', project_root, roots)
         if row['path'] in measured:
             measured[row['path']] = max(measured[row['path']], speed)

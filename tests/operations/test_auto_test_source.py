@@ -69,10 +69,10 @@ def test_software_zero_trial_reports_speed_conversion_stop_time_and_distance():
         assert [e['phase'] for e in source.events] == ['FORWARD', 'ZERO', 'DONE']
         row = trials[0]
         assert row['kind'] == 'software_zero' and row['commanded_m_s'] == pytest.approx(0.10, abs=0.002)
-        assert 0.95 < row['speed_ratio'] < 1.02
+        assert 0.95 < row['speed_ratio'] < 1.02 and 0.95 < row['left_ratio'] < 1.02 and 0.95 < row['right_ratio'] < 1.02
         assert 0 < row['stop_time_s'] < 1.0 and 0 < row['stop_distance_m'] < 0.05
         assert abs(row['heading_change_deg']) < 0.5
-        assert any('software_zero' in line for line in r.lines({'trials': trials}))
+        assert any('software_zero' in line and '左轮' in line for line in r.lines({'trials': trials}))
 
 
 def test_emergency_stop_on_the_driver_is_reported_from_the_slowing_wheels():
@@ -81,6 +81,8 @@ def test_emergency_stop_on_the_driver_is_reported_from_the_slowing_wheels():
     with tempfile.TemporaryDirectory(prefix='wc-src-', dir='/tmp') as tmp:
         source, failure, trials, owner = trial(tmp, 'external', during=press)
         assert failure is None and [e['phase'] for e in source.events][:2] == ['FORWARD', 'OWNER_STOPPED']
+        # field steps 5.3 and 7.3 reset the emergency stop only after this line
+        assert source.events[1]['note'] == 'the owner left AUTO: WHEELS_STOPPED_WHILE_COMMANDED'
         row = trials[0]
         assert row['kind'] == 'estop' and row['owner_exit_reason'] == 'WHEELS_STOPPED_WHILE_COMMANDED'
         assert 0 < row['stop_time_s'] < 1.5 and 0 < row['stop_distance_m'] < 0.1
@@ -128,6 +130,41 @@ def test_cli_needs_todays_approval_and_one_running_session(tmp_path):
         t.main(['--project-root', str(ROOT), '--stop', 'software_zero', '--forward-s', '30', '--dry-run'])
     with pytest.raises(SystemExit, match='together'):
         t.main(['--project-root', str(ROOT), '--stop', 'external', '--session-root', str(tmp_path), '--dry-run'])
+
+
+def test_stop_report_gives_each_wheel_its_own_ratio(tmp_path):
+    """Second review of 2026-11-10, item 6: one wheel at 80 % and the other at 120 % average to 100 %."""
+    import json
+    import math
+    from wc_runtime.mapping_wheel import speed_write
+    wheel = json.loads((ROOT/'config/wheel_history_calibration.json').read_text())
+    scale = 8.9
+    for folder in ('configuration', 'sources'):
+        (tmp_path/folder).mkdir()
+    (tmp_path/'configuration/manual_runtime.json').write_text(json.dumps(
+        {'session_id': 'synthetic', 'wheel_candidate': wheel, 'manual_controls': {'command_rpm_to_register_scale': scale}}))
+    rpm = 0.10 * 60 / (2 * math.pi * wheel['wheel_radius_m'])
+    forward = speed_write(int(rpm * wheel['left_sign'] * scale), int(rpm * wheel['right_sign'] * scale)).hex()
+    records = [{'event': 'auto_state', 'journal_enqueued_monotonic_ns': 10**9, 'state': 'AUTO', 'reason': 'AUTO_STARTED'}]
+    records += [{'event': 'wheel_io_complete', 'request_hex': forward,
+                 'exchange_started_monotonic_ns': round((1.0 + 0.05 * i) * 1e9)} for i in range(40)]
+    records.append({'event': 'wheel_io_complete', 'request_hex': speed_write(0, 0).hex(),
+                    'exchange_started_monotonic_ns': 3 * 10**9})   # software zero at 3.0 s
+    commanded = r.command_wheels(forward, wheel, scale)          # what the words decode to, m/s per wheel
+    to_rpm = 60 / (2 * math.pi * wheel['wheel_radius_m'])
+    for i in range(25):
+        t, moving = 1.0 + 0.1 * i, i < 20
+        left, right = (commanded[0] * 0.8 * to_rpm, commanded[1] * 1.2 * to_rpm) if moving else (0.0, 0.0)
+        speed = (left + right) / 2 / to_rpm
+        records.append({'event': 'history_preview', 'receive_monotonic_ns': round(t * 1e9), 'stamp_ns': None,
+                        'linear_velocity_m_s': speed, 'signed_distance_m': 0.1 * (min(t, 3.0) - 1.0), 'yaw_rad': 0.0,
+                        'left_wheel_rpm_candidate': left, 'right_wheel_rpm_candidate': right,
+                        'left_raw_signed': int(moving), 'right_raw_signed': int(moving)})
+    (tmp_path/'sources/wheel_feedback.jsonl').write_text(''.join(json.dumps(v) + '\n' for v in records))
+    row = r.report(tmp_path)['trials'][0]
+    assert row['kind'] == 'software_zero' and row['speed_ratio'] == pytest.approx(1.0, abs=0.005)
+    assert row['left_ratio'] == pytest.approx(0.8, abs=0.01) and row['right_ratio'] == pytest.approx(1.2, abs=0.01)
+    assert '（100%，左轮 80%、右轮 120%）' in r.lines({'trials': [row]})[0]
 
 
 def test_stop_report_finds_the_newest_recording_of_the_checkout(tmp_path, monkeypatch, capsys):
