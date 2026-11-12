@@ -51,6 +51,8 @@ class LiveInputs:
         self.filter_config = live["filter"]
         self.transforms = {"T_base_axle": live["T_base_axle"]}
         self.rotation = live["R_reference_base"]
+        # --scan-inside-body drop (off by default): /scan without the points inside the body outline
+        self.scan_body = config.get("scan_body")
         self.lidar_id = live["identities"]["lidar_left"]
         self.lever = live["lever_xy"]
         self.odometry = LiveOdometry(live["prior"], self.lever, float(config.get("odom_period_s", 0.02)))
@@ -109,7 +111,8 @@ class LiveInputs:
             if self.scan_period_ns and self.last_scan_ns is not None and stamp - self.last_scan_ns < self.scan_period_ns * 0.9:
                 self.counts["clouds_skipped_by_rate"] += 1
                 return
-            ranges, _ = scan_from_source(message, self.filter_config, self.transforms, self.rotation)
+            ranges, stats = scan_from_source(message, self.filter_config, self.transforms, self.rotation,
+                                             body=self.scan_body)
         except ScanRejected as error:
             self.counts["clouds_rejected"] += 1
             self.reasons[str(error)[:80]] = self.reasons.get(str(error)[:80], 0) + 1
@@ -123,6 +126,9 @@ class LiveInputs:
                      else _time_msg(scan_stamp_ns(stamp, self.lidar_time_offset_ms)))
         self.scan_pub.publish(laser_scan_message(ranges, published))
         self.counts["scans"] += 1
+        if self.scan_body is not None:
+            self.counts["scan_inside_body_dropped"] = (self.counts.get("scan_inside_body_dropped", 0)
+                                                       + stats["inside_body_dropped"])
 
     def on_imu(self, message):
         self.received["imu"] = self.now()

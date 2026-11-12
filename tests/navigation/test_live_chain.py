@@ -201,6 +201,58 @@ def test_host_filter_drops_isolated_returns_before_projection():
     assert np.isfinite(ranges).sum() >= 8 and np.nanmin(ranges[np.isfinite(ranges)]) == pytest.approx(2.0, abs=1e-5)
 
 
+_MEASURED_OUTLINE = [[0.81, 0.2425], [0.2, 0.35], [-0.255, 0.35], [-0.255, -0.35], [0.2, -0.35], [0.81, -0.2425]]
+
+
+def test_scan_inside_body_drop_keeps_the_nearest_return_outside_the_body():
+    # 总管 2026-11-12 item 5: the left lidar's near ring (0.31 m ahead of it, 0.86 m above the floor) is inside the
+    # measured outline; with the body given, its bin keeps the wall behind it
+    from wc_navigation.live.scan_adapter import drop_inside_body, scan_body, scan_from_source
+    body = scan_body(_MEASURED_OUTLINE, (0.323, 0.229, 0.675), 0.185, 1.60)
+    assert body["near_m"] == 0.40
+    ring, wall, left, high = [0.31, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.33, 0.0], [0.31, 0.0, 1.0]
+    # window C 11-12 15:12: someone against the front edge is inside the outline too, 0.45 m from the lidar: kept
+    touching = [0.45, 0.0, 0.0]
+    points = np.array([ring, wall, left, high, touching], dtype=np.float32)
+    kept, dropped = drop_inside_body(points, body)
+    assert dropped == 1 and kept.tolist() == points[1:].tolist()   # beside the body, above it (1.86 m) and 0.45 m stay
+    with pytest.raises(ValueError):
+        scan_body(_MEASURED_OUTLINE, (0.323, 0.229, 0.675), 0.185, 1.60, near_m=0.0)
+    grid = np.array([ring, wall] * 20, dtype=float)
+    message = source_frame(organized_cloud(grid, 4, 10))
+    config = {"cloud_filter": {"enabled": False}, "mapping_enabled": True}
+    keep, stats = scan_from_source(message, config, {"T_base_axle": np.eye(4).tolist()}, np.eye(3))
+    drop, stats_drop = scan_from_source(message, config, {"T_base_axle": np.eye(4).tolist()}, np.eye(3), body=body)
+    ahead = 80                                                       # 0 deg
+    assert keep[ahead] == pytest.approx(0.31) and drop[ahead] == pytest.approx(1.0)
+    assert "inside_body_dropped" not in stats and stats_drop["inside_body_dropped"] == 20
+    with pytest.raises(ValueError):
+        scan_body(_MEASURED_OUTLINE[:2], (0.3, 0.2, 0.7), 0.185, 1.6)
+
+
+def test_scan_inside_body_option_needs_the_outline_and_reaches_only_the_scan_input(tmp_path):
+    from wc_navigation.live import cli
+    from wc_navigation.live.supervisor import LiveSupervisor
+    outline = [str(v) for p in _MEASURED_OUTLINE for v in p]
+    argv = _closed_argv(tmp_path)
+    shadow = argv[:argv.index("--closed-loop")]
+    assert cli.arguments(shadow).scan_inside_body == "keep"           # default: /scan as before
+    assert cli.arguments(_closed_argv(tmp_path, "--scan-inside-body", "drop", "--footprint", *outline)
+                         ).scan_inside_body == "drop"
+    with pytest.raises(SystemExit):
+        cli.arguments(_closed_argv(tmp_path, "--scan-inside-body", "drop"))         # no measured outline
+    lever = np.eye(4)
+    lever[:3, 3] = (0.323, 0.229, 0.675)
+    body = cli.scan_body_settings(_MEASURED_OUTLINE, {"T_base_axle": np.linalg.inv(lever).tolist()})
+    assert body["lever"] == pytest.approx([0.323, 0.229, 0.675]) and body["max_height_m"] == 1.60
+    assert body["axle_height_m"] == 0.185 and body["outline"] == _MEASURED_OUTLINE
+    config = {"use_sim_time": True, "live_config_file": "live.json", "lidar_time_offset_ms": 75.0}
+    plain = LiveSupervisor(tmp_path, tmp_path, config)
+    assert "scan_body" not in plain.input_config("scan") and "scan_body" not in plain.input_config("odometry")
+    dropping = LiveSupervisor(tmp_path, tmp_path, dict(config, scan_body=body))
+    assert dropping.input_config("scan")["scan_body"] == body and "scan_body" not in dropping.input_config("odometry")
+
+
 # -- odometry adapter ----------------------------------------------------------------------------------
 def test_axle_pose_is_the_reference_moved_back_by_the_lever():
     pose = np.eye(4)
@@ -740,6 +792,88 @@ def test_start_check_reports_a_corridor_view_as_ambiguous():
     assert start_check.moved((0.0, 0.0, 0.0), (0.06, 0.0, 0.0)) and not start_check.moved((0, 0, 0), (0.02, 0, 0.01))
 
 
+def test_start_pose_correction_moves_the_position_across_the_corridor_only():
+    # 总管 2026-11-12 item 3 (user 11:05): the minimum-offset rule, position only, within +-0.4 m. These scans are
+    # exact, so every pose within about 0.1 m of the true one fits as well; the rule stops at the first of them.
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    true = (-3.0, 0.0, math.pi)                                      # looking down the corridor away from the wall
+    scans = _scans_seen_from(true, scorer)
+    given = (-3.0, 0.25, math.pi)                                    # placed 0.25 m off across the corridor
+    result = start_check.correction(scorer, scans, (0.0, 0.0), given)
+    assert result["applied"] and result["support_before"] < 0.5 and result["support_after"] >= 0.9
+    x, y, yaw = result["corrected_pose"]
+    assert abs(y) <= 0.15 and x == pytest.approx(-3.0, abs=1e-6) and yaw == given[2]   # along: as given
+    assert 0.1 <= result["offset_across_m"] <= 0.25 and result["offset_along_m"] == 0.0
+    text = start_check.correction_message(result)
+    assert "向车左" in text and "朝向不变" in text and "向前" not in text and "向后" not in text
+    fits = start_check.correction(scorer, scans, (0.0, 0.0), true)
+    assert not fits["applied"] and fits["reason"] == "GIVEN_POSE_FITS"
+    assert start_check.correction_message(fits).startswith("起点修正：不用改")
+    far = start_check.correction(scorer, scans, (0.0, 0.0), (-3.0, 0.7, math.pi))     # beyond +-0.4 m
+    assert not far["applied"] and far["reason"] == "NOTHING_FITS_NEARBY"
+    assert "60%" in start_check.correction_message(far)
+    assert start_check.correction(scorer, scans[:3], (0.0, 0.0), given)["reason"] == "NO_DATA"
+
+
+def test_start_pose_correction_fixes_both_directions_where_the_view_has_a_wall_ahead():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    true = (1.0, 0.0, 0.0)                                           # the wall across the corridor 3 m ahead
+    scans = _scans_seen_from(true, scorer)
+    result = start_check.correction(scorer, scans, (0.0, 0.0), (1.25, -0.25, 0.0))
+    assert result["applied"] and result["corrected_pose"][:2] == pytest.approx([1.0, 0.0], abs=0.15)
+    assert result["offset_along_m"] < 0 and result["offset_across_m"] > 0
+    text = start_check.correction_message(result)
+    assert "向后" in text and "向车左" in text
+
+
+def test_start_pose_correction_option(tmp_path):
+    from wc_navigation.live import cli
+    argv = _closed_argv(tmp_path)
+    shadow = argv[:argv.index("--closed-loop")]
+    assert cli.arguments(shadow).start_pose_correction == "off"                       # default: as before
+    assert cli.arguments(_closed_argv(tmp_path)).start_pose_correction == "off"       # the closed loop too
+    assert cli.arguments(_closed_argv(tmp_path, "--start-pose-correction", "apply")).start_pose_correction == "apply"
+    with pytest.raises(SystemExit):
+        cli.arguments(shadow + ["--start-pose-correction", "apply", "--start-check", "off"])   # needs the scans
+    with pytest.raises(SystemExit):
+        cli.arguments(shadow + ["--start-pose-correction", "on"])
+
+
+def test_start_pose_correction_sends_the_corrected_pose_until_amcl_takes_it(tmp_path):
+    from types import SimpleNamespace
+    from wc_navigation.live import start_check
+    from wc_navigation.live.supervisor import LiveSupervisor
+    scorer = _start_check_scorer()
+    scans = _scans_seen_from((-3.0, 0.0, math.pi), scorer)
+    given = [-3.0, 0.25, math.pi]
+    sent, pose = [], {"now": tuple(given)}
+
+    def publish(p, covariance):
+        sent.append((list(p), list(covariance)))
+        if len(sent) == 2:                                           # AMCL takes the second message
+            pose["now"] = tuple(p)
+    monitor = SimpleNamespace(map_pose=lambda: (pose["now"], 0.0), publish_initial_pose=publish,
+                              spin=lambda s: None, now=lambda: 0.0)
+    config = {"initial_pose": given, "start_pose_correction": "apply"}
+    run = LiveSupervisor(tmp_path, tmp_path, config)
+    run.t0 = 0.0
+    run.start_scans, run.report["initial_pose"] = scans, {"covariance": [0.0625] * 36}
+    run.report["start_check"] = {"status": "AMBIGUOUS"}
+    run.map_scorer, run.laser_lever, run.check_alive = (lambda: scorer), (lambda: (0.0, 0.0)), (lambda allow=(): None)
+    run.correct_start_pose(monitor)
+    correction = run.report["start_check"]["correction"]
+    assert correction["applied"] and correction["messages_sent"] == 2 and len(sent) == 2
+    assert sent[0][0] == correction["corrected_pose"] and sent[0][1] == [0.0625] * 36   # same covariance
+    assert run.report["initial_pose"]["corrected_pose_map"] == correction["corrected_pose"]
+    assert [s["stage"] for s in run.report["stages"]][-1] == "start_pose_corrected"
+    off = LiveSupervisor(tmp_path / "off", tmp_path / "off", {"initial_pose": given})
+    off.correct_start_pose(monitor)                                   # off by default: nothing sent, nothing written
+    assert len(sent) == 2 and "start_check" not in off.report
+    assert start_check.CORRECTION_MODES == ("off", "apply")
+
+
 def test_run_files_are_copied_from_the_work_directory_and_kept_when_a_copy_fails(tmp_path, monkeypatch):
     import shutil
     from wc_navigation.live.cli import move_run_files
@@ -912,6 +1046,9 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
         path.unlink(missing_ok=True)    # the test runner archives tmp_path and refuses special files (sockets)
     assert settings["auto_socket"] == str(path) and settings["bridge_node"] == "/wc_auto_bridge"
     assert (settings["max_linear"], settings["max_angular"], settings["enable_timeout_s"]) == (0.10, 0.30, 0.5)
+    # window B 2026-11-12 02:10: RPP's in-place turn acceleration and the angle above which it turns in place
+    assert settings["controller_params"] == [["max_angular_accel", 3.2], ["rotate_to_heading_min_angle", 0.785]]
+    assert settings["global_live_scans"] is False             # user 2026-11-12: plan on the saved map only
     assert seen[-1] == (tmp_path / "panel", tmp_path / "session", "capture_x")
     assert (settings["panel_root"], settings["session_root"]) == (str(tmp_path / "panel"), str(tmp_path / "session"))
     monkeypatch.setenv("ROS_DOMAIN_ID", "99")
@@ -922,6 +1059,7 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
 def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     from wc_navigation.autonomy import nav2_config
     from wc_navigation.autonomy.safety_gate import GateConfig
+    from wc_navigation.live import cli
     from wc_navigation.live.supervisor import LiveSupervisor
     import yaml
     config = {"use_sim_time": False, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
@@ -932,7 +1070,9 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
               "goals": [[4.0, 0.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
               "smoother_timeout_s": 0.3,
               "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
-                              "session_root": "/s", "session_id": "capture_x"}}
+                              "session_root": "/s", "session_id": "capture_x",
+                              "controller_params": [list(p) for p in cli.CLOSED_LOOP_CONTROLLER_PARAMS],
+                              "global_live_scans": cli.CLOSED_LOOP_GLOBAL_LIVE_SCANS}}
     profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
     run = LiveSupervisor(tmp_path, tmp_path, config)
     files = run.prepare_shadow(profile)
@@ -941,6 +1081,16 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert expected["controller_server"]["FollowPath.rotate_to_heading_angular_vel"] == 0.30
     assert expected["behavior_server"]["max_rotational_vel"] == 0.30
     assert expected["controller_server"]["FollowPath.desired_linear_vel"] == 0.10      # Nav2's own list kept
+    # window B 2026-11-12 02:10: the two changed RPP values and the ones kept are read back as well
+    assert {k: expected["controller_server"][k] for k in (
+        "FollowPath.max_angular_accel", "FollowPath.rotate_to_heading_min_angle", "FollowPath.use_rotate_to_heading",
+        "general_goal_checker.xy_goal_tolerance", "general_goal_checker.yaw_goal_tolerance")} == {
+        "FollowPath.max_angular_accel": 3.2, "FollowPath.rotate_to_heading_min_angle": 0.785,
+        "FollowPath.use_rotate_to_heading": True, "general_goal_checker.xy_goal_tolerance": 0.25,
+        "general_goal_checker.yaw_goal_tolerance": 0.35}
+    # user 2026-11-12: the global costmap has the saved map only, and the readback checks that
+    assert expected["global_costmap/global_costmap"]["plugins"] == ["static_layer", "inflation_layer"]
+    assert not [k for k in expected["global_costmap/global_costmap"] if k.startswith("obstacle_layer.")]
     node = json.loads(files["gate"].read_text())
     gate = GateConfig(**node["gate"])
     assert node["clock"] == "monotonic" and node["use_sim_time"] is False
@@ -950,7 +1100,17 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert json.loads(files["goals"].read_text())["closed_loop"] is True
     assert "feedback" not in files                                 # open loop: no velocity_feedback node
     nav2 = yaml.safe_load(files["nav2"].read_text())
-    assert nav2["controller_server"]["ros__parameters"]["FollowPath"]["desired_linear_vel"] == 0.10
+    server = nav2["controller_server"]["ros__parameters"]
+    follow = server["FollowPath"]
+    assert follow["desired_linear_vel"] == 0.10
+    # B's two values; unchanged: in-place turns at 0.30 rad/s, goal tolerances 0.25 m / 0.35 rad, replanning each second
+    assert (follow["max_angular_accel"], follow["rotate_to_heading_min_angle"]) == (3.2, 0.785)
+    assert (follow["use_rotate_to_heading"], follow["rotate_to_heading_angular_vel"]) == (True, 0.30)
+    assert (server["general_goal_checker"]["xy_goal_tolerance"], server["general_goal_checker"]["yaw_goal_tolerance"]
+            ) == (0.25, 0.35)
+    assert '<RateController hz="1.0">' in files["bt_to_pose"].read_text()
+    assert nav2["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"] == ["static_layer", "inflation_layer"]
+    assert "obstacle_layer" in nav2["local_costmap"]["local_costmap"]["ros__parameters"]["plugins"]
     smoother = nav2["velocity_smoother"]["ros__parameters"]
     assert (smoother["max_velocity"], smoother["feedback"], smoother["velocity_timeout"]) == (
         [0.10, 0.0, 0.30], "OPEN_LOOP", 0.3)
@@ -960,6 +1120,11 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     files = plain.prepare_shadow(nav2_config.NavProfile())
     assert plain.readback_expectations(nav2_config.NavProfile()) == nav2_config.readback_expectations(
         nav2_config.NavProfile(), "navigate", planning=plain.planning())                  # the shadow's list as before
+    follow = yaml.safe_load(files["nav2"].read_text())["controller_server"]["ros__parameters"]["FollowPath"]
+    assert (follow["max_angular_accel"], follow["rotate_to_heading_min_angle"]) == (
+        nav2_config.NavProfile().angular_accel, 0.5)                                    # the shadow keeps the stack's
+    assert "obstacle_layer" in yaml.safe_load(files["nav2"].read_text())["global_costmap"]["global_costmap"][
+        "ros__parameters"]["plugins"]                                                   # and its live global costmap
     node = json.loads(files["gate"].read_text())
     assert "clock" not in node and "require_base" not in node["gate"] and "enable_source_node" not in node["gate"]
     assert json.loads(files["goals"].read_text())["closed_loop"] is False
@@ -980,6 +1145,19 @@ def test_closed_loop_rotation_speeds_must_be_given_and_within_the_angular_limit(
             closed_loop_rotation_readback(params(rotate, spin), 0.30)
     with pytest.raises(RunError, match="missing"):
         closed_loop_rotation_readback({"controller_server": {"ros__parameters": {}}}, 0.30)
+
+
+def test_closed_loop_kept_controller_values_must_be_given():
+    from wc_navigation.autonomy.bringup import RunError
+    from wc_navigation.live.supervisor import closed_loop_kept_readback
+    server = {"FollowPath": {"use_rotate_to_heading": True},
+              "general_goal_checker": {"xy_goal_tolerance": 0.25, "yaw_goal_tolerance": 0.35}}
+    assert closed_loop_kept_readback({"controller_server": {"ros__parameters": server}}) == {"controller_server": {
+        "FollowPath.use_rotate_to_heading": True, "general_goal_checker.xy_goal_tolerance": 0.25,
+        "general_goal_checker.yaw_goal_tolerance": 0.35}}
+    with pytest.raises(RunError, match="yaw_goal_tolerance"):
+        closed_loop_kept_readback({"controller_server": {"ros__parameters": {
+            **server, "general_goal_checker": {"xy_goal_tolerance": 0.25}}}})
 
 
 def test_the_base_bridge_is_stopped_first(tmp_path, monkeypatch):
@@ -1151,6 +1329,25 @@ def test_front_check_verdict_is_the_median_of_the_last_scans():
     check.add_scan(walls, a0, inc, None)                               # lost the pose: no verdict until scans again
     assert check.verdict(7, 3.0)["clear"] is False and check.no_pose == 1
     assert front_check.operator_text(None) == "车前空地 未算"
+    # 总管 2026-11-12 item 4: the filtered scan, and a verdict on old scans is not clear
+    filtered = front_check.FrontCheck(scorer, (0.0, 0.0), (), 0.55, mode="block",
+                                      max_points=front_check.FILTERED_MAX_POINTS, frames=5, topic="/obstacles/left/scan")
+    for t in (10.0, 10.2, 10.4):
+        filtered.add_scan(walls, a0, inc, (0.0, 0.0, 0.0), time_s=t)
+    value = filtered.verdict(8, 10.9)
+    assert (value["clear"], value["topic"], value["scan_age_s"]) == (True, "/obstacles/left/scan", 0.5)
+    assert front_check.operator_text(value) == "车前空地（过滤扫描） 0 点（门限 3）"
+    value = filtered.verdict(9, 11.6)
+    assert (value["clear"], value["reason"], value["points"]) == (False, "FRONT_SCAN_STALE", 0)
+    assert front_check.operator_text(value) == "车前空地（过滤扫描） 1.2 s 没有新扫描：不要开始自动"
+    assert front_check.parse(json.dumps(value)) == (False, "FRONT_SCAN_STALE")
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=11.7)    # a person or ghosts on the filtered scan
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=11.9)
+    assert filtered.verdict(10, 12.0)["clear"] is True                  # median of 5: 0 0 0 11 11
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=12.1)
+    value = filtered.verdict(11, 12.2)
+    assert (value["clear"], value["reason"], value["points"]) == (False, "FRONT_NOT_CLEAR", 11)
+    assert check.verdict(12, 3.0)["topic"] == "/scan" and "scan_age_s" not in check.verdict(12, 3.0)
     for bad in ({"mode": "off"}, {"mode": "block", "max_points": -1}, {"mode": "block", "max_points": 1.5}):
         with pytest.raises(ValueError):
             front_check.FrontCheck(scorer, (0, 0), **bad)
@@ -1162,6 +1359,14 @@ def test_front_check_options_and_the_gate_hold(tmp_path):
     from wc_navigation.live.supervisor import LiveSupervisor
     closed = cli.arguments(_closed_argv(tmp_path))
     assert (closed.front_check, closed.front_check_max_points) == ("block", 10)     # closed loop: block
+    assert closed.front_check_topic == "/scan"
+    # 总管 2026-11-12 item 4: with the combined scheme it reads window C's filtered scan, with its own default limit
+    combined = ["--obstacle-input", "scan", "--obstacle-scan", "filtered", "--obstacle-monitor", "cloud"]
+    args = cli.arguments(_closed_argv(tmp_path, *combined))
+    assert (args.front_check_topic, args.front_check_max_points) == ("/obstacles/left/scan", 3)
+    assert cli.arguments(_closed_argv(tmp_path, *combined, "--front-check-max-points", "6")).front_check_max_points == 6
+    monitor_only = cli.arguments(_closed_argv(tmp_path, "--obstacle-monitor", "cloud"))     # no filtered scan
+    assert (monitor_only.front_check_topic, monitor_only.front_check_max_points) == ("/scan", 10)
     argv = _closed_argv(tmp_path)
     shadow = cli.arguments(argv[:argv.index("--closed-loop")])
     assert shadow.front_check == "off"                                               # the shadow: unchanged
@@ -1193,6 +1398,19 @@ def test_closed_loop_line_shows_the_front_check():
     assert "车前空地 36 点 > 门限 10，最近 1.17 m：不要开始自动" in line
     assert "车前空地 2 点（门限 10）" in closed_loop_line({TOPIC: dict(value, points=2, clear=True)})
     assert "车前空地" not in closed_loop_line({})
+    filtered = dict(value, points=6, max_points=3, nearest_m=2.4, topic="/obstacles/left/scan")
+    assert "车前空地（过滤扫描） 6 点 > 门限 3，最近 2.40 m：不要开始自动" in closed_loop_line({TOPIC: filtered})
+
+
+def test_front_check_report_names_the_scan_it_read():
+    from types import SimpleNamespace
+    from wc_navigation.live.supervisor import front_check_report
+    front = SimpleNamespace(mode="block", max_points=3, topic="/obstacles/left/scan", no_pose=0)
+    monitor = SimpleNamespace(front=front, front_value={"points": 0}, front_before_start=[0, 1, 0])
+    report = front_check_report(monitor)
+    assert (report["topic"], report["max_points"], report["before_start"]) == (
+        "/obstacles/left/scan", 3, {"samples": 3, "min": 0, "median": 0, "max": 1})
+    assert front_check_report(SimpleNamespace(front=None, front_value=None)) == {"mode": "off"}
 
 
 def test_the_bridge_exit_is_told_with_its_reasons(tmp_path):

@@ -199,10 +199,15 @@ class LiveMonitor:
         self.gate_was_active = False
 
     def setup_front_check(self, check):
-        """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck)."""
+        """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck); a check on
+        another topic than /scan (window C's filtered scan) gets its own subscription."""
         from std_msgs.msg import String
+        from .front_check import SCAN_TOPIC
         self.front = check
         self.front_pub = self.node.create_publisher(String, FRONT_TOPIC, latched_qos())
+        if check.topic != SCAN_TOPIC:
+            from sensor_msgs.msg import LaserScan
+            self.node.create_subscription(LaserScan, check.topic, self._front_scan, 10)
         self.node.create_timer(0.5, self._publish_front)
 
     def _publish_front(self, changed_only=False):
@@ -232,13 +237,18 @@ class LiveMonitor:
 
     def _on_scan(self, message):
         self.scans.append((list(message.ranges), float(message.angle_min), float(message.angle_increment)))
-        if self.front is not None:
-            found = self.map_pose()
-            pose = None
-            if found is not None and abs(self.now() - found[1]) <= 1.0:   # front_check.POSE_MAX_AGE_S
-                pose = found[0]
-            self.front.add_scan(message.ranges, message.angle_min, message.angle_increment, pose)
-            self._publish_front(changed_only=True)
+        if self.front is not None and self.front.topic == "/scan":          # front_check.SCAN_TOPIC
+            self._front_scan(message)
+
+    def _front_scan(self, message):
+        """One scan of the front check's topic with the map pose of base_link now (None when older than 1 s)."""
+        now = self.now()
+        found = self.map_pose()
+        pose = None
+        if found is not None and abs(now - found[1]) <= 1.0:   # front_check.POSE_MAX_AGE_S
+            pose = found[0]
+        self.front.add_scan(message.ranges, message.angle_min, message.angle_increment, pose, time_s=now)
+        self._publish_front(changed_only=True)
 
     def _on_odom(self, message):
         from ..autonomy.ros_util import quaternion_to_yaw
@@ -406,8 +416,11 @@ class LiveSupervisor(Supervisor):
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"],
             bt_through_poses_path=files["bt_through"], planning=planning)
         if cfg.get("closed_loop"):
-            # window B 2026-11-10: the rotation speeds are not in Nav2's readback list; the closed loop checks them
+            # window B 2026-11-10: the rotation speeds are not in Nav2's readback list; the closed loop checks them,
+            # and the values B kept for it on 2026-11-12 (B's adjust_readback adds the two it changed)
             self.closed_readback = closed_loop_rotation_readback(nav2_params, profile.max_angular)
+            for node, values in closed_loop_kept_readback(nav2_params).items():
+                self.closed_readback.setdefault(node, {}).update(values)
         files["nav2"] = self.write("nav2_params.yaml", with_sim_time(nav2_params, sim))
         if planning.smoother_feedback == "gated":
             # window B's relay: the gate's output as the smoother's feedback (restart from rest after a gate stop)
@@ -449,12 +462,17 @@ class LiveSupervisor(Supervisor):
         return expected
 
     def planning(self):
-        """Window B's planning choice for the shadow's Nav2: only the smoother feedback and timeout are set here."""
+        """Window B's planning choice for the shadow's Nav2: the smoother feedback and timeout, and in the closed loop
+        the values fixed by cli.py: ``closed_loop.controller_params`` (window B 2026-11-12 02:10) and
+        ``closed_loop.global_live_scans`` (false: the global costmap has the saved map only, user 2026-11-12)."""
         from ..planning.stack import PlanningChoice
         cfg = self.config
         defaults = PlanningChoice()
+        closed = cfg.get("closed_loop") or {}
         return PlanningChoice(smoother_feedback=cfg.get("smoother_feedback", defaults.smoother_feedback),
-                              smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)))
+                              smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)),
+                              controller_params=tuple(tuple(p) for p in closed.get("controller_params", ())),
+                              global_live_scans=bool(closed.get("global_live_scans", defaults.global_live_scans)))
 
     def start_localization(self, monitor, files):
         self.launch_ros("map_server", "map_server", files["localization"])
@@ -523,6 +541,16 @@ class LiveSupervisor(Supervisor):
                                        "messages_sent": published["count"]}
         self.start_odom = monitor.odom_pose          # where the chair stood when AMCL took the start pose
 
+    def input_config(self, role):
+        """Configuration of one live input process (``scan`` or ``odometry``, inputs_node.py)."""
+        cfg = self.config
+        value = {"role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
+                 "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
+                 "lidar_time_offset_ms": cfg["lidar_time_offset_ms"], "source_prefix": cfg.get("source_prefix", "")}
+        if role == "scan" and cfg.get("scan_body"):
+            value["scan_body"] = cfg["scan_body"]       # --scan-inside-body drop (总管 2026-11-12 item 5); off by default
+        return value
+
     def map_scorer(self):
         """The saved map's distance to the nearest occupied cell (start check and front check share it)."""
         if getattr(self, "_map_scorer", None) is None:
@@ -546,7 +574,8 @@ class LiveSupervisor(Supervisor):
         monitor.setup_front_check(FrontCheck(
             self.map_scorer(), self.laser_lever(), profile.get("footprint") or (), profile.get("radius_m", 0.55),
             mode=settings["mode"], max_points=int(settings["max_points"]), range_m=settings["range_m"],
-            wall_tolerance_m=settings["wall_tolerance_m"], frames=settings["frames"]))
+            wall_tolerance_m=settings["wall_tolerance_m"], frames=settings["frames"],
+            topic=settings.get("topic", "/scan")))
 
     def check_alive(self, allow=()):
         """The base bridge first: its exit (closed loop) is told apart, with the reason (BridgeExited)."""
@@ -578,6 +607,7 @@ class LiveSupervisor(Supervisor):
                 status = "START_CHECK_NOT_STANDING"
                 break
         scans = list(monitor.scans)
+        self.start_scans = scans if status is None else []    # --start-pose-correction uses the same scans
         result = (check.evaluate(scorer, scans, lever, cfg["initial_pose"]) if status is None
                   else {"status": status, "scans": len(scans)})
         result.update(mode=mode, standing_verified=reference is not None)
@@ -587,6 +617,44 @@ class LiveSupervisor(Supervisor):
         _say(check.operator_message(result, mode))
         if check.stops_run(result["status"], mode):
             raise StartCheckStop(result["status"])
+
+    def correct_start_pose(self, monitor):
+        """--start-pose-correction apply (总管 2026-11-12 item 3, user 11-12 11:05): the minimum-offset correction
+        (start_check.correction) on the start check's standing scans; a corrected position (heading as given) goes to
+        AMCL as the initial pose again, with the same covariance, before Nav2 starts. The result is in result.json
+        (supervisor.start_check.correction) and the operator gets one line."""
+        cfg = self.config
+        if cfg.get("start_pose_correction", "off") != "apply":
+            return
+        from . import start_check as check
+        given = cfg["initial_pose"]
+        result = check.correction(self.map_scorer(), getattr(self, "start_scans", None) or [], self.laser_lever(),
+                                  given)
+        if result["applied"]:
+            target = result["corrected_pose"]
+            covariance = self.report["initial_pose"]["covariance"]
+            sent = {"count": 0, "last": -1e9}
+
+            def taken():
+                # AMCL took it once its pose is nearer the corrected position than the given one
+                found = monitor.map_pose()
+                if sent["count"] and found is not None and (
+                        math.hypot(found[0][0] - target[0], found[0][1] - target[1])
+                        < math.hypot(found[0][0] - given[0], found[0][1] - given[1])):
+                    return True
+                if time.monotonic() - sent["last"] > 1.0:
+                    monitor.publish_initial_pose(target, covariance)
+                    sent["count"] += 1
+                    sent["last"] = time.monotonic()
+                return False
+
+            self.wait_for(monitor, taken, 15, "start_pose_corrected", allow=("bag_play",))
+            found = monitor.map_pose()
+            result.update(messages_sent=sent["count"],
+                          amcl_after=None if found is None else [round(float(v), 4) for v in found[0]])
+            self.report["initial_pose"]["corrected_pose_map"] = target
+        self.report.setdefault("start_check", {})["correction"] = result
+        _say(check.correction_message(result))
 
     def run(self):
         """Run until the source ends, the duration limit or the operator's stop; always returns the report."""
@@ -617,11 +685,8 @@ class LiveSupervisor(Supervisor):
                                   capture_output=True, text=True, timeout=10.0)
         self.report["package_versions"] = versions.stdout.strip().splitlines()
         (self.output / "logs").mkdir()
-        files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
-                     "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
-                     "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
-                     "lidar_time_offset_ms": cfg["lidar_time_offset_ms"],
-                     "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
+        files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, self.input_config(role))
+                 for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {
                      "use_sim_time": cfg["use_sim_time"], "output_dir": str(self.output),
@@ -659,6 +724,7 @@ class LiveSupervisor(Supervisor):
             if profile is not None:
                 self.initial_pose(monitor)
                 self.start_check(monitor)
+                self.correct_start_pose(monitor)           # --start-pose-correction apply, before Nav2
                 self.start_front_check(monitor)            # verdicts flow before the gate starts (front_hold)
                 self.start_shadow(monitor, files, profile)
                 self.launch_module("goals", "wc_navigation.live.goals_node", files["goals"])
@@ -749,6 +815,21 @@ def closed_loop_rotation_readback(params, max_angular):
     return {"controller_server": {"FollowPath.rotate_to_heading_angular_vel":
                                   value("controller_server", "FollowPath", "rotate_to_heading_angular_vel")},
             "behavior_server": {"max_rotational_vel": value("behavior_server", "max_rotational_vel")}}
+
+
+def closed_loop_kept_readback(params):
+    """Readback of the controller values window B kept for the closed loop (2026-11-12 02:10), from the Nav2
+    parameters this run writes: RPP still turns in place (``rotate_to_heading_min_angle`` needs
+    ``use_rotate_to_heading``), and the goal checker's tolerances. A missing value stops the run (RunError)."""
+    server = (params.get("controller_server") or {}).get("ros__parameters") or {}
+    follow, goal = server.get("FollowPath") or {}, server.get("general_goal_checker") or {}
+    kept = {"FollowPath.use_rotate_to_heading": follow.get("use_rotate_to_heading"),
+            "general_goal_checker.xy_goal_tolerance": goal.get("xy_goal_tolerance"),
+            "general_goal_checker.yaw_goal_tolerance": goal.get("yaw_goal_tolerance")}
+    missing = [key for key, value in kept.items() if value is None]
+    if missing:
+        raise RunError("closed loop: controller_server %s missing in the Nav2 parameters" % ", ".join(missing))
+    return {"controller_server": kept}
 
 
 def _switch(*values):
@@ -885,8 +966,8 @@ def front_check_report(monitor):
     if counts:
         ordered = sorted(counts)
         summary = {"samples": len(ordered), "min": ordered[0], "median": ordered[len(ordered) // 2], "max": ordered[-1]}
-    return {"mode": monitor.front.mode, "max_points": monitor.front.max_points, "before_start": summary,
-            "last": value, "no_pose_scans": monitor.front.no_pose}
+    return {"mode": monitor.front.mode, "max_points": monitor.front.max_points, "topic": monitor.front.topic,
+            "before_start": summary, "last": value, "no_pose_scans": monitor.front.no_pose}
 
 
 def closed_loop_report(status):

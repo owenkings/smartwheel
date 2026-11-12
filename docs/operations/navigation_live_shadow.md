@@ -91,6 +91,10 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`），由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°）并做起点检查（见下），再起 Nav2 各服务器（参数读回核对）、平滑器反馈节点和安全闸门，最后启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`、`--gate-covariance-mode`、`--gate-slow-limits`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 只有平滑器反馈节点订阅；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
 
+- /scan 去掉左雷达的近点圈（总管 2026-11-12 第 5 条；`--scan-inside-body keep|drop`，默认 keep，和以前一样）：drop 时生成 /scan 前去掉实测外形（`--footprint`，必须给）里面、离地 1.60 m 以下、并且离左雷达水平距离不到 0.40 m 的点；那一格改用别的最近回波。贴着车头前沿的人和东西离雷达 0.45 m 以上，不去掉，碰撞监控照样停。
+  - 起因：左雷达的近点圈（离雷达 0.31–0.35 m、离地 0.86 m，在车头前沿里面）在 11-11 20:56 朝看板地图左的静止录制里，220 帧有 1 帧让 4 格进了碰撞监控的停车区，碰撞监控会停一个周期。drop 以后是 0 帧。
+  - 开组合方案（`--obstacle-monitor cloud`）时碰撞监控读三维点云，那里车体一级已经去掉了这些点；/scan 只给 AMCL 用，这个选项对碰撞监控没有影响。
+  - 改不改默认值由用户定，证据在 docs/architecture/live_shadow.md。
 - 平滑器反馈（2026-11-10 起默认，用户决定）：`--smoother-feedback gated` 时，Nav2 读回之后起窗口 B 的反馈节点 `wc_velocity_feedback`，等 `/wc_nav/smoother_feedback` 有发布者再起闸门。它把闸门输出转成平滑器的反馈：闸门停车后平滑器从静止重新起步。
   - `--smoother-feedback open_loop` 退回开环；`--smoother-timeout S` 是平滑器的速度超时（默认 0.3 s，0.2–5 s）。
   - 读回核对包括平滑器的 `feedback`、`odom_topic`、`velocity_timeout`；逐周期记录在 `velocity_feedback.csv`，实际用的值在 `run_config.json`。
@@ -144,6 +148,12 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   - 收扫描时车动了（位移超过 0.05 m 或转过 2°），记 START_CHECK_NOT_STANDING，按没通过处理。
   - 其他模式：`strict` 时 AMBIGUOUS 也停；`warn` 只记录；`off` 不做。
   - 结果在 `result.json` 的 `supervisor.start_check`，也打印一行"起点检查…"给操作员。
+- 起点自动修正（`--start-pose-correction off|apply`，默认 off；用户 2026-11-12 同意，现场闭环脚本用 apply；要 `--start-check` 不是 off）：
+  - 起点检查以后、Nav2 启动以前，用同一批静止扫描。给定位姿贴图低于 50%、给定朝向下 ±0.4 m 内有贴图 60% 以上的位置时，把初始位置移到贴图离最好不超过 1% 的位置里离给定最近的那个，朝向不变，重发初始位姿（协方差不变）。
+  - 打印一行"起点修正：…"：改到哪、向前后和向车左右各多少、修正前后的贴图；不改时说原因（给定位姿贴图够好，或附近没有贴图够好的位置）。细节在 `result.json` 的 `supervisor.start_check.correction`。
+  - 走廊里沿走廊的位置从扫描看不出来，这个方向基本不改；能修的是横穿走廊的偏差。
+  - 11-11 20:27 的录制按现场的胶带点回放：横向修了 0.225 m，站着时 AMCL 起点的横向差从 0.21 m 降到 0.04 m。
+  - 朝看板地图左的胶带点附近，横向偏 0.2 m 时给定位姿的贴图有时还有 50% 以上，这时不修（docs/architecture/live_shadow.md）。
   - 门限的依据（2026-11-10，静止扫描）：
     - 验证包起点在门口、车头朝走廊对面：给定朝向 85%，掉头 0%，分得很清楚。
     - ZL1107 建图起点车头沿走廊：对的 85–86%，反了 180° 的也有 79%，分不开，这里只能报 AMBIGUOUS。
@@ -203,6 +213,8 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
 - 其他选项照影子的写法，例如窗口 C 的 `--monitor-slow-margin M`（碰撞监控减速框伸出车头多远）可以一起给。`--monitor-base-shift` 只能是 off，不给时也按 off。
 - 启动前命令自己查：`WC_AUTO_DRIVE_APPROVAL` 的日期是今天；域 100；面板会话的 `auto.sock` 存在。会话没开自动控制源时没有这个 socket，命令直接拒绝。
 - 固定值（总管 2026-11-10 14:40）：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、`velocity_timeout` 0.3 s；`--monitor-base-shift off`；`--start-check` 默认 block（也可以给更严的 strict）。给了别的值，命令拒绝启动。
+- RPP 的两个固定值（窗口 B 2026-11-12）：原地转的角加速度上限 `FollowPath.max_angular_accel` 3.2（一步给到 0.30 rad/s），`FollowPath.rotate_to_heading_min_angle` 0.785（车头和路线差 45° 以上才原地转，以内边走边转）。没有命令行选项。读回核对这两个值，以及不变的 `use_rotate_to_heading`、目标容差 0.25 m / 0.35 rad；`result.json` 的 `supervisor.parameter_readback` 里能看到。
+- 全局代价地图只用保存的地图（用户 2026-11-12）：路线不会绕着雷达假点左右翻。路上有地图里没有的东西（包括人）时，车停在它前面，不绕；恢复几轮以后目标失败，车动过以后不自动重发，由操作员处理。读回核对全局代价地图的 plugins 里没有 obstacle_layer。影子模式不变。
 - 起来以后先让车站着跑约 30 s，看每秒一行的“闭环状态”。这一段代替单独的实车影子：目标已经发出，Nav2 照常规划、出指令，闸门因为没有使能输出零。
   - 没点“开始自动”时应是：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`，底盘不在 AUTO，急停否，目标 `NAVIGATING`。
   - “影子判断”是使能、底盘都就绪时闸门会放行什么，例如“会放行 0.10 m/s 0.00 rad/s”，或者“LOCALIZATION_UNTRUSTED(…)”。
@@ -211,9 +223,12 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
   - 急停、软件急停、“停止自动”、空格、WASD 都会停；急停以后要松开、再点一次“开始自动”。
   - 站着时 Nav2 的目标失败会照影子的做法重发；车动过以后（闸门 ACTIVE 过），目标失败不再重发。
 - 使能和急停只能由桥发：这两个话题有别的发布者时，闸门停在 `DISABLED(ENABLE_SOURCE_AMBIGUOUS)`。
-- 车前空地检查（总管 2026-11-11 第 2 条；`--front-check block|warn|off`，闭环默认 block；`--front-check-max-points N`，默认 10）：
+- 车前空地检查（总管 2026-11-11 第 2 条；`--front-check block|warn|off`，闭环默认 block；`--front-check-max-points N`）：
   - 状态行里的“车前空地 N 点”：车前 5 m 内、车体以外、落在地图空地里（离最近的占据格超过 0.30 m）的扫描点数，取最近 10 帧的中位数。
-  - 超过门限时写“车前空地 N 点 > 门限 10，最近 x m：不要开始自动”。先看车前有没有人或东西，有就挪开。车前其实是空的，就是雷达假点：停下来，按 A 的雷达设置处理，或者等 C 的过滤。
+  - 读哪个扫描（总管 2026-11-12 第 4 条）：开组合方案（`--obstacle-scan filtered`）时读 C 的过滤扫描 `/obstacles/left/scan`，状态行写“车前空地（过滤扫描）”，默认门限 3；否则读 /scan，默认门限 10。走廊里 /scan 上有 18–40 点折叠假点，读 /scan 时一直拦，所以下次闭环要开组合方案。
+  - 门限 3 的依据：录制上叠一个人，朝看板地图左时，清空的走廊最多 1 点，侧身的人站在车前 3 m 最少 5 点，正面的成年人 3 m 8–9 点、1 m 18 点以上（docs/architecture/live_shadow.md 的表）。朝看板地图右加兜底以后还剩 8–9.5 点假点，会拦。
+  - 1 s 没有新扫描时也写“不要开始自动”（`FRONT_SCAN_STALE`）。
+  - 超过门限时写“车前空地 N 点 > 门限 10，最近 x m：不要开始自动”。先看车前有没有人或东西，有就挪开。车前其实是空的，就是雷达假点：停下来，换组合方案（读过滤扫描）再启动。
   - block 下这时点“开始自动”，轮控所有者照常进 AUTO，闸门在 `START_BLOCKED(FRONT_NOT_CLEAR)` 输出零，车不动。挡着的人走开、判定变空，闸门放行，车起步。只在每次开始（使能上升）到第一次放行之间查；车动起来以后，前方的东西归 Nav2 和碰撞监控。
   - 站着时“影子判断”也会显示 `START_BLOCKED(FRONT_NOT_CLEAR)`。warn 只提示，不拦。
   - 2026-11-11 20:27 那次的录制上量是 34–40 点；11-07 验证录制的门口起点（朝走廊对面墙）是 8 点。

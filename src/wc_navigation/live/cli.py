@@ -39,6 +39,14 @@ CLOSED_LOOP_SLOW_LIMITS = (0.50, 0.05)
 CLOSED_LOOP_ENABLE_TIMEOUT_S = 0.5
 CLOSED_LOOP_START_CHECKS = ("block", "strict")
 CLOSED_LOOP_SMOOTHER, CLOSED_LOOP_SMOOTHER_TIMEOUT_S = "open_loop", 0.3   # window B's PlanningChoice; gated later
+# Window B 2026-11-12 02:10 (总管 11-12 10:45 item 1): Humble's RPP clamps an in-place turn to the odometry's rate
+# +- max_angular_accel x 0.1 s, which held the 11-11 turns at 0.08-0.17 rad/s, where the right wheel lags; 3.2 asks
+# 0.30 rad/s at once. A path within 0.785 rad (45 degrees) of the heading is followed while driving, not turned to.
+CLOSED_LOOP_CONTROLLER_PARAMS = (("max_angular_accel", 3.2), ("rotate_to_heading_min_angle", 0.785))
+# User 2026-11-12 11:05 (window B 02:10; 总管 item 2): the first closed loops plan on the saved map only, so the route
+# no longer flips sides around the lidars' fold ghosts. The local costmap, RPP's collision check and the collision
+# monitor still see live scans: something not in the map stops the chair in front of it, the chair does not go around.
+CLOSED_LOOP_GLOBAL_LIVE_SCANS = False
 AUTO_DRIVE_APPROVAL_ENV = "WC_AUTO_DRIVE_APPROVAL"   # the same variable as window A's base bridge and wheel owner
 BRIDGE_NODE = "/wc_auto_bridge"                      # wc_motion.auto_bridge: the only enable and estop publisher
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
@@ -61,15 +69,18 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     - 通过：照常运行。
     - 没通过（INITIAL_POSE_MISMATCH）：运行自己停止。按给定位姿摆好车或改 --initial-pose，再重新启动。
     - 看不出朝向（AMBIGUOUS，走廊里沿走廊起步时就是这样）：照常运行，朝向只能靠上面的说明核对。
+    起点修正（--start-pose-correction apply，默认 off；用户 2026-11-12 同意）：起点检查以后，给定位姿贴图低于 50%、给定朝向下 ±0.4 m 内有贴图 60% 以上的位置时，把初始位置移到贴图离最好不超过 1% 的位置里离给定最近的那个，朝向不变，Nav2 启动前重发初始位姿。打印"起点修正：…"一行（改到哪、向前后和向车左右各多少、前后的贴图）；result.json 的 supervisor.start_check.correction 记全部数。走廊里沿走廊的位置看不出来，这个方向不改。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
 11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）。结束时按一次 Ctrl-C 停止本命令：只停本命令启动的进程；收尾期间再按 Ctrl-C 不会打断，收尾完写出 result.json（supervisor.stopped = OPERATOR_INTERRUPT；车上模式这样结束是正常结束）。
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
 闭环（shadow --closed-loop，闸门输出经 A 的底盘桥交给面板会话的轮控所有者；现场步骤以 A 的步骤单为准）：
 13. 用户当天同意闭环，命令前另设 WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>（和桥、轮控所有者同一个变量，日期必须是今天）。面板会话已开自动控制源（会话目录对应的 auto.sock 存在），命令给 --panel-root、--session-root、--session-id。
-    固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、velocity_timeout 0.3 s；--monitor-base-shift off；起点检查 block（或更严的 strict）。
+    固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、velocity_timeout 0.3 s；--monitor-base-shift off；起点检查 block（或更严的 strict）；RPP 原地转的角加速度上限 3.2 rad/s²（一步给到 0.30 rad/s），车头和路线差 0.785 rad（45°）以上才原地转，以内边走边转（B 2026-11-12）。
+    全局代价地图只用保存的地图（用户 2026-11-12）：路线不会绕着假点左右翻；路上有地图里没有的东西（包括人）时，车停在它前面，不绕。目标失败后由操作员处理，车动过以后不自动重发。
 14. 命令起来后先让车站着跑约 30 s，看每秒一行的"闭环状态"（这一段代替单独的实车影子）：闸门 DISABLED（OPERATOR_ENABLE_OFF）、"影子判断"是它放行时会发的速度（例如 会放行 0.10 m/s）、定位可信、底盘不在 AUTO、急停否、目标 NAVIGATING。起点检查没通过、定位不可信，或影子判断的方向不对，不要点"开始自动"。
     使能和急停只能由桥发：/wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
-    车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points，默认 10）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
+    车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
+    读哪个扫描：开组合方案（--obstacle-scan filtered）时读 C 的过滤扫描 /obstacles/left/scan，状态行写"车前空地（过滤扫描）"，默认门限 3；否则读 /scan，默认门限 10。走廊里 /scan 上的折叠假点有 18–40 点，读 /scan 时会一直拦。1 s 没有新扫描时也写"不要开始自动"（FRONT_SCAN_STALE）。
 15. 点"开始自动"：底盘进 AUTO 后闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。车动过以后，目标失败不自动重发。
 16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数、最后的底盘状态和车前空地的点数。
     桥自己退出时（例如轮控所有者 FAULT 结束了会话），运行停止，supervisor.stopped 是 BASE_BRIDGE_EXITED，supervisor.stop_reason 写一句原因（桥的退出原因、轮控所有者最后报的状态、会话轮控日志里的故障），终端也打印这一句。
@@ -139,6 +150,13 @@ def arguments(argv=None):
                         help="standing scans against the map at the start pose before Nav2 and the gate start: block "
                              "stops on INITIAL_POSE_MISMATCH and warns on AMBIGUOUS (default), strict stops on both, "
                              "warn only reports, off skips it")
+    # 总管 2026-11-12 item 3 (user 11-12 11:05): the start check's minimum-offset position correction
+    from .start_check import CORRECTION_MODES
+    shadow.add_argument("--start-pose-correction", choices=CORRECTION_MODES, default="off",
+                        help="apply: when the given pose fits the standing scans poorly (support < 0.5) and a position "
+                             "within +-0.4 m at the given heading fits (>= 0.6), move the initial position to the "
+                             "nearest of the best-fitting ones and send it to AMCL again before Nav2 starts (the "
+                             "heading stays as given); off (default) keeps the given pose")
     # Window B's smoother feedback (user 2026-11-10: gated by default; velocity timeout 0.3 s on the vehicle chain)
     shadow.add_argument("--smoother-feedback", choices=["open_loop", "gated"], default="gated",
                         help="gated: planning/velocity_feedback.py feeds the gate's output back to the smoother")
@@ -169,14 +187,20 @@ def arguments(argv=None):
                              "serial owner of the running panel session; 0.10 m/s and 0.30 rad/s; needs "
                              + AUTO_DRIVE_APPROVAL_ENV + "=APPROVED_BY_USER_<today, YYYYMMDD>")
     # 总管 2026-11-11 item 2: scan points in the map's free space ahead before "start automatic" (live/front_check.py)
-    from .front_check import MAX_POINTS as FRONT_MAX_POINTS, MODES as FRONT_MODES
+    from .front_check import FILTERED_MAX_POINTS, MAX_POINTS as FRONT_MAX_POINTS, MODES as FRONT_MODES
     shadow.add_argument("--front-check", choices=FRONT_MODES,
                         help="scan points within 5 m ahead in the map's free space: block holds the gate at each start "
                              "while there are more than --front-check-max-points (default with --closed-loop), warn "
-                             "only reports, off skips it (default without --closed-loop)")
-    shadow.add_argument("--front-check-max-points", type=int, default=FRONT_MAX_POINTS, metavar="N",
-                        help="most points still counted as clear (default %d, median of the last 10 scans)"
-                             % FRONT_MAX_POINTS)
+                             "only reports, off skips it (default without --closed-loop). With --obstacle-scan "
+                             "filtered it reads window C's filtered scan instead of /scan")
+    shadow.add_argument("--front-check-max-points", type=int, metavar="N",
+                        help="most points still counted as clear, median of the last 10 scans (default %d on /scan, "
+                             "%d on the filtered scan)" % (FRONT_MAX_POINTS, FILTERED_MAX_POINTS))
+    # 总管 2026-11-12 item 5: the left lidar's near ring inside the body outline on /scan (off by default)
+    shadow.add_argument("--scan-inside-body", choices=("keep", "drop"), default="keep",
+                        help="/scan points inside the body outline (--footprint) up to the body's height and within "
+                             "0.40 m of the left lidar (its near ring): keep (default, as before) or drop; a bin then "
+                             "keeps its nearest other return")
     shadow.add_argument("--panel-root", type=Path, help="closed loop: the panel's checkout (its session sockets)")
     shadow.add_argument("--session-root", type=Path, help="closed loop: directory of the running panel session")
     shadow.add_argument("--session-id", help="closed loop: identity of that session")
@@ -246,8 +270,12 @@ def arguments(argv=None):
             parser.error("--panel-root, --session-root and --session-id belong to --closed-loop")
         if args.front_check is None:
             args.front_check = "block" if args.closed_loop else "off"
-        if not 0 <= args.front_check_max_points <= 161:
+        if args.start_pose_correction == "apply" and args.start_check == "off":
+            parser.error("--start-pose-correction apply works on the start check's scans: not with --start-check off")
+        if args.front_check_max_points is not None and not 0 <= args.front_check_max_points <= 161:
             parser.error("--front-check-max-points must be within 0..161 (the scan has 161 bins)")
+        if args.scan_inside_body == "drop" and args.footprint is None:
+            parser.error("--scan-inside-body drop needs the measured outline (--footprint)")
         try:
             args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, slow_limits, max_linear)
         except ValueError as exc:
@@ -269,7 +297,30 @@ def arguments(argv=None):
     if args.lidar_time_offset_ms is not None and abs(args.lidar_time_offset_ms) > MAX_LIDAR_TIME_OFFSET_MS:
         parser.error("--lidar-time-offset-ms must be within +-%g" % MAX_LIDAR_TIME_OFFSET_MS)
     shadow_cli_options.check_live_arguments(parser, args)
+    if args.command == "shadow":
+        front_check_source(args)
     return args
+
+
+def scan_body_settings(footprint, live):
+    """``--scan-inside-body drop``: the measured outline, the left lidar's origin in base_link (from the live
+    configuration's T_base_axle) and the 3D obstacle input's floor and body height (window C's ObstacleFilter)."""
+    from ..perception.obstacle_cloud import ObstacleFilter
+    from .scan_adapter import scan_body
+    lever = np.linalg.inv(np.asarray(live["T_base_axle"], dtype=float))[:3, 3]
+    defaults = ObstacleFilter()
+    return scan_body(footprint, lever, defaults.axle_height_m, defaults.body_max_height_m)
+
+
+def front_check_source(args):
+    """The scan the front check reads and its limit (总管 2026-11-12 item 4): window C's filtered scan when the run
+    publishes it (--obstacle-scan filtered, the combined scheme), else /scan; each with its own default limit."""
+    from .front_check import FILTERED_MAX_POINTS, MAX_POINTS, SCAN_TOPIC
+    plan = (getattr(args, "obstacle_live", None) or {}).get("plan") or {}
+    filtered = bool(plan.get("filtered_scan"))
+    args.front_check_topic = plan["filtered_scan_topic"] if filtered else SCAN_TOPIC
+    if args.front_check_max_points is None:
+        args.front_check_max_points = FILTERED_MAX_POINTS if filtered else MAX_POINTS
 
 
 def goals_along(cell, alignment_json, spacing):
@@ -357,7 +408,9 @@ def closed_loop_settings(args):
     return {"panel_root": str(panel), "session_root": str(session), "session_id": args.session_id,
             "auto_socket": str(path), "bridge_node": BRIDGE_NODE, "approval": approval,
             "max_linear": CLOSED_LOOP_MAX_LINEAR, "max_angular": CLOSED_LOOP_MAX_ANGULAR,
-            "enable_timeout_s": CLOSED_LOOP_ENABLE_TIMEOUT_S}
+            "enable_timeout_s": CLOSED_LOOP_ENABLE_TIMEOUT_S,
+            "controller_params": [list(p) for p in CLOSED_LOOP_CONTROLLER_PARAMS],
+            "global_live_scans": CLOSED_LOOP_GLOBAL_LIVE_SCANS}
 
 
 def relay_graph_command(args):
@@ -474,11 +527,14 @@ def run_command(args, guard):
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)
         config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
+        config["start_pose_correction"] = args.start_pose_correction
         from . import front_check
         config["front_check"] = {"mode": args.front_check, "max_points": args.front_check_max_points,
                                  "range_m": front_check.RANGE_M, "wall_tolerance_m": front_check.WALL_TOLERANCE_M,
-                                 "frames": front_check.FRAMES}
+                                 "frames": front_check.FRAMES, "topic": args.front_check_topic}
         config["smoother_feedback"], config["smoother_timeout_s"] = args.smoother_feedback, args.smoother_timeout
+        if args.scan_inside_body == "drop":
+            config["scan_body"] = scan_body_settings(args.footprint, live)
         if closed_loop:
             config["closed_loop"] = closed_loop
             config.update(open_loop=False, hardware_control=True, commands_sent=True)
