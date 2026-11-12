@@ -14,6 +14,7 @@
 - [test_h30.py](test_h30.py)
 - [test_metadata.py](test_metadata.py)
 - [test_phase_wrap.py](test_phase_wrap.py)
+- [test_phase_wrap_model.py](test_phase_wrap_model.py)
 - [test_pointcloud.py](test_pointcloud.py)
 - [test_preflight.py](test_preflight.py)
 - [test_stability.py](test_stability.py)

@@ -10,6 +10,7 @@
 - [h30.py](h30.py)
 - [metadata.py](metadata.py)
 - [phase_wrap.py](phase_wrap.py)：XT-M60 的 12.49 m 相位折叠假点：按像素查一帧（纯函数，显式打开才用；规则和接法见文件开头）
+- [phase_wrap_model.py](phase_wrap_model.py)：按场所的三维表面模型预测折叠：沿每个候选像素的射线找第一个面（纯函数，显式打开才用；规则、接法和评估见文件开头）
 - [pointcloud.py](pointcloud.py)
 - [preflight.py](preflight.py)
 - [stability.py](stability.py)
