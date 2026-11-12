@@ -326,6 +326,10 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
     - 车头和路线差 45° 以内边走边转，两轮同向，右轮跟得上。
     - 不变：`use_rotate_to_heading` true、`rotate_to_heading_angular_vel` 0.30、目标容差 0.25 m / 0.35 rad、每秒重规划。
     - 接法：cli.py 的 `CLOSED_LOOP_CONTROLLER_PARAMS` 写进 `run_config.json` 的 `closed_loop.controller_params`，`supervisor.planning()` 交给 B 的 `PlanningChoice.controller_params`，由 `planning/stack.py` 的 `apply` 写进 FollowPath。
+  - 全局代价地图只用保存的地图（用户 2026-11-12 11:05，B 02:10 的建议，总管 10:45 第 2 条）：`closed_loop.global_live_scans` 为 false，交给 `PlanningChoice.global_live_scans`，全局代价地图的 plugins 里没有 obstacle_layer，读回也按这个核对。
+    - 为什么：11-11 20:27 那次，路线在雷达假点那团两边来回翻，新路线起头和车头差 45° 以上，车就原地转，转完接前进时右轮冲速停车。B 的仿真里只用保存的地图时，94 次规划都在同一侧，没有原地转。
+    - 代价：路上有地图里没有的东西（包括人）时，规划不绕。局部代价地图、RPP 的碰撞检查和碰撞监控照样读实时扫描，车停在它前面，恢复几轮以后目标失败。
+    - 影子模式不变，全局代价地图仍读实时扫描。以后假点去掉，再请用户定换回。
 - 启动顺序：Nav2 读回 → 桥 → 闸门（闭环配置）→ 目标。
   - Nav2 读回之外，闭环另核对两个转向速度（窗口 B 2026-11-10 提醒，它们不在 Nav2 的读回清单里）：controller_server 的 `FollowPath.rotate_to_heading_angular_vel`（RPP 原地转向）和 behavior_server 的 `max_rotational_vel`（Spin）。期望值取自这次写出的参数，两者都不能超过 0.30 rad/s，否则不启动。读回不一致时运行停止，和其他读回项一样。
   - RPP 两个值由 B 的 `adjust_readback` 加进读回。闭环另读回保持不变的 `FollowPath.use_rotate_to_heading` 和 `general_goal_checker` 的两个容差（`closed_loop_kept_readback`，期望值取自这次写出的参数）。

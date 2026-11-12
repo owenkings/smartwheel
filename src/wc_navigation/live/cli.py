@@ -43,6 +43,10 @@ CLOSED_LOOP_SMOOTHER, CLOSED_LOOP_SMOOTHER_TIMEOUT_S = "open_loop", 0.3   # wind
 # +- max_angular_accel x 0.1 s, which held the 11-11 turns at 0.08-0.17 rad/s, where the right wheel lags; 3.2 asks
 # 0.30 rad/s at once. A path within 0.785 rad (45 degrees) of the heading is followed while driving, not turned to.
 CLOSED_LOOP_CONTROLLER_PARAMS = (("max_angular_accel", 3.2), ("rotate_to_heading_min_angle", 0.785))
+# User 2026-11-12 11:05 (window B 02:10; 总管 item 2): the first closed loops plan on the saved map only, so the route
+# no longer flips sides around the lidars' fold ghosts. The local costmap, RPP's collision check and the collision
+# monitor still see live scans: something not in the map stops the chair in front of it, the chair does not go around.
+CLOSED_LOOP_GLOBAL_LIVE_SCANS = False
 AUTO_DRIVE_APPROVAL_ENV = "WC_AUTO_DRIVE_APPROVAL"   # the same variable as window A's base bridge and wheel owner
 BRIDGE_NODE = "/wc_auto_bridge"                      # wc_motion.auto_bridge: the only enable and estop publisher
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
@@ -71,6 +75,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
 闭环（shadow --closed-loop，闸门输出经 A 的底盘桥交给面板会话的轮控所有者；现场步骤以 A 的步骤单为准）：
 13. 用户当天同意闭环，命令前另设 WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>（和桥、轮控所有者同一个变量，日期必须是今天）。面板会话已开自动控制源（会话目录对应的 auto.sock 存在），命令给 --panel-root、--session-root、--session-id。
     固定值：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、velocity_timeout 0.3 s；--monitor-base-shift off；起点检查 block（或更严的 strict）；RPP 原地转的角加速度上限 3.2 rad/s²（一步给到 0.30 rad/s），车头和路线差 0.785 rad（45°）以上才原地转，以内边走边转（B 2026-11-12）。
+    全局代价地图只用保存的地图（用户 2026-11-12）：路线不会绕着假点左右翻；路上有地图里没有的东西（包括人）时，车停在它前面，不绕。目标失败后由操作员处理，车动过以后不自动重发。
 14. 命令起来后先让车站着跑约 30 s，看每秒一行的"闭环状态"（这一段代替单独的实车影子）：闸门 DISABLED（OPERATOR_ENABLE_OFF）、"影子判断"是它放行时会发的速度（例如 会放行 0.10 m/s）、定位可信、底盘不在 AUTO、急停否、目标 NAVIGATING。起点检查没通过、定位不可信，或影子判断的方向不对，不要点"开始自动"。
     使能和急停只能由桥发：/wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
     车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points，默认 10）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
@@ -362,7 +367,8 @@ def closed_loop_settings(args):
             "auto_socket": str(path), "bridge_node": BRIDGE_NODE, "approval": approval,
             "max_linear": CLOSED_LOOP_MAX_LINEAR, "max_angular": CLOSED_LOOP_MAX_ANGULAR,
             "enable_timeout_s": CLOSED_LOOP_ENABLE_TIMEOUT_S,
-            "controller_params": [list(p) for p in CLOSED_LOOP_CONTROLLER_PARAMS]}
+            "controller_params": [list(p) for p in CLOSED_LOOP_CONTROLLER_PARAMS],
+            "global_live_scans": CLOSED_LOOP_GLOBAL_LIVE_SCANS}
 
 
 def relay_graph_command(args):

@@ -914,6 +914,7 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
     assert (settings["max_linear"], settings["max_angular"], settings["enable_timeout_s"]) == (0.10, 0.30, 0.5)
     # window B 2026-11-12 02:10: RPP's in-place turn acceleration and the angle above which it turns in place
     assert settings["controller_params"] == [["max_angular_accel", 3.2], ["rotate_to_heading_min_angle", 0.785]]
+    assert settings["global_live_scans"] is False             # user 2026-11-12: plan on the saved map only
     assert seen[-1] == (tmp_path / "panel", tmp_path / "session", "capture_x")
     assert (settings["panel_root"], settings["session_root"]) == (str(tmp_path / "panel"), str(tmp_path / "session"))
     monkeypatch.setenv("ROS_DOMAIN_ID", "99")
@@ -936,7 +937,8 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
               "smoother_timeout_s": 0.3,
               "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
                               "session_root": "/s", "session_id": "capture_x",
-                              "controller_params": [list(p) for p in cli.CLOSED_LOOP_CONTROLLER_PARAMS]}}
+                              "controller_params": [list(p) for p in cli.CLOSED_LOOP_CONTROLLER_PARAMS],
+                              "global_live_scans": cli.CLOSED_LOOP_GLOBAL_LIVE_SCANS}}
     profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
     run = LiveSupervisor(tmp_path, tmp_path, config)
     files = run.prepare_shadow(profile)
@@ -952,6 +954,9 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
         "FollowPath.max_angular_accel": 3.2, "FollowPath.rotate_to_heading_min_angle": 0.785,
         "FollowPath.use_rotate_to_heading": True, "general_goal_checker.xy_goal_tolerance": 0.25,
         "general_goal_checker.yaw_goal_tolerance": 0.35}
+    # user 2026-11-12: the global costmap has the saved map only, and the readback checks that
+    assert expected["global_costmap/global_costmap"]["plugins"] == ["static_layer", "inflation_layer"]
+    assert not [k for k in expected["global_costmap/global_costmap"] if k.startswith("obstacle_layer.")]
     node = json.loads(files["gate"].read_text())
     gate = GateConfig(**node["gate"])
     assert node["clock"] == "monotonic" and node["use_sim_time"] is False
@@ -970,6 +975,8 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert (server["general_goal_checker"]["xy_goal_tolerance"], server["general_goal_checker"]["yaw_goal_tolerance"]
             ) == (0.25, 0.35)
     assert '<RateController hz="1.0">' in files["bt_to_pose"].read_text()
+    assert nav2["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"] == ["static_layer", "inflation_layer"]
+    assert "obstacle_layer" in nav2["local_costmap"]["local_costmap"]["ros__parameters"]["plugins"]
     smoother = nav2["velocity_smoother"]["ros__parameters"]
     assert (smoother["max_velocity"], smoother["feedback"], smoother["velocity_timeout"]) == (
         [0.10, 0.0, 0.30], "OPEN_LOOP", 0.3)
@@ -982,6 +989,8 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     follow = yaml.safe_load(files["nav2"].read_text())["controller_server"]["ros__parameters"]["FollowPath"]
     assert (follow["max_angular_accel"], follow["rotate_to_heading_min_angle"]) == (
         nav2_config.NavProfile().angular_accel, 0.5)                                    # the shadow keeps the stack's
+    assert "obstacle_layer" in yaml.safe_load(files["nav2"].read_text())["global_costmap"]["global_costmap"][
+        "ros__parameters"]["plugins"]                                                   # and its live global costmap
     node = json.loads(files["gate"].read_text())
     assert "clock" not in node and "require_base" not in node["gate"] and "enable_source_node" not in node["gate"]
     assert json.loads(files["goals"].read_text())["closed_loop"] is False

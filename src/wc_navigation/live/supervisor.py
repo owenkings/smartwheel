@@ -453,14 +453,16 @@ class LiveSupervisor(Supervisor):
 
     def planning(self):
         """Window B's planning choice for the shadow's Nav2: the smoother feedback and timeout, and in the closed loop
-        the controller values fixed by cli.py (``closed_loop.controller_params``, window B 2026-11-12 02:10)."""
+        the values fixed by cli.py: ``closed_loop.controller_params`` (window B 2026-11-12 02:10) and
+        ``closed_loop.global_live_scans`` (false: the global costmap has the saved map only, user 2026-11-12)."""
         from ..planning.stack import PlanningChoice
         cfg = self.config
         defaults = PlanningChoice()
         closed = cfg.get("closed_loop") or {}
         return PlanningChoice(smoother_feedback=cfg.get("smoother_feedback", defaults.smoother_feedback),
                               smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)),
-                              controller_params=tuple(tuple(p) for p in closed.get("controller_params", ())))
+                              controller_params=tuple(tuple(p) for p in closed.get("controller_params", ())),
+                              global_live_scans=bool(closed.get("global_live_scans", defaults.global_live_scans)))
 
     def start_localization(self, monitor, files):
         self.launch_ros("map_server", "map_server", files["localization"])
