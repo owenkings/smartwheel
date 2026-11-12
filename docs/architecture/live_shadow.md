@@ -321,8 +321,14 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
   - NavProfile 是 0.10 m/s、0.30 rad/s，RPP、平滑器、行为服务器和闸门都跟着降。
   - 闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s，命令超时 0.5 s。
   - 平滑器反馈开环、`velocity_timeout` 0.3 s（B 的 `PlanningChoice(smoother_feedback="open_loop", smoother_timeout_s=0.3)`）；`--monitor-base-shift off`；起点检查 block（也可以更严的 strict）。这些是总管 2026-11-10 14:40 定的，给别的值命令拒绝启动。
+  - RPP 两个值（窗口 B 2026-11-12 02:10，总管 11-12 10:45 第 1 条）：`FollowPath.max_angular_accel` 3.2、`FollowPath.rotate_to_heading_min_angle` 0.785。命令行改不了，影子模式仍用规划栈的 0.8 和 0.5。
+    - Humble 的 RPP 原地转时把指令夹在"里程计角速度 ± max_angular_accel × 0.1 s"。0.8 时 11-11 的原地转只到 0.08–0.17 rad/s，正是右轮跟不上的区间；3.2 一步给到 0.30 rad/s，斜坡交给平滑器和轮控所有者。沿路径行驶时不用这个值。
+    - 车头和路线差 45° 以内边走边转，两轮同向，右轮跟得上。
+    - 不变：`use_rotate_to_heading` true、`rotate_to_heading_angular_vel` 0.30、目标容差 0.25 m / 0.35 rad、每秒重规划。
+    - 接法：cli.py 的 `CLOSED_LOOP_CONTROLLER_PARAMS` 写进 `run_config.json` 的 `closed_loop.controller_params`，`supervisor.planning()` 交给 B 的 `PlanningChoice.controller_params`，由 `planning/stack.py` 的 `apply` 写进 FollowPath。
 - 启动顺序：Nav2 读回 → 桥 → 闸门（闭环配置）→ 目标。
   - Nav2 读回之外，闭环另核对两个转向速度（窗口 B 2026-11-10 提醒，它们不在 Nav2 的读回清单里）：controller_server 的 `FollowPath.rotate_to_heading_angular_vel`（RPP 原地转向）和 behavior_server 的 `max_rotational_vel`（Spin）。期望值取自这次写出的参数，两者都不能超过 0.30 rad/s，否则不启动。读回不一致时运行停止，和其他读回项一样。
+  - RPP 两个值由 B 的 `adjust_readback` 加进读回。闭环另读回保持不变的 `FollowPath.use_rotate_to_heading` 和 `general_goal_checker` 的两个容差（`closed_loop_kept_readback`，期望值取自这次写出的参数）。
   - 起桥后，要等 `base_status`、`enable`、`estop` 都有发布者，并收到第一条 `base_status`（阶段 `bridge_ready`），才起闸门。
   - 监督进程不建 `/wc_nav/enable` 发布者。
 - 点“开始自动”之前的一段代替单独的实车影子：

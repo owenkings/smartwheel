@@ -912,6 +912,8 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
         path.unlink(missing_ok=True)    # the test runner archives tmp_path and refuses special files (sockets)
     assert settings["auto_socket"] == str(path) and settings["bridge_node"] == "/wc_auto_bridge"
     assert (settings["max_linear"], settings["max_angular"], settings["enable_timeout_s"]) == (0.10, 0.30, 0.5)
+    # window B 2026-11-12 02:10: RPP's in-place turn acceleration and the angle above which it turns in place
+    assert settings["controller_params"] == [["max_angular_accel", 3.2], ["rotate_to_heading_min_angle", 0.785]]
     assert seen[-1] == (tmp_path / "panel", tmp_path / "session", "capture_x")
     assert (settings["panel_root"], settings["session_root"]) == (str(tmp_path / "panel"), str(tmp_path / "session"))
     monkeypatch.setenv("ROS_DOMAIN_ID", "99")
@@ -922,6 +924,7 @@ def test_closed_loop_needs_todays_approval_the_bridge_domain_and_the_owner_socke
 def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     from wc_navigation.autonomy import nav2_config
     from wc_navigation.autonomy.safety_gate import GateConfig
+    from wc_navigation.live import cli
     from wc_navigation.live.supervisor import LiveSupervisor
     import yaml
     config = {"use_sim_time": False, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
@@ -932,7 +935,8 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
               "goals": [[4.0, 0.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
               "smoother_timeout_s": 0.3,
               "closed_loop": {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p",
-                              "session_root": "/s", "session_id": "capture_x"}}
+                              "session_root": "/s", "session_id": "capture_x",
+                              "controller_params": [list(p) for p in cli.CLOSED_LOOP_CONTROLLER_PARAMS]}}
     profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
     run = LiveSupervisor(tmp_path, tmp_path, config)
     files = run.prepare_shadow(profile)
@@ -941,6 +945,13 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert expected["controller_server"]["FollowPath.rotate_to_heading_angular_vel"] == 0.30
     assert expected["behavior_server"]["max_rotational_vel"] == 0.30
     assert expected["controller_server"]["FollowPath.desired_linear_vel"] == 0.10      # Nav2's own list kept
+    # window B 2026-11-12 02:10: the two changed RPP values and the ones kept are read back as well
+    assert {k: expected["controller_server"][k] for k in (
+        "FollowPath.max_angular_accel", "FollowPath.rotate_to_heading_min_angle", "FollowPath.use_rotate_to_heading",
+        "general_goal_checker.xy_goal_tolerance", "general_goal_checker.yaw_goal_tolerance")} == {
+        "FollowPath.max_angular_accel": 3.2, "FollowPath.rotate_to_heading_min_angle": 0.785,
+        "FollowPath.use_rotate_to_heading": True, "general_goal_checker.xy_goal_tolerance": 0.25,
+        "general_goal_checker.yaw_goal_tolerance": 0.35}
     node = json.loads(files["gate"].read_text())
     gate = GateConfig(**node["gate"])
     assert node["clock"] == "monotonic" and node["use_sim_time"] is False
@@ -950,7 +961,15 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert json.loads(files["goals"].read_text())["closed_loop"] is True
     assert "feedback" not in files                                 # open loop: no velocity_feedback node
     nav2 = yaml.safe_load(files["nav2"].read_text())
-    assert nav2["controller_server"]["ros__parameters"]["FollowPath"]["desired_linear_vel"] == 0.10
+    server = nav2["controller_server"]["ros__parameters"]
+    follow = server["FollowPath"]
+    assert follow["desired_linear_vel"] == 0.10
+    # B's two values; unchanged: in-place turns at 0.30 rad/s, goal tolerances 0.25 m / 0.35 rad, replanning each second
+    assert (follow["max_angular_accel"], follow["rotate_to_heading_min_angle"]) == (3.2, 0.785)
+    assert (follow["use_rotate_to_heading"], follow["rotate_to_heading_angular_vel"]) == (True, 0.30)
+    assert (server["general_goal_checker"]["xy_goal_tolerance"], server["general_goal_checker"]["yaw_goal_tolerance"]
+            ) == (0.25, 0.35)
+    assert '<RateController hz="1.0">' in files["bt_to_pose"].read_text()
     smoother = nav2["velocity_smoother"]["ros__parameters"]
     assert (smoother["max_velocity"], smoother["feedback"], smoother["velocity_timeout"]) == (
         [0.10, 0.0, 0.30], "OPEN_LOOP", 0.3)
@@ -960,6 +979,9 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     files = plain.prepare_shadow(nav2_config.NavProfile())
     assert plain.readback_expectations(nav2_config.NavProfile()) == nav2_config.readback_expectations(
         nav2_config.NavProfile(), "navigate", planning=plain.planning())                  # the shadow's list as before
+    follow = yaml.safe_load(files["nav2"].read_text())["controller_server"]["ros__parameters"]["FollowPath"]
+    assert (follow["max_angular_accel"], follow["rotate_to_heading_min_angle"]) == (
+        nav2_config.NavProfile().angular_accel, 0.5)                                    # the shadow keeps the stack's
     node = json.loads(files["gate"].read_text())
     assert "clock" not in node and "require_base" not in node["gate"] and "enable_source_node" not in node["gate"]
     assert json.loads(files["goals"].read_text())["closed_loop"] is False
@@ -980,6 +1002,19 @@ def test_closed_loop_rotation_speeds_must_be_given_and_within_the_angular_limit(
             closed_loop_rotation_readback(params(rotate, spin), 0.30)
     with pytest.raises(RunError, match="missing"):
         closed_loop_rotation_readback({"controller_server": {"ros__parameters": {}}}, 0.30)
+
+
+def test_closed_loop_kept_controller_values_must_be_given():
+    from wc_navigation.autonomy.bringup import RunError
+    from wc_navigation.live.supervisor import closed_loop_kept_readback
+    server = {"FollowPath": {"use_rotate_to_heading": True},
+              "general_goal_checker": {"xy_goal_tolerance": 0.25, "yaw_goal_tolerance": 0.35}}
+    assert closed_loop_kept_readback({"controller_server": {"ros__parameters": server}}) == {"controller_server": {
+        "FollowPath.use_rotate_to_heading": True, "general_goal_checker.xy_goal_tolerance": 0.25,
+        "general_goal_checker.yaw_goal_tolerance": 0.35}}
+    with pytest.raises(RunError, match="yaw_goal_tolerance"):
+        closed_loop_kept_readback({"controller_server": {"ros__parameters": {
+            **server, "general_goal_checker": {"xy_goal_tolerance": 0.25}}}})
 
 
 def test_the_base_bridge_is_stopped_first(tmp_path, monkeypatch):

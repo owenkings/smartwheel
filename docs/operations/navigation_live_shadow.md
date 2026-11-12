@@ -203,6 +203,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
 - 其他选项照影子的写法，例如窗口 C 的 `--monitor-slow-margin M`（碰撞监控减速框伸出车头多远）可以一起给。`--monitor-base-shift` 只能是 off，不给时也按 off。
 - 启动前命令自己查：`WC_AUTO_DRIVE_APPROVAL` 的日期是今天；域 100；面板会话的 `auto.sock` 存在。会话没开自动控制源时没有这个 socket，命令直接拒绝。
 - 固定值（总管 2026-11-10 14:40）：0.10 m/s、0.30 rad/s；闸门限速 0.50 m / 0.05 m/s；使能超时 0.5 s；平滑器反馈开环、`velocity_timeout` 0.3 s；`--monitor-base-shift off`；`--start-check` 默认 block（也可以给更严的 strict）。给了别的值，命令拒绝启动。
+- RPP 的两个固定值（窗口 B 2026-11-12）：原地转的角加速度上限 `FollowPath.max_angular_accel` 3.2（一步给到 0.30 rad/s），`FollowPath.rotate_to_heading_min_angle` 0.785（车头和路线差 45° 以上才原地转，以内边走边转）。没有命令行选项。读回核对这两个值，以及不变的 `use_rotate_to_heading`、目标容差 0.25 m / 0.35 rad；`result.json` 的 `supervisor.parameter_readback` 里能看到。
 - 起来以后先让车站着跑约 30 s，看每秒一行的“闭环状态”。这一段代替单独的实车影子：目标已经发出，Nav2 照常规划、出指令，闸门因为没有使能输出零。
   - 没点“开始自动”时应是：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`，底盘不在 AUTO，急停否，目标 `NAVIGATING`。
   - “影子判断”是使能、底盘都就绪时闸门会放行什么，例如“会放行 0.10 m/s 0.00 rad/s”，或者“LOCALIZATION_UNTRUSTED(…)”。

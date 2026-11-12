@@ -406,8 +406,11 @@ class LiveSupervisor(Supervisor):
             profile, mode="navigate", bt_to_pose_path=files["bt_to_pose"],
             bt_through_poses_path=files["bt_through"], planning=planning)
         if cfg.get("closed_loop"):
-            # window B 2026-11-10: the rotation speeds are not in Nav2's readback list; the closed loop checks them
+            # window B 2026-11-10: the rotation speeds are not in Nav2's readback list; the closed loop checks them,
+            # and the values B kept for it on 2026-11-12 (B's adjust_readback adds the two it changed)
             self.closed_readback = closed_loop_rotation_readback(nav2_params, profile.max_angular)
+            for node, values in closed_loop_kept_readback(nav2_params).items():
+                self.closed_readback.setdefault(node, {}).update(values)
         files["nav2"] = self.write("nav2_params.yaml", with_sim_time(nav2_params, sim))
         if planning.smoother_feedback == "gated":
             # window B's relay: the gate's output as the smoother's feedback (restart from rest after a gate stop)
@@ -449,12 +452,15 @@ class LiveSupervisor(Supervisor):
         return expected
 
     def planning(self):
-        """Window B's planning choice for the shadow's Nav2: only the smoother feedback and timeout are set here."""
+        """Window B's planning choice for the shadow's Nav2: the smoother feedback and timeout, and in the closed loop
+        the controller values fixed by cli.py (``closed_loop.controller_params``, window B 2026-11-12 02:10)."""
         from ..planning.stack import PlanningChoice
         cfg = self.config
         defaults = PlanningChoice()
+        closed = cfg.get("closed_loop") or {}
         return PlanningChoice(smoother_feedback=cfg.get("smoother_feedback", defaults.smoother_feedback),
-                              smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)))
+                              smoother_timeout_s=float(cfg.get("smoother_timeout_s", defaults.smoother_timeout_s)),
+                              controller_params=tuple(tuple(p) for p in closed.get("controller_params", ())))
 
     def start_localization(self, monitor, files):
         self.launch_ros("map_server", "map_server", files["localization"])
@@ -749,6 +755,21 @@ def closed_loop_rotation_readback(params, max_angular):
     return {"controller_server": {"FollowPath.rotate_to_heading_angular_vel":
                                   value("controller_server", "FollowPath", "rotate_to_heading_angular_vel")},
             "behavior_server": {"max_rotational_vel": value("behavior_server", "max_rotational_vel")}}
+
+
+def closed_loop_kept_readback(params):
+    """Readback of the controller values window B kept for the closed loop (2026-11-12 02:10), from the Nav2
+    parameters this run writes: RPP still turns in place (``rotate_to_heading_min_angle`` needs
+    ``use_rotate_to_heading``), and the goal checker's tolerances. A missing value stops the run (RunError)."""
+    server = (params.get("controller_server") or {}).get("ros__parameters") or {}
+    follow, goal = server.get("FollowPath") or {}, server.get("general_goal_checker") or {}
+    kept = {"FollowPath.use_rotate_to_heading": follow.get("use_rotate_to_heading"),
+            "general_goal_checker.xy_goal_tolerance": goal.get("xy_goal_tolerance"),
+            "general_goal_checker.yaw_goal_tolerance": goal.get("yaw_goal_tolerance")}
+    missing = [key for key, value in kept.items() if value is None]
+    if missing:
+        raise RunError("closed loop: controller_server %s missing in the Nav2 parameters" % ", ".join(missing))
+    return {"controller_server": kept}
 
 
 def _switch(*values):
