@@ -17,6 +17,10 @@ WC_DRIVER_READBACK_APPROVAL=APPROVED_BY_USER_<YYYYMMDD>. Every approved run
 writes reports/driver_readback/<UTC>_<label>/result.json under the storage
 policy, also when the port was refused or a read failed. To read 2003h once per
 switch combination, run with --registers 2003 and a different --label each time.
+The list also holds the left and right motor parameter blocks (2030h, 2043h, 2060h,
+2073h), the per-wheel control times 2080h-2087h, the status words 20A1h-20A4h and
+the actual currents 20ADh-20AEh. After a run the tool prints each per-wheel item
+left against right and stores the same table as left_right in result.json.
 """
 import argparse
 import datetime
@@ -48,7 +52,34 @@ REGISTERS = (
     (0x20A0, 1, 'software version'),
     (0x20A5, 1, 'fault code'),
     (0x20A6, 1, 'fault code'),
+    # Left and right motor parameters, for comparing the two wheels (coordinator 2026-11-11, item 2). The blocks
+    # skip 2041h-2042h and 2071h-2072h, which the 8015D manual does not list.
+    (0x2030, 17, 'left motor 2030h-2040h: encoder lines, hall offset, overload factor, rated and maximum current, '
+                 'overload time, position following error, velocity smoothing, current loop Kp Ki, feedforward and '
+                 'torque smoothing, velocity loop Kp Ki Kf, position loop Kp Kf'),
+    (0x2043, 8, 'left motor 2043h-204Ah: initial velocity (velocity, position mode), poles, over-temperature, '
+                'velocity observer 1-4'),
+    (0x2060, 17, 'right motor 2060h-2070h, same layout as 2030h-2040h'),
+    (0x2073, 8, 'right motor 2073h-207Ah, same layout as 2043h-204Ah'),
+    (0x2080, 8, 'acceleration, deceleration, quick stop deceleration time and torque rate, left then right'),
+    (0x20A1, 4, 'DC voltage, motor state, hall state, motor temperature (high byte left, low byte right)'),
+    (0x20AD, 2, 'actual torque (current), left and right'),
 )
+# (name, left register, right register); a register given as (address, 'high'|'low') is one byte of a word.
+WHEEL_PAIRS = tuple(
+    [(name, 0x2030 + offset, 0x2060 + offset) for offset, name in (
+        (0x00, 'encoder lines'), (0x01, 'hall offset angle'), (0x02, 'overload factor'), (0x03, 'rated current'),
+        (0x04, 'maximum current'), (0x05, 'overload protection time'), (0x06, 'position following error threshold'),
+        (0x07, 'velocity smoothing factor'), (0x08, 'current loop Kp'), (0x09, 'current loop Ki'),
+        (0x0A, 'feedforward output smoothing'), (0x0B, 'torque output smoothing'), (0x0C, 'velocity loop Kp'),
+        (0x0D, 'velocity loop Ki'), (0x0E, 'velocity loop Kf'), (0x0F, 'position loop Kp'), (0x10, 'position loop Kf'),
+        (0x13, 'initial velocity, velocity mode'), (0x14, 'initial velocity, position mode'), (0x15, 'motor poles'),
+        (0x16, 'over-temperature threshold'), (0x17, 'velocity observer 1'), (0x18, 'velocity observer 2'),
+        (0x19, 'velocity observer 3'), (0x1A, 'velocity observer 4'))] +
+    [('acceleration time', 0x2080, 0x2081), ('deceleration time', 0x2082, 0x2083),
+     ('quick stop deceleration time', 0x2084, 0x2085), ('torque rate', 0x2086, 0x2087),
+     ('motor state', (0x20A2, 'high'), (0x20A2, 'low')), ('hall state', (0x20A3, 'high'), (0x20A3, 'low')),
+     ('motor temperature', (0x20A4, 'high'), (0x20A4, 'low')), ('actual torque (current)', 0x20AD, 0x20AE)])
 REQUEST_GAP_S = .05  # bus idle time between two reads
 LABEL = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 REGISTER_SOURCE = 'ZLAC8015D RS485 manual V1.04; not verified for the ZLAC8030D'
@@ -151,6 +182,36 @@ def read_all(lease, entries, timeout_s, reads, *, clock=time.monotonic, sleep=ti
     return error
 
 
+def wheel_pairs(reads):
+    """Left and right value of every per-wheel item that was read: [{name, left, right, equal}] (raw words)."""
+    words = {}
+    for row in reads:
+        if row.get('status') == 'WORDS':
+            start = int(row['start_register'][:-1], 16)
+            for index, word in enumerate(row['words_u16']):
+                words[start + index] = word
+
+    def value(register):
+        if isinstance(register, tuple):
+            address, part = register
+            if address not in words:
+                return None
+            return words[address] >> 8 if part == 'high' else words[address] & 0xff
+        return words.get(register)
+
+    def label(register):
+        return '%04Xh %s byte' % register if isinstance(register, tuple) else '%04Xh' % register
+
+    out = []
+    for name, left, right in WHEEL_PAIRS:
+        a, b = value(left), value(right)
+        if a is None or b is None:
+            continue
+        out.append({'name': name, 'left_register': label(left), 'right_register': label(right),
+                    'left': a, 'right': b, 'equal': a == b})
+    return out
+
+
 def approval_problem(environ, today):
     """None with today's explicit user approval, otherwise what is missing."""
     expected = 'APPROVED_BY_USER_' + today.strftime('%Y%m%d')
@@ -233,6 +294,7 @@ def main(argv=None, *, environ=None, today=None):
             record['host_serial'] = lease.host_configuration
             error = read_all(lease, entries, config['timeout_s'], reads)
             record.update(status='TRANSPORT_FAILED' if error else 'COMPLETE', error=error)
+            record['left_right'] = wheel_pairs(reads)
     finally:
         lease.close()
         record['finished_utc'] = _utc()
@@ -251,6 +313,14 @@ def main(argv=None, *, environ=None, today=None):
             elapsed = row['exchange_completed_monotonic_ns'] - row['exchange_started_monotonic_ns']
             value += '  %.1f ms' % (elapsed / 1e6)
         print('%s  %s' % (row['start_register'], value), flush=True)
+    pairs = record.get('left_right') or []
+    if pairs:
+        print('left / right (raw words; = same, != different):', flush=True)
+        for pair in pairs:
+            print('  %-36s %-15s %6d  %-2s %6d  %s' % (pair['name'], pair['left_register'], pair['left'],
+                                                    '=' if pair['equal'] else '!=', pair['right'],
+                                                    pair['right_register']), flush=True)
+        print('%d of %d per-wheel items differ' % (sum(not pair['equal'] for pair in pairs), len(pairs)), flush=True)
     print('%s: %s' % (record['status'], folder/'result.json'), flush=True)
     if record.get('error'):
         print(record['error'], flush=True)

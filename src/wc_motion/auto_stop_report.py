@@ -8,13 +8,16 @@ check: commanded 0.10 m/s should read back as 0.10 m/s on both wheels), then how
 - software_zero: the command ramped down while the owner stayed in AUTO (the source sent zero);
 - source_lost: the owner left AUTO because its bridge or test source went away (kill -9) or fell silent;
 - estop: the wheels slowed while still commanded and the owner then reported WHEELS_STOPPED_WHILE_COMMANDED (the
-  vehicle's emergency stop acts on the driver); the stop counts from the first feedback below 90 % of the steady
-  speed;
+  vehicle's emergency stop acts on the driver); the stop counts from the last feedback still at 60 % or more of the
+  steady speed before the owner's detection (until 2026-11-11 the first feedback below 90 %: on the ground the
+  wheels wobble by 10-50 % and one wobble was taken for the emergency stop, 5.50 s and 0.448 m instead of 0.83 s
+  and 0.2 cm; the coordinator's field/ground_trials.py rule);
 - feedback_lost: the wheel feedback ended while moving (USB adapter pulled, or the owner killed): stop time and
   distance are unknown here and come from the video;
 - operator, or the owner's own stop reason otherwise.
 
-Stop time runs from the trigger to the first feedback sample with both wheels at zero. Distance and heading change
+Stop time runs from the trigger to the first feedback sample with both wheels standing still: at most 3 words, the
+wheel owner's rule since 2026-11-11 (held wheels read 1-3 words on the ground). Distance and heading change
 come from the owner's wheel preview (axle distance and yaw it integrated), interpolated at the trigger. Values
 come from the 10 Hz wheel feedback: about 0.1 s and, at 0.10 m/s, about 1 cm resolution.
 """
@@ -26,7 +29,8 @@ from pathlib import Path
 import re
 
 SCHEMA = 'wc_auto_stop_report_v1'
-SLOWING = 0.9            # estop trigger: feedback below this share of the steady speed
+AT_SPEED = 0.6           # estop trigger: the last feedback at this share of the steady speed or more
+STILL_WORDS = 3          # standing still: both wheels at most this many words (wc_runtime.mapping_auto.STATIONARY_WORDS)
 STEADY_WINDOW_S = 1.0    # the steady speed is measured over the last second of the command plateau
 SOURCE_LOST = ('BRIDGE_DISCONNECTED', 'DECISION_STALE')
 OPERATOR = ('USER_STOPPED_AUTO', 'USER_STOP', 'MANUAL_TAKEOVER', 'UI_NOT_FRESH', 'UI_CLOSED', 'SOFTWARE_ESTOP',
@@ -79,7 +83,8 @@ def timeline(records, wheel, scale):
                              'yaw': record['yaw_rad'],
                              'left': record['left_wheel_rpm_candidate'] * rpm_to_m_s,
                              'right': record['right_wheel_rpm_candidate'] * rpm_to_m_s,
-                             'zero': record['left_raw_signed'] == 0 and record['right_raw_signed'] == 0})
+                             'zero': max(abs(record['left_raw_signed']), abs(record['right_raw_signed']))
+                             <= STILL_WORDS})
         elif event == 'wheel_io_complete' and record.get('request_hex', '')[2:4] == '10':
             left, right = command_wheels(record['request_hex'], wheel, scale)
             writes.append((record['exchange_started_monotonic_ns'] * 1e-9, (left + right) / 2, (left, right)))
@@ -144,7 +149,9 @@ def trial(feedback, writes, failures, run):
     elif end is not None and end_reason == 'WHEELS_STOPPED_WHILE_COMMANDED':
         kind = 'estop'
         base = _median([s['v'] for s in moving if s['t'] <= end and s['v'] >= 0.5 * plateau])
-        trigger = next((s['t'] for s in moving if base and s['v'] < SLOWING * base), end)
+        at_speed = [s['t'] for s in moving if s['t'] <= end and base and s['v'] >= AT_SPEED * base]
+        trigger = at_speed[-1] if at_speed else end
+        row['trigger_rule'] = 'last_feedback_at_60pct_before_owner_detection'
     elif failure is not None:
         # The serial line failed while in AUTO (USB adapter pulled): the owner faults without a state record.
         kind = 'feedback_lost'

@@ -4,7 +4,7 @@
 
 start: asks the wheel owner of the running recording to start automatic control. Typing the command took the focus
 away from the RViz window, and automatic control only runs while RViz has it: click into the RViz window within
-10 s. The start is then checked like the panel's "start automatic" (the bridge or the test source connected, the
+30 s. The start is then checked like the panel's "start automatic" (the bridge or the test source connected, the
 wheels standing still, the gate not latched, no keys held, ...). The command prints the state until AUTO or a
 refusal. Stop with Space or WASD in RViz, the emergency stop, or ``stop`` here; clicking out of RViz (into this
 terminal, for example) already stops automatic control at once.
@@ -19,6 +19,7 @@ uses it: the base bridge and navigation never request automatic control. --sessi
 session explicitly, for example the dry run of wc_runtime.auto_dry_run.
 """
 import argparse
+import datetime
 import json
 from pathlib import Path
 import socket
@@ -86,6 +87,28 @@ def attach_reason(directory, *, lines=5000):
     return None
 
 
+def unavailable_hint(directory, session_id, *, today=None):
+    """Why a running recording has no auto.sock, from what the session itself recorded.
+
+    On 11-11 the panel had been started without the day's approval and the old hint asked whether auto_controls
+    was in the hardware setup, which it was."""
+    approval = 'WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_' + (today or datetime.date.today()).strftime('%Y%m%d')
+    reason = attach_reason(directory)
+    if reason is not None:
+        text = 'the wheel owner of %s reports %s' % (session_id, reason)
+        if reason.endswith('NO_USER_APPROVAL_TODAY'):
+            text += '; close the panel and start it again with ' + approval
+        return text
+    try:
+        configuration = json.loads((Path(directory) / 'configuration/manual_runtime.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 'the wheel owner of %s has not reported its automatic control yet' % session_id
+    if not isinstance(configuration, dict) or 'auto_controls' not in configuration:
+        return 'the session configuration of %s has no auto_controls: the hardware setup does not allow it' % session_id
+    return ('the session configuration of %s has auto_controls, but the wheel owner has not reported its automatic '
+            'control yet; was the panel started with %s?' % (session_id, approval))
+
+
 def session(args):
     root = args.project_root.resolve()
     if (args.session_root is None) != (args.session_id is None):
@@ -97,9 +120,7 @@ def session(args):
         hint = ''
         running = [row for row in recording_sessions(root) if row[2] == 'RECORDING']
         if not sessions and running:
-            reason = attach_reason(running[0][0])
-            hint = '; the wheel owner of %s reports %s' % (running[0][1], reason or (
-                'nothing about automatic control: is auto_controls in the hardware setup?'))
+            hint = '; ' + unavailable_hint(running[0][0], running[0][1])
         elif not sessions:
             hint = '; no recording of this checkout is running'
         raise SystemExit('expected one running recording with automatic control, found %d%s'

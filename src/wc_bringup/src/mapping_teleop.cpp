@@ -3,6 +3,7 @@
 // to the session backend. No global keyboard hook, device API or ROS publisher.
 #include "wc_bringup/mapping_teleop.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <QApplication>
@@ -36,6 +37,9 @@ namespace
 constexpr int kLineBytes = 4096;
 constexpr int kStatusTimeoutMs = 500;
 constexpr int kReconnectRetryMs = 500;
+// A WASD release counts only if the same key does not come back within this time (BOARD 2026-11-11 15:20:
+// NoMachine sends a held key as real release/press pairs, so every pair stopped the chair for a moment).
+constexpr int kReleaseDebounceMs = 60;
 
 bool checked_integer(const QJsonValue & value, qint64 & output)
 {
@@ -215,6 +219,9 @@ MappingTeleopPanel::MappingTeleopPanel(const TeleopSession & session, QWidget * 
   area->addWidget(control_guide_); area->addWidget(keys_label_); layout->addWidget(control_);
   socket_ = new QLocalSocket(this); socket_->setReadBufferSize(kLineBytes * 2);
   timer_ = new QTimer(this); timer_->setInterval(50); timer_->setTimerType(Qt::PreciseTimer);
+  release_timer_ = new QTimer(this); release_timer_->setSingleShot(true); release_timer_->setTimerType(Qt::PreciseTimer);
+  release_clock_.start();
+  connect(release_timer_, &QTimer::timeout, this, [this]() {release_due();});
   connect(stop_button_, &QPushButton::clicked, this, [this]() {stop_and_disarm(QStringLiteral("用户停车"));});
   connect(socket_, &QLocalSocket::connected, this, [this]() {
       connection_age_.restart();
@@ -239,7 +246,7 @@ MappingTeleopPanel::MappingTeleopPanel(const TeleopSession & session, QWidget * 
   connect(push_button_, &QPushButton::clicked, this, [this]() {
       if (!have_status_ || !arm_allowed_ || waiting_for_stop_ || !status_age_.isValid() ||
         status_age_.elapsed() >= kStatusTimeoutMs || state_ == QStringLiteral("FAULT")) {return;}
-      keys_.clear(); sent_keys_ = intent_started_ = false;
+      clear_keys(); sent_keys_ = intent_started_ = false;
       const bool enabled = !push_mode_ && !push_requested_;
       if (send({{QStringLiteral("type"), QStringLiteral("push_mode")},
         {QStringLiteral("session_id"), session_.session_id},
@@ -301,7 +308,7 @@ void MappingTeleopPanel::connect_to_server()
 {
   if (!session_.valid() || !retry_enabled_ || socket_->state() != QLocalSocket::UnconnectedState) {return;}
   retry_age_.restart();
-  keys_.clear(); sent_keys_ = intent_started_ = waiting_for_stop_ = arm_allowed_ = have_status_ = false;
+  clear_keys(); sent_keys_ = intent_started_ = waiting_for_stop_ = arm_allowed_ = have_status_ = false;
   stop_revocation_sent_ = false;
   generation_ = sequence_ = 0; incoming_.clear(); status_age_.invalidate();
   const QString path = QDir(session_.directory).filePath(QStringLiteral("manual.sock"));
@@ -345,7 +352,7 @@ bool MappingTeleopPanel::send_keys()
     if (!have_status_ || !arm_allowed_ || waiting_for_stop_ || !status_age_.isValid() ||
       status_age_.elapsed() >= kStatusTimeoutMs || state_ == QStringLiteral("FAULT") ||
       socket_->state() != QLocalSocket::ConnectedState) {return false;}
-    if (!application_active()) {keys_.clear(); intent_started_ = false;}
+    if (!application_active()) {clear_keys(); intent_started_ = false;}
   } else if (!keys_allowed() || waiting_for_stop_ || (keys_.isEmpty() && !sent_keys_)) {return false;}
   if (socket_->bytesToWrite() > 0) {
     transport_failed(QStringLiteral("控制消息未及时写出；按键意图已取消。")); return false;
@@ -366,7 +373,7 @@ void MappingTeleopPanel::stop_and_disarm(const QString & reason)
 {
   const bool had_intent = active_intent() || waiting_for_stop_ ||
     (hybrid_manual_ && have_status_ && arm_allowed_);
-  keys_.clear(); sent_keys_ = intent_started_ = false;
+  clear_keys(); sent_keys_ = intent_started_ = false;
   // Waiting for a normal final-release acknowledgement does not revoke its
   // pending automatic hand-push transition. An abnormal stop must supersede
   // that intent immediately, without waiting for a generation/status reply.
@@ -384,7 +391,7 @@ void MappingTeleopPanel::stop_and_disarm(const QString & reason)
 void MappingTeleopPanel::transport_failed(const QString & reason, bool retry)
 {
   retry_enabled_ = retry && session_.valid(); retry_age_.restart();
-  keys_.clear(); sent_keys_ = intent_started_ = waiting_for_stop_ = arm_allowed_ = have_status_ = false;
+  clear_keys(); sent_keys_ = intent_started_ = waiting_for_stop_ = arm_allowed_ = have_status_ = false;
   stop_revocation_sent_ = false;
   generation_ = 0; incoming_.clear(); status_age_.invalidate();
   state_ = QStringLiteral("DISCONNECTED"); reason_ = reason;
@@ -452,14 +459,16 @@ void MappingTeleopPanel::receive_status(const QJsonObject & status)
   // its heartbeat through READY -> INITIALIZING -> ARMED. A stop or backend
   // watchdog changes generation and invalidates old intent.
   if (!arm_allowed_ || next == QStringLiteral("DISARMED") || next == QStringLiteral("FAULT")) {
-    keys_.clear(); sent_keys_ = intent_started_ = waiting_for_stop_ = false;
+    clear_keys(); sent_keys_ = intent_started_ = waiting_for_stop_ = false;
     stop_revocation_sent_ = false;
   } else if (waiting_for_stop_) {
     if (generation == generation_) {render(); return;}
+    // A key released before this acknowledgement is not a fresh press: it must not start the new generation.
+    forget_released();
     waiting_for_stop_ = sent_keys_ = false;  // Keys pressed after the local stop are fresh.
     stop_revocation_sent_ = false;
   } else if (generation != generation_) {
-    keys_.clear(); sent_keys_ = intent_started_ = false;
+    clear_keys(); sent_keys_ = intent_started_ = false;
   }
   generation_ = generation; state_ = next; render();
 }
@@ -518,13 +527,29 @@ bool MappingTeleopPanel::eventFilter(QObject * watched, QEvent * event)
   }
   if (key_name(key->key()).isEmpty()) {return false;}
   if (key->isAutoRepeat()) {return true;}
+  const int code = key->key();
+  if (event->type() == QEvent::KeyRelease && keys_.contains(code) && !pending_release_.contains(code)) {
+    // Held for now: the heartbeat keeps sending it until the release is due.
+    pending_release_.insert(code, release_clock_.elapsed() + kReleaseDebounceMs);
+    schedule_release(); return true;
+  }
+  if (event->type() == QEvent::KeyPress && pending_release_.remove(code) > 0) {
+    schedule_release(); render(); return true;  // the same key came back in time: it never let go
+  }
+  flush_releases();  // any other key change happens after the releases before it
+  key_changed(code, event->type() == QEvent::KeyPress);
+  return true;
+}
+
+void MappingTeleopPanel::key_changed(int key, bool pressed)
+{
   const bool had_keys = !keys_.isEmpty();
-  if (event->type() == QEvent::KeyRelease) {
-    keys_.remove(key->key());
+  if (!pressed) {
+    keys_.remove(key);
   }
   else if (keys_allowed())
   {
-    keys_.insert(key->key()); intent_started_ = true;
+    keys_.insert(key); intent_started_ = true;
   }
   if (!keys_.isEmpty() || had_keys) {
     const bool sent = send_keys();
@@ -536,7 +561,45 @@ bool MappingTeleopPanel::eventFilter(QObject * watched, QEvent * event)
       state_ = QStringLiteral("STOPPING");
     }
   }
-  render(); return true;
+  render();
+}
+
+void MappingTeleopPanel::release_due()
+{
+  const qint64 now = release_clock_.elapsed();
+  QList<int> due;
+  for (auto item = pending_release_.cbegin(); item != pending_release_.cend(); ++item) {
+    if (item.value() <= now) {due.append(item.key());}
+  }
+  for (int key : due) {pending_release_.remove(key); key_changed(key, false);}
+  schedule_release();
+}
+
+void MappingTeleopPanel::schedule_release()
+{
+  if (pending_release_.isEmpty()) {release_timer_->stop(); return;}
+  qint64 next = -1;
+  for (const qint64 due : pending_release_) {next = next < 0 ? due : std::min(next, due);}
+  release_timer_->start(static_cast<int>(std::max<qint64>(0, next - release_clock_.elapsed())));
+}
+
+void MappingTeleopPanel::flush_releases()
+{
+  const QList<int> released = pending_release_.keys();
+  pending_release_.clear(); release_timer_->stop();
+  for (int key : released) {key_changed(key, false);}
+}
+
+void MappingTeleopPanel::forget_released()
+{
+  for (auto item = pending_release_.cbegin(); item != pending_release_.cend(); ++item) {keys_.remove(item.key());}
+  pending_release_.clear(); release_timer_->stop();
+}
+
+void MappingTeleopPanel::clear_keys()
+{
+  keys_.clear(); pending_release_.clear();
+  if (release_timer_ != nullptr) {release_timer_->stop();}
 }
 
 void MappingTeleopPanel::render()

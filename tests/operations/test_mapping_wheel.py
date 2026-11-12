@@ -128,6 +128,18 @@ def hold(value, clock, pressed, count=70):
         ticks(value, clock, 1)
 
 
+def ramp_start(value, linear, angular):
+    """First held-key write from standstill: one control period of the manual ramp toward the key target."""
+    up = value.control['max_linear_accel_m_s2']*m.CONTROL_PERIOD_S
+    turn = value.control['max_angular_accel_rad_s2']*m.CONTROL_PERIOD_S
+    return m.velocity_request(value.wheel, value.control, max(-up, min(up, linear)), max(-turn, min(turn, angular)))
+
+
+def speed_words(request):
+    """(left, right) target words of an FC10 2088h speed write."""
+    return struct.unpack('>hh', request[7:11])
+
+
 def test_default_lifetime_reads_continuously_and_never_writes_zero_on_exit():
     value, clock, channel, records, published = owner()
     ticks(value, clock, 230)
@@ -216,7 +228,11 @@ def test_idle_ready_never_enables_and_first_held_key_initializes_with_moving_fee
     hold(value, clock, ['w'])
     controls = [r for r in channel.requests if r != m.QUERY]
     assert controls[:5] == [*m.INITIALIZATION_WRITES[:3], m.ZERO_REQUEST, m.INITIALIZATION_WRITES[3]]
-    assert controls[5:] and all(r == m.velocity_request(value.wheel, value.control, .1, 0.) for r in controls[5:])
+    # Held W ramps up from standstill: forward words only, growing, never beyond the key target.
+    assert controls[5:] and controls[5] == ramp_start(value, .1, 0.)
+    full = speed_words(m.velocity_request(value.wheel, value.control, .1, 0.))
+    written = [speed_words(r) for r in controls[5:]]
+    assert all(full[0] <= a[0] <= b[0] < 0 < b[1] <= a[1] <= full[1] for b, a in zip(written, written[1:]))
     assert value.state == 'ARMED' and value.arm_generation == old_generation and value.keys == {'w'}
     clear_at = next(at for request, at in request_times if request == m.INITIALIZATION_WRITES[2])
     enable_at = next(at for request, at in request_times if request == m.INITIALIZATION_WRITES[3])
@@ -261,7 +277,7 @@ def test_hand_push_requires_explicit_request_stationary_feedback_and_explicit_ex
     value.command({'type':'push_mode', 'session_id':value.session_id, 'enabled':False,
                    'sequence':value.last_key_sequence+1, 'arm_generation':value.arm_generation})
     assert not value.push_mode and not value.keys
-    hold(value, clock, ['s'])
+    hold(value, clock, ['s'], 120)  # initialization, then the ramp up to the full reverse speed
     assert value.state == 'ARMED' and channel.requests.count(m.INITIALIZATION_WRITES[0]) == initializations+1
     assert m.velocity_request(value.wheel, value.control, -.1, 0.) in channel.requests
     assert m.single_write(0x200E, 5) not in channel.requests
@@ -358,7 +374,7 @@ def test_repress_during_zero_delay_resumes_without_waiting_for_servo_release():
     keys(value, []); value.step(); ticks(value, clock, 10)
     before = len(channel.requests)
     keys(value, ['s']); value.step()
-    assert m.velocity_request(value.wheel, value.control, -.1, 0.) in channel.requests[before:]
+    assert ramp_start(value, -.1, 0.) in channel.requests[before:]
     assert m.RELEASE_REQUEST not in channel.requests and value.stop_deadline is None
 
 
@@ -370,7 +386,7 @@ def test_idle_does_not_invoke_release_guard_and_new_press_resumes():
     value.step()
     assert m.RELEASE_REQUEST not in channel.requests
     assert value.state == 'ARMED' and value.keys == {'s'} and value.stop_deadline is None
-    assert m.velocity_request(value.wheel, value.control, -.1, 0.) in channel.requests[before:]
+    assert ramp_start(value, -.1, 0.) in channel.requests[before:]
 
 
 def test_close_after_movement_sends_zero_and_never_releases_holding(monkeypatch):
@@ -451,7 +467,8 @@ def test_prewrite_cancel_publishes_one_generation_and_preserves_acknowledged_new
     requests_before_resume = len(channel.requests)
     hold(value, clock, ['s'])
     assert value.state == 'ARMED' and value.arm_generation == generation+1
-    assert m.velocity_request(value.wheel, value.control, -.1, 0.) in channel.requests[requests_before_resume:]
+    # The resumed reverse motion ramps up from standstill like any new press.
+    assert ramp_start(value, -.1, 0.) in channel.requests[requests_before_resume:]
     if phase == 'armed':
         controls = [r for r in channel.requests[requests_before_resume:] if r != m.QUERY]
         assert controls[0] == m.ZERO_REQUEST  # Pending cancellation is serviced before resume.
@@ -471,9 +488,13 @@ def test_fresh_direction_change_during_prewrite_guard_retains_keys_and_generatio
     assert channel.control_transmissions == before  # The pending W-only packet was cancelled.
     assert value.state == 'ARMED' and value.keys == set(replacement)
     assert value.arm_generation == generation and value.failure is None and not channel.failed
+    previous = value.drive_command
     value.step()  # No keyup, new keydown or activation is needed.
     assert channel.control_transmissions == before+1
-    assert channel.requests[-1] == m.velocity_request(value.wheel, value.control, *value.target())
+    # The write is one ramp step from the last written command toward the new keys' target.
+    assert channel.requests[-1] == m.velocity_request(value.wheel, value.control, *value.drive_command)
+    for written, last, goal in zip(value.drive_command, previous, value.target()):
+        assert written == goal or abs(goal-written) < abs(goal-last)
     assert value.arm_generation == generation and value.keys == set(replacement)
 
 
@@ -561,6 +582,7 @@ def test_continuous_fresh_user_keys_keep_motion_enabled_beyond_two_seconds():
     for seq in range(2, 85):
         keys(value, ['w'] if seq % 2 else ['w', 'a'])
         ticks(value, clock, 4)
+    hold(value, clock, ['w', 'a'], 40)  # long enough for the ramp to settle on the W+A target
     assert clock()-started > 3.0
     assert value.state == 'ARMED' and value.keys
     assert value.status()['max_continuous_motion_s'] is None
@@ -1165,3 +1187,164 @@ def test_wrong_socket_session_cannot_start_direct_control(socket_tmp_path):
         assert set(channel.requests) == {m.QUERY}
     finally:
         client.close();server.close()
+
+
+def drive_log(value, clock, pressed, count):
+    """Hold keys for count ticks; [(time, (linear, angular))] of every nonzero speed write."""
+    log = []
+    for _ in range(count):
+        before = value.channel.control_transmissions
+        keys(value, pressed)
+        value.step()
+        request = value.channel.requests[-1]
+        if value.channel.control_transmissions > before and request[1] == 16 and request != m.ZERO_REQUEST:
+            log.append((clock(), value.drive_command))
+        clock.advance(.01)
+    return log
+
+
+def test_held_keys_ramp_at_the_manual_rates_and_releasing_still_writes_zero_at_once():
+    """Coordinator 2026-11-11 item 2: the manual channel ramps like the automatic one."""
+    value, clock, channel, _, _ = owner(True)
+    value.connected()
+    hold(value, clock, ['w'], 45)   # initialization (about 0.4 s) and the first writes
+    control = value.control
+    up, down = control['max_linear_accel_m_s2'], control['max_linear_decel_m_s2']
+    turn = control['max_angular_accel_rad_s2']
+    forward = drive_log(value, clock, ['w'], 60)
+    assert forward[-1][1] == (.1, 0.)
+    turning = drive_log(value, clock, ['w', 'a'], 40)
+    assert turning[-1][1] == (.1, .2)
+    reverse = drive_log(value, clock, ['s'], 80)
+    assert reverse[-1][1] == (-.1, 0.)
+    log = forward+turning+reverse
+    for (t0, (v0, w0)), (t1, (v1, w1)) in zip(log, log[1:]):
+        dt = min(t1-t0, .1)
+        faster = abs(v1) > abs(v0) and v1*v0 >= 0
+        assert abs(v1-v0) <= (up if faster else down)*dt+1e-9
+        assert abs(w1-w0) <= turn*dt+1e-9
+    # W to S slowed down through zero at the deceleration rate, then sped up backward at the acceleration rate
+    linear = [v for _, (v, _) in reverse]
+    assert linear[0] > 0 > linear[-1] and linear == sorted(linear, reverse=True)
+    # A press from standstill starts with one control period of acceleration.
+    start = [v for _, (v, _) in forward]
+    assert start == sorted(start) and start[-1] == .1
+    # Releasing every key: zero at once, no nonzero write after the last held key, the ramp starts over.
+    before = len(channel.requests)
+    keys(value, []); value.step()
+    after = [r for r in channel.requests[before:] if r != m.QUERY]
+    assert after == [m.ZERO_REQUEST] and value.drive_command == (0., 0.)
+    ticks(value, clock, 40)
+    resumed = drive_log(value, clock, ['w'], 10)
+    assert channel.requests.count(m.INITIALIZATION_WRITES[0]) == 1   # no new initialization was needed
+    assert resumed[0][1] == (pytest.approx(up*m.CONTROL_PERIOD_S), 0.)
+
+
+def test_manual_ramp_rates_come_from_manual_controls_and_are_bounded():
+    defaults = m.validate_manual_controls()
+    assert (defaults['max_linear_accel_m_s2'], defaults['max_linear_decel_m_s2'],
+            defaults['max_angular_accel_rad_s2']) == (.30, .60, .80)
+    settings = config(True)
+    settings['manual_controls'].update(max_linear_accel_m_s2=1.0, max_angular_accel_rad_s2=2.0)
+    clock, channel, records = Clock(), FakeChannel(), []
+    value = m.MappingWheel(settings, channel, records.append, clock=clock, wall_ns=clock.wall, mono_ns=clock.ns)
+    value.connected()
+    hold(value, clock, ['w', 'a'], 60)   # initialization (about 0.4 s), then the first speed writes
+    first = next(r for r in channel.requests if r[1] == 16 and r != m.ZERO_REQUEST)
+    assert first == m.velocity_request(value.wheel, value.control, .05, .1)
+    for change in ({'max_linear_accel_m_s2': 0}, {'max_linear_accel_m_s2': 1.5}, {'max_linear_decel_m_s2': 2.5},
+                   {'max_angular_accel_rad_s2': float('nan')}, {'max_angular_accel_rad_s2': '0.8'},
+                   {'max_linear_decel_m_s2': -.6}):
+        with pytest.raises(m.FeedbackError):
+            m.validate_manual_controls(change)
+
+
+class Line:
+    """Far end of a socket pair for WheelChannel: one scripted answer per request.
+
+    None stays silent; a (delay_s, bytes) pair answers late from a timer."""
+    def __init__(self, answers):
+        self.near, self.far = socket.socketpair()
+        self.answers, self.requests = list(answers), []
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while True:
+            try:
+                request = self.far.recv(64)
+            except OSError:
+                return
+            if not request:
+                return
+            self.requests.append(request)
+            answer = self.answers.pop(0) if self.answers else None
+            if isinstance(answer, tuple):
+                delay, payload = answer
+                threading.Timer(delay, lambda: self.far.sendall(payload)).start()
+            elif answer is not None:
+                self.far.sendall(answer)
+
+    def channel(self, records):
+        return m.WheelChannel(NS(fd=self.near.fileno(), failed=False), records.append)
+
+    def close(self):
+        self.near.close()
+        self.thread.join(timeout=2)
+        self.far.close()
+
+
+def test_a_feedback_read_without_any_answer_is_sent_once_more():
+    """Coordinator 2026-11-11 item 3: one read timeout no longer ends the recording."""
+    line, records = Line([None, response((3, 4))]), []
+    channel = line.channel(records)
+    try:
+        assert channel.exchange(m.QUERY, .05) == response((3, 4))
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY, m.QUERY] and not channel.failed and channel.read_retries == 1
+    events = [row['event'] for row in records]
+    assert events == ['wheel_io_planned', 'wheel_read_retry', 'wheel_io_planned', 'wheel_io_complete']
+    assert records[1]['error'] == 'wheel response timeout' and records[1]['read_retries'] == 1
+
+
+def test_a_second_read_timeout_still_fails_the_channel():
+    line, records = Line([None, None]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='timeout'):
+            channel.exchange(m.QUERY, .05)
+        with pytest.raises(m.QueryFailure, match='closed or failed'):
+            channel.exchange(m.QUERY, .05)
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY, m.QUERY] and channel.failed and channel.read_retries == 1
+    assert [row['event'] for row in records] == ['wheel_io_planned', 'wheel_read_retry', 'wheel_io_planned',
+                                                 'wheel_io_failed']
+
+
+def test_a_late_answer_after_a_read_timeout_fails_without_resending(monkeypatch):
+    monkeypatch.setattr(m, 'READ_RETRY_QUIET_S', .3)
+    line, records = Line([(.1, response((0, 0)))]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='late RTU bytes'):
+            channel.exchange(m.QUERY, .05)
+    finally:
+        line.close()
+    assert line.requests == [m.QUERY] and channel.failed and channel.read_retries == 0
+    assert records[-1]['event'] == 'wheel_io_failed' and records[-1]['response_hex'] == response((0, 0)).hex()
+
+
+@pytest.mark.parametrize('request_kind', ['partial_answer', 'speed_write'])
+def test_partial_answers_and_control_writes_are_never_resent(request_kind):
+    request = m.QUERY if request_kind == 'partial_answer' else m.speed_write(-5, 5)
+    line, records = Line([response()[:4] if request_kind == 'partial_answer' else None]), []
+    channel = line.channel(records)
+    try:
+        with pytest.raises(m.QueryFailure, match='timeout'):
+            channel.exchange(request, .05, guard=None if request == m.QUERY else (lambda: None))
+    finally:
+        line.close()
+    assert line.requests == [request] and channel.failed and channel.read_retries == 0
+    assert 'wheel_read_retry' not in [row['event'] for row in records]

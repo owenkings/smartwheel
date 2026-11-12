@@ -167,6 +167,46 @@ def test_stop_report_gives_each_wheel_its_own_ratio(tmp_path):
     assert '（100%，左轮 80%、右轮 120%）' in r.lines({'trials': [row]})[0]
 
 
+def test_estop_trigger_ignores_ground_wobble_and_wheels_held_at_a_few_words_have_stopped(tmp_path):
+    """Coordinator 2026-11-11: the trigger is the last feedback at 60 % of the steady speed or more before the owner's
+    detection, not the first one below 90 % (on the ground that was a wobble, 5.50 s and 0.448 m)."""
+    import json
+    import math
+    wheel = {'wheel_radius_m': 0.1646, 'track_width_m': 0.599, 'register_to_wheel_rpm': 0.112,
+             'left_sign': -1, 'right_sign': 1}
+    (tmp_path/'configuration').mkdir()
+    (tmp_path/'sources').mkdir()
+    (tmp_path/'configuration/manual_runtime.json').write_text(json.dumps(
+        {'wheel_candidate': wheel, 'manual_controls': {'command_rpm_to_register_scale': 8.9}}))
+    word = 0.112 * 2 * math.pi * 0.1646 / 60          # m/s of one feedback word
+    records = [{'event': 'auto_state', 'state': 'AUTO', 'reason': 'AUTO_STARTED', 'journal_enqueued_monotonic_ns': 0}]
+    for t in (0.05, 0.1):
+        records.append({'event': 'wheel_io_complete', 'request_hex': '0110208800020' + '4ffcc0034' + '0000',
+                        'exchange_started_monotonic_ns': round(t * 1e9)})
+    # 0.2-4.9 s at 52 words with one wobble down to 80 % at 2.0 s; the emergency stop takes the wheels down from
+    # 5.0 s, the owner sees it at 5.5 s, and the held wheels then read (1, -2) for good.
+    plan = [(i / 10, 52) for i in range(2, 50)]
+    plan = [(t, 42 if abs(t - 2.0) < 1e-9 else w) for t, w in plan]
+    plan += [(5.0, 40), (5.1, 20), (5.2, 6), (5.3, (1, -2)), (5.4, (1, -2)), (5.5, (1, -2)), (5.6, (1, -2))]
+    distance = 0.0
+    for t, words in plan:
+        left, right = words if isinstance(words, tuple) else (-words, words)
+        speed = (-left + right) / 2 * word
+        distance += speed * 0.1
+        records.append({'event': 'history_preview', 'receive_monotonic_ns': round(t * 1e9), 'stamp_ns': None,
+                        'linear_velocity_m_s': speed, 'signed_distance_m': distance, 'yaw_rad': 0.0,
+                        'left_wheel_rpm_candidate': -left * 0.112, 'right_wheel_rpm_candidate': right * 0.112,
+                        'left_raw_signed': left, 'right_raw_signed': right})
+    records.append({'event': 'auto_state', 'state': 'STOPPING', 'reason': 'WHEELS_STOPPED_WHILE_COMMANDED',
+                    'immediate_reason': 'WHEELS_STOPPED_WHILE_COMMANDED', 'journal_enqueued_monotonic_ns': 5_500_000_000})
+    (tmp_path/'sources/wheel_feedback.jsonl').write_text(''.join(json.dumps(v) + '\n' for v in records))
+    row = r.report(tmp_path)['trials'][0]
+    assert row['kind'] == 'estop' and row['trigger_rule'] == 'last_feedback_at_60pct_before_owner_detection'
+    assert row['trigger_mono_s'] == 5.0                 # 40 of 52 words; the 2.0 s wobble is not the trigger
+    assert row['stop_time_s'] == pytest.approx(0.3)     # (1, -2) at 5.3 s stands still
+    assert 0 < row['stop_distance_m'] < 0.01
+
+
 def test_stop_report_finds_the_newest_recording_of_the_checkout(tmp_path, monkeypatch, capsys):
     import json
     import os

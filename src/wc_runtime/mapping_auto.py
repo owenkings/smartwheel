@@ -68,9 +68,13 @@ OPERATOR_SOCKET_NAME = 'operator.sock'
 HOLD_TO_RUN_MODES = ('INSTALLED', 'NOT_INSTALLED')
 ENABLE_SOURCES = {'INSTALLED': 'HOLD_TO_RUN_SWITCH', 'NOT_INSTALLED': 'OPERATOR_START'}
 LINEAR_TOLERANCE_M_S, ANGULAR_TOLERANCE_RAD_S = 0.005, 0.01   # beyond the limit by more: the chain is broken
-ENTRY_STATIONARY_SAMPLES = 5      # 0.5 s of zero wheel feedback before automatic control starts
-EXIT_STATIONARY_SAMPLES = 3       # same rule as the manual stop
+ENTRY_STATIONARY_SAMPLES = 5      # 0.5 s of standing still before automatic control starts
+EXIT_STATIONARY_SAMPLES = 3       # standing still for three samples after the zero write ends a stop
 STOP_CONFIRM_S = 1.0              # zero written and still not standing still after this: FAULT
+# Standing still: both wheels read at most this many words (about 0.34 rpm, 6 mm/s). Wheels held by the servo
+# after a stop read 1-3 words on the ground (11-11: (1, -2) for good after an emergency stop); a wheel that keeps
+# moving faster than this still counts as moving (coordinator 2026-11-11, item 3).
+STATIONARY_WORDS = 3
 SWITCH_FRESH_S = 0.2
 FUTURE_TOLERANCE_S = 0.05         # a gate or bridge stamp further ahead of this clock is not the same clock
 BACKWARD_M_S, BACKWARD_S = -0.02, 0.2
@@ -79,7 +83,8 @@ COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driv
 WHEELS_STOPPED_SHARE = 0.2        # ... when both wheels read below this share of the faster wheel's command
 OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
 START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
-OPERATOR_WAIT_S = 10.0            # a command-line start waits this long for the RViz window to have the focus
+OPERATOR_WAIT_S = 30.0            # a command-line start waits this long for the RViz window to have the focus
+                                  # (10 s until 2026-11-11: too short to click through NoMachine)
 OPERATOR_CLIENTS, OPERATOR_LINE_S = 4, 1.0   # operator.sock: clients at a time, seconds to send the request line
 INFERRED_ESTOP_HOLD_S = 0.5       # an inferred hardware emergency stop is reported this long, so the gate latches
 ACTIVE_STATES = ('INITIALIZING', 'AUTO', 'STOPPING')
@@ -719,12 +724,12 @@ class AutoDrive:
             return
         self.seen_sequence = owner.sequence
         stamp, words = owner.samples[-1]
-        zero = list(words) == [0, 0]
-        self.stationary = self.stationary + 1 if zero else 0
-        if self.zero_reached is not None and stamp > self.zero_reached:
-            self.settled = self.settled + 1 if zero else 0
-        wheel = owner.wheel
         signed = [value - 65536 if value >= 32768 else value for value in words]
+        still = max(abs(value) for value in signed) <= STATIONARY_WORDS
+        self.stationary = self.stationary + 1 if still else 0
+        if self.zero_reached is not None and stamp > self.zero_reached:
+            self.settled = self.settled + 1 if still else 0
+        wheel = owner.wheel
         if max(abs(value) for value in signed) * wheel['register_to_wheel_rpm'] > \
                 OVERSPEED_FACTOR * self.limits['max_wheel_rpm']:
             self.overspeed_since = stamp if self.overspeed_since is None else self.overspeed_since

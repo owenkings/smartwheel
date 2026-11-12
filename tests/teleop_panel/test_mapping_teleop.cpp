@@ -314,6 +314,43 @@ private slots:
     QTRY_COMPARE(latest("keys")["keys"].toArray(), QJsonArray({"d"}));
     QCOMPARE(latest("keys")["arm_generation"].toInt(), 1); QCOMPARE(messages("arm").size(), 0);
   }
+  void nomachine_release_press_pairs_keep_a_held_key_driving()
+  {
+    // BOARD 2026-11-11 15:20: NoMachine sends a held key as real release/press pairs without the
+    // auto-repeat flag; each pair used to stop the chair for a moment.
+    allow_keys(); QTest::keyPress(text_, Qt::Key_W); finish_initialization();
+    const int before = messages("keys").size();
+    for (int i = 0; i < 10; ++i) {
+      QTest::keyRelease(text_, Qt::Key_W); QTest::qWait(15); QTest::keyPress(text_, Qt::Key_W); QTest::qWait(25);
+    }
+    QVERIFY(messages("keys").size() > before);  // the heartbeat kept going
+    const auto sent = messages("keys");
+    for (int i = before; i < sent.size(); ++i) {QCOMPARE(sent[i]["keys"].toArray(), QJsonArray({"w"}));}
+    QCOMPARE(latest("keys")["arm_generation"].toInt(), 0); QCOMPARE(messages("disarm").size(), 0);
+    QVERIFY(panel_->findChild<QLabel *>("teleop_state")->text().contains("ARMED |"));
+    // A real release still stops, 60 ms later.
+    QElapsedTimer elapsed; elapsed.start();
+    QTest::keyRelease(text_, Qt::Key_W);
+    QTRY_VERIFY_WITH_TIMEOUT(latest("keys")["keys"].toArray().isEmpty(), 300);
+    QVERIFY(elapsed.elapsed() >= 50);
+    ready_after_stop();
+  }
+  void key_released_within_the_debounce_never_comes_back_after_a_stop()
+  {
+    allow_keys(); QTest::keyPress(text_, Qt::Key_W); finish_initialization();
+    QTest::keyRelease(text_, Qt::Key_W); QTest::keyPress(text_, Qt::Key_Space);  // inside the 60 ms
+    QTRY_COMPARE(messages("disarm").size(), 1); ready_after_stop(); QTest::qWait(150);
+    QVERIFY(panel_->findChild<QLabel *>("teleop_keys")->text().endsWith(QString::fromUtf8("无")));
+    int disarm = -1;
+    for (int i = 0; i < received_.size(); ++i) {if (received_[i]["type"] == "disarm") {disarm = i;}}
+    QVERIFY(disarm >= 0);
+    for (int i = disarm + 1; i < received_.size(); ++i) {
+      if (received_[i]["type"] == "keys") {QVERIFY(received_[i]["keys"].toArray().isEmpty());}
+    }
+    QTest::keyPress(text_, Qt::Key_D);
+    QTRY_COMPARE(latest("keys")["keys"].toArray(), QJsonArray({"d"}));
+    QCOMPARE(latest("keys")["arm_generation"].toInt(), 1);
+  }
   void final_release_pending_ack_abnormal_stop_revokes_immediately_data()
   {
     QTest::addColumn<QString>("stop_event");
@@ -329,8 +366,8 @@ private slots:
     status_["interaction_policy"] = "hybrid_manual";
     allow_keys(); QTest::keyPress(text_, Qt::Key_W); finish_initialization();
     status_timer_->stop(); suppress_status_ = true;  // No release/generation acknowledgement.
-    QTest::keyRelease(text_, Qt::Key_W);
-    QVERIFY(panel_->findChild<QLabel *>("teleop_state")->text().contains("STOPPING"));
+    QTest::keyRelease(text_, Qt::Key_W);  // a release counts after the 60 ms debounce
+    QTRY_VERIFY_WITH_TIMEOUT(panel_->findChild<QLabel *>("teleop_state")->text().contains("STOPPING"), 200);
     const int previous = messages("disarm").size();
     if (stop_event == "focus") {
       QEvent leave(QEvent::WindowDeactivate); QApplication::sendEvent(window_, &leave);

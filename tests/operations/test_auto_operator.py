@@ -74,9 +74,25 @@ def test_command_line_needs_one_running_session(tmp_path, monkeypatch, capsys):
     (tmp_path/'rec'/'sources').mkdir(parents=True)
     (tmp_path/'rec'/'capture_manifest.json').write_text(json.dumps(
         {'session_id': 'rec', 'status': 'RECORDING', 'project_root': str(ROOT)}))
-    with pytest.raises(SystemExit, match='reports nothing about automatic control'):
+    with pytest.raises(SystemExit, match='wheel owner of rec has not reported its automatic control yet'):
         o.main(['status', '--project-root', str(ROOT)])
-    (tmp_path/'rec'/'sources'/'wheel_feedback.jsonl').write_text(json.dumps(
+    # Nothing in the journal yet: the session's own configuration says which of the two it is (11-11: the old
+    # hint asked about auto_controls when the panel had been started without the day's approval).
+    (tmp_path/'rec'/'configuration').mkdir()
+    runtime = tmp_path/'rec'/'configuration'/'manual_runtime.json'
+    runtime.write_text(json.dumps({'session_id': 'rec'}))
+    with pytest.raises(SystemExit, match='has no auto_controls: the hardware setup does not allow it'):
+        o.main(['status', '--project-root', str(ROOT)])
+    runtime.write_text(json.dumps({'session_id': 'rec', 'auto_controls': {'allowed': True}}))
+    with pytest.raises(SystemExit, match='has auto_controls, but .* WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_'):
+        o.main(['status', '--project-root', str(ROOT)])
+    journal = tmp_path/'rec'/'sources'/'wheel_feedback.jsonl'
+    journal.write_text(json.dumps({'event': 'lease_open'}) + '\n' + json.dumps(
+        {'event': 'auto_attached', 'state': 'UNAVAILABLE', 'reason': 'NO_USER_APPROVAL_TODAY'}) + '\n')
+    with pytest.raises(SystemExit, match='reports UNAVAILABLE: NO_USER_APPROVAL_TODAY; close the panel and start it '
+                                         'again with WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_'):
+        o.main(['status', '--project-root', str(ROOT)])
+    journal.write_text(json.dumps(
         {'event': 'lease_open'}) + '\n' + json.dumps({'event': 'auto_attached', 'state': 'UNAVAILABLE',
         'reason': 'EVIDENCE_REJECTED: automatic drive evidence is not reviewed'}) + '\n')
     with pytest.raises(SystemExit, match='reports UNAVAILABLE: EVIDENCE_REJECTED'):
