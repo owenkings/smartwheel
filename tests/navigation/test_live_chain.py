@@ -209,10 +209,15 @@ def test_scan_inside_body_drop_keeps_the_nearest_return_outside_the_body():
     # measured outline; with the body given, its bin keeps the wall behind it
     from wc_navigation.live.scan_adapter import drop_inside_body, scan_body, scan_from_source
     body = scan_body(_MEASURED_OUTLINE, (0.323, 0.229, 0.675), 0.185, 1.60)
+    assert body["near_m"] == 0.40
     ring, wall, left, high = [0.31, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.33, 0.0], [0.31, 0.0, 1.0]
-    points = np.array([ring, wall, left, high], dtype=np.float32)
+    # window C 11-12 15:12: someone against the front edge is inside the outline too, 0.45 m from the lidar: kept
+    touching = [0.45, 0.0, 0.0]
+    points = np.array([ring, wall, left, high, touching], dtype=np.float32)
     kept, dropped = drop_inside_body(points, body)
-    assert dropped == 1 and kept.tolist() == points[1:].tolist()   # beside the body and above it (1.86 m) stay
+    assert dropped == 1 and kept.tolist() == points[1:].tolist()   # beside the body, above it (1.86 m) and 0.45 m stay
+    with pytest.raises(ValueError):
+        scan_body(_MEASURED_OUTLINE, (0.323, 0.229, 0.675), 0.185, 1.60, near_m=0.0)
     grid = np.array([ring, wall] * 20, dtype=float)
     message = source_frame(organized_cloud(grid, 4, 10))
     config = {"cloud_filter": {"enabled": False}, "mapping_enabled": True}

@@ -198,9 +198,9 @@ def arguments(argv=None):
                              "%d on the filtered scan)" % (FRONT_MAX_POINTS, FILTERED_MAX_POINTS))
     # 总管 2026-11-12 item 5: the left lidar's near ring inside the body outline on /scan (off by default)
     shadow.add_argument("--scan-inside-body", choices=("keep", "drop"), default="keep",
-                        help="/scan points inside the body outline (--footprint) up to the body's height: keep (default, "
-                             "as before) or drop, like the 3D obstacle input's body stage; a bin then keeps its "
-                             "nearest return outside the body")
+                        help="/scan points inside the body outline (--footprint) up to the body's height and within "
+                             "0.40 m of the left lidar (its near ring): keep (default, as before) or drop; a bin then "
+                             "keeps its nearest other return")
     shadow.add_argument("--panel-root", type=Path, help="closed loop: the panel's checkout (its session sockets)")
     shadow.add_argument("--session-root", type=Path, help="closed loop: directory of the running panel session")
     shadow.add_argument("--session-id", help="closed loop: identity of that session")

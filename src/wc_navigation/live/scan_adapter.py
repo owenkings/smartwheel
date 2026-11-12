@@ -95,38 +95,48 @@ def reference_points(message, filter_config, transforms, rotation):
     return (xyz[finite] @ np.asarray(rotation, dtype=float).T).astype(np.float32), report
 
 
-def scan_body(outline, lever, axle_height_m, max_height_m):
+SCAN_BODY_NEAR_M = 0.40          # --scan-inside-body drop: only points this close to the lidar (window C 11-12 15:12)
+
+
+def scan_body(outline, lever, axle_height_m, max_height_m, near_m=SCAN_BODY_NEAR_M):
     """Settings of ``drop_inside_body`` (``--scan-inside-body drop``; 总管 2026-11-12 item 5): the body outline in
-    base_link, the lidar origin in base_link (x, y, z), the floor ``axle_height_m`` below base_link and the height
-    above the floor up to which the body reaches (window C's ObstacleFilter.body_max_height_m)."""
+    base_link, the lidar origin in base_link (x, y, z), the floor ``axle_height_m`` below base_link, the height above
+    the floor up to which the body reaches (window C's ObstacleFilter.body_max_height_m), and how close to the lidar
+    (horizontally) a point inside the outline must be to be dropped."""
     outline = [[float(x), float(y)] for x, y in outline]
     lever = [float(v) for v in lever]
     if len(outline) < 3 or len(lever) != 3 or not all(math.isfinite(v) for p in outline for v in p):
         raise ValueError("the scan's body needs an outline of at least three points and the lidar's x, y, z")
+    if not 0.0 < float(near_m) <= 1.0:
+        raise ValueError("near_m must be within (0, 1] m")
     return {"outline": outline, "lever": lever, "axle_height_m": float(axle_height_m),
-            "max_height_m": float(max_height_m)}
+            "max_height_m": float(max_height_m), "near_m": float(near_m)}
 
 
 def drop_inside_body(reference, body):
-    """(points, number dropped): reference points (base_link axes at the lidar) without those inside the body.
+    """(points, number dropped): reference points (base_link axes at the lidar) without the lidar's near ring.
 
-    The 3D obstacle input's stage ``body`` (window C's obstacle_cloud: inside the convex outline, up to the body's
-    height above the floor) on the /scan cloud. On 2026-11-11 the left lidar's near ring (0.31-0.35 m from it,
-    0.86 m above the floor, 0.15-0.20 m behind the outline's front edge) put 4 bins into the collision monitor's
-    stop zone in one of 220 standing scans facing map -x; the 3D input already drops them here (C.md 11-12 01:45).
+    Dropped are points inside the convex outline, up to the body's height above the floor (the 3D obstacle input's
+    stage ``body``), and closer than ``near_m`` to the lidar horizontally. On 2026-11-11 the left lidar's near ring
+    (0.31-0.35 m from it, 0.86 m above the floor, 0.15-0.20 m behind the outline's front edge) put 4 bins into the
+    collision monitor's stop zone in one of 220 standing scans facing map -x (C.md 11-12 01:45). Dropping everything
+    inside the outline also cancelled 7 real stops on 11-07: people and things against the front edge, 0.45-0.5 m
+    from the lidar (C.md 11-12 15:12); with ``near_m`` only the ring's stop goes.
     """
     from ..perception.obstacle_cloud import inside_convex
     points = np.asarray(reference)
-    base = points.astype(np.float64) + np.asarray(body["lever"], dtype=float)
-    inside = inside_convex(base[:, :2], body["outline"]) & (base[:, 2] + body["axle_height_m"] <= body["max_height_m"])
+    p = points.astype(np.float64)
+    base = p + np.asarray(body["lever"], dtype=float)
+    inside = (inside_convex(base[:, :2], body["outline"]) & (base[:, 2] + body["axle_height_m"] <= body["max_height_m"])
+              & (np.hypot(p[:, 0], p[:, 1]) < body["near_m"]))
     return points[~inside], int(inside.sum())
 
 
 def scan_from_source(message, filter_config, transforms, rotation, height_band=SCAN_HEIGHT_M, body=None):
     """Return (ranges float32[161], stats) for one SourceFrame; the message is not modified.
 
-    ``body`` (``scan_body``, None by default): points inside the body outline are dropped before the projection,
-    so a bin keeps the nearest return outside the body (stats ``inside_body_dropped``).
+    ``body`` (``scan_body``, None by default): the lidar's near ring inside the body outline (``drop_inside_body``)
+    is dropped before the projection, so its bins keep their next return (stats ``inside_body_dropped``).
     """
     from ..amcl_replay import build_scan
     reference, report = reference_points(message, filter_config, transforms, rotation)
