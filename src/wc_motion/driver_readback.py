@@ -96,24 +96,28 @@ def plan(selected=None):
             if selected is None or start in selected]
 
 
-def whitelisted(request):
-    """(start, count) of an exact whitelisted FC03 request; anything else raises FeedbackError."""
+def whitelisted(request, allowed=None):
+    """(start, count) of an exact whitelisted FC03 request; anything else raises FeedbackError.
+
+    ``allowed``: other (start, count) reads instead of REGISTERS (driver_params' own read list).
+    """
     frame = checked_frame(request)
     if len(frame) != 8 or frame[0] != SLAVE or frame[1] != 3:
         raise FeedbackError('only FC03 reads of slave 1 are sent')
     start, count = struct.unpack('>HH', frame[2:6])
-    if (start, count) not in {(first, n) for first, n, _ in REGISTERS} or frame != read_request(SLAVE, start, count):
+    reads = {(first, n) for first, n, _ in REGISTERS} if allowed is None else set(allowed)
+    if (start, count) not in reads or frame != read_request(SLAVE, start, count):
         raise FeedbackError('request outside the read-only whitelist')
     return start, count
 
 
-def exchange(fd, request, timeout_s, *, clock=time.monotonic):
+def exchange(fd, request, timeout_s, *, clock=time.monotonic, allowed=None):
     """One bounded FC03 transaction: (response, words, None) or (response, None, exception code).
 
     A Modbus exception answer is a complete answer. Anything other than the
     exact answer raises QueryFailure, and the caller must not retry.
     """
-    _, count = whitelisted(request)
+    _, count = whitelisted(request, allowed)
     response, sent = bytearray(), 0
     if select.select([fd], [], [], .002)[0]:
         response.extend(os.read(fd, 256))
@@ -149,10 +153,11 @@ def exchange(fd, request, timeout_s, *, clock=time.monotonic):
         raise QueryFailure(str(error), response, sent) from error
 
 
-def read_all(lease, entries, timeout_s, reads, *, clock=time.monotonic, sleep=time.sleep):
+def read_all(lease, entries, timeout_s, reads, *, clock=time.monotonic, sleep=time.sleep, allowed=None):
     """Read entries over an open lease in order, appending one row each to reads.
 
     Returns None or the first transport failure; the entries after it stay NOT_READ.
+    ``allowed`` replaces the whitelist as in ``whitelisted``.
     """
     error = None
     for start, count, meaning, request in entries:
@@ -166,7 +171,7 @@ def read_all(lease, entries, timeout_s, reads, *, clock=time.monotonic, sleep=ti
         row['status'] = 'IN_PROGRESS'
         started = time.monotonic_ns()
         try:
-            response, words, code = exchange(lease.fd, request, timeout_s, clock=clock)
+            response, words, code = exchange(lease.fd, request, timeout_s, clock=clock, allowed=allowed)
         except QueryFailure as failure:
             lease.failed = True
             error = '%04Xh: %s' % (start, failure)

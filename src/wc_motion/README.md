@@ -1,6 +1,6 @@
 # 轮反馈与手动控制边界
 
-反馈解析、状态及明确授权的手动控制链路放这里；不增加隐式设备写入或自动运动。例外是默认关闭的自动速度通道（[速度通道设计](../../docs/architecture/velocity_channel.md)）的消息、证据格式和底盘桥：没有用户当天的同意、审过的证据、使能开关读入和驱动器参数回读就不运行，写串口的仍只有 wc_runtime 里的轮控所有者。
+反馈解析、状态及明确授权的手动控制链路放这里；不增加隐式设备写入或自动运动。例外是默认关闭的自动速度通道（[速度通道设计](../../docs/architecture/velocity_channel.md)）的消息、证据格式和底盘桥：没有用户当天的同意、审过的证据、使能开关读入和驱动器参数回读就不运行，写串口的仍只有 wc_runtime 里的轮控所有者。另一个例外是 driver_params：用户在现场当次同意时，把白名单里的按轮参数写进驱动器 RAM（FC06，不写 2010h），面板或录制占着串口时拒绝。
 
 ## 内容与入口
 
@@ -12,6 +12,7 @@
 - [auto_test_source.py](auto_test_source.py)：架空和落地用的测试指令源，只发 0.10 m/s 直行和零速；代替桥连 `auto.sock`。
 - [config_template.json](config_template.json)
 - [driver_readback.py](driver_readback.py)：驱动器寄存器只读回读（[速度通道设计](../../docs/architecture/velocity_channel.md) 7.3 第 7 步）：只发 FC03 读请求，寄存器白名单，经轮控用的同一个串口租约独占；没有用户当天的同意不开串口。
+- [driver_params.py](driver_params.py)：把白名单里的按轮驱动器参数写进 RAM（[速度通道设计](../../docs/architecture/velocity_channel.md) 7.3 第 7 步）：只在现场、用户当次同意时用；写前写后回读，`revert` 一条命令改回，从不写 2010h。
 - [feedback_transport.py](feedback_transport.py)
 - [history_preview.py](history_preview.py)
 - [manual_hardware.py](manual_hardware.py)
