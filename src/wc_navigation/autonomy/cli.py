@@ -43,6 +43,9 @@ def arguments(argv=None):
                         metavar=("X", "Y", "R"), help="extra disc in the world, absent from any map")
     common.add_argument("--actors", type=Path,
                         help="moving pedestrians: scenario JSON in world coordinates (autonomy/actors.py)")
+    common.add_argument("--ghosts", type=Path,               # window B: lidar-only false returns (world.py)
+                        help="false lidar points: scenario JSON of points in base_link, fixed in the world from the "
+                             "start pose or moving with the chair; seen by the scan only, never solid (default none)")
     common.add_argument("--assumed-radius", type=_positive, default=0.55,
                         help="assumed circular body radius (m); not a measured outline")
     from ..planning.options import add_body_arguments, add_planning_arguments
@@ -138,6 +141,12 @@ def arguments(argv=None):
             load_scenario(args.actors)
         except (OSError, TypeError, ValueError) as exc:
             parser.error("--actors: " + str(exc))
+    if args.ghosts is not None:
+        from .world import load_ghosts
+        try:
+            load_ghosts(args.ghosts)
+        except (OSError, TypeError, ValueError) as exc:
+            parser.error("--ghosts: " + str(exc))
     return args
 
 
@@ -282,6 +291,10 @@ def build_config(args):
                                              _body(profile, config["body_model"]))
         config["world"]["actors"] = actors
         config["actor_scenario"] = provenance
+    if getattr(args, "ghosts", None) is not None:          # window B: --ghosts (runs without it unchanged)
+        from .world import load_ghosts
+        ghosts, provenance = load_ghosts(args.ghosts)
+        config["ghosts"] = {"scenario": provenance, "ghosts": ghosts}
     return config
 
 
@@ -335,6 +348,11 @@ def summarize(config, report, output):
               "distance_m": sim.get("distance_m"), "gate": {"final": gate, "tick_period_s": 0.05}}
     if sim.get("drive_response"):                   # window B: --drive-response (wheel owner would stop on overspeed)
         result["drive_response"] = sim["drive_response"]
+    if config.get("ghosts"):                        # window B: --ghosts (false lidar points, scan only)
+        result["ghosts"] = {"scenario": config["ghosts"]["scenario"],
+                            "interpretation": "LIDAR_ONLY_FALSE_RETURNS: seen by the simulated scan, not solid, "
+                                              "not in the map, not in any gap or collision count",
+                            **(sim.get("ghosts") or {})}
     if plans:
         result["plans"] = {"count": len(plans), "file": str(output / "plans.json")}
     goals_plot = []

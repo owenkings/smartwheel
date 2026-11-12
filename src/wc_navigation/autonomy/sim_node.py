@@ -12,6 +12,9 @@ so navigation can be judged without AMCL. Actors (moving pedestrian discs,
 are logged to ``actors.jsonl``. With ``tracks`` (``--tracks truth``) the actors
 are also published as simulated truth tracks on ``/obstacles/tracks`` in window
 C's ``wc_obstacle_tracks/1`` format (``truth_tracks``), for the people reaction.
+With ``ghosts`` (``--ghosts``, world.py) the scan also returns lidar-only false
+points, fixed in the world from the start pose or moving with the chair; they are
+never solid, and the status counts the scans and beams they took.
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel, WheelDrive
 from .nav2_config import CMD_GATED
 from .ros_util import (compose, inverse, json_message, latched_qos, load_config, require_isolated_domain,
                        yaw_to_quaternion)
-from .world import LaserModel, load_world
+from .world import LaserModel, ghost_discs, ghost_scenario, load_world
 
 
 def collision_body(config):
@@ -98,6 +101,11 @@ class Simulator:
         wheels = WheelDrive(WheelResponse(**config["wheel_response"])) if config.get("wheel_response") else None
         self.base = DiffDriveSim(start, BaseLimits(**config.get("base_limits", {})),
                                  OdometryErrorModel(**config.get("odometry", {})), wheels=wheels)
+        # Optional lidar-only false returns (--ghosts): in the scan only, never solid (world.py).
+        self.ghosts = ghost_scenario({"schema_version": 1, "name": "sim", "ghosts": config["ghosts"]}) \
+            if config.get("ghosts") else ()
+        self.start_pose = start
+        self.ghost_counts = {"scans": 0, "scans_with_ghost_returns": 0, "ghost_beams": 0}
         self.rng = np.random.default_rng(int(config.get("seed", 0)))
         self.rtf = float(config.get("real_time_factor", 1.0))
         if not 0.1 <= self.rtf <= 4.0:
@@ -188,6 +196,8 @@ class Simulator:
                 "hardware_control": False}
             if self.base.wheels is not None:
                 status["drive_response"] = self.base.wheels.summary()
+            if self.ghosts:
+                status["ghosts"] = dict(self.ghost_counts)
             self.status_pub.publish(json_message(status))
 
     def _odometry(self, frame, child, pose, v, w, stamp):
@@ -223,7 +233,15 @@ class Simulator:
         return t
 
     def publish_scan(self):
-        ranges = self.world.scan(self.base.pose, self.laser, self.rng)
+        if self.ghosts:
+            discs = ghost_discs(self.ghosts, self.base.pose, self.start_pose)
+            ranges, hit = self.world.scan_with_ghosts(self.base.pose, self.laser, self.rng, discs)
+            counts = self.ghost_counts
+            counts["scans"] += 1
+            counts["scans_with_ghost_returns"] += int(hit.any())
+            counts["ghost_beams"] += int(hit.sum())
+        else:
+            ranges = self.world.scan(self.base.pose, self.laser, self.rng)
         message = self.LaserScan()
         message.header.stamp = _time_msg(self.sim_time)
         message.header.frame_id = "laser"

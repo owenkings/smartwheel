@@ -68,6 +68,19 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 
 仿真也可以用窗口 C 的 `--monitor-base-shift off` 和 `--monitor-slow-margin M`（同影子运行），让碰撞监控和实车闭环一样（闭环模式是 base shift off、减速框伸出车头 0.15 m）。
 
+`--ghosts FILE`（仿真的 explore 和 navigate，默认没有）：在仿真扫描里加雷达假点，比如左雷达的 12.49 m 相位折叠点。假点只进 /scan，不算实物：不进地图、不算碰撞，也不算最小间隙。文件格式（autonomy/world.py 的 `ghost_scenario`）：
+
+```json
+{"schema_version": 1, "name": "说明",
+ "ghosts": [{"id": "fold", "frame": "start", "radius_m": 0.03, "points": [[1.45, 0.10], [1.50, 0.15]]}]}
+```
+
+- `points` 是 base_link 里的点（车轴原点，x 朝前，y 朝左，单位 m），每个点是半径 `radius_m`（默认 0.03 m）的小圆，最多 2000 个点。
+- `frame` 是 `start` 时，点按起点位姿放进世界，之后固定不动（远处墙面的折叠，车往前开时它在世界里不动）；是 `chair` 时，点跟着车走（天花板折叠，一直在车前同样的位置）。
+- 离雷达不到 0.3 m（扫描的最近距离）的假点不出现在扫描里。
+- `result.json` 的 `ghosts` 段记场景文件的路径、sha256，以及扫描帧数、有假点的帧数、被假点占的光束数。
+- 11-12 −x 闭环用的两个场景在 `R/reports/navigation_planning_analysis/20261112_minus_x_ghosts/`，取法见设计文档。
+
 `--enable-pause AFTER_S DURATION_S`（只对 navigate，验证用，默认不开）：任务开始后 AFTER_S 仿真秒，监督进程的使能心跳改发 false，持续 DURATION_S（最多 30 s），闸门停车一次再放行，用来看放行后怎么起步（配合 `--smoother-feedback`）。时间窗写在 `result.json` 的 `supervisor.enable_pause_sim_s`。
 
 `--goal-heading planned|turn_at_goal`（只对 navigate 任务的目标，默认 `planned` 不变）。`turn_at_goal` 时，任务节点不把目标朝向直接交给规划器，分三步：

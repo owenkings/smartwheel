@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from wc_navigation.autonomy.kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel, integrate
-from wc_navigation.autonomy.world import CircleObstacle, LaserModel, SimWorld, synthetic_names, synthetic_world
+from wc_navigation.autonomy.world import (CircleObstacle, LaserModel, SimWorld, ghost_discs, ghost_scenario,
+                                          synthetic_names, synthetic_world)
 from wc_navigation.geometry import Grid
 
 
@@ -63,6 +64,77 @@ def test_laser_mount_offsets_the_ray_origin():
     laser = LaserModel(mount_x=0.5, mount_y=0.0, angle_min=-0.01, angle_max=0.01, beams=2, noise_std=0.0)
     ranges = world.scan((2.0, 2.0, 0.0), laser)
     assert np.allclose(ranges, 1.4, atol=0.01)
+
+
+def _ghost_scenario(*ghosts):
+    return {"schema_version": 1, "name": "test", "ghosts": list(ghosts)}
+
+
+def test_ghost_returns_are_in_the_scan_but_not_solid():
+    world = box_world()
+    laser = LaserModel(mount_x=0.0, mount_y=0.0, angle_min=-0.1, angle_max=0.1, beams=3, noise_std=0.0)
+    pose = (1.0, 2.0, 0.0)
+    ghosts = ghost_scenario(_ghost_scenario({"id": "g", "frame": "chair", "points": [[1.0, 0.0]]}))
+    ranges, hit = world.scan_with_ghosts(pose, laser, None, ghost_discs(ghosts, pose, pose))
+    assert ranges[1] == pytest.approx(0.97, abs=1e-6) and hit.tolist() == [False, True, False]
+    assert np.allclose(ranges[[0, 2]], world.scan(pose, laser)[[0, 2]])     # the beams beside it see the wall
+    assert not world.collides(2.0, 2.0, 0.3) and not world.obstacles          # its place stays free
+    too_close, hit = world.scan_with_ghosts(pose, laser, None, ghost_discs(
+        ghost_scenario(_ghost_scenario({"id": "g", "frame": "chair", "points": [[0.2, 0.0]]})), pose, pose))
+    assert np.isneginf(too_close[1]) and not hit.any()                         # inside range_min: no return
+
+
+def test_start_ghosts_stay_in_the_world_and_chair_ghosts_follow():
+    ghosts = ghost_scenario(_ghost_scenario({"id": "fixed", "frame": "start", "points": [[1.5, 0.1]]},
+                                            {"id": "band", "frame": "chair", "radius_m": 0.05, "points": [[1.2, 0.0]]}))
+    start = (-0.3, -0.43, math.pi)
+    at_start = ghost_discs(ghosts, start, start)
+    assert at_start[0] == pytest.approx([-1.8, -0.53, 0.03]) and at_start[1] == pytest.approx([-1.5, -0.43, 0.05])
+    moved = ghost_discs(ghosts, (-1.3, -0.43, math.pi / 2), start)
+    assert moved[0] == pytest.approx(at_start[0])                             # fixed in the world
+    assert moved[1, :2] == pytest.approx([-1.3, 0.77])                        # 1.2 m ahead of the turned chair
+
+
+def test_runs_without_ghosts_are_unchanged_and_with_ghosts_carry_the_scenario(tmp_path):
+    import json
+    from pathlib import Path
+    from wc_navigation.autonomy.bringup import Supervisor
+    from wc_navigation.autonomy.cli import arguments, build_config
+    project = Path(__file__).resolve().parents[2]
+    base_args = ["--project-root", str(project), "navigate", "--world", "two_rooms", "--start", "1.2", "1.4", "0.0",
+                 "--goal", "8.0", "1.4", "0.0"]
+    plain = build_config(arguments(base_args))
+    assert "ghosts" not in plain
+    path = tmp_path / "ghosts.json"
+    path.write_text(json.dumps(_ghost_scenario({"id": "band", "frame": "chair", "points": [[1.2, 0.0], [1.2, 0.05]]})))
+    config = build_config(arguments(base_args + ["--ghosts", str(path)]))
+    assert config["ghosts"]["scenario"]["sha256"] and config["ghosts"]["ghosts"][0]["radius_m"] == 0.03
+    assert {k: v for k, v in config.items() if k != "ghosts"} == plain
+    out = tmp_path / "run"
+    out.mkdir()
+    Supervisor(project, out, config).prepare()
+    sim_config = json.loads((out / "sim_config.json").read_text())
+    assert sim_config["ghosts"] == config["ghosts"]["ghosts"] and "ghosts" not in sim_config["world"]
+    path.write_text(json.dumps(_ghost_scenario({"id": "band", "frame": "map", "points": [[1.2, 0.0]]})))
+    with pytest.raises(SystemExit):
+        arguments(base_args + ["--ghosts", str(path)])
+
+
+@pytest.mark.parametrize("bad", [
+    {"schema_version": 2}, {"name": ""}, {"ghosts": []}, {"colour": "red"},
+    {"ghosts": [{"id": "g", "frame": "map", "points": [[1.0, 0.0]]}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "radius_m": 0.5, "points": [[1.0, 0.0]]}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "points": []}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0, 0.5]]}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, float("nan")]]}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0]], "height_m": 0.8}]},
+    {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0]]},
+                {"id": "g", "frame": "start", "points": [[2.0, 0.0]]}]},
+])
+def test_ghost_scenarios_are_checked(bad):
+    value = dict(_ghost_scenario({"id": "g", "frame": "chair", "points": [[1.0, 0.0]]}), **bad)
+    with pytest.raises(ValueError):
+        ghost_scenario(value)
 
 
 def test_swept_segment_collision_is_not_skipped():
