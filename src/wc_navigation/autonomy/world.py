@@ -35,6 +35,107 @@ class CircleObstacle:
         object.__setattr__(self, "radius", _number(self.radius, "obstacle radius", positive=True))
 
 
+def _disc_entries(ranges, ox, oy, cos, sin, discs):
+    """``ranges`` shortened to where each ray from (ox, oy) along (cos, sin) enters a disc (x, y, r); 0 inside one."""
+    for x, y, radius in discs:
+        dx, dy = x - ox, y - oy
+        along = cos * dx + sin * dy
+        perpendicular2 = dx * dx + dy * dy - along * along
+        disc = radius * radius - perpendicular2
+        with np.errstate(invalid="ignore"):
+            entry = along - np.sqrt(np.maximum(disc, 0.0))
+        valid = (disc >= 0) & (along + np.sqrt(np.maximum(disc, 0.0)) > 0)
+        entry = np.where(entry < 0, 0.0, entry)
+        ranges = np.where(valid & (entry < ranges), entry, ranges)
+    return ranges
+
+
+# Ghosts: lidar-only false returns (e.g. the left lidar's 12.49 m phase-wrap points, 11-11) as small discs that the
+# simulated scan sees but that are not solid, not in the map and not part of any gap or collision metric.
+# frame "start": base_link at the start pose, then fixed in the world; "chair": base_link, moving with the chair.
+# min_ahead_m (optional, default 0): a point shows only while it is at least this far ahead of the axle (on 11-09
+# the world-fixed points ahead of the chair were seen only while 1.4-2.1 m ahead, window C 11-12 15:12).
+GHOST_FRAMES = ("start", "chair")
+GHOST_MAX_POINTS = 2000
+_GHOST_KEYS = {"id", "frame", "radius_m", "min_ahead_m", "points"}
+
+
+def ghost_scenario(value):
+    """Validated ghost entries ({"id", "frame", "radius_m", "points"}) of a ghost scenario (schema_version 1)."""
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise ValueError("ghost scenario must be a JSON object with schema_version 1")
+    if set(value) - {"schema_version", "name", "ghosts"}:
+        raise ValueError("unknown ghost scenario keys: " + ", ".join(sorted(set(value) - {"schema_version", "name",
+                                                                                          "ghosts"})))
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise ValueError("ghost scenario needs a name")
+    items = value.get("ghosts")
+    if not isinstance(items, list) or not items:
+        raise ValueError("ghost scenario needs a non-empty list of ghosts")
+    out, ids, total = [], set(), 0
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("each ghost must be an object")
+        if set(item) - _GHOST_KEYS:
+            raise ValueError("unknown ghost keys: " + ", ".join(sorted(set(item) - _GHOST_KEYS)))
+        ghost_id = item.get("id")
+        if not isinstance(ghost_id, str) or not ghost_id or ghost_id in ids:
+            raise ValueError("each ghost needs its own non-empty id")
+        ids.add(ghost_id)
+        if item.get("frame") not in GHOST_FRAMES:
+            raise ValueError("ghost frame must be one of " + ", ".join(GHOST_FRAMES))
+        radius = _number(item.get("radius_m", 0.03), "ghost radius_m", positive=True)
+        if radius > 0.3:
+            raise ValueError("ghost radius_m must be within (0, 0.3] m")
+        ahead = _number(item.get("min_ahead_m", 0.0), "ghost min_ahead_m", nonnegative=True)
+        if ahead > 20.0:
+            raise ValueError("ghost min_ahead_m must be within 0..20 m")
+        points = item.get("points")
+        if not isinstance(points, list) or not points:
+            raise ValueError("each ghost needs a non-empty list of points")
+        clean = []
+        for p in points:
+            if not isinstance(p, (list, tuple)) or len(p) != 2:
+                raise ValueError("ghost points are [x, y] pairs in metres")
+            x, y = (_number(v, "ghost point") for v in p)
+            if abs(x) > 20.0 or abs(y) > 20.0:
+                raise ValueError("ghost points must be within 20 m of base_link")
+            clean.append([x, y])
+        total += len(clean)
+        entry = {"id": ghost_id, "frame": item["frame"], "radius_m": radius, "points": clean}
+        if ahead:
+            entry["min_ahead_m"] = ahead
+        out.append(entry)
+    if total > GHOST_MAX_POINTS:
+        raise ValueError("a ghost scenario may have at most %d points" % GHOST_MAX_POINTS)
+    return out
+
+
+def load_ghosts(path):
+    """(ghost entries, provenance) of a ghost scenario file."""
+    path = Path(path).expanduser().resolve(strict=True)
+    raw = path.read_bytes()
+    value = json.loads(raw.decode("utf-8"))
+    return ghost_scenario(value), {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+                                   "name": value["name"]}
+
+
+def ghost_discs(ghosts, pose, start_pose):
+    """World-frame discs (N x 3: x, y, r) of the ghosts showing with the chair at ``pose`` (start ``start_pose``)."""
+    rows = []
+    for ghost in ghosts:
+        ax, ay, ayaw = start_pose if ghost["frame"] == "start" else pose
+        c, s = math.cos(ayaw), math.sin(ayaw)
+        p = np.asarray(ghost["points"], dtype=float)
+        x, y = ax + c * p[:, 0] - s * p[:, 1], ay + s * p[:, 0] + c * p[:, 1]
+        if ghost.get("min_ahead_m"):
+            ahead = math.cos(pose[2]) * (x - pose[0]) + math.sin(pose[2]) * (y - pose[1])
+            keep = ahead >= ghost["min_ahead_m"]
+            x, y = x[keep], y[keep]
+        rows.append(np.column_stack([x, y, np.full(len(x), float(ghost["radius_m"]))]))
+    return np.vstack(rows) if rows else np.zeros((0, 3))
+
+
 @dataclass(frozen=True)
 class LaserModel:
     """Planar scan model of a forward-facing range sensor mounted on base_link.
@@ -228,27 +329,35 @@ class SimWorld:
         any_hit = hit.any(axis=1)
         first = np.argmax(hit, axis=1)
         ranges = np.where(any_hit, t[first] - step * 0.5, np.inf)
-        for o in self.obstacles:
-            dx, dy = o.x - ox, o.y - oy
-            along = cos[:, 0] * dx + sin[:, 0] * dy
-            perpendicular2 = dx * dx + dy * dy - along * along
-            disc = o.radius * o.radius - perpendicular2
-            with np.errstate(invalid="ignore"):
-                entry = along - np.sqrt(np.maximum(disc, 0.0))
-            valid = (disc >= 0) & (along + np.sqrt(np.maximum(disc, 0.0)) > 0)
-            entry = np.where(entry < 0, 0.0, entry)
-            ranges = np.where(valid & (entry < ranges), entry, ranges)
+        ranges = _disc_entries(ranges, ox, oy, cos[:, 0], sin[:, 0], ((o.x, o.y, o.radius) for o in self.obstacles))
         ranges = np.where(ranges <= max_range, ranges, np.inf)
         return ranges
 
-    def scan(self, pose, laser, rng=None):
-        """Return REP-117 ranges: ``-inf`` too close, ``+inf`` no return."""
+    def _laser_rays(self, pose, laser):
         x, y, yaw = pose
         c, s = math.cos(yaw), math.sin(yaw)
         sx = x + c * laser.mount_x - s * laser.mount_y
         sy = y + s * laser.mount_x + c * laser.mount_y
-        world_angles = yaw + laser.mount_yaw + laser.angles()
-        true_ranges = self.raycast((sx, sy), world_angles, laser.range_max + 4 * laser.noise_std + 0.05)
+        return (sx, sy), yaw + laser.mount_yaw + laser.angles(), laser.range_max + 4 * laser.noise_std + 0.05
+
+    def scan(self, pose, laser, rng=None):
+        """Return REP-117 ranges: ``-inf`` too close, ``+inf`` no return."""
+        origin, world_angles, reach = self._laser_rays(pose, laser)
+        return self._finish_scan(self.raycast(origin, world_angles, reach), laser, rng)
+
+    def scan_with_ghosts(self, pose, laser, rng, ghosts):
+        """``scan`` plus lidar-only false returns: ``ghosts`` are discs (x, y, r) in the world frame that the scan sees
+        but that are not solid and not in any map (``ghost_discs``). Returns (ranges, beams whose return is a ghost)."""
+        origin, world_angles, reach = self._laser_rays(pose, laser)
+        true_ranges = self.raycast(origin, world_angles, reach)
+        ghost = _disc_entries(np.full(len(world_angles), np.inf), origin[0], origin[1], np.cos(world_angles),
+                              np.sin(world_angles), ghosts)
+        hit = ghost < true_ranges
+        ranges = self._finish_scan(np.where(hit, ghost, true_ranges), laser, rng)
+        return ranges, hit & np.isfinite(ranges) & (ranges > 0)
+
+    @staticmethod
+    def _finish_scan(true_ranges, laser, rng):
         ranges = true_ranges.copy()
         finite = np.isfinite(ranges)
         if rng is not None and laser.noise_std > 0:

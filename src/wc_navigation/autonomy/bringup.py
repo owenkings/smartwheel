@@ -407,6 +407,8 @@ class Supervisor:
             sim["map_to_odom_from_truth"] = {"world_T_map": list(cfg["world_T_map"])}
         if cfg.get("tracks"):                                   # window B: --tracks truth (actors as tracks)
             sim["tracks"] = dict(cfg["tracks"])
+        if cfg.get("ghosts"):                                   # window B: --ghosts (false lidar points)
+            sim["ghosts"] = list(cfg["ghosts"]["ghosts"])
         files["sim"] = self.write("sim_config.json", sim)
         if planning_choice(cfg).people_reaction:                # window B: --people-reaction
             from ..planning.people_node import node_config as people_config
