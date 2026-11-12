@@ -109,8 +109,8 @@ python3 scripts/wc_phase1 capture \
 - 来源共同就绪的当前等待上限为 30 秒；手动轮 owner/UI 的单独就绪上限为 20 秒。`--duration` 从全部请求来源就绪之后开始计时，准备期间已有数据也保留；停止、转存和审计还需时间，进程运行总时间可能超过请求时长。
 - 结束处保留各来源到达目标终点或之后的覆盖样本；请求窗口、首末有效到达和最大间隔会被重新核验。共同窗口使用原始主机 monotonic 到达时间，不能据此宣称设备曝光、雷达测量或轮反馈已实现物理同步。
 - 请求时长对应的磁盘／内存容量估计仅为 advisory，不以“预计整段放不下”作为启动门。真实空间保护保留 **2 GiB = 2,147,483,648 bytes** 的磁盘／tmpfs边界；转存时也逐文件检查余量。这是应用检查，不是操作系统配额，也不保证可以无限录制。
-- 当前 CLI 默认 `--staging memory`：先录 `/dev/shm/wc_capture/$SESSION`。运行时按已积累的 RAM 记录、待复制的雷达来源日志及真实磁盘剩余量核算收尾空间，同时检查 tmpfs和主存可用量；接近保留边界时停止采集并进入排空／转存，可能录不满 300 秒。主存保留至少 4 GiB或总内存的10%，有界队列仍有自身预算。停止来源后复制到 `$DATASET`，逐文件检查哈希并 fsync；最终磁盘审计通过之前不会从 RAM 发布 `COMPLETE`。
-- 完成且磁盘审计通过后，只清除已核验的 RAM 临时副本，原始归档仍在磁盘保留。失败时 RAM/磁盘已有结果尽量保留；tmpfs断电或重启不持久，不能把仅存在 RAM 的数据当成永久档案。
+- 当前 CLI 默认 `--staging memory`：先录 `/dev/shm/wc_capture_<UID>/$SESSION`。运行时按已积累的 RAM 记录、待复制的雷达来源日志及真实磁盘剩余量核算收尾空间，同时检查 tmpfs和主存可用量；接近保留边界时停止采集并进入排空／转存，可能录不满 300 秒。主存保留至少 4 GiB或总内存的10%，有界队列仍有自身预算。停止来源后复制到 `$DATASET`，逐文件检查哈希并 fsync；最终磁盘审计通过之前不会从 RAM 发布 `COMPLETE`。
+- 磁盘副本核验通过后清除 RAM 临时副本，录制是 `COMPLETE` 还是 `PARTIAL` 都清：`PARTIAL` 的问题已写进磁盘档案，RAM 副本是同样的字节，留着补不了。核验通过指：转存逐文件哈希和 fsync 通过，最终清单已提交，收尾没有哈希、同步或清单写入问题，RAM 里也没有磁盘副本缺少或转存后变了大小的文件。核验不通过时保留 RAM 副本：最终清单 `storage_staging.cleanup` 记 `RETAINED_DISK_COPY_UNVERIFIED` 和 `cleanup_reasons`，RAM 里的 `capture_manifest.json` 改为 `STAGING_RETAINED` 并写明原因；转存中途失败时两边都保留（`STAGING_RECOVERY_REQUIRED`）。原始归档始终在磁盘保留。tmpfs断电或重启不持久，不能把仅存在 RAM 的数据当成永久档案。
 - 可显式用 `--staging disk` 直接写磁盘，身份、队列、时间窗及严格失败门不变；磁盘写入性能不足仍会留下 `PARTIAL`。
 
 来源窗口的当前代码间隔硬门为雷达 0.5 秒、IMU 0.1 秒、轮反馈 0.5 秒、相机 0.2 秒、超声波 3 秒。这些是完整性检查参数，不是传感器精度或产品性能标准。最终 `COMPLETE` 还要求身份、序号、源端/录包对账、关闭、同步与保留文件哈希全部通过。
@@ -126,7 +126,7 @@ python3 -m json.tool "$DATASET/capture_manifest.json"
 python3 -m json.tool "$DATASET/progress.json"
 ```
 
-默认内存暂存期间，进度文件在 `/dev/shm/wc_capture/$SESSION/progress.json`。转存和最终审计后以磁盘目录为准。
+默认内存暂存期间，进度文件在 `/dev/shm/wc_capture_<UID>/$SESSION/progress.json`。转存和最终审计后以磁盘目录为准，核验通过的 RAM 目录随即删除。
 
 | 路径（相对会话目录） | 用途 |
 |---|---|

@@ -124,9 +124,26 @@ def test_cleanup_only_removes_exact_current_ram_session_and_rejects_outside(tmp_
     assert not current.exists() and (other/'raw').read_bytes()==b'keep'
 
 
+# outcome: (finalize exit code, final manifest fields over the FINALIZED durable defaults or None, RAM removed)
+FINAL_OUTCOMES={
+    'complete':(0,dict(status='COMPLETE',recording_complete=True,issues=[]),True),
+    # The 11-11 panel recordings: the wheel owner failed, every byte reached the disk.
+    'recording_partial':(2,dict(status='PARTIAL',recording_complete=False,issues=[
+        dict(code='CAPTURE_INTERRUPTED',evidence='logs',detail='RuntimeError: SOURCE_EXITED: wheel'),
+        dict(code='WHEEL_EVIDENCE_INVALID',evidence='sources/wheel_summary.json',detail='synthetic'),
+        dict(code='MAX_SOURCE_GAP_EXCEEDED',evidence='sources',detail='synthetic')]),True),
+    'durability_failed':(2,dict(status='PARTIAL',recording_complete=False,durability_complete=False,issues=[
+        dict(code='CAPTURE_DURABILITY_FAILED',evidence='sources; bag',detail='OSError: injected fsync')]),False),
+    # A writer that outlived the drain: the archive lacks this file.
+    'late_ram_file':(0,dict(status='COMPLETE',recording_complete=True,issues=[]),False),
+    'manifest_unreadable':(2,None,False)}
+
+
 @pytest.mark.skipif(os.name=='nt',reason='target POSIX ownership and subprocess contract')
-@pytest.mark.parametrize('audit_pass',[True,False])
-def test_capture_audits_final_path_after_drain_then_conditionally_removes_ram(tmp_path,monkeypatch,audit_pass):
+@pytest.mark.parametrize('outcome',sorted(FINAL_OUTCOMES))
+def test_capture_audits_final_path_after_drain_then_removes_ram_unless_the_archive_copy_is_unproven(
+        tmp_path,monkeypatch,outcome):
+    exit_code,fields,removed=FINAL_OUTCOMES[outcome]
     from wc_runtime import cli,capture_contract
     root=tmp_path/'project'; root.mkdir(); run=root/'shared_run'; ram=tmp_path/'ram'; ram.mkdir()
     # Real POSIX locks remain exercised, but only in this test's root.
@@ -185,12 +202,37 @@ def test_capture_audits_final_path_after_drain_then_conditionally_removes_ram(tm
         assert (directory/'sources/camera.bgr').read_bytes()==b'all camera bytes'
         assert digest(directory/'configuration/runtime_config.json')==hashes['configuration/runtime_config.json']
         observed.append('disk_audit')
-        atomic_json(directory/'capture_manifest.json',dict(manifest,status='COMPLETE' if audit_pass else 'PARTIAL',recording_complete=audit_pass))
-        return 0 if audit_pass else 2
+        if fields is None:
+            (directory/'capture_manifest.json').write_text('{"status": "PART',encoding='utf-8')
+        else:
+            atomic_json(directory/'capture_manifest.json',{**manifest,'finalization_state':'FINALIZED',
+                                                           'durability_complete':True,**fields})
+        if outcome=='late_ram_file':
+            (ram/'session/sources/late.bin').write_bytes(b'after the drain')
+        return exit_code
     monkeypatch.setattr(capture,'finalize_capture',finalize)
     args=SimpleNamespace(profile='mapping_core',session='session',duration=1,dry_run=False,diagnostic=False,staging='memory')
-    assert capture.run_capture(args)==(0 if audit_pass else 2)
-    assert observed==['drained','disk_audit'] and (ram/'session').exists() is (not audit_pass)
+    assert capture.run_capture(args)==exit_code
+    assert observed==['drained','disk_audit'] and (ram/'session').exists() is (not removed)
+    final=root/'data/experiments/session'
+    if fields is None:
+        assert (final/'capture_manifest.json').read_text(encoding='utf-8')=='{"status": "PART'  # never rewritten
+    else:
+        value=json.loads((final/'capture_manifest.json').read_text(encoding='utf-8'))
+        assert value['status']==fields['status'] and value['recording_complete'] is fields['recording_complete']
+        assert value['storage_staging']['cleanup']==('REMOVED_AFTER_DURABLE_AUDIT' if removed else
+                                                     'RETAINED_DISK_COPY_UNVERIFIED')
+        assert value['staging_transfer']['source_retained'] is (not removed)
+    if not removed:
+        kept=json.loads((ram/'session/capture_manifest.json').read_text(encoding='utf-8'))
+        assert kept['finalization_state']=='STAGING_RETAINED' and kept['status']=='PARTIAL'
+        assert kept['storage_staging']['cleanup']=='RETAINED_DISK_COPY_UNVERIFIED'
+        assert kept['staging_transfer']['source_retained'] and 'Keep both paths' in kept['staging_transfer']['recovery']
+        reason={'durability_failed':'issue CAPTURE_DURABILITY_FAILED',
+                'late_ram_file':'only in RAM or changed after the transfer: sources/late.bin',
+                'manifest_unreadable':'archive manifest unreadable'}[outcome]
+        assert any(row.startswith(reason) for row in kept['storage_staging']['cleanup_reasons'])
+        assert (ram/'session/sources/camera.bgr').read_bytes()==b'all camera bytes'
 
 
 def test_memory_capacity_failure_starts_no_children(tmp_path,monkeypatch):

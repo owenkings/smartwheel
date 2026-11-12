@@ -466,6 +466,8 @@ def test_startup_or_owner_failures_remain_partial_even_diagnostic(capture_temp,m
     manifest = json.loads((directory/'capture_manifest.json').read_text(encoding='utf-8'))
     assert manifest['status'] == 'PARTIAL' and not manifest['recording_complete']
     assert any(error in item['detail'] or error == item['code'] for item in manifest['issues'])
+    # A failed source is the recording's issue; the archive copy itself is complete (memory staging removes RAM).
+    assert capture.disk_copy_problems(manifest) == []
     if mode == 'no_readiness':
         assert ('start','manual_ui') not in events
     if mode == 'missing_summary':
@@ -549,9 +551,10 @@ def assert_stopped_checkpoint(directory, events):
 @pytest.mark.parametrize('stage,code', [('copy','CAPTURE_SOURCE_COPY_FAILED'),
     ('audit','CAPTURE_AUDIT_FAILED'), ('audit_schema','CAPTURE_AUDIT_FAILED'),
     ('hash','CAPTURE_HASH_FAILED'), ('scan','CAPTURE_HASH_SCAN_FAILED'),
+    ('durability','CAPTURE_DURABILITY_FAILED'),
     ('health','CAPTURE_HEALTH_REPORT_FAILED'), ('summary','CAPTURE_SUMMARY_WRITE_FAILED')])
 def test_stopped_finalization_faults_persist_partial_and_keep_control_evidence(capture_temp,monkeypatch,stage,code):
-    from wc_runtime import capture_audit, cli, runtime_health
+    from wc_runtime import capture_audit, capture_support, cli, runtime_health
     args,directory,events,_,_ = mock_capture_run(monkeypatch,capture_temp)
     health_calls = []
     def healthy(output, *, capture_manifest):
@@ -589,6 +592,11 @@ def test_stopped_finalization_faults_persist_partial_and_keep_control_evidence(c
                 raise OSError('injected artifact traversal failure')
             return original(path,*args,**kwargs)
         monkeypatch.setattr(Path,'rglob',fail_scan)
+    elif stage == 'durability':
+        def fail_sync(output):
+            assert_stopped_checkpoint(directory,events)
+            raise OSError('injected archive fsync failure')
+        monkeypatch.setattr(capture_support,'synchronize_tree',fail_sync)
     elif stage == 'health':
         def fail_health(output, *, capture_manifest):
             assert_stopped_checkpoint(directory,events)
@@ -612,6 +620,8 @@ def test_stopped_finalization_faults_persist_partial_and_keep_control_evidence(c
     assert manifest['finalization_state'] == 'FINALIZED'
     assert manifest['control_transmissions'] == 7
     assert any(row['code']==code for row in manifest['issues'])
+    # Memory staging keeps the RAM copy only for faults in the archive copy itself.
+    assert bool(capture.disk_copy_problems(manifest)) is (stage in ('hash','scan','durability'))
     assert (directory/'sources/wheel_summary.json').is_file()
     assert len([event for event in events if event[0]=='start']) == 5  # Never restart a source.
     if stage == 'copy':
@@ -640,6 +650,7 @@ def test_health_uses_prospective_complete_before_durable_final_commit(capture_te
     assert capture.run_capture(args)==0 and seen==[args.session]
     manifest = json.loads((directory/'capture_manifest.json').read_text(encoding='utf-8'))
     assert manifest['status']=='COMPLETE' and manifest['finalization_state']=='FINALIZED'
+    assert capture.disk_copy_problems(manifest)==[]
 
 
 @pytest.mark.parametrize('after_rename',[False,True])
@@ -666,6 +677,7 @@ def test_final_manifest_commit_failure_downgrades_reports_and_returns_nonzero(ca
     assert manifest['status']=='PARTIAL' and manifest['recording_complete'] is False
     assert manifest['manifest_persistence_failed'] and manifest['control_transmissions']==7
     assert any(row['code']=='CAPTURE_MANIFEST_WRITE_FAILED' for row in manifest['issues'])
+    assert 'manifest_persistence_failed' in capture.disk_copy_problems(manifest)
     assert health_statuses==['COMPLETE','PARTIAL']
     health = json.loads((directory/'health.json').read_text(encoding='utf-8'))
     assert health['lifecycle']=='PARTIAL' and health['recording']['recording_complete'] is False

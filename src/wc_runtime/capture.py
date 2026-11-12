@@ -219,6 +219,105 @@ def remove_memory_staging(staged, session):
     shutil.rmtree(expected)
 
 
+# Finalization issues about the archive copy itself. Recording issues (a gap, a short window, a failed source)
+# are not here: the RAM copy holds the same bytes, so keeping it does not help them.
+DISK_COPY_ISSUES=frozenset(('CAPTURE_MANIFEST_WRITE_FAILED','CAPTURE_DURABILITY_FAILED',
+    'CAPTURE_REPORT_DURABILITY_FAILED','CAPTURE_HASH_FAILED','CAPTURE_HASH_SCAN_FAILED',
+    'CAPTURE_FROZEN_INPUT_MISSING','CAPTURE_FROZEN_INPUT_CHANGED'))
+
+
+def disk_copy_problems(final_manifest):
+    """Why a final manifest does not show a committed, durable, readable archive copy; [] when it does.
+
+    COMPLETE or PARTIAL does not enter: a PARTIAL recording safely on disk needs no RAM copy either.
+    """
+    problems=[]
+    if final_manifest.get('finalization_state')!='FINALIZED':
+        problems.append('finalization_state '+str(final_manifest.get('finalization_state')))
+    if final_manifest.get('durability_complete') is not True:
+        problems.append('durability_complete '+str(final_manifest.get('durability_complete')))
+    if final_manifest.get('manifest_persistence_failed'):
+        problems.append('manifest_persistence_failed')
+    codes={row.get('code') for row in final_manifest.get('issues') or [] if isinstance(row,dict)}
+    problems.extend('issue '+code for code in sorted(codes&DISK_COPY_ISSUES))
+    return problems
+
+
+def ram_only_files(staged, final_directory, transfer):
+    """RAM files that the hash-checked transfer did not copy, that changed size since, or that the archive lacks."""
+    staged, final_directory = Path(staged), Path(final_directory)
+    copied = transfer.get('files') or {}
+    found = []
+    for path in sorted(staged.rglob('*')):
+        relative = path.relative_to(staged)
+        info = path.lstat()
+        if relative==Path('capture_manifest.json') or stat.S_ISDIR(info.st_mode):
+            continue
+        row = copied.get(str(relative))
+        if (not stat.S_ISREG(info.st_mode) or row is None or row.get('bytes')!=info.st_size
+                or not (final_directory/relative).is_file()):
+            found.append(str(relative))
+    return found
+
+
+def clean_memory_staging(staged, final_directory, session, manifest, transfer, *, destination_guard=None):
+    """After finalization, remove the RAM copy once the archive holds all of it durably, whatever the status.
+
+    The RAM copy stays only while the archive copy is not shown complete; its manifest then says why.
+    """
+    final_path = Path(final_directory)/'capture_manifest.json'
+    final_manifest = None
+    try:
+        if destination_guard is not None: destination_guard.check()
+        value = json.loads(final_path.read_text(encoding='utf-8'))
+        if not isinstance(value, dict) or not isinstance(value.get('storage_staging'), dict):
+            raise ValueError('no storage_staging in the final manifest')
+        final_manifest = value
+        problems = disk_copy_problems(final_manifest)
+    except Exception as error:
+        problems = ['archive manifest unreadable: '+type(error).__name__+': '+str(error)]
+    if not problems:
+        try:
+            problems = ['only in RAM or changed after the transfer: '+name
+                        for name in ram_only_files(staged, final_directory, transfer)]
+        except Exception as error:
+            problems = ['RAM and archive not compared: '+type(error).__name__+': '+str(error)]
+    if problems:
+        cleanup = dict(cleanup='RETAINED_DISK_COPY_UNVERIFIED', cleanup_reasons=problems)
+    else:
+        try:
+            if destination_guard is not None: destination_guard.check()
+            remove_memory_staging(staged, session)
+            cleanup = dict(cleanup='REMOVED_AFTER_DURABLE_AUDIT')
+        except Exception as error:
+            cleanup = dict(cleanup='RETAINED_CLEANUP_FAILED', cleanup_error=str(error))
+    removed = cleanup['cleanup']=='REMOVED_AFTER_DURABLE_AUDIT'
+    if final_manifest is not None:
+        final_manifest['storage_staging'].update(cleanup)
+        if isinstance(final_manifest.get('staging_transfer'), dict):
+            final_manifest['staging_transfer']['source_retained'] = not removed
+        try:
+            if destination_guard is not None: destination_guard.check()
+            atomic_json(final_path, final_manifest)
+        except Exception as error:
+            print('CAPTURE_STAGING_CLEANUP_RECORD_FAILED: '+str(error), file=sys.stderr)
+    if not removed:
+        # Otherwise the RAM manifest would still read as the transfer checkpoint.
+        retained = dict(manifest, status='PARTIAL', recording_complete=False, finalization_state='STAGING_RETAINED',
+            storage_staging=dict(manifest.get('storage_staging') or {}, **cleanup),
+            staging_transfer=dict(transfer, source_retained=True,
+                recovery='The archive copy is not shown complete (storage_staging). Keep both paths; check the '
+                         'archive with doctor --verify-archive, or copy this RAM session into a new archive, '
+                         'before removing it.'))
+        try:
+            atomic_json(Path(staged)/'capture_manifest.json', retained)
+        except Exception as error:
+            print('STAGING_RETENTION_REPORT_WRITE_FAILED: '+str(error), file=sys.stderr)
+        print(json.dumps(dict(stage='STAGING_RETAINED', staging_directory=str(staged), **cleanup),
+                         ensure_ascii=False), flush=True)
+    return cleanup
+
+
 def selected_lidar_sides(sides='all'):
     if sides not in ('left', 'right', 'all'):
         raise ValueError('lidar sides must be left, right or all')
@@ -1207,23 +1306,14 @@ def run_capture(args):
             try:
                 check_storage(force=True,closing=True)
                 progress(directory,'TRANSFERRING')
-                transfer_capture(directory,final_directory,manifest,**destination_options)
+                transfer=transfer_capture(directory,final_directory,manifest,**destination_options)
                 manifest['storage_staging']['durable_archive']=True
                 progress(final_directory,'VERIFYING')
                 code=finalize_capture(final_directory,RUN,manifest,hashes,results,failures,stop_reason,**destination_options)
             except BaseException as error:
                 return retain_staging_failure(directory,final_directory,manifest,error,**destination_options)
-            if code==0:
-                final_manifest=json.loads((final_directory/'capture_manifest.json').read_text(encoding='utf-8'))
-                if final_manifest.get('recording_complete') is True and final_manifest.get('status')=='COMPLETE':
-                    try:
-                        if destination_guard is not None: destination_guard.check()
-                        remove_memory_staging(directory,args.session)
-                        final_manifest['storage_staging']['cleanup']='REMOVED_AFTER_DURABLE_AUDIT'
-                    except Exception as error:
-                        final_manifest['storage_staging'].update(cleanup='RETAINED_CLEANUP_FAILED',cleanup_error=str(error))
-                    if destination_guard is not None: destination_guard.check()
-                    atomic_json(final_directory/'capture_manifest.json',final_manifest)
+            # PARTIAL too: the recording's own issues stay in the archive; only an unproven copy keeps RAM.
+            clean_memory_staging(directory,final_directory,args.session,manifest,transfer,**destination_options)
             return code
         if destination_guard is not None:
             try: destination_guard.check()
