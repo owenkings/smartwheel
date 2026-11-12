@@ -337,6 +337,38 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 - 收尾先停桥：轮控所有者看到 socket 断开就退出自动、写零。
 - 记录：记录器把 `base_status` 的变化写进 `events.jsonl`。`result.json` 多一节 `closed_loop`：最后一条 `base_status`（含桥的计数和轮控所有者的状态），闸门的 `gate_id`、`seq` 和各状态计数；`hardware_control`、`commands_sent` 记为 true。
 - 没改：命令超时（0.5 s）；放行爬升（9.2 第 7 条，要用户同意）。
+- 桥退出的原因（总管 2026-11-11 第 4 条）：
+  - 桥自己退出时，监督进程把 `supervisor.stopped` 记为 `BASE_BRIDGE_EXITED`，`closed_loop.bridge_exit` 里放四样东西：
+    - 退出码和桥自己的原因，即桥日志最后一行 JSON 的 failure。
+    - 轮控所有者最后报的状态和原因（`owner_last`）。
+    - 整段运行里轮控所有者报过的状态序列（`owner_reasons`）。
+    - 面板会话轮控日志（`<session-root>/sources/wheel_feedback.jsonl`）末尾 64 KB 里最后的 manual_fault、capture_failed。只读，在停其他进程之前读一次，没读到故障就在停完以后再读一次。会话目录已经移走时记 UNREADABLE。
+  - `supervisor.stop_reason` 把这些合成一句，也打印给操作员。
+  - 读会话日志的原因：轮控所有者 FAULT 时会马上结束会话，桥收不到带 FAULT 的状态。2026-11-11 20:27 那次，桥最后看到的是 STOPPING（FEEDBACK_OVERSPEED），接着的 NOT_STATIONARY_AFTER_STOP 只写在会话日志里。
+
+开始自动前的车前空地检查（总管 2026-11-11 第 2 条，`live/front_check.py`）：
+- 起因：2026-11-11 20:27 第一次真闭环时，走廊里其实没有东西。左雷达 1–3 档用 12 MHz 调制，12.49 m 以外的面折叠到车前 0–6 m，NavFn 绕着这些假点规划，车原地转。
+- 算法：监督进程每帧 /scan 数满足四条的点：离雷达 ≤ 5 m；在 base_link 前方；在实测外形外 0.05 m 以上；落在地图空闲格上，离最近的占据格超过 0.30 m。位姿用 map→base_link。最近 10 帧的中位数超过门限（默认 10 点）就是“车前不空”。
+- 发布：判定发在 `/wc_live/front_check`（std_msgs/String JSON，latched，2 Hz 加每次判定变化），状态行显示，记录器记进 `events.jsonl`。
+- block 时闸门的处理：闸门配置 `front_hold`。从每次使能的上升沿到第一次 ACTIVE，判定不空或超过 1 s 没刷新，就输出零，状态 `START_BLOCKED`（原因 `FRONT_NOT_CLEAR`、`FRONT_CHECK_STALE`）。这个状态排在 `LOCALIZATION_UNTRUSTED` 之后、`COMMAND_STALE` 之前；preview 也带上它。轮控所有者进 AUTO 本来就不看闸门是否 ACTIVE，所以 A 的代码不用改。
+- 容差和门限的依据：用录包重建 /scan，位姿取运行记录，每帧计数。
+
+  | 录制 | 位姿 | 容差 0.15 | 0.20 | 0.25 | 0.30 | 0.40 m |
+  |---|---|---|---|---|---|---|
+  | 2026-11-11 20:27 闭环（站着） | AMCL，起点偏 0.2 m 没修正 | 152 | 67 | 43 | 36 | 30 |
+  | 2026-11-11 20:12（站着） | 同上 | 150 | 53 | 35 | 33 | 28 |
+  | 2026-11-11 20:53 静止，朝看板地图右 | 起点检查拟合 | 42 | 41 | 40 | 40 | 39 |
+  | 2026-11-11 20:56 静止，转 180° | 同上 | 27 | 25 | 25 | 25 | 22 |
+  | 11-07 验证录制，门口朝走廊对面 | 录包影子的 AMCL | 24 | 11 | 8 | 8 | 7 |
+
+  - 表里是站着时每帧计数的中位数。容差小于起点误差（0.2 m）时，两侧墙上的点也被算成空地，所以取 0.30 m。
+  - 门口那 8 点处看不到 12.5 m 以外的东西，没有折叠，多半是地图里没有的家具或人。
+  - 门限 10 点用今天的数定，A 改完雷达以后要用新录制再定一次。
+- 录包闭环验证（2026-11-11 20:27 的录制，A 的 DryRun 轮控所有者，`reports/navigation_live_shadow/20261111T153647Z_shadow_680307fd`）：
+  - 站着时状态行是“车前空地 34–40 点 > 门限 10：不要开始自动”，影子判断 `START_BLOCKED(FRONT_NOT_CLEAR)`。
+  - 脚本点“开始自动”两次，轮控所有者都进了 AUTO，闸门在 `START_BLOCKED` 停了 24.6 s，一直输出零，假驱动器上没有一次非零写入。
+  - 同一录制用 `--front-check warn` 对照（`…154132Z_shadow_8c0fa5ea`）：状态行一样提示，闸门照常放行。
+  - 那一次还让模拟驱动器的右轮往前冲速，复现了现场的停法：FEEDBACK_OVERSPEED 之后 NOT_STATIONARY_AFTER_STOP。`stop_reason` 是“底盘桥退出（退出码 1：wheel owner closed the automatic control socket）；轮控所有者最后报 STOPPING（FEEDBACK_OVERSPEED）；会话轮控日志：NOT_STATIONARY_AFTER_STOP”。
 
 录包加假轮控所有者的闭环干跑（2026-11-10，总管 14:40 第 3 项的五种情况，`reports/navigation_live_shadow/20261110T111056Z_shadow_a561a812`）：
 - 条件：验证包按录包时间，域 100。临时检出合并了 A 的 motion 分支（3f575fd9），用 A 真的底盘桥；闭环模式按上面的固定值（平滑器开环、0.3 s）。

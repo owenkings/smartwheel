@@ -1087,3 +1087,165 @@ def test_closed_loop_goals_go_out_at_once_and_are_not_retried_once_the_chair_dro
         sequence.tick()                     # aborted again: the sequence ends, nothing is re-sent
     assert len(Client.sent) == 2 and sequence.finished and published[-1]["state"] == "FAILED"
     assert [r["reason"] for r in sequence.records] == ["GATE_ACTIVE_FIRST", "NAV2_FAILED"]
+
+
+# -- front check before "start automatic" and the bridge's exit reason (总管 2026-11-11 items 2 and 4) ---------
+def _corridor_scorer():
+    """A 2.0 m wide corridor along map x (walls at y = +-1.0 m), 0.05 m cells, x from -2 to 20 m."""
+    import numpy as np
+    from wc_navigation.live.amcl_cross import EndpointScorer
+    data = np.zeros((60, 440), dtype=np.int16)           # y -1.5..1.5, x -2..20
+    data[:10, :] = 100
+    data[50:, :] = 100
+    return EndpointScorer(data, 0.05, (-2.0, -1.5, 0.0))
+
+
+def _scan_with(points_at):
+    """161 bins: side walls of the corridor seen from (0, 0, 0) with the laser at base_link, plus given points."""
+    import numpy as np
+    from wc_navigation.live.scan_adapter import ANGLE_INCREMENT, ANGLE_MIN, BINS
+    angles = ANGLE_MIN + ANGLE_INCREMENT * np.arange(BINS)
+    ranges = np.full(BINS, np.inf)
+    side = np.abs(np.sin(angles)) > 1e-6
+    ranges[side] = np.minimum(1.0 / np.abs(np.sin(angles[side])), 8.0)
+    ranges[ranges >= 8.0] = np.inf
+    for bearing_deg, distance in points_at:
+        ranges[int(round((np.radians(bearing_deg) - ANGLE_MIN) / ANGLE_INCREMENT))] = distance
+    return ranges, ANGLE_MIN, ANGLE_INCREMENT
+
+
+def test_front_check_counts_free_space_points_ahead_only():
+    from wc_navigation.live import front_check
+    scorer = _corridor_scorer()
+    footprint = [[0.81, 0.2425], [0.2, 0.35], [-0.255, 0.35], [-0.255, -0.35], [0.2, -0.35], [0.81, -0.2425]]
+    walls, a0, inc = _scan_with([])
+    assert front_check.free_points(scorer, walls, a0, inc, (0.0, 0.0), (0.0, 0.0, 0.0), footprint) == (0, None)
+    ghosts, _, _ = _scan_with([(b, 1.3) for b in range(-14, 7, 2)] + [(20, 6.0)])   # 11 points ahead, one too far
+    count, nearest = front_check.free_points(scorer, ghosts, a0, inc, (0.0, 0.0), (0.0, 0.0, 0.0), footprint)
+    assert (count, nearest) == (11, 1.3)
+    # a start pose 0.2 m across the corridor is within the wall tolerance: the walls do not become free space
+    assert front_check.free_points(scorer, walls, a0, inc, (0.0, 0.0), (0.0, 0.2, 0.0), footprint)[0] == 0
+    # 0.35 m off is beyond it: wall points on one side count (why the tolerance is 0.30 m)
+    assert front_check.free_points(scorer, walls, a0, inc, (0.0, 0.0), (0.0, 0.35, 0.0), footprint)[0] > 10
+    near, _, _ = _scan_with([(0, 0.7)])                                               # inside the outline + 0.05 m
+    assert front_check.free_points(scorer, near, a0, inc, (0.0, 0.0), (0.0, 0.0, 0.0), footprint)[0] == 0
+
+
+def test_front_check_verdict_is_the_median_of_the_last_scans():
+    from wc_navigation.live import front_check
+    scorer = _corridor_scorer()
+    check = front_check.FrontCheck(scorer, (0.0, 0.0), (), 0.55, mode="block", max_points=10, frames=5)
+    value = check.verdict(1, 0.0)
+    assert value["clear"] is False and value["reason"] == "NO_POSE_OR_SCAN"
+    walls, a0, inc = _scan_with([])
+    ghosts, _, _ = _scan_with([(b, 1.3) for b in range(-14, 7, 2)])
+    for ranges in (walls, walls, ghosts, walls, walls):                 # one noisy scan does not block
+        check.add_scan(ranges, a0, inc, (0.0, 0.0, 0.0))
+    value = check.verdict(5, 1.0)
+    assert (value["clear"], value["points"], value["last"], value["schema"]) == (True, 0, 0, front_check.SCHEMA)
+    for _ in range(3):
+        check.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0))
+    value = check.verdict(6, 2.0)
+    assert (value["clear"], value["points"], value["reason"], value["nearest_m"]) == (False, 11, "FRONT_NOT_CLEAR", 1.3)
+    assert "不要开始自动" in front_check.operator_text(value) and "11 点 > 门限 10" in front_check.operator_text(value)
+    check.add_scan(walls, a0, inc, None)                               # lost the pose: no verdict until scans again
+    assert check.verdict(7, 3.0)["clear"] is False and check.no_pose == 1
+    assert front_check.operator_text(None) == "车前空地 未算"
+    for bad in ({"mode": "off"}, {"mode": "block", "max_points": -1}, {"mode": "block", "max_points": 1.5}):
+        with pytest.raises(ValueError):
+            front_check.FrontCheck(scorer, (0, 0), **bad)
+
+
+def test_front_check_options_and_the_gate_hold(tmp_path):
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.live import cli
+    from wc_navigation.live.supervisor import LiveSupervisor
+    closed = cli.arguments(_closed_argv(tmp_path))
+    assert (closed.front_check, closed.front_check_max_points) == ("block", 10)     # closed loop: block
+    argv = _closed_argv(tmp_path)
+    shadow = cli.arguments(argv[:argv.index("--closed-loop")])
+    assert shadow.front_check == "off"                                               # the shadow: unchanged
+    assert cli.arguments(_closed_argv(tmp_path, "--front-check", "warn", "--front-check-max-points", "3")).front_check \
+        == "warn"
+    for bad in (["--front-check-max-points", "-1"], ["--front-check-max-points", "200"], ["--front-check", "on"]):
+        with pytest.raises(SystemExit):
+            cli.arguments(_closed_argv(tmp_path, *bad))
+    config = {"use_sim_time": True, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
+              "gate_limits": {"correction_translation_m": 0.25, "correction_yaw_deg": 10.0,
+                              "correction_reference": "robot", "covariance_xy_std_m": 0.5,
+                              "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
+                              "slow_linear": 0.15},
+              "goals": [[1.0, 2.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
+              "smoother_timeout_s": 1.0, "front_check": {"mode": "block", "max_points": 10}}
+    for mode, hold in (("block", True), ("warn", None), ("off", None)):
+        folder = tmp_path / mode
+        folder.mkdir()
+        cfg = dict(config, front_check={"mode": mode, "max_points": 10})
+        files = LiveSupervisor(folder, folder, cfg).prepare_shadow(nav2_config.NavProfile())
+        assert json.loads(files["gate"].read_text())["gate"].get("front_hold") is hold
+
+
+def test_closed_loop_line_shows_the_front_check():
+    from wc_navigation.live.front_check import TOPIC
+    from wc_navigation.live.supervisor import closed_loop_line
+    value = {"points": 36, "max_points": 10, "clear": False, "nearest_m": 1.17, "reason": "FRONT_NOT_CLEAR"}
+    line = closed_loop_line({TOPIC: value})
+    assert "车前空地 36 点 > 门限 10，最近 1.17 m：不要开始自动" in line
+    assert "车前空地 2 点（门限 10）" in closed_loop_line({TOPIC: dict(value, points=2, clear=True)})
+    assert "车前空地" not in closed_loop_line({})
+
+
+def test_the_bridge_exit_is_told_with_its_reasons(tmp_path):
+    from wc_navigation.live import supervisor
+    log = tmp_path / "base_bridge.log"
+    log.write_text("starting\n{\"state\": \"STOPPED\", \"failure\": \"wheel owner closed the automatic control socket\","
+                   " \"counters\": {}}\n", encoding="utf-8")
+    assert supervisor.bridge_failure(log) == "wheel owner closed the automatic control socket"
+    plain = tmp_path / "refused.log"
+    plain.write_text("SystemExit: the base bridge needs WC_AUTO_DRIVE_APPROVAL\n\n", encoding="utf-8")
+    assert supervisor.bridge_failure(plain).startswith("SystemExit: the base bridge needs")
+    assert supervisor.bridge_failure(tmp_path / "missing.log") is None
+    session = tmp_path / "session"
+    (session / "sources").mkdir(parents=True)
+    records = [{"event": "wheel_io_complete"}] * 3 + [
+        {"event": "auto_state", "state": "STOPPING", "reason": "FEEDBACK_OVERSPEED"},
+        {"event": "manual_fault", "reason": "NOT_STATIONARY_AFTER_STOP"},
+        {"event": "auto_bridge_lost", "reason": "SESSION_EXIT"},
+        {"event": "capture_failed", "error": "NOT_STATIONARY_AFTER_STOP"}]
+    (session / "sources/wheel_feedback.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records) + "{cut",
+                                                          encoding="utf-8")
+    outcome = supervisor.session_journal_outcome(session)
+    assert outcome["status"] == "READ" and outcome["fault"] == "NOT_STATIONARY_AFTER_STOP"
+    assert [e["event"] for e in outcome["events"]] == ["auto_state", "manual_fault", "auto_bridge_lost", "capture_failed"]
+    assert supervisor.session_journal_outcome(tmp_path / "moved")["status"] == "UNREADABLE"
+    assert supervisor.session_journal_outcome(None) == {"status": "NO_SESSION"}
+    base = {"owner": {"auto_state": "STOPPING", "reason": "FEEDBACK_OVERSPEED", "immediate_reason": "FEEDBACK_OVERSPEED",
+                      "refusal": None, "estop_reasons": []}}
+    text = supervisor.bridge_exit_text({"exit_code": 1, "bridge_failure": supervisor.bridge_failure(log),
+                                        "owner_last": supervisor.owner_last(base), "session": outcome})
+    assert text == ("底盘桥退出（退出码 1：wheel owner closed the automatic control socket）；轮控所有者最后报 STOPPING"
+                    "（FEEDBACK_OVERSPEED）；会话轮控日志：NOT_STATIONARY_AFTER_STOP")
+    assert supervisor.owner_last(None) is None
+
+
+def test_a_bridge_exit_ends_the_run_as_base_bridge_exited(tmp_path):
+    from wc_navigation.live import supervisor
+
+    class Process:
+        def __init__(self, code):
+            self.returncode = code
+
+        def poll(self):
+            return self.returncode
+    run = supervisor.LiveSupervisor(tmp_path, tmp_path, {})
+    run.processes = [("recorder", Process(None)), (supervisor.BRIDGE, Process(1)), ("amcl", Process(None))]
+    run.logs = {supervisor.BRIDGE: str(tmp_path / "base_bridge.log")}
+    with pytest.raises(supervisor.BridgeExited) as caught:
+        run.check_alive(allow=("bag_play",))
+    assert caught.value.code == 1 and caught.value.log.endswith("base_bridge.log")
+    assert isinstance(caught.value, supervisor.RunError)
+    run.processes = [("recorder", Process(None)), ("amcl", Process(0))]
+    run.logs = {"amcl": "a.log"}
+    with pytest.raises(supervisor.RunError) as other:
+        run.check_alive()
+    assert not isinstance(other.value, supervisor.BridgeExited)

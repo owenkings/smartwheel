@@ -20,6 +20,9 @@ Vehicle closed loop (D.md 2026-11-10 16:45; all off by default, simulation and s
 - ``GateConfig.enable_source_node``: /wc_nav/enable and /wc_nav/estop must each have exactly that node as their
   only publisher, else DISABLED with ENABLE_SOURCE_AMBIGUOUS; /wc_nav/estop is then read transient local, like the
   bridge publishes it, so a pressed emergency stop is known at once.
+- ``GateConfig.front_hold`` (the live chain's ``--front-check block``): /wc_live/front_check must report the free
+  space ahead as clear, within ``front_check_timeout_s``, from each enable rising edge until the first ACTIVE; else
+  START_BLOCKED.
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ from .safety_gate import (COVARIANCE_REASONS, GATE_COMMAND_TOPIC, CorrectionMoni
 NOMOTION_SERVICE = "/request_nomotion_update"
 BASE_STATUS_TOPIC = "/wc_nav/base_status"
 BASE_STATUS_SCHEMA = "wc_base_status_relay_v1"     # window A's base bridge (wc_motion.auto_bridge.RELAY_SCHEMA)
+FRONT_CHECK_TOPIC = "/wc_live/front_check"         # live/front_check.TOPIC (importing it here pulls in numpy only)
 SOURCE_TOPICS = ("/wc_nav/enable", "/wc_nav/estop")
 CLOCKS = ("ros", "monotonic")
 TF_FUTURE_TOLERANCE_S = 0.05       # monotonic clock mode: a map->base_link stamp further ahead of now is stale
@@ -116,6 +120,10 @@ class GateNode:
         self.base_status, self.base_messages = None, 0
         if cfg.require_base:
             node.create_subscription(String, BASE_STATUS_TOPIC, self.on_base_status, 10)
+        self.front = None
+        if cfg.front_hold:
+            # the live chain's front check (latched, 2 Hz and on every change), see live/front_check.py
+            node.create_subscription(String, FRONT_CHECK_TOPIC, self.on_front_check, latched_qos())
         self.sources = {}
         self.covariance_ok, self.covariance_reason = (not cfg.require_covariance), "NO_COVARIANCE_YET"
         if cfg.require_covariance:
@@ -150,6 +158,17 @@ class GateNode:
             self.base_status = json.loads(message.data)
         except ValueError:
             self.base_status = {"schema": None}
+
+    def on_front_check(self, message):
+        from ..live.front_check import parse
+        clear, reason = parse(message.data)
+        self.gate.on_front(clear, reason, self.age_now())
+        try:
+            value = json.loads(message.data)
+        except ValueError:
+            value = {}
+        self.front = {k: value.get(k) for k in ("points", "max_points", "clear", "nearest_m", "mode")} \
+            if isinstance(value, dict) else {}
 
     def tick(self):
         stamp_ns = self.node.get_clock().now().nanoseconds
@@ -230,6 +249,8 @@ class GateNode:
                                   "enable_source": base.get("enable_source")}
             if cfg.enable_source_node:
                 status["sources"] = {"node": cfg.enable_source_node, "publishers": self.sources}
+            if cfg.front_hold:
+                status["front"] = self.front
             self.status.publish(json_message(status))
             self.last_state, self.last_status = decision.state, age_now
 

@@ -16,10 +16,13 @@ import math
 from ..geometry import _number
 
 STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "BASE_NOT_READY", "LOCALIZATION_UNTRUSTED",
-          "COMMAND_STALE", "ACTIVE")
+          "START_BLOCKED", "COMMAND_STALE", "ACTIVE")
 # BASE_NOT_READY (only with GateConfig.require_base): the base bridge's /wc_nav/base_status does not say that the
 # wheel serial owner runs automatic control, or it is stale or unreadable (velocity_channel.md 9.2 item 4).
 BASE_REASONS = ("BASE_NOT_AUTO", "BASE_STATUS_STALE", "BASE_STATUS_INVALID")
+# START_BLOCKED (only with GateConfig.front_hold): from an enable rising edge until the first ACTIVE, the live
+# chain's front check (live/front_check.py) does not report the free space ahead as clear, or its verdict is stale.
+FRONT_REASONS = ("FRONT_NOT_CLEAR", "FRONT_CHECK_STALE", "FRONT_CHECK_INVALID", "NO_POSE_OR_SCAN")
 # The gate's decision of every cycle for the base bridge, next to /wc_nav/cmd_vel_gated (velocity_channel.md 9.2
 # item 1; the same field list as window A's wc_motion.auto_protocol.GATE_COMMAND_FIELDS).
 GATE_COMMAND_TOPIC = "/wc_nav/gate_command"
@@ -88,14 +91,19 @@ class GateConfig:
     require_base: bool = False
     base_status_timeout_s: float = 0.3
     enable_source_node: str = ""
+    # Front check hold (总管 2026-11-11 item 2; D.md 23:40), off by default: from each enable rising edge until the
+    # first ACTIVE, the gate holds the chair (START_BLOCKED) while the front check is not clear or its verdict is
+    # older than front_check_timeout_s. Once ACTIVE, obstacles ahead are Nav2's and the collision monitor's.
+    front_hold: bool = False
+    front_check_timeout_s: float = 1.0
 
     def __post_init__(self):
         for name in ("max_linear", "max_angular", "command_timeout_s", "enable_timeout_s",
                      "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad",
                      "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel",
-                     "base_status_timeout_s"):
+                     "base_status_timeout_s", "front_check_timeout_s"):
             object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
-        for name in ("allow_reverse", "require_covariance", "require_base"):
+        for name in ("allow_reverse", "require_covariance", "require_base", "front_hold"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(name + " must be a boolean")
         node = self.enable_source_node
@@ -328,6 +336,9 @@ class SafetyGate:
         # closed loop only (require_base, enable_source_node); the node feeds both on every cycle
         self._base_ok, self._base_reason = False, "BASE_STATUS_STALE"
         self._sources_ok = not self.config.enable_source_node
+        # front_hold: the last front check verdict and its receipt time; started = ACTIVE since the last enable edge
+        self._front_clear, self._front_reason, self._front_time = False, "FRONT_CHECK_STALE", -math.inf
+        self._started = False
         # lateral covariance mode: slow-down state, last assessed spread and the ramped speed ceiling
         self._slow = False
         self._spread = None
@@ -346,6 +357,8 @@ class SafetyGate:
     def on_enable(self, enabled, now):
         enabled = bool(enabled)
         rising = enabled and (not self._enabled or now - self._enable_time > self.config.enable_timeout_s)
+        if rising:
+            self._started = False          # a (re)start: the front check applies until the next ACTIVE
         if rising and self._latched and not self._estop_engaged:
             # A latched stop clears only after release followed by a fresh enable.
             self._latched = False
@@ -370,6 +383,23 @@ class SafetyGate:
         """Whether /wc_nav/enable and /wc_nav/estop each have exactly the one allowed publisher (enable_source_node)."""
         self._sources_ok = bool(ok)
 
+    def on_front(self, clear, reason, now):
+        """The front check's verdict (front_hold), received at ``now`` on the gate's age clock."""
+        self._front_clear = bool(clear)
+        self._front_reason = "" if clear else (reason if reason in FRONT_REASONS else "FRONT_NOT_CLEAR")
+        self._front_time = float(now)
+
+    def _front_stop(self, now, held):
+        """START_BLOCKED while the chair is about to start and the front is not confirmed clear, else None."""
+        cfg = self.config
+        if not cfg.front_hold or self._started:
+            return None
+        if now - self._front_time > cfg.front_check_timeout_s:
+            return GateDecision(0.0, 0.0, "START_BLOCKED", ("FRONT_CHECK_STALE",), held)
+        if not self._front_clear:
+            return GateDecision(0.0, 0.0, "START_BLOCKED", (self._front_reason or "FRONT_NOT_CLEAR",), held)
+        return None
+
     def command_status(self, now):
         """The last monitored command and its age, for the status topic (None before the first command)."""
         if self._command is None:
@@ -387,6 +417,8 @@ class SafetyGate:
             value.update(base_ok=self._base_ok, base_reason=self._base_reason)
         if self.config.enable_source_node:
             value["sources_ok"] = self._sources_ok
+        if self.config.front_hold:
+            value.update(front_clear=self._front_clear, front_reason=self._front_reason, started=self._started)
         return value
 
     def check_covariance(self, covariance, yaw=None):
@@ -514,12 +546,16 @@ class SafetyGate:
             return stop("BASE_NOT_READY", self._base_reason)
         if not self._localization_ok:
             return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
+        blocked = self._front_stop(now, held)
+        if blocked is not None:
+            return blocked
         stopped = self._command_stop(now, held)
         if stopped is not None:
             return stopped
         ceiling = cfg.max_linear
         if cfg.covariance_mode == "lateral":
             ceiling = min(self._speed_ceiling(now), cfg.max_linear)
+        self._started = True               # front_hold: this start passed; it applies again after the next edge
         return self._limit(ceiling)
 
     def preview(self, now):
@@ -534,6 +570,9 @@ class SafetyGate:
         if not self._localization_ok:
             return GateDecision(0.0, 0.0, "LOCALIZATION_UNTRUSTED",
                                 (self._localization_reason or "LOCALIZATION_FAILED",), held)
+        blocked = self._front_stop(now, held)
+        if blocked is not None:
+            return blocked
         stopped = self._command_stop(now, held)
         return stopped if stopped is not None else self._limit(held)
 
