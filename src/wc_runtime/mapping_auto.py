@@ -107,7 +107,8 @@ def auto_socket_path(project_root, directory, session_id):
 def recording_sessions(project_root):
     """(directory, session id, status) of this checkout's recordings in the capture staging area, newest first.
 
-    A recording stays there until it has been copied to the data disk at its end."""
+    A recording stays there until its copy on the data disk has been verified at its end, COMPLETE or PARTIAL;
+    a copy that could not be verified stays, with the reason in its manifest."""
     import json
     from .project_paths import capture_staging_root
     root, found = Path(project_root).resolve(), []
