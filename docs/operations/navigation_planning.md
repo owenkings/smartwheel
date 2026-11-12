@@ -72,14 +72,16 @@ WC_AUTONOMY_ROS_DOMAIN=98 bash scripts/navigation_autonomy_sim navigate \
 
 ```json
 {"schema_version": 1, "name": "说明",
- "ghosts": [{"id": "fold", "frame": "start", "radius_m": 0.03, "points": [[1.45, 0.10], [1.50, 0.15]]}]}
+ "ghosts": [{"id": "fold", "frame": "start", "radius_m": 0.03, "min_ahead_m": 1.3,
+             "points": [[1.45, 0.10], [1.50, 0.15]]}]}
 ```
 
 - `points` 是 base_link 里的点（车轴原点，x 朝前，y 朝左，单位 m），每个点是半径 `radius_m`（默认 0.03 m）的小圆，最多 2000 个点。
 - `frame` 是 `start` 时，点按起点位姿放进世界，之后固定不动（远处墙面的折叠，车往前开时它在世界里不动）；是 `chair` 时，点跟着车走（天花板折叠，一直在车前同样的位置）。
+- `min_ahead_m`（可选，默认 0）：点在车轴前方不到这个距离时就不出现。11-09 推车时，世界里固定的那团在车离它约 1.3 m 时就不见了（窗口 C 11-12），用 1.3 可以模拟这种情况。
 - 离雷达不到 0.3 m（扫描的最近距离）的假点不出现在扫描里。
 - `result.json` 的 `ghosts` 段记场景文件的路径、sha256，以及扫描帧数、有假点的帧数、被假点占的光束数。
-- 11-12 −x 闭环用的两个场景在 `R/reports/navigation_planning_analysis/20261112_minus_x_ghosts/`，取法见设计文档。
+- 11-12 −x 闭环用的三个场景在 `R/reports/navigation_planning_analysis/20261112_minus_x_ghosts/`，取法见设计文档。
 
 `--enable-pause AFTER_S DURATION_S`（只对 navigate，验证用，默认不开）：任务开始后 AFTER_S 仿真秒，监督进程的使能心跳改发 false，持续 DURATION_S（最多 30 s），闸门停车一次再放行，用来看放行后怎么起步（配合 `--smoother-feedback`）。时间窗写在 `result.json` 的 `supervisor.enable_pause_sim_s`。
 

@@ -53,8 +53,11 @@ def _disc_entries(ranges, ox, oy, cos, sin, discs):
 # Ghosts: lidar-only false returns (e.g. the left lidar's 12.49 m phase-wrap points, 11-11) as small discs that the
 # simulated scan sees but that are not solid, not in the map and not part of any gap or collision metric.
 # frame "start": base_link at the start pose, then fixed in the world; "chair": base_link, moving with the chair.
+# min_ahead_m (optional, default 0): a point shows only while it is at least this far ahead of the axle (on 11-09
+# the world-fixed points ahead of the chair were seen only while 1.4-2.1 m ahead, window C 11-12 15:12).
 GHOST_FRAMES = ("start", "chair")
 GHOST_MAX_POINTS = 2000
+_GHOST_KEYS = {"id", "frame", "radius_m", "min_ahead_m", "points"}
 
 
 def ghost_scenario(value):
@@ -73,9 +76,8 @@ def ghost_scenario(value):
     for item in items:
         if not isinstance(item, dict):
             raise ValueError("each ghost must be an object")
-        if set(item) - {"id", "frame", "radius_m", "points"}:
-            raise ValueError("unknown ghost keys: " + ", ".join(sorted(set(item) - {"id", "frame", "radius_m",
-                                                                                   "points"})))
+        if set(item) - _GHOST_KEYS:
+            raise ValueError("unknown ghost keys: " + ", ".join(sorted(set(item) - _GHOST_KEYS)))
         ghost_id = item.get("id")
         if not isinstance(ghost_id, str) or not ghost_id or ghost_id in ids:
             raise ValueError("each ghost needs its own non-empty id")
@@ -85,6 +87,9 @@ def ghost_scenario(value):
         radius = _number(item.get("radius_m", 0.03), "ghost radius_m", positive=True)
         if radius > 0.3:
             raise ValueError("ghost radius_m must be within (0, 0.3] m")
+        ahead = _number(item.get("min_ahead_m", 0.0), "ghost min_ahead_m", nonnegative=True)
+        if ahead > 20.0:
+            raise ValueError("ghost min_ahead_m must be within 0..20 m")
         points = item.get("points")
         if not isinstance(points, list) or not points:
             raise ValueError("each ghost needs a non-empty list of points")
@@ -97,7 +102,10 @@ def ghost_scenario(value):
                 raise ValueError("ghost points must be within 20 m of base_link")
             clean.append([x, y])
         total += len(clean)
-        out.append({"id": ghost_id, "frame": item["frame"], "radius_m": radius, "points": clean})
+        entry = {"id": ghost_id, "frame": item["frame"], "radius_m": radius, "points": clean}
+        if ahead:
+            entry["min_ahead_m"] = ahead
+        out.append(entry)
     if total > GHOST_MAX_POINTS:
         raise ValueError("a ghost scenario may have at most %d points" % GHOST_MAX_POINTS)
     return out
@@ -113,14 +121,18 @@ def load_ghosts(path):
 
 
 def ghost_discs(ghosts, pose, start_pose):
-    """World-frame discs (N x 3: x, y, r) of the ghosts with the chair at ``pose`` and its start at ``start_pose``."""
+    """World-frame discs (N x 3: x, y, r) of the ghosts showing with the chair at ``pose`` (start ``start_pose``)."""
     rows = []
     for ghost in ghosts:
         ax, ay, ayaw = start_pose if ghost["frame"] == "start" else pose
         c, s = math.cos(ayaw), math.sin(ayaw)
         p = np.asarray(ghost["points"], dtype=float)
-        rows.append(np.column_stack([ax + c * p[:, 0] - s * p[:, 1], ay + s * p[:, 0] + c * p[:, 1],
-                                     np.full(len(p), float(ghost["radius_m"]))]))
+        x, y = ax + c * p[:, 0] - s * p[:, 1], ay + s * p[:, 0] + c * p[:, 1]
+        if ghost.get("min_ahead_m"):
+            ahead = math.cos(pose[2]) * (x - pose[0]) + math.sin(pose[2]) * (y - pose[1])
+            keep = ahead >= ghost["min_ahead_m"]
+            x, y = x[keep], y[keep]
+        rows.append(np.column_stack([x, y, np.full(len(x), float(ghost["radius_m"]))]))
     return np.vstack(rows) if rows else np.zeros((0, 3))
 
 

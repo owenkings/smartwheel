@@ -95,6 +95,15 @@ def test_start_ghosts_stay_in_the_world_and_chair_ghosts_follow():
     assert moved[1, :2] == pytest.approx([-1.3, 0.77])                        # 1.2 m ahead of the turned chair
 
 
+def test_ghosts_with_min_ahead_show_only_while_far_enough_ahead():
+    ghosts = ghost_scenario(_ghost_scenario({"id": "fixed", "frame": "start", "min_ahead_m": 1.4,
+                                             "points": [[1.5, 0.0], [2.0, 0.0]]}))
+    start = (0.0, 0.0, 0.0)
+    assert len(ghost_discs(ghosts, start, start)) == 2
+    assert ghost_discs(ghosts, (0.2, 0.0, 0.0), start)[:, 0].tolist() == pytest.approx([2.0])
+    assert len(ghost_discs(ghosts, (0.7, 0.0, 0.0), start)) == 0
+
+
 def test_runs_without_ghosts_are_unchanged_and_with_ghosts_carry_the_scenario(tmp_path):
     import json
     from pathlib import Path
@@ -128,6 +137,7 @@ def test_runs_without_ghosts_are_unchanged_and_with_ghosts_carry_the_scenario(tm
     {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0, 0.5]]}]},
     {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, float("nan")]]}]},
     {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0]], "height_m": 0.8}]},
+    {"ghosts": [{"id": "g", "frame": "start", "points": [[1.0, 0.0]], "min_ahead_m": -1.0}]},
     {"ghosts": [{"id": "g", "frame": "chair", "points": [[1.0, 0.0]]},
                 {"id": "g", "frame": "start", "points": [[2.0, 0.0]]}]},
 ])
