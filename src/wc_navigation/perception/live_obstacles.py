@@ -42,6 +42,8 @@ from .obstacle_cloud import ObstacleFilter, filter_frame
 
 SCHEMA_VERSION = 1
 STATUS_TOPIC = "/wc_live/inputs_status/obstacles"
+# The node publishes its status every 0.5 s on the steady clock; three missed ones make it old (``input_health``).
+STATUS_MAX_AGE_S = 1.5
 LOG_NAME = "obstacles.jsonl"
 # The SDK host-filtered frames of both lidars (the left one is the live chain's /scan source).
 SOURCE_TOPICS = {"left": LEFT_FILTERED_TOPIC, "right": RIGHT_FILTERED_TOPIC}
@@ -451,3 +453,40 @@ class LiveStatus:
                 "rejections": dict(self.rejections), "counts": counts or {},
                 "timing_ms": {k: _summary(v) for k, v in self.timing.items()},
                 "commands_subscribed": False, "hardware_control": False}
+
+
+def input_health(value, age_s, max_age_s=STATUS_MAX_AGE_S):
+    """(ok, reason) of the input for a consumer that must not drive without it (window D's gate in the closed loop).
+
+    ``value``: the latest status (the parsed JSON of STATUS_TOPIC) or None; ``age_s``: seconds since the consumer
+    received it, on its own clock. Only a RUNNING status younger than ``max_age_s`` is ok: STALE means a lidar or
+    /odom stopped for more than a second, and the Humble collision monitor drops a cloud older than its
+    source_timeout without stopping the chair.
+    """
+    if value is None or age_s is None:
+        return False, "OBSTACLES_NO_STATUS"
+    if not isinstance(value, dict) or value.get("role") != "obstacles" or value.get("state") not in (
+            "RUNNING", "STALE", "FAILED"):
+        return False, "OBSTACLES_STATUS_INVALID"
+    if not 0.0 <= float(age_s) <= float(max_age_s):
+        return False, "OBSTACLES_STATUS_OLD"
+    if value["state"] != "RUNNING":
+        return False, "OBSTACLES_" + value["state"]
+    return True, ""
+
+
+def operator_text(value, age_s=None, max_age_s=STATUS_MAX_AGE_S):
+    """The closed-loop status line's part for the input, in Chinese."""
+    ok, reason = input_health(value, 0.0 if age_s is None else age_s, max_age_s)
+    if ok:
+        latency = ((value.get("timing_ms") or {}).get("latency_ms") or {}).get("median")
+        return "三维障碍输入 正常" + ("，延迟中位 %.0f ms" % latency if latency is not None else "")
+    text = {"OBSTACLES_NO_STATUS": "没有状态", "OBSTACLES_STATUS_INVALID": "状态看不懂",
+            "OBSTACLES_STATUS_OLD": "状态 %.1f s 没更新" % float(age_s or 0.0)}.get(reason)
+    if text is None:
+        stale = "、".join({"left": "左雷达", "right": "右雷达", "odom": "/odom"}.get(s, s)
+                         for s in value.get("stale_inputs") or [])
+        text = value["state"] + ("（%s 没有数据）" % stale if stale and value["state"] == "STALE" else "")
+        if value["state"] == "FAILED" and value.get("failure"):
+            text += "：" + str(value["failure"])[:60]
+    return "三维障碍输入 " + text + "：不要开始自动"

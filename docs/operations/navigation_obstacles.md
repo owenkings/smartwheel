@@ -104,8 +104,32 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
   - 输入：处理过的帧里，冻结前端有的那些（约三分之一），点云 sha256 要相同。
   - 输出：按 `obstacles.jsonl` 记下的配对和位姿，用录包里的同一批帧离线重算，点、射线和过滤扫描都要相同。
   - 频率：每台雷达不低于 0.8 × `--obstacle-rate-hz`；等不到位姿的周期不超过 5%；进程没有 FAILED。
-- `shadow` 的 `result.json` 多一节 `obstacles`：频率、配对、见证、等待、耗时和各级计数，不重算。
-- 车上（`--source vehicle`）：用户 2026-11-10 同意开，转发要多转右雷达（D5，窗口 D）。D5 进来之前命令仍拒绝开障碍输入；运行时照常要用户当次同意。
+- `shadow` 的 `result.json` 多一节 `obstacles`：频率、配对、见证、等待、耗时和各级计数，不重算；另有 `criteria`，就是下面车上的判据，有一条不过整节就是 FAIL，原因写在 `reasons`，收尾打印的那一行里也有。
+- 车上（`--source vehicle`）：用户 2026-11-09 23:50 同意开（D5：开障碍输入时转发会多转右雷达的两路），运行时照常要用户当次同意。
+
+### 车上：组合方案加兜底
+
+先跑影子（不闭环），判据都过了，闭环再用同样的选项。命令就是现场脚本里那条 `shadow --source vehicle`（或 `--closed-loop`）后面加：
+```bash
+  --obstacle-input scan --obstacle-scan filtered --obstacle-monitor cloud \
+  --obstacle-filter '{"persist_min_age_s": 0.6, "witness_scope": "all"}'
+```
+- 这样接：局部和全局代价地图的 ObstacleLayer 都读 `/obstacles/left/scan`（左雷达过滤扫描），碰撞监控只读两台雷达的三维点云（`/obstacles/left/points`、`/obstacles/right/points`）。/scan 照旧给 AMCL、起点检查和 D 的车前空地检查。读回会核对碰撞监控的 observation_sources 和两个代价地图的 `obstacle_layer.scan.topic`，不对就不启动。
+- 影子 3–5 min：车放在胶带点、车头朝看板地图左（−x，下次闭环的方向）站 1 min；沿闭环路线慢推约 4 m，站 30 s；拉回胶带点再站 30 s。别的窗口的重任务先停：机器满载时 /odom 会晚，等位姿超时，判据会不过。11-12 在 11-11 闭环录制上跑录包影子，负载 13 时 11 % 的周期等不到位姿；负载 7–10 时 1.9 %，判据通过。
+- 收尾以后判定（只读运行目录）：
+  ```bash
+  PYTHONPATH=src python3 -s -m wc_navigation.perception.live_check $R/reports/navigation_live_shadow/<运行>
+  ```
+  每条打印“通过 / 不通过”，最后一行是结论，退出码 0 是通过。判据（`live_check.FIELD_CRITERIA`）：
+
+  | 判据 | 要求 | 依据 |
+  |---|---|---|
+  | 两台雷达都在 | 每台都有处理过的帧，处理时长 ≥ 60 s；节点第一次 RUNNING 以后再没有 STALE、FAILED | |
+  | 跑满 5 Hz | 每台 ≥ 4.75 Hz；两台同周期 ≥ 95 %；发布的帧里用上另一台见证的 ≥ 95 % | 录包检验 5.0 Hz、配对 100 % |
+  | 延迟 | 测量时刻（雷达时间戳减 75 ms）到发布：每台 p99 ≤ 500 ms、最大 ≤ 800 ms | 车上 /scan 到记录器 120 ms（中位）、136–172 ms（p99）；经转发的录包影子 p99 350 ms，多半在等 /odom；500 ms 在 0.10 m/s 下是 5 cm。碰撞监控不看比 1.0 s（source_timeout）旧的点云，Humble 下这时不停车 |
+  | 位姿 | 等不到 /odom 的周期 ≤ 2 % | 这些周期没有见证和持续性检查，兜底也判不了；2 % 是每 10 s 一个周期。朝 −x 的路线上 /scan 的假点从没进过停车区和减速框 |
+- 同时看一眼：站着时碰撞监控不减速、不停车；D 的车前空地检查读过滤扫描以后，站在胶带点朝 −x 应是 0 点（11-11 朝 −x 的静止录制：/scan 23 点，过滤扫描 0 点，加兜底 0 点）。
+- 闭环：`--closed-loop` 的命令后面加同样的选项，闭环模式不拦它们。障碍输入停了（STALE、FAILED）时，现在闸门不看它，Humble 的碰撞监控对过期点云也只是不看、不停车，所以闭环用组合方案以前要先有闸门的障碍输入检查（已请窗口 D 加，见 status/C.md 11-12）。
 
 ## 仿真里的移动行人
 

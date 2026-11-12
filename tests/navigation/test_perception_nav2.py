@@ -124,6 +124,9 @@ def test_monitor_can_read_the_clouds_while_the_costmaps_stay_two_dimensional():
     assert monitor(p)["observation_sources"] == ["cloud_left", "cloud_right"] and "scan" not in monitor(p)
     expected = nav2_config.readback_expectations(profile, "navigate")
     assert expected["collision_monitor"]["observation_sources"] == ["cloud_left", "cloud_right"]
+    for side in ("left", "right"):            # the readback also checks which topic each cloud source reads
+        assert expected["collision_monitor"]["cloud_%s.topic" % side] == monitor(p)["cloud_" + side]["topic"] \
+            == nav2_obstacles.CLOUD_TOPICS[side]
     assert "plugins" not in expected["local_costmap/local_costmap"]
     assert expected["local_costmap/local_costmap"]["obstacle_layer.scan.topic"] == nav2_obstacles.FILTERED_SCAN_TOPIC
     assert profile.as_dict()["obstacle_monitor"] == "cloud" and nav2_config.NavProfile(**profile.as_dict()) == profile

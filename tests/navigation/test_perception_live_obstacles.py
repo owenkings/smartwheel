@@ -326,6 +326,30 @@ def test_status_reports_stale_inputs_and_failures():
     assert report["rejections"] == {"right: host filter left no points": 1}
 
 
+def test_input_health_needs_a_fresh_running_status():
+    status = lo.LiveStatus(("left", "right"), lo.LiveObstacleConfig(), 75.0, None)
+    for name in ("left", "right", "odom"):
+        status.mark(name, 10.0)
+    status.timing["latency_ms"].extend([40.0, 60.0, 80.0])
+    running = status.status(10.5)
+    assert lo.input_health(running, 0.2) == (True, "")
+    assert lo.operator_text(running, 0.2) == "三维障碍输入 正常，延迟中位 60 ms"
+    assert lo.input_health(running, lo.STATUS_MAX_AGE_S + 0.1) == (False, "OBSTACLES_STATUS_OLD")
+    assert lo.input_health(None, None) == (False, "OBSTACLES_NO_STATUS")
+    assert lo.input_health({"state": "RUNNING", "role": "scan"}, 0.1) == (False, "OBSTACLES_STATUS_INVALID")
+    stale = status.status(11.2)
+    assert lo.input_health(stale, 0.1) == (False, "OBSTACLES_STALE")
+    status.mark("left", 11.1)
+    status.mark("odom", 11.1)
+    text = lo.operator_text(status.status(11.2), 0.1)
+    assert text == "三维障碍输入 STALE（右雷达 没有数据）：不要开始自动"
+    status.fail("processing", RuntimeError("boom"))
+    assert lo.input_health(status.status(11.2), 0.1) == (False, "OBSTACLES_FAILED")
+    assert lo.operator_text(status.status(11.2), 0.1).startswith("三维障碍输入 FAILED：processing: RuntimeError: boom")
+    assert lo.operator_text(None) == "三维障碍输入 没有状态：不要开始自动"
+    assert lo.operator_text(running, 2.0) == "三维障碍输入 状态 2.0 s 没更新：不要开始自动"
+
+
 # -- offline check (live_check) ------------------------------------------------------------------------------
 def entries(plan):
     g = geometry()
@@ -412,6 +436,91 @@ def test_summary_and_verdict():
     assert any("below 0.8" in r for r in live_check.evaluate(slow)["reasons"])
     bad_inputs = {"left": {"status": "NOT_CHECKED"}}
     assert live_check.evaluate(summary, inputs=bad_inputs)["status"] == "FAIL"
+
+
+def timed(lines, latency_ms=50.0):
+    """The node's log lines with the timing it writes (the simulated node has none)."""
+    out = []
+    for x in lines:
+        x = dict(x)
+        x["timing_ms"] = {"host_filter": 20.0, "latency": latency_ms, **({"filter": 30.0} if x["published"] else {})}
+        out.append(x)
+    return out
+
+
+def test_field_criteria_name_what_fails():
+    from wc_navigation.perception import live_check
+    plan = lo.output_plan("scan", ("left", "right"), "filtered", "cloud")
+    e, lines, _ = simulated_node(plan, seconds=6.0)
+    short = {"min_span_s": 5.0}
+    ok = live_check.field_criteria(timed(lines), e, limits=short, events=[
+        {"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["left"]}},
+        {"time_s": 1000.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}])
+    assert ok["status"] == "PASS", [c for c in ok["checks"] if not c["ok"]]
+    names = {(c["name"], c["side"]) for c in ok["checks"]}
+    assert ("rate_hz", "left") in names and ("witness_share", "right") in names and ("age_max_ms", "left") in names
+    age = next(c for c in ok["checks"] if c["name"] == "age_p99_ms" and c["side"] == "left")
+    assert age["value"] == pytest.approx(76.0 + 50.0)          # arrival 1 ms after the stamp, 75 ms offset, latency
+    # a minute is asked for by default
+    assert live_check.field_criteria(timed(lines), e)["status"] == "FAIL"
+
+    running = [{"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}]
+
+    def failed(records, events=running):
+        result = live_check.field_criteria(records, e, limits=short, events=events)
+        return {(c["name"], c["side"]) for c in result["checks"] if not c["ok"]}
+
+    assert failed(timed(lines), events=()) == {("not_running_s", None)}       # the node never said RUNNING
+
+    assert ("rate_hz", "left") in failed(timed([x for x in lines if x["cycle"] % 2]))
+    assert failed(timed(lines, latency_ms=900.0)) >= {("age_max_ms", "left"), ("age_p99_ms", "right")}
+    lonely = [dict(x, witness=False) if x["side"] == "left" and x["published"] else x for x in timed(lines)]
+    assert failed(lonely) == {("witness_share", "left")}
+    unpaired = [dict(x, paired=False) for x in timed(lines)]
+    assert failed(unpaired) == {("paired_share", "left"), ("paired_share", "right")}
+    right_gone = [x for x in timed(lines) if x["side"] == "left"]
+    assert ("rate_hz", "right") in failed(right_gone) and ("span_s", "right") in failed(right_gone)
+    t_end = max(x["arrival_ns"] for x in lines) * 1e-9
+    stalled = [{"time_s": t_end - 5.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}},
+               {"time_s": t_end - 3.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["right"]}},
+               {"time_s": t_end - 1.5, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}]
+    assert failed(timed(lines), events=stalled) == {("not_running_s", None)}
+
+
+def test_time_not_running_counts_after_the_start_and_before_the_end():
+    from wc_navigation.perception import live_check
+
+    def event(t, state, stale=()):
+        return {"time_s": t, "topic": lo.STATUS_TOPIC, "value": {"state": state, "stale_inputs": list(stale)}}
+
+    events = [event(0.0, "STALE", ["left", "right", "odom"]), event(1.0, "RUNNING"), event(5.0, "STALE", ["right"]),
+              event(7.0, "RUNNING"), event(15.0, "FAILED"), event(20.0, "STALE", ["left", "right", "odom"]),
+              {"time_s": 6.0, "topic": "/wc_live/inputs_status/scan", "value": {"state": "STALE"}}]
+    result = live_check.not_running_after_start(events, end_s=19.0)
+    assert result == {"first_running_s": 1.0, "seconds": 6.0, "intervals": 2, "stale_inputs": ["right"]}
+    assert live_check.not_running_after_start(events[:1])["seconds"] is None     # never ran: fails the check
+    assert live_check.not_running_after_start(events[:4], end_s=19.0)["seconds"] == 2.0
+    # a source that stops in the last END_GRACE_S before the last frame is the end of the run (bag end, Ctrl-C)
+    assert live_check.not_running_after_start(events[:4] + [event(18.0, "STALE", ["odom"])], end_s=19.0)["seconds"] == 2.0
+    assert live_check.not_running_after_start(events[:4] + [event(16.0, "STALE", ["odom"])], end_s=19.0)["seconds"] == 5.0
+
+
+def test_the_run_check_command_reads_a_run_directory(tmp_path, capsys):
+    import json
+    from wc_navigation.perception import live_check
+    plan = lo.output_plan("scan", ("left", "right"), "filtered", "cloud")
+    e, lines, _ = simulated_node(plan, seconds=6.0)
+    (tmp_path / "run_config.json").write_text(json.dumps({"obstacles": e}))
+    (tmp_path / lo.LOG_NAME).write_text("".join(json.dumps(x) + "\n" for x in timed(lines)))
+    (tmp_path / "events.jsonl").write_text(json.dumps(
+        {"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}) + "\n")
+    assert live_check.main([str(tmp_path)]) == 1                 # 6 s of frames: the minute is missing
+    text = capsys.readouterr().out
+    assert "不通过 左处理时长" in text and "通过 右处理频率 Hz：5.0" in text and text.rstrip().endswith("结论：不通过")
+    section = live_check.summarize_run(tmp_path, {"obstacles": e})
+    assert section["status"] == "FAIL" and any(r.startswith("span_s (left)") for r in section["reasons"])
+    (tmp_path / "run_config.json").write_text(json.dumps({"obstacles": None}))
+    assert live_check.main([str(tmp_path)]) == 2
 
 
 # -- command line (window D's live/cli.py with C's options) ------------------------------------------------------

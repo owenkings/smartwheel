@@ -653,8 +653,11 @@ def _readback_expectations(profile, mode):
         local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
     if profile.monitor_input != "scan":
         from ..perception import nav2_obstacles
-        stop = dict(stop, observation_sources=nav2_obstacles.monitor_source_names(profile.monitor_input,
-                                                                                   profile.obstacle_clouds))
+        names = nav2_obstacles.monitor_source_names(profile.monitor_input, profile.obstacle_clouds)
+        # and each cloud source must read its lidar's obstacle topic
+        stop = dict(stop, observation_sources=names,
+                    **{name + ".topic": nav2_obstacles.CLOUD_TOPICS[name[len("cloud_"):]]
+                       for name in names if name.startswith("cloud_")})
     if profile.obstacle_scan != "raw":             # and so must the filtered scan
         from ..perception import nav2_obstacles
         topic = {"obstacle_layer.scan.topic": nav2_obstacles.scan_topic(profile.obstacle_scan)}
