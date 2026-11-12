@@ -69,6 +69,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     - 通过：照常运行。
     - 没通过（INITIAL_POSE_MISMATCH）：运行自己停止。按给定位姿摆好车或改 --initial-pose，再重新启动。
     - 看不出朝向（AMBIGUOUS，走廊里沿走廊起步时就是这样）：照常运行，朝向只能靠上面的说明核对。
+    起点修正（--start-pose-correction apply，默认 off；用户 2026-11-12 同意）：起点检查以后，给定位姿贴图低于 50%、给定朝向下 ±0.4 m 内有贴图 60% 以上的位置时，把初始位置移到贴图离最好不超过 1% 的位置里离给定最近的那个，朝向不变，Nav2 启动前重发初始位姿。打印"起点修正：…"一行（改到哪、向前后和向车左右各多少、前后的贴图）；result.json 的 supervisor.start_check.correction 记全部数。走廊里沿走廊的位置看不出来，这个方向不改。
 10. 目标：--goal 按路线给若干个地图坐标目标；推车的人按路线走，框架只计算不执行。
 11. 记录空间：数据根剩余空间足够（每分钟约 20 MB）。结束时按一次 Ctrl-C 停止本命令：只停本命令启动的进程；收尾期间再按 Ctrl-C 不会打断，收尾完写出 result.json（supervisor.stopped = OPERATOR_INTERRUPT；车上模式这样结束是正常结束）。
 12. 运行后核对 result.json：输入状态全程 RUNNING、转发计数和自检、AMCL 收敛（与车位一致）、闸门不可信时长与原因（含原地更新次数）、闸门限速时长（gate_slow_s，第 5 级第一次闭环前要逐段复核）、各级指令与推车运动的对比；面板的录包没有被标成 PARTIAL。
@@ -149,6 +150,13 @@ def arguments(argv=None):
                         help="standing scans against the map at the start pose before Nav2 and the gate start: block "
                              "stops on INITIAL_POSE_MISMATCH and warns on AMBIGUOUS (default), strict stops on both, "
                              "warn only reports, off skips it")
+    # 总管 2026-11-12 item 3 (user 11-12 11:05): the start check's minimum-offset position correction
+    from .start_check import CORRECTION_MODES
+    shadow.add_argument("--start-pose-correction", choices=CORRECTION_MODES, default="off",
+                        help="apply: when the given pose fits the standing scans poorly (support < 0.5) and a position "
+                             "within +-0.4 m at the given heading fits (>= 0.6), move the initial position to the "
+                             "nearest of the best-fitting ones and send it to AMCL again before Nav2 starts (the "
+                             "heading stays as given); off (default) keeps the given pose")
     # Window B's smoother feedback (user 2026-11-10: gated by default; velocity timeout 0.3 s on the vehicle chain)
     shadow.add_argument("--smoother-feedback", choices=["open_loop", "gated"], default="gated",
                         help="gated: planning/velocity_feedback.py feeds the gate's output back to the smoother")
@@ -262,6 +270,8 @@ def arguments(argv=None):
             parser.error("--panel-root, --session-root and --session-id belong to --closed-loop")
         if args.front_check is None:
             args.front_check = "block" if args.closed_loop else "off"
+        if args.start_pose_correction == "apply" and args.start_check == "off":
+            parser.error("--start-pose-correction apply works on the start check's scans: not with --start-check off")
         if args.front_check_max_points is not None and not 0 <= args.front_check_max_points <= 161:
             parser.error("--front-check-max-points must be within 0..161 (the scan has 161 bins)")
         if args.scan_inside_body == "drop" and args.footprint is None:
@@ -517,6 +527,7 @@ def run_command(args, guard):
                       initial_pose_std=list(args.initial_pose_std), goals=goals, advance_radius_m=args.advance_radius,
                       max_duration_s=args.max_duration)
         config["start_check"] = args.start_check   # live/start_check.py, before Nav2 and the gate start
+        config["start_pose_correction"] = args.start_pose_correction
         from . import front_check
         config["front_check"] = {"mode": args.front_check, "max_points": args.front_check_max_points,
                                  "range_m": front_check.RANGE_M, "wall_tolerance_m": front_check.WALL_TOLERANCE_M,

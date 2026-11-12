@@ -302,6 +302,19 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 - 走廊里沿走廊起步时，扫描两头看起来一样，只能报 AMBIGUOUS（默认只警告）。要靠检查确认朝向，起步位置要选朝向分得开的地方，例如验证包起点。
 - 门限是按上面 6 种情况定的，数据不多。以后有新的起步位置要补测。
 
+起点自动修正（`--start-pose-correction off|apply`，默认 off；用户 2026-11-12 11:05 同意 D 11-12 00:15 的方案 1，总管 10:45 第 3 条；`start_check.correction`）：
+- 时机：起点检查之后、Nav2 启动之前，用起点检查同一批静止扫描。起点检查让运行停下时（INITIAL_POSE_MISMATCH 等），不做修正。
+- 规则（最小偏移）：在给定朝向下，沿车头和横向各 ±0.4 m、步长 0.025 m 的格子上算贴图（0.15 m 以内的端点比例）。
+  - 给定位姿贴图 < 0.5、格子里最好的 ≥ 0.6 时才修。
+  - 在贴图离最好不超过 0.01 的位置里，取离给定最近的。只改位置，朝向不变。
+  - 走廊里沿走廊方向贴图是平的，这条规则在那个方向基本不动；直接取最好的位置，11-11 的评估里会多出沿走廊 0.30–0.47 m 的误差。
+- 修了就用修正后的位置重发 `/initialpose`，协方差和第一次一样；AMCL 的位姿离修正位置比离给定位置近，就算收到（阶段 `start_pose_corrected`，15 s 内没收到运行停止）。
+- 记录：`result.json` 的 `supervisor.start_check.correction` 记规则参数、修正前后的贴图、沿车头和横向的修正量、地图坐标里的修正量、修正后的位姿、发了几次、AMCL 收到后的位姿；`supervisor.initial_pose.corrected_pose_map`。终端打印一行，例如“起点修正：给定位姿贴图 1%，初始位姿改到 (-0.35, -0.45)，向后 0.03 m、向车右 0.23 m，贴图 76%；朝向不变，Nav2 启动前已重发”。
+- 触发条件里的“最好”只看给定朝向。11-11 评估里规则生效的每一种情况，给定朝向下的最好都在 0.76–0.86，朝向错 3° 时也是，所以和评估的结果一样。
+- 录包回放（`--start-pose-correction apply`，`~/.kiro_work_live/shadow_replay.py`）：
+  - 11-11 20:27 的现场录制，按现场给的胶带点 (−0.323, −0.229, 0)（`reports/navigation_live_shadow/20261112T072837Z_shadow_94a8810f`）：给定位姿贴图 1%，改到 (−0.348, −0.454)，向后 0.025 m、向车右 0.225 m，贴图 76%，发 1 次 AMCL 就收到。以 AMCL 在车动过以后收敛的起点作参考，站着时 AMCL 起点的横向差从 0.21 m 降到 0.04 m（沿车头 −0.06 m）。
+  - 11-11 20:56 朝看板地图左的静止录制，给定位姿相对 C 的位姿在地图 y 上偏 0.2 m、朝向 180°（C 的是 179°）（`…073211Z_shadow_2e4cf746`）：给定位姿贴图还有 54%，规则不触发，AMCL 起点横向差 0.18 m 留着。同一段录制取另一批扫描、朝向不错时，横向偏 0.2 m 的贴图是 5–35%，规则会修，剩 0.05–0.1 m。所以给定位姿贴图 0.5 这条线在朝 −x 的胶带点附近会漏掉一部分 0.2 m 的横向偏差。
+
 ## 上车配置（freeze-config）
 
 `navigation_live_shadow freeze-config --config-root <面板的检出>` 在子进程里调用 `wc_runtime.mapping_controller.configuration()`，按面板实时建图的请求（左雷达、filtered 点云、robot_localization）解析当前配置：本机覆盖 `config/local/project/` 优先，否则仓库基础文件；外参、IMU 安装和轮参数来自选中的 `hardware_setup.json`，零偏只来自 `mapping_live.json` 的 `gyro_bias_config`。只读文件，不连设备、不起 ROS，不改 wc_runtime。结果按前端目录的格式写进 `reports/navigation_live_shadow/<时间>_config_<编号>/`：`runtime_config.json`、`prior_config.json`（先验模板加固定安装变换，和实时输入启动时写的一样）、`hardware_setup.json` 等快照、那个检出的 `config/calibration/lidar_time_offset.json` 副本，和 `frozen_configuration.json`（来源、请求、每个文件的 sha256、核对结果）。影子命令用这个目录作 `--cell`，时间偏移也取其中的副本。

@@ -607,6 +607,7 @@ class LiveSupervisor(Supervisor):
                 status = "START_CHECK_NOT_STANDING"
                 break
         scans = list(monitor.scans)
+        self.start_scans = scans if status is None else []    # --start-pose-correction uses the same scans
         result = (check.evaluate(scorer, scans, lever, cfg["initial_pose"]) if status is None
                   else {"status": status, "scans": len(scans)})
         result.update(mode=mode, standing_verified=reference is not None)
@@ -616,6 +617,44 @@ class LiveSupervisor(Supervisor):
         _say(check.operator_message(result, mode))
         if check.stops_run(result["status"], mode):
             raise StartCheckStop(result["status"])
+
+    def correct_start_pose(self, monitor):
+        """--start-pose-correction apply (总管 2026-11-12 item 3, user 11-12 11:05): the minimum-offset correction
+        (start_check.correction) on the start check's standing scans; a corrected position (heading as given) goes to
+        AMCL as the initial pose again, with the same covariance, before Nav2 starts. The result is in result.json
+        (supervisor.start_check.correction) and the operator gets one line."""
+        cfg = self.config
+        if cfg.get("start_pose_correction", "off") != "apply":
+            return
+        from . import start_check as check
+        given = cfg["initial_pose"]
+        result = check.correction(self.map_scorer(), getattr(self, "start_scans", None) or [], self.laser_lever(),
+                                  given)
+        if result["applied"]:
+            target = result["corrected_pose"]
+            covariance = self.report["initial_pose"]["covariance"]
+            sent = {"count": 0, "last": -1e9}
+
+            def taken():
+                # AMCL took it once its pose is nearer the corrected position than the given one
+                found = monitor.map_pose()
+                if sent["count"] and found is not None and (
+                        math.hypot(found[0][0] - target[0], found[0][1] - target[1])
+                        < math.hypot(found[0][0] - given[0], found[0][1] - given[1])):
+                    return True
+                if time.monotonic() - sent["last"] > 1.0:
+                    monitor.publish_initial_pose(target, covariance)
+                    sent["count"] += 1
+                    sent["last"] = time.monotonic()
+                return False
+
+            self.wait_for(monitor, taken, 15, "start_pose_corrected", allow=("bag_play",))
+            found = monitor.map_pose()
+            result.update(messages_sent=sent["count"],
+                          amcl_after=None if found is None else [round(float(v), 4) for v in found[0]])
+            self.report["initial_pose"]["corrected_pose_map"] = target
+        self.report.setdefault("start_check", {})["correction"] = result
+        _say(check.correction_message(result))
 
     def run(self):
         """Run until the source ends, the duration limit or the operator's stop; always returns the report."""
@@ -685,6 +724,7 @@ class LiveSupervisor(Supervisor):
             if profile is not None:
                 self.initial_pose(monitor)
                 self.start_check(monitor)
+                self.correct_start_pose(monitor)           # --start-pose-correction apply, before Nav2
                 self.start_front_check(monitor)            # verdicts flow before the gate starts (front_hold)
                 self.start_shadow(monitor, files, profile)
                 self.launch_module("goals", "wc_navigation.live.goals_node", files["goals"])

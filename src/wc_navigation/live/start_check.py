@@ -13,6 +13,15 @@ for the pose turned 180 deg about the axle.
 
 Modes: ``block`` (default) stops the run on a mismatch and warns on AMBIGUOUS; ``strict`` stops on both;
 ``warn`` only reports; ``off`` skips the check.
+
+Start-pose correction (``--start-pose-correction apply``, off by default; user 2026-11-12, D.md 11-12 00:15):
+on the same standing scans, ``correction`` moves the given position, never the heading, when the given pose fits
+poorly (support < 0.5) and some position within +-0.4 m along and across the given heading fits at that heading
+(>= 0.6; in every case of the 11-11 study where the rule applied this held, 0.76-0.86, also with the heading 3 deg
+off). Of the positions whose support is within 0.01 of the best, it takes the one nearest the given position. In a
+corridor the support is flat along the corridor and sharp across it, so this rule fixes the offset across the
+corridor and leaves the along-corridor position as given (taking the best instead added 0.30-0.47 m along the
+corridor in the 11-11 study); the supervisor then sends the corrected pose to AMCL before Nav2 starts.
 """
 from __future__ import annotations
 
@@ -29,6 +38,12 @@ MIN_SCANS = 10
 MODES = ("block", "strict", "warn", "off")
 STANDING_M = 0.05
 STANDING_RAD = math.radians(2.0)
+CORRECTION_MODES = ("off", "apply")
+CORRECTION_SPAN_M = 0.4           # along and across the given heading
+CORRECTION_STEP_M = 0.025
+CORRECTION_POOR = 0.5             # the given pose fits worse than this ...
+CORRECTION_GOOD = 0.6             # ... and the best position nearby, at the given heading, at least this well
+CORRECTION_TOLERANCE = 0.01       # near-best at the given heading: within this of its best
 
 
 def local_endpoints(scans):
@@ -90,6 +105,86 @@ def evaluate(scorer, scans, lever, pose, min_support=MIN_SUPPORT, margin=MIN_MAR
     else:
         result["status"] = "AMBIGUOUS"
     return result
+
+
+def support_grid(scorer, points, lever, pose, span_m=CORRECTION_SPAN_M, step_m=CORRECTION_STEP_M):
+    """(support[i_along, j_across], offsets m) of positions around base pose (x, y, yaw rad) at its heading; the
+    offsets run along and across that heading."""
+    offsets = np.round(np.arange(-span_m, span_m + 1e-9, step_m), 6)
+    along, across = (v.ravel() for v in np.meshgrid(offsets, offsets, indexing="ij"))
+    c, s = math.cos(pose[2]), math.sin(pose[2])
+    rotated = points @ np.array([[c, s], [-s, c]])
+    lx = pose[0] + c * along - s * across + c * lever[0] - s * lever[1]
+    ly = pose[1] + s * along + c * across + s * lever[0] + c * lever[1]
+    values = np.empty(len(lx))
+    for lo in range(0, len(lx), 48):
+        xy = np.stack([rotated[None, :, 0] + lx[lo:lo + 48, None], rotated[None, :, 1] + ly[lo:lo + 48, None]],
+                      axis=-1)
+        values[lo:lo + 48] = (scorer.lookup(xy) <= SUPPORT_M).mean(axis=1)
+    return values.reshape(len(offsets), len(offsets)), offsets
+
+
+def correction(scorer, scans, lever, pose):
+    """The minimum-offset start-pose correction for base pose (x, y, yaw rad) and the start check's standing scans.
+
+    Returns a dict for result.json: ``applied`` and, when applied, ``corrected_pose`` (same yaw), the offset along
+    and across the given heading and in map axes, and the support before and after; else ``reason``:
+    GIVEN_POSE_FITS, NOTHING_FITS_NEARBY, NO_DATA or GIVEN_POSE_IS_NEAREST.
+    """
+    points = local_endpoints(scans)
+    result = {"rule": "minimum_offset", "span_m": CORRECTION_SPAN_M, "step_m": CORRECTION_STEP_M,
+              "poor_below": CORRECTION_POOR, "good_from": CORRECTION_GOOD, "tolerance": CORRECTION_TOLERANCE,
+              "given_pose": [float(v) for v in pose], "scans": len(scans), "applied": False}
+    if len(scans) < MIN_SCANS or len(points) < 50:
+        result["reason"] = "NO_DATA"
+        return result
+    grid, offsets = support_grid(scorer, points, lever, pose)
+    centre = len(offsets) // 2
+    best = float(grid.max())
+    near = np.argwhere(grid >= best - CORRECTION_TOLERANCE)
+    i, j = near[int(np.argmin(np.hypot(offsets[near[:, 0]], offsets[near[:, 1]])))]
+    before = float(grid[centre, centre])
+    result.update(support_before=round(before, 3), best_nearby=round(best, 3))
+    if before >= CORRECTION_POOR:
+        result["reason"] = "GIVEN_POSE_FITS"
+        return result
+    if best < CORRECTION_GOOD:
+        result["reason"] = "NOTHING_FITS_NEARBY"
+        return result
+    along, across = float(offsets[i]), float(offsets[j])
+    if i == centre and j == centre:
+        result["reason"] = "GIVEN_POSE_IS_NEAREST"
+        return result
+    c, s = math.cos(pose[2]), math.sin(pose[2])
+    dx, dy = c * along - s * across, s * along + c * across
+    result.update(applied=True, reason=None, offset_along_m=round(along, 3), offset_across_m=round(across, 3),
+                  offset_map_m=[round(dx, 3), round(dy, 3)],
+                  corrected_pose=[round(pose[0] + dx, 4), round(pose[1] + dy, 4), float(pose[2])],
+                  support_after=round(float(grid[i, j]), 3))
+    return result
+
+
+def correction_message(result):
+    """One operator line about the start-pose correction (offsets in the chair's own directions)."""
+    reason = result.get("reason")
+    if result.get("applied"):
+        along, across = result["offset_along_m"], result["offset_across_m"]
+        moves = []
+        if abs(along) >= 0.005:
+            moves.append(("向前 %.2f m" if along > 0 else "向后 %.2f m") % abs(along))
+        if abs(across) >= 0.005:
+            moves.append(("向车左 %.2f m" if across > 0 else "向车右 %.2f m") % abs(across))
+        x, y = result["corrected_pose"][:2]
+        return ("起点修正：给定位姿贴图 %.0f%%，初始位姿改到 (%.2f, %.2f)，%s，贴图 %.0f%%；朝向不变，Nav2 启动前已重发"
+                % (100 * result["support_before"], x, y, "、".join(moves), 100 * result["support_after"]))
+    if reason == "GIVEN_POSE_FITS":
+        return "起点修正：不用改，给定位姿贴图 %.0f%%" % (100 * result["support_before"])
+    if reason == "NOTHING_FITS_NEARBY":
+        return ("起点修正：不改，给定朝向下 ±%.1f m 内最好的贴图只有 %.0f%%（要 %.0f%% 以上）。请核对车的摆放和 --initial-pose"
+                % (CORRECTION_SPAN_M, 100 * result["best_nearby"], 100 * CORRECTION_GOOD))
+    if reason == "GIVEN_POSE_IS_NEAREST":
+        return "起点修正：不改，给定位置已经是贴图最好的位置里最近的"
+    return "起点修正：不改，没有足够的静止扫描"
 
 
 def stops_run(status, mode):

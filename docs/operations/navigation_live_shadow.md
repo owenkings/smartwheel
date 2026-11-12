@@ -148,6 +148,12 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   - 收扫描时车动了（位移超过 0.05 m 或转过 2°），记 START_CHECK_NOT_STANDING，按没通过处理。
   - 其他模式：`strict` 时 AMBIGUOUS 也停；`warn` 只记录；`off` 不做。
   - 结果在 `result.json` 的 `supervisor.start_check`，也打印一行"起点检查…"给操作员。
+- 起点自动修正（`--start-pose-correction off|apply`，默认 off；用户 2026-11-12 同意，现场闭环脚本用 apply；要 `--start-check` 不是 off）：
+  - 起点检查以后、Nav2 启动以前，用同一批静止扫描。给定位姿贴图低于 50%、给定朝向下 ±0.4 m 内有贴图 60% 以上的位置时，把初始位置移到贴图离最好不超过 1% 的位置里离给定最近的那个，朝向不变，重发初始位姿（协方差不变）。
+  - 打印一行"起点修正：…"：改到哪、向前后和向车左右各多少、修正前后的贴图；不改时说原因（给定位姿贴图够好，或附近没有贴图够好的位置）。细节在 `result.json` 的 `supervisor.start_check.correction`。
+  - 走廊里沿走廊的位置从扫描看不出来，这个方向基本不改；能修的是横穿走廊的偏差。
+  - 11-11 20:27 的录制按现场的胶带点回放：横向修了 0.225 m，站着时 AMCL 起点的横向差从 0.21 m 降到 0.04 m。
+  - 朝看板地图左的胶带点附近，横向偏 0.2 m 时给定位姿的贴图有时还有 50% 以上，这时不修（docs/architecture/live_shadow.md）。
   - 门限的依据（2026-11-10，静止扫描）：
     - 验证包起点在门口、车头朝走廊对面：给定朝向 85%，掉头 0%，分得很清楚。
     - ZL1107 建图起点车头沿走廊：对的 85–86%，反了 180° 的也有 79%，分不开，这里只能报 AMBIGUOUS。

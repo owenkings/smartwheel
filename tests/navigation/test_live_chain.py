@@ -787,6 +787,88 @@ def test_start_check_reports_a_corridor_view_as_ambiguous():
     assert start_check.moved((0.0, 0.0, 0.0), (0.06, 0.0, 0.0)) and not start_check.moved((0, 0, 0), (0.02, 0, 0.01))
 
 
+def test_start_pose_correction_moves_the_position_across_the_corridor_only():
+    # 总管 2026-11-12 item 3 (user 11:05): the minimum-offset rule, position only, within +-0.4 m. These scans are
+    # exact, so every pose within about 0.1 m of the true one fits as well; the rule stops at the first of them.
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    true = (-3.0, 0.0, math.pi)                                      # looking down the corridor away from the wall
+    scans = _scans_seen_from(true, scorer)
+    given = (-3.0, 0.25, math.pi)                                    # placed 0.25 m off across the corridor
+    result = start_check.correction(scorer, scans, (0.0, 0.0), given)
+    assert result["applied"] and result["support_before"] < 0.5 and result["support_after"] >= 0.9
+    x, y, yaw = result["corrected_pose"]
+    assert abs(y) <= 0.15 and x == pytest.approx(-3.0, abs=1e-6) and yaw == given[2]   # along: as given
+    assert 0.1 <= result["offset_across_m"] <= 0.25 and result["offset_along_m"] == 0.0
+    text = start_check.correction_message(result)
+    assert "向车左" in text and "朝向不变" in text and "向前" not in text and "向后" not in text
+    fits = start_check.correction(scorer, scans, (0.0, 0.0), true)
+    assert not fits["applied"] and fits["reason"] == "GIVEN_POSE_FITS"
+    assert start_check.correction_message(fits).startswith("起点修正：不用改")
+    far = start_check.correction(scorer, scans, (0.0, 0.0), (-3.0, 0.7, math.pi))     # beyond +-0.4 m
+    assert not far["applied"] and far["reason"] == "NOTHING_FITS_NEARBY"
+    assert "60%" in start_check.correction_message(far)
+    assert start_check.correction(scorer, scans[:3], (0.0, 0.0), given)["reason"] == "NO_DATA"
+
+
+def test_start_pose_correction_fixes_both_directions_where_the_view_has_a_wall_ahead():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    true = (1.0, 0.0, 0.0)                                           # the wall across the corridor 3 m ahead
+    scans = _scans_seen_from(true, scorer)
+    result = start_check.correction(scorer, scans, (0.0, 0.0), (1.25, -0.25, 0.0))
+    assert result["applied"] and result["corrected_pose"][:2] == pytest.approx([1.0, 0.0], abs=0.15)
+    assert result["offset_along_m"] < 0 and result["offset_across_m"] > 0
+    text = start_check.correction_message(result)
+    assert "向后" in text and "向车左" in text
+
+
+def test_start_pose_correction_option(tmp_path):
+    from wc_navigation.live import cli
+    argv = _closed_argv(tmp_path)
+    shadow = argv[:argv.index("--closed-loop")]
+    assert cli.arguments(shadow).start_pose_correction == "off"                       # default: as before
+    assert cli.arguments(_closed_argv(tmp_path)).start_pose_correction == "off"       # the closed loop too
+    assert cli.arguments(_closed_argv(tmp_path, "--start-pose-correction", "apply")).start_pose_correction == "apply"
+    with pytest.raises(SystemExit):
+        cli.arguments(shadow + ["--start-pose-correction", "apply", "--start-check", "off"])   # needs the scans
+    with pytest.raises(SystemExit):
+        cli.arguments(shadow + ["--start-pose-correction", "on"])
+
+
+def test_start_pose_correction_sends_the_corrected_pose_until_amcl_takes_it(tmp_path):
+    from types import SimpleNamespace
+    from wc_navigation.live import start_check
+    from wc_navigation.live.supervisor import LiveSupervisor
+    scorer = _start_check_scorer()
+    scans = _scans_seen_from((-3.0, 0.0, math.pi), scorer)
+    given = [-3.0, 0.25, math.pi]
+    sent, pose = [], {"now": tuple(given)}
+
+    def publish(p, covariance):
+        sent.append((list(p), list(covariance)))
+        if len(sent) == 2:                                           # AMCL takes the second message
+            pose["now"] = tuple(p)
+    monitor = SimpleNamespace(map_pose=lambda: (pose["now"], 0.0), publish_initial_pose=publish,
+                              spin=lambda s: None, now=lambda: 0.0)
+    config = {"initial_pose": given, "start_pose_correction": "apply"}
+    run = LiveSupervisor(tmp_path, tmp_path, config)
+    run.t0 = 0.0
+    run.start_scans, run.report["initial_pose"] = scans, {"covariance": [0.0625] * 36}
+    run.report["start_check"] = {"status": "AMBIGUOUS"}
+    run.map_scorer, run.laser_lever, run.check_alive = (lambda: scorer), (lambda: (0.0, 0.0)), (lambda allow=(): None)
+    run.correct_start_pose(monitor)
+    correction = run.report["start_check"]["correction"]
+    assert correction["applied"] and correction["messages_sent"] == 2 and len(sent) == 2
+    assert sent[0][0] == correction["corrected_pose"] and sent[0][1] == [0.0625] * 36   # same covariance
+    assert run.report["initial_pose"]["corrected_pose_map"] == correction["corrected_pose"]
+    assert [s["stage"] for s in run.report["stages"]][-1] == "start_pose_corrected"
+    off = LiveSupervisor(tmp_path / "off", tmp_path / "off", {"initial_pose": given})
+    off.correct_start_pose(monitor)                                   # off by default: nothing sent, nothing written
+    assert len(sent) == 2 and "start_check" not in off.report
+    assert start_check.CORRECTION_MODES == ("off", "apply")
+
+
 def test_run_files_are_copied_from_the_work_directory_and_kept_when_a_copy_fails(tmp_path, monkeypatch):
     import shutil
     from wc_navigation.live.cli import move_run_files
