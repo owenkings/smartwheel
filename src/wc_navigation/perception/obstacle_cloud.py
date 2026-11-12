@@ -29,6 +29,27 @@ Stages, in order (each removed point is counted under the first stage that drops
    it. Without a verdict, only small clusters (``floating_max_points`` points,
    ``floating_max_extent_m`` across) are dropped as ``floating``; large overhangs
    such as table edges are kept.
+5a. ``seen_through`` (off by default, ``witness_scope`` "all"): the remaining
+   clusters that stage 5 did not judge (supported ones) are judged by the witness as
+   well. A cluster is dropped when the other lidar saw through at least
+   ``witness_min_share`` of its voxels and hit fewer than ``WITNESS_CONFIRM_SHARE`` of
+   them. Two guards keep what could be real: clusters larger than
+   ``unsupported_max_points`` (walls, large furniture), and clusters standing on the
+   floor, i.e. with a return of the same lidar between ``min_height_m`` and
+   ``seen_through_floor_m`` within ``cluster_voxel_m`` (x, y) of their points, from
+   any stage (so legs that stage 3 drops beyond 2 m still count). Meant for
+   phase-wrap ghosts of the XT-M60 (12 MHz: a surface 12.5-18.5 m away returns
+   0-6 m away along the same ray, fixed in the world; they hang 0.5-1.3 m above the
+   floor, and other ghost points beneath them make them "supported", so stage 5 does
+   not judge them; status/C.md 2026-11-12). A real object stops the other lidar's
+   rays at or before it, so it is hit or not judged. What it can still wrongly drop:
+   a real thing that does not stand on the floor in this lidar's view (an overhang
+   without visible legs, a hanging object) and is at most 400 points, when the other
+   lidar's beams pass beside or through it (thinner than the beam spacing, a mesh,
+   glass), when the two lidars' relative mounting is off by more than about 0.1 m,
+   or when the other lidar returns a wrong far value there. A ghost lying in front of
+   the other lidar is usually not judged (that lidar's own wrapped return stops its
+   ray before the ghost) and stays.
 6. ``transient`` (off by default, ``persist_min_age_s`` > 0): an unsupported cluster
    that survived stage 5 is dropped when less than ``persist_min_share`` of its
    voxels had a candidate of the same lidar at the same world position
@@ -50,6 +71,9 @@ import numpy as np
 
 AXLE_HEIGHT_M = 0.185        # drive-wheel hub centre above the floor, measured 2026-10-05
 STAGES = ("height", "range", "far_low", "body", "contradicted", "floating", "transient", "sparse")
+WITNESS_SCOPES = ("unsupported", "all")
+# A cluster with at least this share of its voxels hit by the other lidar counts as confirmed (seen by both).
+WITNESS_CONFIRM_SHARE = 0.3
 # The shadow runs' 161-bin scan (amcl_replay.build_scan): +-60 deg in 0.75 deg bins, 0.3-8 m.
 SCAN_ANGLE_MIN, SCAN_INCREMENT, SCAN_BINS = -math.pi / 3, math.pi / 240, 161
 SCAN_RANGE_M = (0.30, 8.0)
@@ -78,6 +102,10 @@ class ObstacleFilter:
     floating_min_gap_m: float = 0.30
     unsupported_max_points: int = 400   # larger unsupported clusters are always kept
     witness_min_share: float = 0.5      # share of a cluster's voxels the other lidar saw through
+    # Clusters the witness judges: "unsupported" (stage 5 only, the default) or "all" (stage 5a as well).
+    witness_scope: str = "unsupported"
+    # Stage 5a keeps a cluster with a return of the same lidar between min_height_m and this height in its column.
+    seen_through_floor_m: float = 0.25
     # Stage "transient": 0 = off; otherwise the age window of the same lidar's earlier frames checked.
     persist_min_age_s: float = 0.0
     persist_max_age_s: float = 2.0
@@ -131,9 +159,27 @@ class ObstacleFilter:
             raise ValueError("clearing settings out of range")
         if self.scan_max_range_m > SCAN_RANGE_M[1]:
             raise ValueError("scan_max_range_m cannot exceed the scan's 8 m")
+        if self.witness_scope not in WITNESS_SCOPES:
+            raise ValueError("witness_scope must be one of " + ", ".join(WITNESS_SCOPES))
+        floor_m = float(self.seen_through_floor_m)
+        if not (math.isfinite(floor_m) and self.min_height_m < floor_m <= 1.0):
+            raise ValueError("seen_through_floor_m must be above min_height_m and at most 1 m")
+        object.__setattr__(self, "seen_through_floor_m", floor_m)
 
     def as_dict(self):
-        return asdict(self)
+        values = asdict(self)
+        if self.witness_scope == "unsupported":
+            values.pop("witness_scope")     # the default: recorded settings stay as before the option
+            if self.seen_through_floor_m == 0.25:
+                values.pop("seen_through_floor_m")
+        return values
+
+    @property
+    def stage_order(self):
+        """Stage names in the order they drop points (``seen_through`` only while witness_scope is "all")."""
+        if self.witness_scope == "all":
+            return STAGES[:6] + ("seen_through",) + STAGES[6:]
+        return STAGES
 
     @property
     def floor_z_base(self):
@@ -235,6 +281,29 @@ def unsupported_clusters(base, h, keep, horizontal, lever_z, cfg):
             continue
         out.append((members, len(members), float(max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1])))))
     return out
+
+
+def all_clusters(base, keep, voxel_m):
+    """Every 26-connected cluster of the kept points on ``voxel_m`` voxels: a list of index arrays into ``base``.
+
+    Same voxels and connectivity as ``unsupported_clusters``; empty when the grid would be implausibly large.
+    """
+    from scipy import ndimage
+    idx = np.flatnonzero(keep)
+    if not len(idx):
+        return []
+    keys = _voxel_keys(base[idx], voxel_m)
+    k = keys - keys.min(axis=0)
+    shape = k.max(axis=0) + 1
+    if np.prod(shape) > 4_000_000:
+        return []
+    grid = np.zeros(tuple(shape), dtype=bool)
+    grid[k[:, 0], k[:, 1], k[:, 2]] = True
+    labels, _ = ndimage.label(grid, structure=np.ones((3, 3, 3), dtype=bool))
+    point_label = labels[k[:, 0], k[:, 1], k[:, 2]]
+    order = np.argsort(point_label, kind="stable")
+    bounds = np.flatnonzero(np.r_[True, point_label[order][1:] != point_label[order][:-1], True])
+    return [idx[order[bounds[i]:bounds[i + 1]]] for i in range(len(bounds) - 1)]
 
 
 def clearing_rays(points, lever, exclude, cfg=ObstacleFilter()):
@@ -353,7 +422,7 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
             if through >= cfg.witness_min_share:
                 contradicted[members] = True
                 continue
-            if hit >= 0.3:
+            if hit >= WITNESS_CONFIRM_SHARE:
                 confirmed += 1
                 continue
         if size <= cfg.floating_max_points and extent <= cfg.floating_max_extent_m:
@@ -362,6 +431,24 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     stats["unsupported_confirmed_by_witness"] = confirmed
     drop("contradicted", contradicted)
     drop("floating", floating)
+    seen_through = np.zeros(len(p), dtype=bool)
+    if cfg.witness_scope == "all":
+        judged = 0
+        if witness is not None:
+            from scipy.spatial import cKDTree
+            # returns just above the floor, from any stage (also those far_low dropped): what stands on the floor
+            low = np.flatnonzero((h >= cfg.min_height_m) & (h <= cfg.seen_through_floor_m))
+            floor_tree = cKDTree(base[low, :2]) if len(low) else None
+            for members in all_clusters(base, keep, cfg.cluster_voxel_m):
+                if len(members) > cfg.unsupported_max_points:
+                    continue                    # large structure: never judged (as in stage 5)
+                if floor_tree is not None and any(floor_tree.query_ball_point(base[members, :2], cfg.cluster_voxel_m)):
+                    continue                    # stands on the floor: people, furniture, door leaves
+                judged += 1
+                if witness.seen_through(base[members], cfg.witness_min_share, WITNESS_CONFIRM_SHARE):
+                    seen_through[members] = True
+        stats["clusters_judged_by_witness"] = judged
+        drop("seen_through", seen_through)
     result = {}
     transient = np.zeros(len(p), dtype=bool)
     if cfg.persist_min_age_s > 0:
@@ -414,7 +501,7 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     stats["voxels"] = int(len(out))
     result.update(points=out, stats=stats)
     if clearing:
-        result["rays"] = clearing_rays(p, lever, contradicted | floating | transient, cfg)
+        result["rays"] = clearing_rays(p, lever, contradicted | floating | seen_through | transient, cfg)
         stats["clearing_rays"] = int(len(result["rays"]))
     return result
 

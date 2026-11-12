@@ -23,6 +23,8 @@ from . import live_obstacles as lo
 from .obstacle_cloud import ObstacleFilter
 
 MATCH_NS = 1_000_000
+# Stage counts that exist only with a non-default filter option (witness_scope "all"), summarised when logged.
+OPTIONAL_STAT_KEYS = ("clusters_judged_by_witness", "removed_seen_through")
 STAT_KEYS = ("unsupported_clusters", "unsupported_confirmed_by_witness", "removed_contradicted", "removed_floating",
              "removed_transient", "voxels")
 
@@ -158,9 +160,11 @@ def summarize(records, entries):
         if published:
             entry["witness_share"] = round(float(np.mean([r["witness"] for r in published])), 3)
             entry["recent_share"] = round(float(np.mean([r["recent"] for r in published])), 3)
+            keys = STAT_KEYS + tuple(k for k in OPTIONAL_STAT_KEYS
+                                     if any(k in (r.get("stats") or {}) for r in published))
             entry["per_frame"] = {k: round(float(np.mean([(r.get("stats") or {}).get(k, 0) if k != "voxels"
                                                           else r["voxels"] for r in published])), 2)
-                                  for k in STAT_KEYS}
+                                  for k in keys}
         out["sides"][side] = entry
     out["pose_timeouts"] = len({r["cycle"] for r in records if r["pose_timeout"]})
     return out

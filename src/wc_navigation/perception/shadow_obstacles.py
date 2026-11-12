@@ -26,7 +26,7 @@ import numpy as np
 from . import frontend_frames
 from .consensus import RecentFrames, Witness, move, planar_relative
 from .nav2_obstacles import CLEAR_TOPICS, CLOUD_FRAMES, CLOUD_TOPICS, FILTERED_SCAN_TOPIC, SIDES
-from .obstacle_cloud import SCAN_BINS, STAGES, ObstacleFilter, body_outline, filter_frame
+from .obstacle_cloud import SCAN_BINS, ObstacleFilter, body_outline, filter_frame
 
 SYMMETRIC_RIGHT_NOTE = ("right lever arm mirrored from the left mount (CAD-symmetric housing) instead of the "
                         "frozen 2026-10-26 field extrinsic, which puts the right lidar about 8.6 cm further forward")
@@ -183,7 +183,7 @@ def prepare(left_frames, left_runtime, sides=("left", "right"), right_cell=None,
                 "topics": {s: CLOUD_TOPICS[s] for s in sides}, "clearing_topics": {s: CLEAR_TOPICS[s] for s in sides},
                 "filtered_scan_topic": FILTERED_SCAN_TOPIC if scan else None,
                 "frames": {s: CLOUD_FRAMES[s] for s in sides},
-                "stage_order": list(STAGES), "totals": totals,
+                "stage_order": list(cfg.stage_order), "totals": totals,
                 "right_lever_note": SYMMETRIC_RIGHT_NOTE if lever_basis.get("right") == "SYMMETRIC_TO_LEFT_MOUNT"
                 else None}
     out["obstacle_settings"] = np.asarray(json.dumps(settings))
