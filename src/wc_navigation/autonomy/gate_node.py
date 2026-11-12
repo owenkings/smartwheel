@@ -23,6 +23,10 @@ Vehicle closed loop (D.md 2026-11-10 16:45; all off by default, simulation and s
 - ``GateConfig.front_hold`` (the live chain's ``--front-check block``): /wc_live/front_check must report the free
   space ahead as clear, within ``front_check_timeout_s``, from each enable rising edge until the first ACTIVE; else
   START_BLOCKED.
+- ``GateConfig.require_obstacles`` (the closed loop with window C's 3D obstacle input): the input's status
+  /wc_live/inputs_status/obstacles (latched, every 0.5 s) must say RUNNING and must have been received at most
+  ``obstacles_status_timeout_s`` ago on the gate's age clock (``obstacles_health``); else OBSTACLES_UNTRUSTED, on
+  every cycle, also while the chair drives. The gate passes again as soon as the input runs again.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ NOMOTION_SERVICE = "/request_nomotion_update"
 BASE_STATUS_TOPIC = "/wc_nav/base_status"
 BASE_STATUS_SCHEMA = "wc_base_status_relay_v1"     # window A's base bridge (wc_motion.auto_bridge.RELAY_SCHEMA)
 FRONT_CHECK_TOPIC = "/wc_live/front_check"         # live/front_check.TOPIC (importing it here pulls in numpy only)
+OBSTACLES_STATUS_TOPIC = "/wc_live/inputs_status/obstacles"   # perception.live_obstacles.STATUS_TOPIC (window C)
 SOURCE_TOPICS = ("/wc_nav/enable", "/wc_nav/estop")
 CLOCKS = ("ros", "monotonic")
 TF_FUTURE_TOLERANCE_S = 0.05       # monotonic clock mode: a map->base_link stamp further ahead of now is stale
@@ -67,6 +72,19 @@ def base_status_verdict(status, mono_ns, timeout_s):
         reason = status.get("reason")
         return False, reason if reason in ("BASE_NOT_AUTO", "BASE_STATUS_STALE") else "BASE_NOT_AUTO"
     return True, ""
+
+
+def obstacles_health(value, received, now, timeout_s):
+    """(ok, reason, age_s) of window C's 3D obstacle input for GateConfig.require_obstacles.
+
+    ``value``: the last status (parsed JSON; None before the first one), ``received``: when it came, on the same
+    clock as ``now`` (None before the first one). The verdict is window C's ``live_obstacles.input_health``: only a
+    RUNNING status received at most ``timeout_s`` ago is ok.
+    """
+    from ..perception.live_obstacles import input_health
+    age = None if received is None else float(now) - float(received)
+    ok, reason = input_health(value, age, timeout_s)
+    return ok, reason, age
 
 
 def endpoint_name(info):
@@ -124,6 +142,11 @@ class GateNode:
         if cfg.front_hold:
             # the live chain's front check (latched, 2 Hz and on every change), see live/front_check.py
             node.create_subscription(String, FRONT_CHECK_TOPIC, self.on_front_check, latched_qos())
+        self.obstacles, self.obstacles_time, self.obstacles_messages = None, None, 0
+        self.obstacles_verdict = (False, "OBSTACLES_NO_STATUS", None)
+        if cfg.require_obstacles:
+            # window C's 3D obstacle input (latched; every 0.5 s on its steady clock), see obstacles_health
+            node.create_subscription(String, OBSTACLES_STATUS_TOPIC, self.on_obstacles_status, latched_qos())
         self.sources = {}
         self.covariance_ok, self.covariance_reason = (not cfg.require_covariance), "NO_COVARIANCE_YET"
         if cfg.require_covariance:
@@ -170,6 +193,14 @@ class GateNode:
         self.front = {k: value.get(k) for k in ("points", "max_points", "clear", "nearest_m", "mode")} \
             if isinstance(value, dict) else {}
 
+    def on_obstacles_status(self, message):
+        self.obstacles_messages += 1
+        try:
+            self.obstacles = json.loads(message.data)
+        except ValueError:
+            self.obstacles = {"role": None}            # input_health: OBSTACLES_STATUS_INVALID
+        self.obstacles_time = self.age_now()
+
     def tick(self):
         stamp_ns = self.node.get_clock().now().nanoseconds
         now = stamp_ns * 1e-9
@@ -203,6 +234,10 @@ class GateNode:
                 self.gate.on_localization(True)
         if cfg.require_base:
             self.gate.on_base(*base_status_verdict(self.base_status, time.monotonic_ns(), cfg.base_status_timeout_s))
+        if cfg.require_obstacles:
+            self.obstacles_verdict = obstacles_health(self.obstacles, self.obstacles_time, age_now,
+                                                      cfg.obstacles_status_timeout_s)
+            self.gate.on_obstacles(*self.obstacles_verdict[:2])
         if cfg.enable_source_node:
             self.sources = {topic: [endpoint_name(e) for e in self.node.get_publishers_info_by_topic(topic)]
                             for topic in SOURCE_TOPICS}
@@ -251,6 +286,12 @@ class GateNode:
                 status["sources"] = {"node": cfg.enable_source_node, "publishers": self.sources}
             if cfg.front_hold:
                 status["front"] = self.front
+            if cfg.require_obstacles:
+                value = self.obstacles if isinstance(self.obstacles, dict) else {}
+                ok, reason, age = self.obstacles_verdict
+                status["obstacles"] = {"ok": ok, "reason": reason, "age_s": None if age is None else round(age, 3),
+                                       "messages": self.obstacles_messages, "state": value.get("state"),
+                                       "stale_inputs": value.get("stale_inputs"), "failure": value.get("failure")}
             self.status.publish(json_message(status))
             self.last_state, self.last_status = decision.state, age_now
 

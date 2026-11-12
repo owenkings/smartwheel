@@ -232,6 +232,12 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
   - block 下这时点“开始自动”，轮控所有者照常进 AUTO，闸门在 `START_BLOCKED(FRONT_NOT_CLEAR)` 输出零，车不动。挡着的人走开、判定变空，闸门放行，车起步。只在每次开始（使能上升）到第一次放行之间查；车动起来以后，前方的东西归 Nav2 和碰撞监控。
   - 站着时“影子判断”也会显示 `START_BLOCKED(FRONT_NOT_CLEAR)`。warn 只提示，不拦。
   - 2026-11-11 20:27 那次的录制上量是 34–40 点；11-07 验证录制的门口起点（朝走廊对面墙）是 8 点。
+- 三维障碍输入检查（总管 2026-11-12 D2 第 1 条；开了 `--obstacle-*` 的闭环自动打开，没有选项）：
+  - 状态行写“三维障碍输入 正常，延迟中位 N ms”。没有状态、状态超过 1.5 s 没更新、STALE（某台雷达或 /odom 停了）、FAILED 时写“……：不要开始自动”，闸门在 `OBSTACLES_UNTRUSTED(原因)` 输出零。
+  - 行进中也一样，车会停下。输入恢复正常以后闸门自己放行，车按轮控所有者的加速度上限重新起步。
+  - FAILED 不会自己恢复：按 Ctrl-C 结束，看运行目录的 `obstacles.jsonl` 和 `logs/obstacles.log`，再重新启动。
+  - /scan 停了由定位条件管：约 1 s 后闸门报 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)`。
+  - 障碍节点卡住几秒时，/scan 也可能跟着停（录包干跑里见过，雷达帧走共享内存传输）。闸门照样停车，但不会自己恢复：按 Ctrl-C 结束，再重新启动。
 - 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）、闸门各状态的计数和 `front_check`（开始前站着时的点数）。
 - 桥自己退出（例如轮控所有者 FAULT 结束了会话）时，运行停止：`supervisor.stopped` 是 `BASE_BRIDGE_EXITED`，`supervisor.stop_reason` 写一句原因，终端也打印这一句，例如“底盘桥退出（退出码 1：wheel owner closed the automatic control socket）；轮控所有者最后报 STOPPING（FEEDBACK_OVERSPEED）；会话轮控日志：NOT_STATIONARY_AFTER_STOP”。细节在 `closed_loop.bridge_exit`。
 

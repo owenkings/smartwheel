@@ -81,6 +81,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     使能和急停只能由桥发：/wc_nav/enable、/wc_nav/estop 的发布者不止桥一个时，闸门停在 DISABLED（ENABLE_SOURCE_AMBIGUOUS）。
     车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
     读哪个扫描：开组合方案（--obstacle-scan filtered）时读 C 的过滤扫描 /obstacles/left/scan，状态行写"车前空地（过滤扫描）"，默认门限 3；否则读 /scan，默认门限 10。走廊里 /scan 上的折叠假点有 18–40 点，读 /scan 时会一直拦。1 s 没有新扫描时也写"不要开始自动"（FRONT_SCAN_STALE）。
+    三维障碍输入（开了 --obstacle-* 的闭环，2026-11-12）：状态行写"三维障碍输入 正常，延迟中位 N ms"。没有状态、状态 1.5 s 没更新、STALE（某台雷达或 /odom 停了）或 FAILED 时写"不要开始自动"，闸门停在 OBSTACLES_UNTRUSTED、输出零，行进中也一样；恢复正常以后闸门自己放行。FAILED 是锁住的，不会自己恢复：按 Ctrl-C 结束，再重新启动。
 15. 点"开始自动"：底盘进 AUTO 后闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。车动过以后，目标失败不自动重发。
 16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数、最后的底盘状态和车前空地的点数。
     桥自己退出时（例如轮控所有者 FAULT 结束了会话），运行停止，supervisor.stopped 是 BASE_BRIDGE_EXITED，supervisor.stop_reason 写一句原因（桥的退出原因、轮控所有者最后报的状态、会话轮控日志里的故障），终端也打印这一句。
