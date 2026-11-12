@@ -11,6 +11,14 @@ tolerance keeps a start pose that is off by up to that much from turning the sid
 verdict uses the median count of the last ``frames`` scans: more than ``max_points`` is "not clear"; no pose is "not
 clear" too. Measured 2026-11-11 (D.md 23:40): 25-43 points in the corridor with the phase wrap, 8 at the
 validation recording's doorway start facing across the corridor (no wrap there).
+
+The check reads /scan, or window C's filtered scan when the run publishes it (``--obstacle-scan filtered``, the
+combined scheme; 总管 2026-11-12 item 4): the same 161 bins in the laser frame, built from the left lidar's
+filtered 3D obstacle points, where the corridor's fold ghosts are gone. Its default limit is FILTERED_MAX_POINTS:
+a person written into both lidars' recorded frames 1-3 m ahead (0.24-0.40 m wide, 1.7 m tall) gives 5-18 points
+there, the cleared corridor facing map -x 0-1 (medians of 10 scans, D.md 2026-11-12). On /scan the same corridor
+gives 18-23 ghost points, so the limit of 10 there always holds the start. A verdict on scans older than STALE_S
+is not clear.
 """
 from __future__ import annotations
 
@@ -27,7 +35,10 @@ WALL_TOLERANCE_M = 0.30
 BODY_MARGIN_M = 0.05
 FRAMES = 10
 MAX_POINTS = 10
+FILTERED_MAX_POINTS = 3        # on the filtered scan (see above)
+SCAN_TOPIC = "/scan"
 POSE_MAX_AGE_S = 1.0
+STALE_S = 1.0                  # no new scan for longer: not clear (FRONT_SCAN_STALE)
 
 
 def _inside_body(points, footprint, radius_m, margin):
@@ -70,7 +81,7 @@ class FrontCheck:
     """Counts of the last ``frames`` scans and the verdict published on TOPIC."""
 
     def __init__(self, scorer, lever, footprint=(), radius_m=0.55, mode="block", max_points=MAX_POINTS,
-                 range_m=RANGE_M, wall_tolerance_m=WALL_TOLERANCE_M, frames=FRAMES):
+                 range_m=RANGE_M, wall_tolerance_m=WALL_TOLERANCE_M, frames=FRAMES, topic=SCAN_TOPIC):
         if mode not in MODES or mode == "off":
             raise ValueError("front check mode must be block or warn")
         if type(max_points) is not int or max_points < 0:
@@ -78,12 +89,17 @@ class FrontCheck:
         self.scorer, self.lever, self.footprint, self.radius_m = scorer, tuple(lever), list(footprint or ()), radius_m
         self.mode, self.max_points, self.range_m = mode, max_points, float(range_m)
         self.wall_tolerance_m = float(wall_tolerance_m)
+        self.topic = str(topic)                  # the scan read: /scan or window C's filtered scan
         self.counts = deque(maxlen=int(frames))
         self.nearest = deque(maxlen=int(frames))
         self.no_pose = 0
+        self.last_scan_s = None
 
-    def add_scan(self, ranges, angle_min, increment, pose):
-        """One /scan with the map pose of base_link at that time (None: not localized)."""
+    def add_scan(self, ranges, angle_min, increment, pose, time_s=None):
+        """One scan with the map pose of base_link at that time (None: not localized); ``time_s``: when it arrived,
+        on the clock ``verdict`` gets (its age decides FRONT_SCAN_STALE)."""
+        if time_s is not None:
+            self.last_scan_s = float(time_s)
         if pose is None:
             self.counts.clear()
             self.nearest.clear()
@@ -99,15 +115,19 @@ class FrontCheck:
         """The message published on TOPIC (a dict for std_msgs/String JSON)."""
         value = {"schema": SCHEMA, "time_s": round(float(time_s), 3), "stamp_mono_ns": int(mono_ns),
                  "mode": self.mode, "max_points": self.max_points, "range_m": self.range_m,
-                 "wall_tolerance_m": self.wall_tolerance_m, "frames": len(self.counts)}
+                 "wall_tolerance_m": self.wall_tolerance_m, "frames": len(self.counts), "topic": self.topic}
         if not self.counts:
             value.update(points=None, last=None, nearest_m=None, clear=False, reason="NO_POSE_OR_SCAN")
             return value
         points = int(np.median(self.counts))
         nearest = [n for n in self.nearest if n is not None]
         clear = points <= self.max_points
+        reason = None if clear else "FRONT_NOT_CLEAR"
+        age = None if self.last_scan_s is None else float(time_s) - self.last_scan_s
+        if age is not None and age > STALE_S:
+            clear, reason = False, "FRONT_SCAN_STALE"
         value.update(points=points, last=int(self.counts[-1]), nearest_m=(min(nearest) if nearest else None),
-                     clear=clear, reason=None if clear else "FRONT_NOT_CLEAR")
+                     clear=clear, reason=reason, scan_age_s=None if age is None else round(age, 3))
         return value
 
 
@@ -127,9 +147,12 @@ def operator_text(value):
     """The status line's part: the median count, the limit and, when not clear, what to do."""
     if not value:
         return "车前空地 未算"
+    name = "车前空地" if value.get("topic", SCAN_TOPIC) == SCAN_TOPIC else "车前空地（过滤扫描）"
     if value.get("points") is None:
-        return "车前空地 没有位姿或扫描"
-    text = "车前空地 %d 点" % value["points"]
+        return name + " 没有位姿或扫描"
+    if value.get("reason") == "FRONT_SCAN_STALE":
+        return name + " %.1f s 没有新扫描：不要开始自动" % float(value.get("scan_age_s") or 0.0)
+    text = name + " %d 点" % value["points"]
     if value.get("clear"):
         return text + "（门限 %d）" % value["max_points"]
     nearest = value.get("nearest_m")

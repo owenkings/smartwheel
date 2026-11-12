@@ -1195,6 +1195,25 @@ def test_front_check_verdict_is_the_median_of_the_last_scans():
     check.add_scan(walls, a0, inc, None)                               # lost the pose: no verdict until scans again
     assert check.verdict(7, 3.0)["clear"] is False and check.no_pose == 1
     assert front_check.operator_text(None) == "车前空地 未算"
+    # 总管 2026-11-12 item 4: the filtered scan, and a verdict on old scans is not clear
+    filtered = front_check.FrontCheck(scorer, (0.0, 0.0), (), 0.55, mode="block",
+                                      max_points=front_check.FILTERED_MAX_POINTS, frames=5, topic="/obstacles/left/scan")
+    for t in (10.0, 10.2, 10.4):
+        filtered.add_scan(walls, a0, inc, (0.0, 0.0, 0.0), time_s=t)
+    value = filtered.verdict(8, 10.9)
+    assert (value["clear"], value["topic"], value["scan_age_s"]) == (True, "/obstacles/left/scan", 0.5)
+    assert front_check.operator_text(value) == "车前空地（过滤扫描） 0 点（门限 3）"
+    value = filtered.verdict(9, 11.6)
+    assert (value["clear"], value["reason"], value["points"]) == (False, "FRONT_SCAN_STALE", 0)
+    assert front_check.operator_text(value) == "车前空地（过滤扫描） 1.2 s 没有新扫描：不要开始自动"
+    assert front_check.parse(json.dumps(value)) == (False, "FRONT_SCAN_STALE")
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=11.7)    # a person or ghosts on the filtered scan
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=11.9)
+    assert filtered.verdict(10, 12.0)["clear"] is True                  # median of 5: 0 0 0 11 11
+    filtered.add_scan(ghosts, a0, inc, (0.0, 0.0, 0.0), time_s=12.1)
+    value = filtered.verdict(11, 12.2)
+    assert (value["clear"], value["reason"], value["points"]) == (False, "FRONT_NOT_CLEAR", 11)
+    assert check.verdict(12, 3.0)["topic"] == "/scan" and "scan_age_s" not in check.verdict(12, 3.0)
     for bad in ({"mode": "off"}, {"mode": "block", "max_points": -1}, {"mode": "block", "max_points": 1.5}):
         with pytest.raises(ValueError):
             front_check.FrontCheck(scorer, (0, 0), **bad)
@@ -1206,6 +1225,14 @@ def test_front_check_options_and_the_gate_hold(tmp_path):
     from wc_navigation.live.supervisor import LiveSupervisor
     closed = cli.arguments(_closed_argv(tmp_path))
     assert (closed.front_check, closed.front_check_max_points) == ("block", 10)     # closed loop: block
+    assert closed.front_check_topic == "/scan"
+    # 总管 2026-11-12 item 4: with the combined scheme it reads window C's filtered scan, with its own default limit
+    combined = ["--obstacle-input", "scan", "--obstacle-scan", "filtered", "--obstacle-monitor", "cloud"]
+    args = cli.arguments(_closed_argv(tmp_path, *combined))
+    assert (args.front_check_topic, args.front_check_max_points) == ("/obstacles/left/scan", 3)
+    assert cli.arguments(_closed_argv(tmp_path, *combined, "--front-check-max-points", "6")).front_check_max_points == 6
+    monitor_only = cli.arguments(_closed_argv(tmp_path, "--obstacle-monitor", "cloud"))     # no filtered scan
+    assert (monitor_only.front_check_topic, monitor_only.front_check_max_points) == ("/scan", 10)
     argv = _closed_argv(tmp_path)
     shadow = cli.arguments(argv[:argv.index("--closed-loop")])
     assert shadow.front_check == "off"                                               # the shadow: unchanged
@@ -1237,6 +1264,19 @@ def test_closed_loop_line_shows_the_front_check():
     assert "车前空地 36 点 > 门限 10，最近 1.17 m：不要开始自动" in line
     assert "车前空地 2 点（门限 10）" in closed_loop_line({TOPIC: dict(value, points=2, clear=True)})
     assert "车前空地" not in closed_loop_line({})
+    filtered = dict(value, points=6, max_points=3, nearest_m=2.4, topic="/obstacles/left/scan")
+    assert "车前空地（过滤扫描） 6 点 > 门限 3，最近 2.40 m：不要开始自动" in closed_loop_line({TOPIC: filtered})
+
+
+def test_front_check_report_names_the_scan_it_read():
+    from types import SimpleNamespace
+    from wc_navigation.live.supervisor import front_check_report
+    front = SimpleNamespace(mode="block", max_points=3, topic="/obstacles/left/scan", no_pose=0)
+    monitor = SimpleNamespace(front=front, front_value={"points": 0}, front_before_start=[0, 1, 0])
+    report = front_check_report(monitor)
+    assert (report["topic"], report["max_points"], report["before_start"]) == (
+        "/obstacles/left/scan", 3, {"samples": 3, "min": 0, "median": 0, "max": 1})
+    assert front_check_report(SimpleNamespace(front=None, front_value=None)) == {"mode": "off"}
 
 
 def test_the_bridge_exit_is_told_with_its_reasons(tmp_path):

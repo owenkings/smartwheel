@@ -199,10 +199,15 @@ class LiveMonitor:
         self.gate_was_active = False
 
     def setup_front_check(self, check):
-        """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck)."""
+        """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck); a check on
+        another topic than /scan (window C's filtered scan) gets its own subscription."""
         from std_msgs.msg import String
+        from .front_check import SCAN_TOPIC
         self.front = check
         self.front_pub = self.node.create_publisher(String, FRONT_TOPIC, latched_qos())
+        if check.topic != SCAN_TOPIC:
+            from sensor_msgs.msg import LaserScan
+            self.node.create_subscription(LaserScan, check.topic, self._front_scan, 10)
         self.node.create_timer(0.5, self._publish_front)
 
     def _publish_front(self, changed_only=False):
@@ -232,13 +237,18 @@ class LiveMonitor:
 
     def _on_scan(self, message):
         self.scans.append((list(message.ranges), float(message.angle_min), float(message.angle_increment)))
-        if self.front is not None:
-            found = self.map_pose()
-            pose = None
-            if found is not None and abs(self.now() - found[1]) <= 1.0:   # front_check.POSE_MAX_AGE_S
-                pose = found[0]
-            self.front.add_scan(message.ranges, message.angle_min, message.angle_increment, pose)
-            self._publish_front(changed_only=True)
+        if self.front is not None and self.front.topic == "/scan":          # front_check.SCAN_TOPIC
+            self._front_scan(message)
+
+    def _front_scan(self, message):
+        """One scan of the front check's topic with the map pose of base_link now (None when older than 1 s)."""
+        now = self.now()
+        found = self.map_pose()
+        pose = None
+        if found is not None and abs(now - found[1]) <= 1.0:   # front_check.POSE_MAX_AGE_S
+            pose = found[0]
+        self.front.add_scan(message.ranges, message.angle_min, message.angle_increment, pose, time_s=now)
+        self._publish_front(changed_only=True)
 
     def _on_odom(self, message):
         from ..autonomy.ros_util import quaternion_to_yaw
@@ -554,7 +564,8 @@ class LiveSupervisor(Supervisor):
         monitor.setup_front_check(FrontCheck(
             self.map_scorer(), self.laser_lever(), profile.get("footprint") or (), profile.get("radius_m", 0.55),
             mode=settings["mode"], max_points=int(settings["max_points"]), range_m=settings["range_m"],
-            wall_tolerance_m=settings["wall_tolerance_m"], frames=settings["frames"]))
+            wall_tolerance_m=settings["wall_tolerance_m"], frames=settings["frames"],
+            topic=settings.get("topic", "/scan")))
 
     def check_alive(self, allow=()):
         """The base bridge first: its exit (closed loop) is told apart, with the reason (BridgeExited)."""
@@ -908,8 +919,8 @@ def front_check_report(monitor):
     if counts:
         ordered = sorted(counts)
         summary = {"samples": len(ordered), "min": ordered[0], "median": ordered[len(ordered) // 2], "max": ordered[-1]}
-    return {"mode": monitor.front.mode, "max_points": monitor.front.max_points, "before_start": summary,
-            "last": value, "no_pose_scans": monitor.front.no_pose}
+    return {"mode": monitor.front.mode, "max_points": monitor.front.max_points, "topic": monitor.front.topic,
+            "before_start": summary, "last": value, "no_pose_scans": monitor.front.no_pose}
 
 
 def closed_loop_report(status):
