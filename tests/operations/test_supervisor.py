@@ -30,7 +30,8 @@ def identity(pid):
         text = Path(f'/proc/{pid}/stat').read_text()
         fields = text[text.rindex(')')+2:].split()
         return fields[19], fields[0]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # A process that exits between open and read gives ESRCH: it is gone, like a missing entry.
         return None
 
 

@@ -5,6 +5,7 @@
 #include <functional>
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QJsonObject>
 #include <QSet>
 #include <QStringList>
@@ -55,6 +56,15 @@ private:
   void receive_status(const QJsonObject & status);
   bool send(const QJsonObject & value);
   bool send_keys();
+  // One WASD key went down or up after debouncing: update keys_ and tell the backend.
+  void key_changed(int key, bool pressed);
+  // Releases wait kReleaseDebounceMs for the same key to come back (NoMachine sends a held key as
+  // real release/press pairs without the auto-repeat flag, 2026-11-11).
+  void release_due();
+  void schedule_release();
+  void flush_releases();
+  void forget_released();
+  void clear_keys();
   void tick();
   void transport_failed(const QString & reason, bool retry = true);
   void render();
@@ -75,8 +85,11 @@ private:
   QPushButton * push_button_;
   QLocalSocket * socket_;
   QTimer * timer_;
+  QTimer * release_timer_ = nullptr;
   QByteArray incoming_;
   QSet<int> keys_;
+  QHash<int, qint64> pending_release_;  // key still in keys_ -> release due time on release_clock_ (ms)
+  QElapsedTimer release_clock_;
   QElapsedTimer status_age_;
   QElapsedTimer connection_age_;
   QElapsedTimer retry_age_;

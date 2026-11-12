@@ -24,7 +24,7 @@ export WC_AUTO_DRIVE_APPROVAL=APPROVED_BY_USER_<当天>
 R=/media/nvidia/tiany-USB/wheelchair
 ```
 - 录制都用面板"数据录制"的常规录制（双雷达），前缀写在各步里，后缀照常勾上。第 4 步写了 `auto_controls` 以后不开实时建图：建图会话也会带上它，一开始就读驱动器。
-- "开始自动"：在终端运行 `python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start`（`bash ~/wheelchair_coord/field/auto_start.sh` 是同一个命令），然后 10 s 内点进 RViz 窗口，之后不要再点别的窗口。自动只在 RViz 窗口有焦点时跑：点出 RViz（包括点回终端）自动立即停。命令会一直打印状态，到 `auto AUTO` 或者"refused"为止。`... status` 看当前状态。
+- "开始自动"：在终端运行 `python3 -m wc_runtime.auto_operator --project-root ~/wheelchair start`（`bash ~/wheelchair_coord/field/auto_start.sh` 是同一个命令），然后 30 s 内点进 RViz 窗口（11-11 前是 10 s），之后不要再点别的窗口。自动只在 RViz 窗口有焦点时跑：点出 RViz（包括点回终端）自动立即停。命令会一直打印状态，到 `auto AUTO` 或者"refused"为止。`... status` 看当前状态。
 - 自动中按了急停：第 5、7 步等终端 1 打出 `OWNER_STOPPED: the owner left AUTO: WHEELS_STOPPED_WHILE_COMMANDED` 再复位；第 9 步没有这行输出，一律先在 RViz 按空格再复位。
 - 急停和拔 USB 每次都用手机录视频（架空拍轮子，落地拍整车和地上的胶带）。视频存着、记下文件名，不作证据文件的来源（见第 4 步）。
 - 每一步做完，把终端输出、观察到的情况和视频发给总管。
@@ -126,7 +126,7 @@ A 把 `stage` 改成 `SUPERVISED_CLOSED_LOOP`，加 `braking`：软件零速（`
 前提：第 0–8 步做完，第 8 步的检查 PASS；面板已开常规录制（前缀 `ZLauto_loop`，双雷达），设备都就绪。车放在 11-07 建图起点的胶带处，朝向按脚本里说的放。
 1. 终端 1：`bash ~/wheelchair_coord/field/run_closed_loop.sh`。它找面板的录制会话、冻结面板当前的配置并核对、问你同不同意（输入 `yes`），然后起闸门、Nav2 和底盘桥。不要另起 `wc_motion.auto_bridge`：两个桥会让闸门停在 `ENABLE_SOURCE_AMBIGUOUS`。
 2. 站着看每秒一行的"闭环状态"约 30 s。预期：闸门 `DISABLED(OPERATOR_ENABLE_OFF)`、底盘不在 AUTO、急停否、目标 `NAVIGATING`，"影子判断"是"会放行 0.10 m/s …"。起点检查没通过、定位不可信、影子判断方向不对：不要开始自动，按 Ctrl-C。
-3. 都对：终端 2 `bash ~/wheelchair_coord/field/auto_start.sh`，然后 10 s 内点进 RViz 窗口。车直走约 4 m 到目标。
+3. 都对：终端 2 `bash ~/wheelchair_coord/field/auto_start.sh`，然后 30 s 内点进 RViz 窗口。车直走约 4 m 到目标。
 4. 停车：RViz 里按空格（车上的有线键盘也行），或者按急停；点出 RViz 也会立即停。按了急停以后，一律先在 RViz 按空格，再复位急停。必须停下的情况同上；另外闸门以外的任何东西让车动了，也停下。
 5. 低速（B 问的）：看车到点前（0.05 m/s 以下）和原地转（0.30 rad/s，减速框里约 0.05 rad/s）时动不动。A 事后从录制的轮控日志里查这几段的指令和轮速，写进结果。
 6. 结束：按 Ctrl-C（先停桥，轮控所有者写零，再停其他进程），然后在面板结束录制。

@@ -83,7 +83,8 @@ COMMANDED_WHEEL_M_S, WHEELS_STOPPED_S = 0.05, 0.3   # emergency stop on the driv
 WHEELS_STOPPED_SHARE = 0.2        # ... when both wheels read below this share of the faster wheel's command
 OVERSPEED_FACTOR, OVERSPEED_S = 1.2, 0.2            # wheel feedback above 1.2 x the approved rpm for 0.2 s
 START_PENDING_S = 1.0             # operator start held while the gate unlatches on the new enable edge
-OPERATOR_WAIT_S = 10.0            # a command-line start waits this long for the RViz window to have the focus
+OPERATOR_WAIT_S = 30.0            # a command-line start waits this long for the RViz window to have the focus
+                                  # (10 s until 2026-11-11: too short to click through NoMachine)
 OPERATOR_CLIENTS, OPERATOR_LINE_S = 4, 1.0   # operator.sock: clients at a time, seconds to send the request line
 INFERRED_ESTOP_HOLD_S = 0.5       # an inferred hardware emergency stop is reported this long, so the gate latches
 ACTIVE_STATES = ('INITIALIZING', 'AUTO', 'STOPPING')
