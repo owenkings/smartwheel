@@ -22,7 +22,7 @@ import time
 import numpy as np
 
 from .actors import SimActors
-from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel
+from .kinematics import BaseLimits, DiffDriveSim, OdometryErrorModel, WheelDrive, WheelResponse
 from .nav2_config import CMD_GATED
 from .ros_util import (compose, inverse, json_message, latched_qos, load_config, require_isolated_domain,
                        yaw_to_quaternion)
@@ -94,8 +94,10 @@ class Simulator:
         start = tuple(float(v) for v in config["start_pose"])
         if self.world.body_collides(start, self.body):
             raise ValueError("start pose collides with the simulated world")
+        # Optional measured wheel response (--drive-response): base_limits are then the wheel owner's ramps.
+        wheels = WheelDrive(WheelResponse(**config["wheel_response"])) if config.get("wheel_response") else None
         self.base = DiffDriveSim(start, BaseLimits(**config.get("base_limits", {})),
-                                 OdometryErrorModel(**config.get("odometry", {})))
+                                 OdometryErrorModel(**config.get("odometry", {})), wheels=wheels)
         self.rng = np.random.default_rng(int(config.get("seed", 0)))
         self.rtf = float(config.get("real_time_factor", 1.0))
         if not 0.1 <= self.rtf <= 4.0:
@@ -179,11 +181,14 @@ class Simulator:
         if self.sim_time + 1e-9 >= self.next_status:
             self.next_status += 1.0
             x, y, yaw = self.base.pose
-            self.status_pub.publish(json_message({
+            status = {
                 "sim_time_s": round(self.sim_time, 3), "pose": [x, y, yaw],
                 "distance_m": self.base.distance_m, "collisions": self.base.collisions,
                 "real_time_factor_measured": (self.sim_time - self.start_time) / max(1e-6, time.monotonic() - self.wall_start),
-                "hardware_control": False}))
+                "hardware_control": False}
+            if self.base.wheels is not None:
+                status["drive_response"] = self.base.wheels.summary()
+            self.status_pub.publish(json_message(status))
 
     def _odometry(self, frame, child, pose, v, w, stamp):
         message = self.Odometry()

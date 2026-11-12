@@ -107,6 +107,13 @@ def add_planning_arguments(parser):
     parser.add_argument("--people-keepout", action="store_true",
                         help="with --people-reaction: also a keepout zone in both costmaps around people standing "
                              "still for 3 s (off by default: in the corridor it closes the way and the goal fails)")
+    from .stack import DEFAULT_REPLANNING, REPLANNING
+    parser.add_argument("--replanning", choices=REPLANNING, default=DEFAULT_REPLANNING,
+                        help="periodic (default, unchanged): the behaviour tree plans again every second; "
+                             "on_invalid: it keeps the path until the goal changes or Humble's IsPathValid finds it "
+                             "blocked. IsPathValid checks the padded outline, which a NavFn path within about 0.45 m "
+                             "of an obstacle always touches, so there it replans every second too; in the 11-11 "
+                             "simulations it did not reduce the side flips around a swaying pedestrian")
 
 
 def resolve_planning_arguments(parser, args):
@@ -123,7 +130,8 @@ def resolve_planning_arguments(parser, args):
                                        rescue_planner="" if args.planner_rescue == "none" else args.planner_rescue,
                                        local_padding_m=args.local_padding, smoother_feedback=args.smoother_feedback,
                                        smoother_timeout_s=args.smoother_timeout,
-                                       people_reaction=args.people_reaction, people_keepout=args.people_keepout)
+                                       people_reaction=args.people_reaction, people_keepout=args.people_keepout,
+                                       replanning=args.replanning)
         check_installed(args.planning)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))

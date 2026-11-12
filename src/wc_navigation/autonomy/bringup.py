@@ -159,6 +159,10 @@ class Recorder:
             node.create_subscription(String, topic, lambda m, t=topic: self._event(t.rsplit("/", 1)[-1], m),
                                      latched_qos())
         node.create_subscription(OccupancyGrid, "/map", self._on_map, latched_qos())
+        # window B: every global plan (map frame, every 2nd pose), for replanning and side-flip counts
+        from nav_msgs.msg import Path as PathMsg
+        self.plans = []
+        node.create_subscription(PathMsg, "/plan", self._on_plan, 10)
         from geometry_msgs.msg import PoseWithCovarianceStamped
         self.PoseWithCovarianceStamped = PoseWithCovarianceStamped
         self.initial_pose_pub = node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
@@ -179,6 +183,12 @@ class Recorder:
 
     def _on_map(self, message):
         self.map_messages += 1
+
+    def _on_plan(self, message):
+        if len(self.plans) < 5000 and message.poses:
+            poses = message.poses[::2] + ([message.poses[-1]] if len(message.poses) % 2 == 0 else [])
+            self.plans.append({"time_s": round(self.now(), 3), "frame": message.header.frame_id,
+                               "xy": [[round(p.pose.position.x, 3), round(p.pose.position.y, 3)] for p in poses]})
 
     def _event(self, kind, message):
         try:
@@ -390,6 +400,9 @@ class Supervisor:
             # Same body as the costmaps and the collision monitor: the circle or the profile outline.
             "collision_body": Body.from_profile(profile, source=cfg.get("body_model")).as_config(),
             "odometry": cfg["odometry"], "real_time_factor": cfg["real_time_factor"], "seed": cfg["seed"]}
+        if cfg.get("drive_response"):                          # window B: --drive-response (measured wheels)
+            sim.update(wheel_response=dict(cfg["drive_response"]["wheel_response"]),
+                       base_limits=dict(cfg["drive_response"]["base_limits"]))
         if mode == "navigate" and truth_localization(cfg):
             sim["map_to_odom_from_truth"] = {"world_T_map": list(cfg["world_T_map"])}
         if cfg.get("tracks"):                                   # window B: --tracks truth (actors as tracks)
@@ -552,7 +565,8 @@ class Supervisor:
             if recorder is not None:
                 self.report["recorded"] = {"rows": recorder.rows, "events": recorder.events,
                                            "final_gate_status": recorder.gate_status,
-                                           "final_sim_status": recorder.sim_status}
+                                           "final_sim_status": recorder.sim_status,
+                                           "plans": recorder.plans}
                 recorder.close()
             if context.ok():
                 context.shutdown()
