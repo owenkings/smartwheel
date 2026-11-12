@@ -541,6 +541,16 @@ class LiveSupervisor(Supervisor):
                                        "messages_sent": published["count"]}
         self.start_odom = monitor.odom_pose          # where the chair stood when AMCL took the start pose
 
+    def input_config(self, role):
+        """Configuration of one live input process (``scan`` or ``odometry``, inputs_node.py)."""
+        cfg = self.config
+        value = {"role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
+                 "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
+                 "lidar_time_offset_ms": cfg["lidar_time_offset_ms"], "source_prefix": cfg.get("source_prefix", "")}
+        if role == "scan" and cfg.get("scan_body"):
+            value["scan_body"] = cfg["scan_body"]       # --scan-inside-body drop (总管 2026-11-12 item 5); off by default
+        return value
+
     def map_scorer(self):
         """The saved map's distance to the nearest occupied cell (start check and front check share it)."""
         if getattr(self, "_map_scorer", None) is None:
@@ -636,11 +646,8 @@ class LiveSupervisor(Supervisor):
                                   capture_output=True, text=True, timeout=10.0)
         self.report["package_versions"] = versions.stdout.strip().splitlines()
         (self.output / "logs").mkdir()
-        files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, {
-                     "role": role, "use_sim_time": cfg["use_sim_time"], "live": cfg["live_config_file"],
-                     "scan_rate_hz": cfg.get("scan_rate_hz", 10.0), "odom_period_s": cfg.get("odom_period_s", 0.02),
-                     "lidar_time_offset_ms": cfg["lidar_time_offset_ms"],
-                     "source_prefix": cfg.get("source_prefix", "")}) for role in INPUT_ROLES}
+        files = {"inputs_" + role: self.node_config("inputs_%s_config" % role, self.input_config(role))
+                 for role in INPUT_ROLES}
         files.update({
                  "recorder": self.node_config("recorder_config", {
                      "use_sim_time": cfg["use_sim_time"], "output_dir": str(self.output),

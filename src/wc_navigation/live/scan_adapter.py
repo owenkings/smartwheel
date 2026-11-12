@@ -95,12 +95,48 @@ def reference_points(message, filter_config, transforms, rotation):
     return (xyz[finite] @ np.asarray(rotation, dtype=float).T).astype(np.float32), report
 
 
-def scan_from_source(message, filter_config, transforms, rotation, height_band=SCAN_HEIGHT_M):
-    """Return (ranges float32[161], stats) for one SourceFrame; the message is not modified."""
+def scan_body(outline, lever, axle_height_m, max_height_m):
+    """Settings of ``drop_inside_body`` (``--scan-inside-body drop``; 总管 2026-11-12 item 5): the body outline in
+    base_link, the lidar origin in base_link (x, y, z), the floor ``axle_height_m`` below base_link and the height
+    above the floor up to which the body reaches (window C's ObstacleFilter.body_max_height_m)."""
+    outline = [[float(x), float(y)] for x, y in outline]
+    lever = [float(v) for v in lever]
+    if len(outline) < 3 or len(lever) != 3 or not all(math.isfinite(v) for p in outline for v in p):
+        raise ValueError("the scan's body needs an outline of at least three points and the lidar's x, y, z")
+    return {"outline": outline, "lever": lever, "axle_height_m": float(axle_height_m),
+            "max_height_m": float(max_height_m)}
+
+
+def drop_inside_body(reference, body):
+    """(points, number dropped): reference points (base_link axes at the lidar) without those inside the body.
+
+    The 3D obstacle input's stage ``body`` (window C's obstacle_cloud: inside the convex outline, up to the body's
+    height above the floor) on the /scan cloud. On 2026-11-11 the left lidar's near ring (0.31-0.35 m from it,
+    0.86 m above the floor, 0.15-0.20 m behind the outline's front edge) put 4 bins into the collision monitor's
+    stop zone in one of 220 standing scans facing map -x; the 3D input already drops them here (C.md 11-12 01:45).
+    """
+    from ..perception.obstacle_cloud import inside_convex
+    points = np.asarray(reference)
+    base = points.astype(np.float64) + np.asarray(body["lever"], dtype=float)
+    inside = inside_convex(base[:, :2], body["outline"]) & (base[:, 2] + body["axle_height_m"] <= body["max_height_m"])
+    return points[~inside], int(inside.sum())
+
+
+def scan_from_source(message, filter_config, transforms, rotation, height_band=SCAN_HEIGHT_M, body=None):
+    """Return (ranges float32[161], stats) for one SourceFrame; the message is not modified.
+
+    ``body`` (``scan_body``, None by default): points inside the body outline are dropped before the projection,
+    so a bin keeps the nearest return outside the body (stats ``inside_body_dropped``).
+    """
     from ..amcl_replay import build_scan
     reference, report = reference_points(message, filter_config, transforms, rotation)
+    dropped = None
+    if body is not None:
+        reference, dropped = drop_inside_body(reference, body)
     ranges, stats = build_scan(reference.astype(np.float64), *height_band)
     stats["filter_retained_points"] = report.get("retained_points")
+    if dropped is not None:
+        stats["inside_body_dropped"] = dropped
     return ranges, stats
 
 

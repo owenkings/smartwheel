@@ -91,6 +91,10 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
 
 一条命令按序启动：记录器、扫描与里程计进程、map_server + AMCL（框架参数或 `--amcl-params`），由监督进程按操作员方式发初始位姿（`--initial-pose`，标准差 `--initial-pose-std` 默认 0.25 m、8.6°）并做起点检查（见下），再起 Nav2 各服务器（参数读回核对）、平滑器反馈节点和安全闸门，最后启动目标序列（`--goal X Y YAW_DEG` 可重复；录包检验可用 `--goals-along-cell` 沿冻结前端的路线每 `--goal-spacing` 米取一个目标）。推车的人走近当前目标 `--advance-radius`（默认 1 m）内就换下一个。闸门的定位条件用 `--gate-correction-limits`、`--gate-covariance-limits`、`--gate-correction-reference`、`--gate-covariance-mode`、`--gate-slow-limits`，默认与闸门本身相同。闸门输出 `/wc_nav/cmd_vel_gated` 只有平滑器反馈节点订阅；监督进程发送使能心跳，只是为了记录“闸门会放行什么”。
 
+- /scan 去掉车体里面的点（总管 2026-11-12 第 5 条；`--scan-inside-body keep|drop`，默认 keep，和以前一样）：drop 时生成 /scan 前去掉实测外形（`--footprint`，必须给）里面、离地 1.60 m 以下的点，和三维障碍输入的车体那一级一样；那一格改用外形以外最近的回波。
+  - 起因：左雷达的近点圈（离雷达 0.31–0.35 m、离地 0.86 m，在车头前沿里面）在 11-11 20:56 朝看板地图左的静止录制里，220 帧有 1 帧让 4 格进了碰撞监控的停车区，碰撞监控会停一个周期。drop 以后是 0 帧。
+  - 开组合方案（`--obstacle-monitor cloud`）时碰撞监控读三维点云，那里车体一级已经去掉了这些点；/scan 只给 AMCL 用，这个选项对碰撞监控没有影响。
+  - 改不改默认值由用户定，证据在 docs/architecture/live_shadow.md。
 - 平滑器反馈（2026-11-10 起默认，用户决定）：`--smoother-feedback gated` 时，Nav2 读回之后起窗口 B 的反馈节点 `wc_velocity_feedback`，等 `/wc_nav/smoother_feedback` 有发布者再起闸门。它把闸门输出转成平滑器的反馈：闸门停车后平滑器从静止重新起步。
   - `--smoother-feedback open_loop` 退回开环；`--smoother-timeout S` 是平滑器的速度超时（默认 0.3 s，0.2–5 s）。
   - 读回核对包括平滑器的 `feedback`、`odom_topic`、`velocity_timeout`；逐周期记录在 `velocity_feedback.csv`，实际用的值在 `run_config.json`。

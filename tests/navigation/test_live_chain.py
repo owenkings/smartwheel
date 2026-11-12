@@ -201,6 +201,53 @@ def test_host_filter_drops_isolated_returns_before_projection():
     assert np.isfinite(ranges).sum() >= 8 and np.nanmin(ranges[np.isfinite(ranges)]) == pytest.approx(2.0, abs=1e-5)
 
 
+_MEASURED_OUTLINE = [[0.81, 0.2425], [0.2, 0.35], [-0.255, 0.35], [-0.255, -0.35], [0.2, -0.35], [0.81, -0.2425]]
+
+
+def test_scan_inside_body_drop_keeps_the_nearest_return_outside_the_body():
+    # 总管 2026-11-12 item 5: the left lidar's near ring (0.31 m ahead of it, 0.86 m above the floor) is inside the
+    # measured outline; with the body given, its bin keeps the wall behind it
+    from wc_navigation.live.scan_adapter import drop_inside_body, scan_body, scan_from_source
+    body = scan_body(_MEASURED_OUTLINE, (0.323, 0.229, 0.675), 0.185, 1.60)
+    ring, wall, left, high = [0.31, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.33, 0.0], [0.31, 0.0, 1.0]
+    points = np.array([ring, wall, left, high], dtype=np.float32)
+    kept, dropped = drop_inside_body(points, body)
+    assert dropped == 1 and kept.tolist() == points[1:].tolist()   # beside the body and above it (1.86 m) stay
+    grid = np.array([ring, wall] * 20, dtype=float)
+    message = source_frame(organized_cloud(grid, 4, 10))
+    config = {"cloud_filter": {"enabled": False}, "mapping_enabled": True}
+    keep, stats = scan_from_source(message, config, {"T_base_axle": np.eye(4).tolist()}, np.eye(3))
+    drop, stats_drop = scan_from_source(message, config, {"T_base_axle": np.eye(4).tolist()}, np.eye(3), body=body)
+    ahead = 80                                                       # 0 deg
+    assert keep[ahead] == pytest.approx(0.31) and drop[ahead] == pytest.approx(1.0)
+    assert "inside_body_dropped" not in stats and stats_drop["inside_body_dropped"] == 20
+    with pytest.raises(ValueError):
+        scan_body(_MEASURED_OUTLINE[:2], (0.3, 0.2, 0.7), 0.185, 1.6)
+
+
+def test_scan_inside_body_option_needs_the_outline_and_reaches_only_the_scan_input(tmp_path):
+    from wc_navigation.live import cli
+    from wc_navigation.live.supervisor import LiveSupervisor
+    outline = [str(v) for p in _MEASURED_OUTLINE for v in p]
+    argv = _closed_argv(tmp_path)
+    shadow = argv[:argv.index("--closed-loop")]
+    assert cli.arguments(shadow).scan_inside_body == "keep"           # default: /scan as before
+    assert cli.arguments(_closed_argv(tmp_path, "--scan-inside-body", "drop", "--footprint", *outline)
+                         ).scan_inside_body == "drop"
+    with pytest.raises(SystemExit):
+        cli.arguments(_closed_argv(tmp_path, "--scan-inside-body", "drop"))         # no measured outline
+    lever = np.eye(4)
+    lever[:3, 3] = (0.323, 0.229, 0.675)
+    body = cli.scan_body_settings(_MEASURED_OUTLINE, {"T_base_axle": np.linalg.inv(lever).tolist()})
+    assert body["lever"] == pytest.approx([0.323, 0.229, 0.675]) and body["max_height_m"] == 1.60
+    assert body["axle_height_m"] == 0.185 and body["outline"] == _MEASURED_OUTLINE
+    config = {"use_sim_time": True, "live_config_file": "live.json", "lidar_time_offset_ms": 75.0}
+    plain = LiveSupervisor(tmp_path, tmp_path, config)
+    assert "scan_body" not in plain.input_config("scan") and "scan_body" not in plain.input_config("odometry")
+    dropping = LiveSupervisor(tmp_path, tmp_path, dict(config, scan_body=body))
+    assert dropping.input_config("scan")["scan_body"] == body and "scan_body" not in dropping.input_config("odometry")
+
+
 # -- odometry adapter ----------------------------------------------------------------------------------
 def test_axle_pose_is_the_reference_moved_back_by_the_lever():
     pose = np.eye(4)

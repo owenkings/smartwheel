@@ -188,6 +188,11 @@ def arguments(argv=None):
     shadow.add_argument("--front-check-max-points", type=int, metavar="N",
                         help="most points still counted as clear, median of the last 10 scans (default %d on /scan, "
                              "%d on the filtered scan)" % (FRONT_MAX_POINTS, FILTERED_MAX_POINTS))
+    # 总管 2026-11-12 item 5: the left lidar's near ring inside the body outline on /scan (off by default)
+    shadow.add_argument("--scan-inside-body", choices=("keep", "drop"), default="keep",
+                        help="/scan points inside the body outline (--footprint) up to the body's height: keep (default, "
+                             "as before) or drop, like the 3D obstacle input's body stage; a bin then keeps its "
+                             "nearest return outside the body")
     shadow.add_argument("--panel-root", type=Path, help="closed loop: the panel's checkout (its session sockets)")
     shadow.add_argument("--session-root", type=Path, help="closed loop: directory of the running panel session")
     shadow.add_argument("--session-id", help="closed loop: identity of that session")
@@ -259,6 +264,8 @@ def arguments(argv=None):
             args.front_check = "block" if args.closed_loop else "off"
         if args.front_check_max_points is not None and not 0 <= args.front_check_max_points <= 161:
             parser.error("--front-check-max-points must be within 0..161 (the scan has 161 bins)")
+        if args.scan_inside_body == "drop" and args.footprint is None:
+            parser.error("--scan-inside-body drop needs the measured outline (--footprint)")
         try:
             args.gate_covariance = covariance_mode_settings(args.gate_covariance_mode, slow_limits, max_linear)
         except ValueError as exc:
@@ -283,6 +290,16 @@ def arguments(argv=None):
     if args.command == "shadow":
         front_check_source(args)
     return args
+
+
+def scan_body_settings(footprint, live):
+    """``--scan-inside-body drop``: the measured outline, the left lidar's origin in base_link (from the live
+    configuration's T_base_axle) and the 3D obstacle input's floor and body height (window C's ObstacleFilter)."""
+    from ..perception.obstacle_cloud import ObstacleFilter
+    from .scan_adapter import scan_body
+    lever = np.linalg.inv(np.asarray(live["T_base_axle"], dtype=float))[:3, 3]
+    defaults = ObstacleFilter()
+    return scan_body(footprint, lever, defaults.axle_height_m, defaults.body_max_height_m)
 
 
 def front_check_source(args):
@@ -505,6 +522,8 @@ def run_command(args, guard):
                                  "range_m": front_check.RANGE_M, "wall_tolerance_m": front_check.WALL_TOLERANCE_M,
                                  "frames": front_check.FRAMES, "topic": args.front_check_topic}
         config["smoother_feedback"], config["smoother_timeout_s"] = args.smoother_feedback, args.smoother_timeout
+        if args.scan_inside_body == "drop":
+            config["scan_body"] = scan_body_settings(args.footprint, live)
         if closed_loop:
             config["closed_loop"] = closed_loop
             config.update(open_loop=False, hardware_control=True, commands_sent=True)
