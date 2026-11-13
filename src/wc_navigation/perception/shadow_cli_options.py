@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .nav2_obstacles import OBSTACLE_INPUTS, OBSTACLE_SCANS, SIDES
-from .obstacle_cloud import ObstacleFilter
+from .obstacle_cloud import WRAP_DELETE_NOT_WIRED, ObstacleFilter
 
 # The same bound as the live chain and the AMCL replay (live.scan_adapter.MAX_LIDAR_TIME_OFFSET_MS).
 MAX_LIDAR_TIME_OFFSET_MS = 250.0
@@ -99,6 +99,8 @@ def check_arguments(parser, args):
         args.obstacle_filter_settings = ObstacleFilter(**json.loads(args.obstacle_filter))
     except (TypeError, ValueError) as exc:
         parser.error("--obstacle-filter: " + str(exc))
+    if args.obstacle_filter_settings.wrap_delete:
+        parser.error("--obstacle-filter: " + WRAP_DELETE_NOT_WIRED)
     if not args.obstacle_sides:
         args.obstacle_sides = ["left", "right"] if args.obstacle_right_cell else ["left"]
     if "right" in args.obstacle_sides and not args.obstacle_right_cell:
@@ -220,6 +222,23 @@ def add_live_arguments(parser, inputs=False):
         group.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     else:
         _add_monitor_base_shift(group)
+        from .ultrasonic import MODES
+        group.add_argument("--monitor-ultrasonic", choices=tuple(MODES), default="off",
+                           help="ultrasonic modules the collision monitor reads as range sources (a further brake): "
+                                "off (default), front (the two facing ahead) or all (also the two side ones). Needs "
+                                "window A's Range topics, relayed by window D on the vehicle; see "
+                                "docs/architecture/obstacle_avoidance.md")
+
+
+def ultrasonic_profile_fields(args):
+    """NavProfile fields of --monitor-ultrasonic: the modules, and the relay's prefix on the vehicle or in a relay
+    test (the live command's source_prefix, live/cli.py)."""
+    from .ultrasonic import MODES
+    probes = MODES[getattr(args, "monitor_ultrasonic", "off") or "off"]
+    if not probes:
+        return {}
+    relayed = getattr(args, "source", None) == "vehicle" or bool(getattr(args, "relay_test", False))
+    return {"monitor_ultrasonic": probes, "monitor_ultrasonic_prefix": "/wc_live/relayed" if relayed else ""}
 
 
 def check_live_arguments(parser, args):
@@ -247,12 +266,15 @@ def check_live_arguments(parser, args):
         settings = ObstacleFilter(**json.loads(args.obstacle_filter))
     except (TypeError, ValueError) as exc:
         parser.error("3D obstacle input: " + str(exc))
+    if settings.wrap_delete:
+        parser.error("3D obstacle input: " + WRAP_DELETE_NOT_WIRED)
     args.obstacle_live = {"plan": plan, "config": timing, "filter": settings}
 
 
 def live_profile_fields(args):
-    """NavProfile fields of the live shadow command (obstacle input and the monitor's base shift)."""
-    fields = _base_shift_field(args)
+    """NavProfile fields of the live shadow command (obstacle input, the monitor's base shift, slowdown box and
+    ultrasonic sources)."""
+    fields = dict(_base_shift_field(args), **ultrasonic_profile_fields(args))
     live = getattr(args, "obstacle_live", None)
     if live is None:
         return fields

@@ -24,7 +24,7 @@ import uuid
 import numpy as np
 
 from . import frontend_frames, shadow_obstacles
-from .obstacle_cloud import ObstacleFilter, body_outline
+from .obstacle_cloud import WRAP_DELETE_NOT_WIRED, ObstacleFilter, body_outline
 from .tracks import CLASSES, StaticMap, Tracker, TrackerConfig
 
 
@@ -160,6 +160,8 @@ def arguments(argv=None):
         args.tracker = TrackerConfig(**json.loads(args.tracker))
     except (TypeError, ValueError) as exc:
         parser.error(str(exc))
+    if args.filter.wrap_delete:
+        parser.error("--filter: " + WRAP_DELETE_NOT_WIRED)
     return args
 
 

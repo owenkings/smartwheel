@@ -17,7 +17,7 @@ import time
 from ..autonomy.ros_util import json_message, latched_qos, load_config
 from . import live_obstacles as lo
 from .nav2_obstacles import pointcloud2
-from .obstacle_cloud import ObstacleFilter
+from .obstacle_cloud import WRAP_DELETE_NOT_WIRED, ObstacleFilter
 
 
 def _stamp_ns(stamp):
@@ -37,6 +37,10 @@ def _yaw(q):
 
 class ObstacleInput:
     def __init__(self, node, config):
+        entries = config["obstacles"]
+        settings = ObstacleFilter(**entries["filter"])
+        if settings.wrap_delete:            # the commands refuse it; a hand-edited run_config must not slip through
+            raise ValueError(WRAP_DELETE_NOT_WIRED)
         from geometry_msgs.msg import TransformStamped
         from nav_msgs.msg import Odometry
         from rclpy.clock import Clock, ClockType
@@ -46,10 +50,8 @@ class ObstacleInput:
         from tf2_ros import StaticTransformBroadcaster
         from wc_interfaces.msg import SourceFrame
         self.node = node
-        entries = config["obstacles"]
         live = config["live"]
-        self.plan, self.cfg, self.filter = entries["plan"], lo.LiveObstacleConfig(**entries["config"]), \
-            ObstacleFilter(**entries["filter"])
+        self.plan, self.cfg, self.filter = entries["plan"], lo.LiveObstacleConfig(**entries["config"]), settings
         self.body = [tuple(p) for p in entries["body"]]
         self.geometry = entries["geometry"]
         self.host_filter = live["filter"]

@@ -331,11 +331,32 @@ def persistence_histories(sides, cfg=ObstacleFilter()):
                 if cfg.persist_min_age_s > 0 else None) for s in sides}
 
 
-def process_cycle(released, clouds, geometry, plan, cfg=ObstacleFilter(), body=(), histories=None):
+def wrap_witness(received, relative, other_lever, empty_reach_m=6.5):
+    """``consensus.EchoWitness`` of the other lidar's received frame, moved into the filtered frame's base_link.
+
+    ``received``: {"points": its returns as received (before the live point filter), axle axes at its origin;
+    "empty": unit directions (axle axes) of its pixels without a return}; ``relative``: its capture pose in the
+    filtered frame (``planar_relative``).
+    """
+    from .consensus import EchoWitness
+    lever = np.asarray(other_lever, dtype=float)
+    points = move(np.asarray(received["points"], dtype=float).reshape(-1, 3) + lever, relative)
+    origin = move(lever[None, :], relative)[0]
+    c, s = math.cos(relative[2]), math.sin(relative[2])
+    e = np.asarray(received["empty"], dtype=float).reshape(-1, 3)
+    empty = np.column_stack([c * e[:, 0] - s * e[:, 1], s * e[:, 0] + c * e[:, 1], e[:, 2]])
+    return EchoWitness(points, origin, empty, empty_reach_m)
+
+
+def process_cycle(released, clouds, geometry, plan, cfg=ObstacleFilter(), body=(), histories=None, wrap=None,
+                  explain=False):
     """Obstacle products of the published lidars of one released cycle.
 
     ``clouds``: side -> reference points (float32 N x 3, mapping_reference) of the frames that could be read;
     ``geometry``: side -> ``side_geometry``; ``histories``: ``persistence_histories`` (mutated as in prepare).
+    ``wrap`` (only with cfg.wrap_delete): {"trusted": bool, "sides": side -> {"fold", "amplitude" (per reference
+    point), "received" (``wrap_witness``)}}; a side without a pose or without the other lidar's received frame gets
+    no witness, so the phase-wrap stage keeps everything there.
     Returns side -> {"points", "rays", "scan", "stats", "witness", "recent", "partner_stamp_ns"}.
     """
     cycle, poses = released["cycle"], released["poses"]
@@ -360,14 +381,26 @@ def process_cycle(released, clouds, geometry, plan, cfg=ObstacleFilter(), body=(
         t_s = released["measured_ns"][side] * 1e-9
         started = time.perf_counter()
         recent = history.recent(t_s, pose) if history is not None and pose is not None else None
+        wrap_inputs = None
+        if cfg.wrap_delete and wrap is not None and side in (wrap.get("sides") or {}):
+            mine, theirs = wrap["sides"][side], (wrap.get("sides") or {}).get(other) or {}
+            echo = None
+            if pose is not None and poses.get(other) is not None and theirs.get("received") is not None:
+                echo = wrap_witness(theirs["received"], planar_relative(poses[other], pose), geometry[other]["lever"])
+            wrap_inputs = {"fold": mine["fold"], "amplitude": mine["amplitude"],
+                           "trusted": bool(wrap.get("trusted")) and pose is not None, "witness": echo}
         result = filter_frame(clouds[side], lever, cfg, body, witness, clearing=plan["clearing"],
-                              scan=plan["filtered_scan"] and side == "left", recent=recent)
+                              scan=plan["filtered_scan"] and side == "left", recent=recent, wrap=wrap_inputs,
+                              explain=explain)
         if history is not None and pose is not None:
             history.add(t_s, pose, result["candidates"])
         out[side] = {"points": result["points"], "rays": result.get("rays"), "scan": result.get("scan"),
                      "stats": result["stats"], "witness": witness is not None, "recent": recent is not None,
                      "partner_stamp_ns": partner["stamp_ns"] if partner is not None else None,
                      "filter_ms": (time.perf_counter() - started) * 1e3}
+        for key in ("phase_wrap", "dropped_by", "stage_names"):
+            if key in result:
+                out[side][key] = result[key]
     return out
 
 
