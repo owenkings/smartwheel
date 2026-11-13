@@ -3,7 +3,8 @@
 The gate passes a command only while every condition holds: no latched
 emergency stop, a fresh operator enable, trusted localization and a fresh
 command; in the vehicle closed loop also a base that runs automatic control and
-a single enable source, and with the 3D obstacle input a running obstacle input.
+a single enable source, and with the 3D obstacle input a running obstacle input;
+with the ultrasonic modules a fresh, valid reading of every configured one.
 Otherwise it outputs an explicit zero twist. It also
 clamps speeds and blocks reverse motion because the wheelchair has no
 rear-facing range sensor. The gate is a software layer; it does not replace a
@@ -17,7 +18,7 @@ import math
 from ..geometry import _number
 
 STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "BASE_NOT_READY", "LOCALIZATION_UNTRUSTED",
-          "OBSTACLES_UNTRUSTED", "START_BLOCKED", "COMMAND_STALE", "ACTIVE")
+          "OBSTACLES_UNTRUSTED", "ULTRASONIC_HOLD", "START_BLOCKED", "COMMAND_STALE", "ACTIVE")
 # BASE_NOT_READY (only with GateConfig.require_base): the base bridge's /wc_nav/base_status does not say that the
 # wheel serial owner runs automatic control, or it is stale or unreadable (velocity_channel.md 9.2 item 4).
 BASE_REASONS = ("BASE_NOT_AUTO", "BASE_STATUS_STALE", "BASE_STATUS_INVALID")
@@ -29,6 +30,11 @@ FRONT_REASONS = ("FRONT_NOT_CLEAR", "FRONT_CHECK_STALE", "FRONT_CHECK_INVALID", 
 # in a recent status (perception.live_obstacles.input_health, whose reason codes these are), also while driving.
 OBSTACLE_REASONS = ("OBSTACLES_NO_STATUS", "OBSTACLES_STATUS_INVALID", "OBSTACLES_STATUS_OLD", "OBSTACLES_STALE",
                     "OBSTACLES_FAILED")
+# ULTRASONIC_HOLD (only with GateConfig.require_ultrasonic): the latest Range of a configured ultrasonic module is
+# missing, old, invalid or below the module's minimum range (window C's perception.ultrasonic.range_health, whose
+# reason codes these are; each code once, in module order), also while driving. TOO_CLOSE holds every motion, an
+# in-place turn too (总管 2026-11-13 D4 item 2; docs/architecture/live_shadow.md).
+ULTRASONIC_REASONS = ("ULTRASONIC_NO_DATA", "ULTRASONIC_OLD", "ULTRASONIC_INVALID", "ULTRASONIC_TOO_CLOSE")
 # The gate's decision of every cycle for the base bridge, next to /wc_nav/cmd_vel_gated (velocity_channel.md 9.2
 # item 1; the same field list as window A's wc_motion.auto_protocol.GATE_COMMAND_FIELDS).
 GATE_COMMAND_TOPIC = "/wc_nav/gate_command"
@@ -109,16 +115,31 @@ class GateConfig:
     # logs "Ignoring the source" for a cloud older than its source_timeout, and the costmaps keep the last scan.
     require_obstacles: bool = False
     obstacles_status_timeout_s: float = 1.5
+    # Ultrasonic check (总管 2026-11-13 D4 item 2; the run's --monitor-ultrasonic front|all), off by default: the gate
+    # holds the chair (ULTRASONIC_HOLD), also while it drives, unless every module named here has a latest reading
+    # at most ultrasonic_max_age_s old (its stamp against the gate's node clock; perception.ultrasonic
+    # RANGE_MAX_AGE_S, the collision monitor's source_timeout) that is within the module's span or has no echo.
+    # A further brake, never a release (user 2026-11-12 22:05).
+    require_ultrasonic: tuple = ()
+    ultrasonic_max_age_s: float = 1.0
 
     def __post_init__(self):
         for name in ("max_linear", "max_angular", "command_timeout_s", "enable_timeout_s",
                      "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad",
                      "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel",
-                     "base_status_timeout_s", "front_check_timeout_s", "obstacles_status_timeout_s"):
+                     "base_status_timeout_s", "front_check_timeout_s", "obstacles_status_timeout_s",
+                     "ultrasonic_max_age_s"):
             object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         for name in ("allow_reverse", "require_covariance", "require_base", "front_hold", "require_obstacles"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(name + " must be a boolean")
+        probes = self.require_ultrasonic
+        if isinstance(probes, str) or not isinstance(probes, (tuple, list)):
+            raise ValueError("require_ultrasonic must be a list of ultrasonic modules")
+        if probes:
+            from ..perception.ultrasonic import check_probes
+            probes = check_probes(probes)[0]
+        object.__setattr__(self, "require_ultrasonic", tuple(probes))
         node = self.enable_source_node
         if not isinstance(node, str) or (node and (not node.startswith("/") or len(node) < 2)):
             raise ValueError("enable_source_node must be empty or a fully qualified node name like /wc_auto_bridge")
@@ -354,6 +375,8 @@ class SafetyGate:
         self._started = False
         # require_obstacles: the node feeds the obstacle input's verdict on every cycle
         self._obstacles_ok, self._obstacles_reason = False, "OBSTACLES_NO_STATUS"
+        # require_ultrasonic: the node feeds the modules' verdict on every cycle
+        self._ultrasonic_ok, self._ultrasonic_reasons = False, ("ULTRASONIC_NO_DATA",)
         # lateral covariance mode: slow-down state, last assessed spread and the ramped speed ceiling
         self._slow = False
         self._spread = None
@@ -409,6 +432,13 @@ class SafetyGate:
         self._obstacles_ok = bool(ok)
         self._obstacles_reason = "" if ok else (reason if reason in OBSTACLE_REASONS else "OBSTACLES_STATUS_INVALID")
 
+    def on_ultrasonic(self, ok, reasons=()):
+        """Whether every configured ultrasonic module's latest reading is fresh and valid (require_ultrasonic);
+        ``reasons``: the codes of the modules that are not (ULTRASONIC_REASONS), in module order."""
+        self._ultrasonic_ok = bool(ok)
+        codes = [r if r in ULTRASONIC_REASONS else "ULTRASONIC_INVALID" for r in reasons]
+        self._ultrasonic_reasons = () if ok else (tuple(dict.fromkeys(codes)) or ("ULTRASONIC_INVALID",))
+
     def _front_stop(self, now, held):
         """START_BLOCKED while the chair is about to start and the front is not confirmed clear, else None."""
         cfg = self.config
@@ -441,6 +471,8 @@ class SafetyGate:
             value.update(front_clear=self._front_clear, front_reason=self._front_reason, started=self._started)
         if self.config.require_obstacles:
             value.update(obstacles_ok=self._obstacles_ok, obstacles_reason=self._obstacles_reason)
+        if self.config.require_ultrasonic:
+            value.update(ultrasonic_ok=self._ultrasonic_ok, ultrasonic_reasons=list(self._ultrasonic_reasons))
         return value
 
     def check_covariance(self, covariance, yaw=None):
@@ -570,6 +602,8 @@ class SafetyGate:
             return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
         if cfg.require_obstacles and not self._obstacles_ok:
             return stop("OBSTACLES_UNTRUSTED", self._obstacles_reason or "OBSTACLES_NO_STATUS")
+        if cfg.require_ultrasonic and not self._ultrasonic_ok:
+            return GateDecision(0.0, 0.0, "ULTRASONIC_HOLD", self._ultrasonic_reasons, held)
         blocked = self._front_stop(now, held)
         if blocked is not None:
             return blocked
@@ -597,6 +631,8 @@ class SafetyGate:
         if self.config.require_obstacles and not self._obstacles_ok:
             return GateDecision(0.0, 0.0, "OBSTACLES_UNTRUSTED", (self._obstacles_reason or "OBSTACLES_NO_STATUS",),
                                 held)
+        if self.config.require_ultrasonic and not self._ultrasonic_ok:
+            return GateDecision(0.0, 0.0, "ULTRASONIC_HOLD", self._ultrasonic_reasons, held)
         blocked = self._front_stop(now, held)
         if blocked is not None:
             return blocked

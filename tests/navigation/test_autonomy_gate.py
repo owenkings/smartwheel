@@ -691,3 +691,75 @@ def test_obstacles_health_is_window_c_input_health_on_the_age_since_receipt():
     assert obstacles_health(dict(running, state="FAILED"), 9.9, 10.0, 1.5)[:2] == (False, "OBSTACLES_FAILED")
     for bad in ({"role": None}, {"role": "scan", "state": "RUNNING"}, dict(running, state="OK"), [1]):
         assert obstacles_health(bad, 9.9, 10.0, 1.5)[:2] == (False, "OBSTACLES_STATUS_INVALID")
+
+
+# ---- ultrasonic check (总管 2026-11-13 D4 item 2) -----------------------------------------------------------------
+def test_ultrasonic_check_is_off_by_default_and_holds_the_chair_also_while_it_drives():
+    from wc_navigation.autonomy.safety_gate import STATES, ULTRASONIC_REASONS
+    from wc_navigation.perception.ultrasonic import RANGE_MAX_AGE_S
+    assert GateConfig().require_ultrasonic == () and GateConfig().ultrasonic_max_age_s == RANGE_MAX_AGE_S
+    assert STATES.index("OBSTACLES_UNTRUSTED") < STATES.index("ULTRASONIC_HOLD") < STATES.index("START_BLOCKED")
+    assert active_gate().evaluate(0.1).state == "ACTIVE" and "ultrasonic_ok" not in active_gate().conditions()
+    gate = active_gate(require_ultrasonic=["right_front", "left_front"])
+    assert gate.config.require_ultrasonic == ("left_front", "right_front")          # in module order
+    decision = gate.evaluate(0.1)
+    assert (decision.state, decision.reasons, decision.linear, decision.angular) == (
+        "ULTRASONIC_HOLD", ("ULTRASONIC_NO_DATA",), 0.0, 0.0)
+    gate.on_ultrasonic(True)
+    assert gate.evaluate(0.15).state == "ACTIVE"
+    for reasons in (["ULTRASONIC_TOO_CLOSE"], ["ULTRASONIC_OLD", "ULTRASONIC_INVALID"],
+                    ["ULTRASONIC_OLD", "ULTRASONIC_OLD"]):
+        for linear, angular in ((0.2, 0.1), (0.0, 0.3)):                         # driving, and turning in place
+            gate.on_ultrasonic(False, reasons)
+            gate.on_enable(True, 0.2)
+            gate.on_command(linear, angular, 0.2)
+            decision = gate.evaluate(0.25)
+            assert (decision.state, decision.reasons, decision.linear, decision.angular) == (
+                "ULTRASONIC_HOLD", tuple(dict.fromkeys(reasons)), 0.0, 0.0)
+            gate.on_ultrasonic(True)                                               # ok again: passes at once
+            decision = gate.evaluate(0.25)
+            assert (decision.state, decision.linear, decision.angular) == ("ACTIVE", linear, angular)
+    for reasons in (["SOMETHING"], []):
+        gate.on_ultrasonic(False, reasons)
+        assert gate.evaluate(0.25).reasons == ("ULTRASONIC_INVALID",)
+    from wc_navigation.perception.ultrasonic import range_health
+    span = {"min_range": 0.25, "max_range": 2.0}
+    seen = {range_health(None, None)[1], range_health(dict(span, range=1.0), 2.0)[1],
+            range_health(dict(span, range=float("nan")), 0.1)[1], range_health(dict(span, range=-math.inf), 0.1)[1]}
+    assert seen == set(ULTRASONIC_REASONS)                       # window C's codes, all of them
+    for bad in ({"require_ultrasonic": "left_front"}, {"require_ultrasonic": ["left_rear"]},
+                {"require_ultrasonic": ["left_front", "left_front"]}, {"require_ultrasonic": 1},
+                {"ultrasonic_max_age_s": 0.0}):
+        with pytest.raises(ValueError):
+            GateConfig(**bad)
+
+
+def test_ultrasonic_check_order_preview_conditions_and_the_gate_command():
+    from wc_navigation.autonomy.safety_gate import gate_command
+    gate = active_gate(require_ultrasonic=["left_front"], require_obstacles=True, front_hold=True)
+    gate.on_localization(False, "MAP_TO_BASE_TF_STALE")
+    assert gate.evaluate(0.1).state == "LOCALIZATION_UNTRUSTED"     # localization comes first
+    gate.on_localization(True)
+    assert gate.evaluate(0.1).state == "OBSTACLES_UNTRUSTED"        # then the 3D obstacle input
+    gate.on_obstacles(True)
+    gate.on_front(False, "FRONT_NOT_CLEAR", 0.1)
+    assert gate.evaluate(0.1).reasons == ("ULTRASONIC_NO_DATA",)    # before START_BLOCKED
+    gate.on_ultrasonic(True)
+    assert gate.evaluate(0.1).state == "START_BLOCKED"
+    gate.on_enable(False, 0.1)
+    gate.on_ultrasonic(False, ["ULTRASONIC_TOO_CLOSE"])
+    decision, preview = gate.evaluate(0.12), gate.preview(0.12)
+    assert decision.state == "DISABLED"
+    assert (preview.state, preview.reasons, preview.linear) == ("ULTRASONIC_HOLD", ("ULTRASONIC_TOO_CLOSE",), 0.0)
+    conditions = gate.conditions()
+    assert (conditions["ultrasonic_ok"], conditions["ultrasonic_reasons"]) == (False, ["ULTRASONIC_TOO_CLOSE"])
+    gate.on_ultrasonic(True)
+    assert gate.conditions()["ultrasonic_reasons"] == []
+    # window A's base bridge takes the new state like any other that is not ACTIVE: zero, reasons as given
+    held = active_gate(require_ultrasonic=["left_front", "right_front", "left_side", "right_side"])
+    held.on_ultrasonic(False, ["ULTRASONIC_NO_DATA", "ULTRASONIC_OLD", "ULTRASONIC_INVALID", "ULTRASONIC_TOO_CLOSE"])
+    document = gate_command(held.evaluate(0.1), held.config, "gate_0123456789ab", 3, 1_000_000_000, 2_000_000_000)
+    assert (document["state"], len(document["reasons"]), document["linear"]) == ("ULTRASONIC_HOLD", 4, 0.0)
+    protocol = pytest.importorskip("wc_motion.auto_protocol")
+    parsed = protocol.parse_gate_command(json.dumps(document, allow_nan=False))
+    assert (parsed["state"], list(parsed["reasons"]), parsed["linear"]) == ("ULTRASONIC_HOLD", document["reasons"], 0.0)

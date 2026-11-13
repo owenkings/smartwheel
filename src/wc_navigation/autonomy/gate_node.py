@@ -27,6 +27,13 @@ Vehicle closed loop (D.md 2026-11-10 16:45; all off by default, simulation and s
   /wc_live/inputs_status/obstacles (latched, every 0.5 s) must say RUNNING and must have been received at most
   ``obstacles_status_timeout_s`` ago on the gate's age clock (``obstacles_health``); else OBSTACLES_UNTRUSTED, on
   every cycle, also while the chair drives. The gate passes again as soon as the input runs again.
+
+Ultrasonic modules (总管 2026-11-13 D4 item 2; ``--monitor-ultrasonic front|all``, shadow and closed loop; off by
+default): ``GateConfig.require_ultrasonic`` names them, ``ultrasonic_prefix`` in the node configuration is their
+topics' prefix. Each module's sensor_msgs/Range (best effort, like the collision monitor reads it) is judged on every
+cycle with window C's ``range_health`` (live/ultrasonic_check.verdicts) on its age: the node clock minus its stamp,
+which window A sets to the reply's arrival on the panel's host clock, as the collision monitor ages it. Unless every
+module is ok: ULTRASONIC_HOLD with their reason codes, also while the chair drives; ok again, the gate passes again.
 """
 from __future__ import annotations
 
@@ -38,7 +45,8 @@ import time
 import uuid
 
 from .nav2_config import CMD_GATED, CMD_MONITORED
-from .ros_util import json_message, latched_qos, lookup_pose, quaternion_to_yaw, require_isolated_domain
+from .ros_util import (json_message, latched_qos, lookup_pose, quaternion_to_yaw, require_isolated_domain,
+                       sensor_qos, stamp_seconds)
 from .safety_gate import (COVARIANCE_REASONS, GATE_COMMAND_TOPIC, CorrectionMonitor, GateConfig, SafetyGate,
                           StationaryRelocalization, gate_command)
 
@@ -147,6 +155,18 @@ class GateNode:
         if cfg.require_obstacles:
             # window C's 3D obstacle input (latched; every 0.5 s on its steady clock), see obstacles_health
             node.create_subscription(String, OBSTACLES_STATUS_TOPIC, self.on_obstacles_status, latched_qos())
+        self.ultrasonic, self.ultrasonic_verdicts = {}, {}
+        if cfg.require_ultrasonic:
+            # window A's modules, relayed one way on the vehicle (live/relay_node.py)
+            from sensor_msgs.msg import Range
+            from ..live.ultrasonic_check import verdicts
+            from ..perception.ultrasonic import check_probes, topic
+            self.verdicts = verdicts
+            probes, prefix = check_probes(cfg.require_ultrasonic, config.get("ultrasonic_prefix", ""))
+            for probe in probes:
+                self.ultrasonic[probe] = None
+                node.create_subscription(Range, topic(probe, prefix), lambda m, p=probe: self.on_range(p, m),
+                                         sensor_qos())
         self.sources = {}
         self.covariance_ok, self.covariance_reason = (not cfg.require_covariance), "NO_COVARIANCE_YET"
         if cfg.require_covariance:
@@ -201,6 +221,12 @@ class GateNode:
             self.obstacles = {"role": None}            # input_health: OBSTACLES_STATUS_INVALID
         self.obstacles_time = self.age_now()
 
+    def on_range(self, probe, message):
+        previous = self.ultrasonic.get(probe) or {}
+        self.ultrasonic[probe] = {"range": float(message.range), "min_range": float(message.min_range),
+                                  "max_range": float(message.max_range), "stamp_s": stamp_seconds(message.header.stamp),
+                                  "messages": int(previous.get("messages", 0)) + 1}
+
     def tick(self):
         stamp_ns = self.node.get_clock().now().nanoseconds
         now = stamp_ns * 1e-9
@@ -238,6 +264,11 @@ class GateNode:
             self.obstacles_verdict = obstacles_health(self.obstacles, self.obstacles_time, age_now,
                                                       cfg.obstacles_status_timeout_s)
             self.gate.on_obstacles(*self.obstacles_verdict[:2])
+        if cfg.require_ultrasonic:
+            # ages on the node clock: the stamps are the panel host's (wall) clock, or the recording's in a bag run
+            self.ultrasonic_verdicts = self.verdicts(self.ultrasonic, now, cfg.ultrasonic_max_age_s)
+            self.gate.on_ultrasonic(all(v["ok"] for v in self.ultrasonic_verdicts.values()),
+                                    [v["reason"] for v in self.ultrasonic_verdicts.values() if not v["ok"]])
         if cfg.enable_source_node:
             self.sources = {topic: [endpoint_name(e) for e in self.node.get_publishers_info_by_topic(topic)]
                             for topic in SOURCE_TOPICS}
@@ -292,6 +323,10 @@ class GateNode:
                 status["obstacles"] = {"ok": ok, "reason": reason, "age_s": None if age is None else round(age, 3),
                                        "messages": self.obstacles_messages, "state": value.get("state"),
                                        "stale_inputs": value.get("stale_inputs"), "failure": value.get("failure")}
+            if cfg.require_ultrasonic:
+                verdicts = self.ultrasonic_verdicts
+                status["ultrasonic"] = {"ok": bool(verdicts) and all(v["ok"] for v in verdicts.values()),
+                                        "probes": verdicts}
             self.status.publish(json_message(status))
             self.last_state, self.last_status = decision.state, age_now
 

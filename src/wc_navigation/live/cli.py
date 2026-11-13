@@ -52,10 +52,10 @@ BRIDGE_NODE = "/wc_auto_bridge"                      # wc_motion.auto_bridge: th
 CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底盘）
  0. 第一次上车前，总管和用户已评审单向转发（docs/architecture/live_shadow.md“实车影子模式的单向转发”一节）。
  1. 用户在场，并明确同意本次上车运行；把同意写进状态文件，命令前设置 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>。
- 2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；面板域（现为 83）用 --sensor-domain 给出。影子框架只经单向转发读三个传感器话题（best effort、volatile、keep last，不参与驱动结束录制时的确认等待），从不在面板域发布。开三维障碍输入时多读右雷达 host_filtered，共四个话题（用户 2026-11-10 同意）。
- 3. 先在面板里开始录制或实时建图，等面板显示所有设备就绪、数据在走，再启动影子命令。转发会等到要转发的话题都已有面板自己的订阅者才订阅（状态 WAITING_FOR_PANEL_SOURCES），自检通过才继续：驱动见到第一个订阅者就开始发，转发不能先于面板的录制连上。开障碍输入时面板要用两台雷达录制或建图，否则右雷达没有发布者，转发会一直等。
+ 2. 影子框架用域 100（ROS_LOCALHOST_ONLY=1，用户 2026-11-07 同意）；面板域（现为 83）用 --sensor-domain 给出。影子框架只经单向转发读三个传感器话题（best effort、volatile、keep last，不参与驱动结束录制时的确认等待），从不在面板域发布。开三维障碍输入时多读右雷达 host_filtered，共四个话题（用户 2026-11-10 同意）。开超声波（--monitor-ultrasonic front|all）时再多读所配探头的 Range 话题和 A 的超声波状态：front 多 3 个，all 多 5 个（总管 2026-11-13 D4）。
+ 3. 先在面板里开始录制或实时建图，等面板显示所有设备就绪、数据在走，再启动影子命令。转发会等到要转发的话题都已有面板自己的订阅者才订阅（状态 WAITING_FOR_PANEL_SOURCES），自检通过才继续：驱动见到第一个订阅者就开始发，转发不能先于面板的录制连上。开障碍输入时面板要用两台雷达录制或建图，否则右雷达没有发布者，转发会一直等。开超声波时面板会话要开着超声波（mapping_live.json 的 ultrasonic_enabled），否则也会一直等。
     优先级：面板的录制优先。车上模式整个影子命令以 nice 10 运行，命令自己会把 nice 调到不低于 10，转发再降到 19（2026-11-09 第二次这样跑：录包 COMPLETE，里程计落后最大 0.43 s）。result.json 的 supervisor.niceness 记实际值。
-    转发 RUNNING 后，另开终端，用同样的环境变量运行 navigation_live_shadow relay-graph --sensor-domain <面板域>（开障碍输入时加 --obstacles）。status 应为 PASS：入口节点只有三个订阅（开障碍时四个），都是 best effort、volatile；没有发布者、服务、客户端；查询节点自己也没有端点。不要在面板域用 ros2 命令（ros2 node info、ros2 topic list 等），它们会在面板域起 ros2 daemon，那是一个有发布者和服务的节点。
+    转发 RUNNING 后，另开终端，用同样的环境变量运行 navigation_live_shadow relay-graph --sensor-domain <面板域>（开障碍输入时加 --obstacles，开超声波时加 --ultrasonic front|all）。status 应为 PASS：入口节点只有三个订阅（开障碍时四个，开超声波时再多 3 个或 5 个），都是 best effort、volatile；没有发布者、服务、客户端；查询节点自己也没有端点。不要在面板域用 ros2 命令（ros2 node info、ros2 topic list 等），它们会在面板域起 ros2 daemon，那是一个有发布者和服务的节点。
  4. 物理急停可用、轮控所有者照常由面板管理；在影子域（100）里用 ros2 topic info 确认：订阅 /wc_nav/cmd_vel_gated 的只有平滑器反馈节点 wc_velocity_feedback（--smoother-feedback gated，默认；它只把闸门输出转成平滑器的反馈），没有进程发布 /cmd_vel。
  5. 传感器在线：左雷达 host_filtered 帧约 10 Hz、H30 约 200 Hz、轮速反馈约 10 Hz；开障碍输入时右雷达 host_filtered 也要约 10 Hz（面板里看，或在影子域看转发后的 /wc_live/relayed/... 话题）。
  6. 配置：上车前运行 navigation_live_shadow freeze-config --config-root /home/nvidia/wheelchair --compare-cell <同一台车最近的单左前端> --gyro-bias <零偏文件>，冻结面板当前的实时配置并记 sha256。确认 hardware_setup 来自 config/local/project/hardware_setup.json（否则会退回仓库基础值）、轮参数是设备当前值（2026-11-07 20:19 起 0.1646/0.599）、外参和主机滤波与最近的前端一致。影子命令用冻结目录作 --cell、其中的 hardware_setup.json 作 --hardware-setup。
@@ -82,6 +82,7 @@ CHECKLIST = """上车前检查单（实车影子模式，闸门输出不接底�
     车前空地：状态行的"车前空地 N 点"是车前 5 m 内、车体以外、落在地图空地里的扫描点数（最近 10 帧的中位数）。超过门限（--front-check-max-points）时写"不要开始自动"：先看车前有没有人或东西，有就挪开；车前其实是空的（雷达假点，2026-11-11 的 12.49 m 折叠），就停下来按 A 的雷达设置处理。--front-check block（闭环默认）下，这时点"开始自动"闸门也拦住（START_BLOCKED），车不动；挡着的人走开、判定变空，闸门放行，车起步。--front-check warn 只提示。
     读哪个扫描：开组合方案（--obstacle-scan filtered）时读 C 的过滤扫描 /obstacles/left/scan，状态行写"车前空地（过滤扫描）"，默认门限 3；否则读 /scan，默认门限 10。走廊里 /scan 上的折叠假点有 18–40 点，读 /scan 时会一直拦。1 s 没有新扫描时也写"不要开始自动"（FRONT_SCAN_STALE）。
     三维障碍输入（开了 --obstacle-* 的闭环，2026-11-12）：状态行写"三维障碍输入 正常，延迟中位 N ms"。没有状态、状态 1.5 s 没更新、STALE（某台雷达或 /odom 停了）或 FAILED 时写"不要开始自动"，闸门停在 OBSTACLES_UNTRUSTED、输出零，行进中也一样；恢复正常以后闸门自己放行。FAILED 是锁住的，不会自己恢复：按 Ctrl-C 结束，再重新启动。
+    超声波（--monitor-ultrasonic front|all，总管 2026-11-13）：状态行每个探头一项，例如"超声波 左前 没回波、右前 1.20 m"。某个探头没有读数、读数 1 s 没更新、读数无效或太近（盲区里有东西）时写"不要开始自动"，闸门停在 ULTRASONIC_HOLD、输出零，行进中和原地转都一样；恢复以后闸门自己放行。太近时先看车前是不是贴着东西，或者乘坐者的脚、脚托挡住了探头。闭环要等 A 的现场核对做完（冻结目录里 ultrasonic_live.json 的五项都核对过），否则命令不启动；状态行出现"（未核对）"时，面板正在用的超声波配置还没核对，和冻结的不一致：停下来重新冻结配置。
 15. 点"开始自动"：底盘进 AUTO 后闸门放行当时的指令，车从 0 按轮控所有者的加速度上限起步。急停、软件急停、"停止自动"、空格或 WASD 都会停；急停以后要松开、再点一次"开始自动"。车动过以后，目标失败不自动重发。
 16. 结束：按一次 Ctrl-C。收尾先停桥，轮控所有者看到断开就退出自动、写零；再停其他进程。result.json 的 closed_loop 一节记桥的计数、最后的底盘状态和车前空地的点数。
     桥自己退出时（例如轮控所有者 FAULT 结束了会话），运行停止，supervisor.stopped 是 BASE_BRIDGE_EXITED，supervisor.stop_reason 写一句原因（桥的退出原因、轮控所有者最后报的状态、会话轮控日志里的故障），终端也打印这一句。
@@ -214,6 +215,10 @@ def arguments(argv=None):
     graph.add_argument("--wait", type=_finite, default=3.0, help="seconds to wait for discovery (1..30)")
     graph.add_argument("--obstacles", action="store_true",
                        help="the run has the 3D obstacle input: the relay must read four topics (with the right lidar)")
+    from ..perception.ultrasonic import MODES as ULTRASONIC_MODES
+    graph.add_argument("--ultrasonic", choices=tuple(ULTRASONIC_MODES), default="off",
+                       help="the run has --monitor-ultrasonic front|all: the relay must also read those modules' "
+                            "Range topics and window A's ultrasonic status")
     graph.add_argument("--project-root", type=Path, help=argparse.SUPPRESS)   # added by the wrapper; not used
     freeze = sub.add_parser("freeze-config", help="freeze the panel's current live configuration (files only)")
     freeze.add_argument("--project-root", type=Path, required=True)
@@ -426,8 +431,10 @@ def relay_graph_command(args):
     if os.environ.get("ROS_LOCALHOST_ONLY", "1") != "1":
         raise SystemExit("ROS_LOCALHOST_ONLY must be 1: the panel's domain and the relay are localhost only")
     os.environ["ROS_LOCALHOST_ONLY"] = "1"
+    from ..perception.ultrasonic import MODES as ULTRASONIC_MODES
     from .relay_node import entry_graph
-    report = entry_graph(args.sensor_domain, args.source_prefix, args.wait, obstacles=args.obstacles)
+    report = entry_graph(args.sensor_domain, args.source_prefix, args.wait, obstacles=args.obstacles,
+                         ultrasonic=ULTRASONIC_MODES[getattr(args, "ultrasonic", "off")])
     print(json.dumps(report, ensure_ascii=False, indent=1), flush=True)
     return 0 if report["status"] == "PASS" else 1
 
@@ -546,6 +553,19 @@ def run_command(args, guard):
                                "wait_for_panel_consumers": True, "obstacles": bool(config.get("obstacles"))}
             config["source_prefix"] = OUTPUT_PREFIX
             config["niceness"] = VEHICLE_SHADOW_NICENESS
+        if profile.monitor_ultrasonic:
+            # 总管 2026-11-13 D4 item 2: the modules' frozen geometry (the collision monitor's static transforms) and
+            # the gate's check; the relay reads their Range topics and window A's status. The closed loop needs A's
+            # field check of the frozen configuration (ultrasonic_check.settings).
+            from . import ultrasonic_check
+            try:
+                config["ultrasonic"] = ultrasonic_check.settings(args.cell, profile.monitor_ultrasonic,
+                                                                 profile.monitor_ultrasonic_prefix,
+                                                                 closed_loop=closed_loop is not None)
+            except ValueError as exc:
+                raise SystemExit("--monitor-ultrasonic: " + str(exc))
+            if config.get("relay") is not None:
+                config["relay"]["ultrasonic"] = list(profile.monitor_ultrasonic)
     # While the run goes, its processes write logs and records under /dev/shm: a large file copied to the data disk
     # (NTFS through FUSE) blocks every other write there for seconds (2026-11-10). They are copied in afterwards.
     work = WORK_ROOT / ("wc_live_" + run_id)

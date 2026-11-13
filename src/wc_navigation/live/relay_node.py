@@ -5,9 +5,13 @@ one read-only node that subscribes, as serialized bytes, to exactly three
 topics: the left lidar host-filtered frames, the H30 frames and the wheel
 feedback records (best effort, volatile, keep last 3 / 100 / 20); with the 3D
 obstacle input (configuration ``obstacles: true``) also to the right lidar's
-host-filtered frames (keep last 3), exactly four then. In its own
-isolated domain a second node republishes those bytes unchanged under
-``/wc_live/relayed``, plus a status JSON on ``/wc_live/relay_status``. On the
+host-filtered frames (keep last 3), exactly four then; with ultrasonic modules
+(configuration ``ultrasonic``: the run's --monitor-ultrasonic modules, 总管
+2026-11-13 D4 item 2) also to window A's Range topic of each of them (keep
+last 5) and to its ultrasonic status (keep last 2), at most five more. In its
+own isolated domain a second node republishes those bytes unchanged under
+``/wc_live/relayed`` (the ultrasonic status latched, as window A publishes it),
+plus a status JSON on ``/wc_live/relay_status``. On the
 vehicle the subscriptions are created only once every topic already has a
 publisher and another subscriber (the panel's recorder or live mapping input):
 the drivers start publishing as soon as any subscriber exists, so the relay
@@ -21,8 +25,8 @@ must not be the first one. Nothing is ever published in the source domain:
   end-of-recording wait for all reliable readers and cannot slow the panel's
   publishers down;
 * after subscribing, the node checks its own graph entry: no publisher, no
-  service, no client and exactly the configured subscriptions (three, or four
-  with the obstacle input), or the relay exits.
+  service, no client and exactly the configured subscriptions (three, four
+  with the obstacle input, plus the ultrasonic ones), or the relay exits.
 
 On the vehicle the source is the panel's sensor domain and the relay needs
 the user's dated approval in the environment; in tests the source is this
@@ -35,6 +39,8 @@ import os
 import time
 
 from ..autonomy.ros_util import SIMULATION_DOMAINS, json_message, latched_qos, load_config
+from ..perception.ultrasonic import (PROBES as ULTRASONIC_PROBES, STATUS_TOPIC as ULTRASONIC_STATUS_TOPIC,
+                                     check_probes, topic as ultrasonic_topic)
 from .config import IMU_TOPIC, LEFT_FILTERED_TOPIC, RIGHT_FILTERED_TOPIC, WHEEL_TOPIC
 from .supervisor import VEHICLE_APPROVAL_ENV, require_live_domain, vehicle_approved
 
@@ -42,16 +48,27 @@ RELAYED_TOPICS = (LEFT_FILTERED_TOPIC, IMU_TOPIC, WHEEL_TOPIC)
 # With the 3D obstacle input (window C) the relay also reads the right lidar's host-filtered frames: exactly these
 # two sets, chosen by one boolean of the relay configuration (user 2026-11-10).
 OBSTACLE_RELAYED_TOPICS = RELAYED_TOPICS + (RIGHT_FILTERED_TOPIC,)
+# With ultrasonic modules (总管 2026-11-13 D4 item 2) also window A's Range topic of each configured module and its
+# ultrasonic status: these five are the whitelist, a run reads its modules' ranges and the status.
+ULTRASONIC_RANGE_TOPICS = tuple(ultrasonic_topic(p) for p in ULTRASONIC_PROBES)
+ULTRASONIC_TOPICS = ULTRASONIC_RANGE_TOPICS + (ULTRASONIC_STATUS_TOPIC,)
 # Source side (the panel's domain), per window A 2026-11-08: best effort, volatile, keep last. Best-effort readers
 # take no part in the drivers' end-of-recording acknowledgement wait, so the relay cannot make a recording PARTIAL.
-SOURCE_DEPTH = {LEFT_FILTERED_TOPIC: 3, IMU_TOPIC: 100, WHEEL_TOPIC: 20, RIGHT_FILTERED_TOPIC: 3}
-TARGET_DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50, RIGHT_FILTERED_TOPIC: 5}
+SOURCE_DEPTH = {LEFT_FILTERED_TOPIC: 3, IMU_TOPIC: 100, WHEEL_TOPIC: 20, RIGHT_FILTERED_TOPIC: 3,
+                **{t: 5 for t in ULTRASONIC_RANGE_TOPICS}, ULTRASONIC_STATUS_TOPIC: 2}
+TARGET_DEPTH = {LEFT_FILTERED_TOPIC: 5, IMU_TOPIC: 400, WHEEL_TOPIC: 50, RIGHT_FILTERED_TOPIC: 5,
+                **{t: 10 for t in ULTRASONIC_RANGE_TOPICS}, ULTRASONIC_STATUS_TOPIC: 1}
 OUTPUT_PREFIX = "/wc_live/relayed"
 
 
-def relayed_topics(obstacles=False):
-    """The relay's topic set: the live chain's three, plus the right lidar when the 3D obstacle input is on."""
-    return OBSTACLE_RELAYED_TOPICS if obstacles else RELAYED_TOPICS
+def relayed_topics(obstacles=False, ultrasonic=()):
+    """The relay's topic set: the live chain's three, plus the right lidar when the 3D obstacle input is on, plus the
+    Range topics of the given ultrasonic modules and window A's ultrasonic status when there are any."""
+    topics = OBSTACLE_RELAYED_TOPICS if obstacles else RELAYED_TOPICS
+    probes = check_probes(ultrasonic)[0]
+    if probes:
+        topics = topics + tuple(ultrasonic_topic(p) for p in probes) + (ULTRASONIC_STATUS_TOPIC,)
+    return topics
 
 
 def source_qos(topic):
@@ -76,6 +93,10 @@ def check_relay_config(config, own_domain):
         raise ValueError("wait_for_panel_consumers must be a boolean")
     if type(config.get("obstacles", False)) is not bool:
         raise ValueError("obstacles must be a boolean (relay the right lidar for the 3D obstacle input)")
+    ultrasonic = config.get("ultrasonic", [])
+    if isinstance(ultrasonic, str) or not isinstance(ultrasonic, (list, tuple)):
+        raise ValueError("ultrasonic must be a list of ultrasonic modules (relay their Range topics and status)")
+    check_probes(ultrasonic)
     return source, prefix, output
 
 
@@ -166,7 +187,7 @@ def _node_graph(node, name, namespace, expected):
                        node.get_client_names_and_types_by_node(name, namespace), expected)
 
 
-def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False):
+def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False, ultrasonic=()):
     """The relay entry node's graph entry and the relayed topics' endpoints, as seen in the sensor domain.
 
     One participant joins the sensor domain. Its node has no endpoint at all: the relay's read-only class (no
@@ -181,7 +202,7 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False):
     rclpy.init(args=[], context=context, domain_id=int(sensor_domain))
     node = read_only_node_class()(QUERY_NODE, context=context, enable_rosout=False, start_parameter_services=False,
                                   use_global_arguments=False)
-    topics = [source_prefix + topic for topic in relayed_topics(obstacles)]
+    topics = [source_prefix + topic for topic in relayed_topics(obstacles, ultrasonic)]
     try:
         end = time.monotonic() + float(wait_s)
         entry, names = None, []
@@ -199,7 +220,7 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False):
             time.sleep(0.2)
         own = _node_graph(node, QUERY_NODE, "/", [])
         report = {"sensor_domain": int(sensor_domain), "source_prefix": source_prefix, "obstacles": bool(obstacles),
-                  "entry_node": "/" + ENTRY_NODE,
+                  "ultrasonic": list(check_probes(ultrasonic)[0]), "entry_node": "/" + ENTRY_NODE,
                   "entry": entry, "query_node": "/" + QUERY_NODE, "query_node_graph": own,
                   "nodes": sorted(ns.rstrip("/") + "/" + n for n, ns in names),
                   "topics": {topic: {"publishers": _endpoints(node.get_publishers_info_by_topic(topic)),
@@ -221,19 +242,26 @@ def entry_graph(sensor_domain, source_prefix="", wait_s=3.0, obstacles=False):
 
 
 class Relay:
-    def __init__(self, source_node, target_node, prefix, output_prefix, obstacles=False):
+    def __init__(self, source_node, target_node, prefix, output_prefix, obstacles=False, ultrasonic=()):
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
         from wc_interfaces.msg import H30Frame, SourceFrame
         kinds = {LEFT_FILTERED_TOPIC: SourceFrame, IMU_TOPIC: H30Frame, WHEEL_TOPIC: String,
                  RIGHT_FILTERED_TOPIC: SourceFrame}
-        types = {topic: kinds[topic] for topic in relayed_topics(obstacles)}
+        topics = relayed_topics(obstacles, ultrasonic)
+        if any(topic in ULTRASONIC_TOPICS for topic in topics):
+            from sensor_msgs.msg import Range
+            kinds.update({topic: Range for topic in ULTRASONIC_RANGE_TOPICS})
+            kinds[ULTRASONIC_STATUS_TOPIC] = String
+        types = {topic: kinds[topic] for topic in topics}
         self.counts = {topic: 0 for topic in types}
         self.publishers = {}
         for topic, kind in types.items():
             # Renamed in the shadow domain, so the relayed copies can never be mistaken for the panel's topics.
-            self.publishers[topic] = target_node.create_publisher(
-                kind, output_prefix + topic, QoSProfile(depth=TARGET_DEPTH[topic], reliability=ReliabilityPolicy.RELIABLE))
+            # Window A's ultrasonic status stays latched, as A publishes it.
+            qos = (latched_qos(TARGET_DEPTH[topic]) if topic == ULTRASONIC_STATUS_TOPIC else
+                   QoSProfile(depth=TARGET_DEPTH[topic], reliability=ReliabilityPolicy.RELIABLE))
+            self.publishers[topic] = target_node.create_publisher(kind, output_prefix + topic, qos)
             source_node.create_subscription(kind, prefix + topic, lambda data, t=topic: self.forward(t, data),
                                             source_qos(topic), raw=True)
 
@@ -251,6 +279,7 @@ def main(argv=None):
     source, prefix, output_prefix = check_relay_config(config, os.environ["ROS_DOMAIN_ID"])
     wait_for_panel = config.get("wait_for_panel_consumers", False)
     obstacles = config.get("obstacles", False)
+    ultrasonic = list(check_probes(config.get("ultrasonic", []))[0])
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
@@ -265,9 +294,11 @@ def main(argv=None):
     executor = SingleThreadedExecutor(context=source_context)
     executor.add_node(source_node)
     code = 0
-    topics = [prefix + topic for topic in relayed_topics(obstacles)]
+    topics = [prefix + topic for topic in relayed_topics(obstacles, ultrasonic)]
     base = {"source_domain": source, "source_prefix": prefix, "output_prefix": output_prefix,
             "wait_for_panel_consumers": wait_for_panel, "obstacles": obstacles, "publishes_in_source_domain": False}
+    if ultrasonic:
+        base["ultrasonic"] = ultrasonic
     try:
         # Vehicle: subscribe only once the panel's own consumers are there (graph queries create nothing).
         waited = time.monotonic()
@@ -280,7 +311,7 @@ def main(argv=None):
                                              "publishers_subscribers": {t: list(c) for t, c in counts.items()}}))
             rclpy.spin_once(target_node, timeout_sec=0.0)
             time.sleep(1.0)
-        relay = Relay(source_node, target_node, prefix, output_prefix, obstacles)
+        relay = Relay(source_node, target_node, prefix, output_prefix, obstacles, ultrasonic)
         check = self_check(source_node, topics)
         state = "RUNNING" if check["status"] == "PASS" else "FAILED"
         last_status = 0.0

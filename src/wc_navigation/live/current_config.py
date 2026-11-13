@@ -14,6 +14,8 @@ the layout of a frontend cell, so ``navigation_live_shadow inputs|shadow --cell`
 * ``hardware_setup.json`` and, when configured, ``confirmed_gyro_bias.json`` with its evidence (byte snapshots);
 * ``lidar_time_offset.json``: that checkout's approved lidar time offset (``config/calibration/``), which the
   live chain then uses by default;
+* ``ultrasonic_capture.json`` and ``ultrasonic_live.json`` when the panel's live session runs window A's ultrasonic
+  modules (``ultrasonic_enabled``): byte snapshots of the files it resolved (``--monitor-ultrasonic`` reads them);
 * ``frozen_configuration.json``: source root, request, sha256 of every file and the checks.
 
 Checks: the hardware setup comes from the local override (otherwise the repository base values, e.g. wheel
@@ -51,7 +53,8 @@ from wc_runtime.prepare_picker_input import json_bytes
 request = json.loads(sys.argv[1])
 config = mapping_controller.configuration(request)
 snapshots = {name: config[key] for key, name in json.loads(sys.argv[2]) if config.get(key) is not None}
-runtime = {k: v for k, v in config.items() if not (k.startswith("_") and k.endswith("_raw_text"))}
+snapshots.update(config.get("_ultrasonic_raw_texts") or {})
+runtime = {k: v for k, v in config.items() if not (k.startswith("_") and k.endswith(("_raw_text", "_raw_texts")))}
 transforms = mount_transforms(config, None)
 prior = copy.deepcopy(config["prior_template"])
 prior.setdefault("estimator", config.get("wheel_imu_estimator", "five_state"))
@@ -132,6 +135,12 @@ def freeze(output, config_root, session_id, config_path=LIVE_CONFIG, compare_cel
     provenance = runtime.get("hardware_setup_provenance") or {}
     if provenance.get("sha256") != files.get("hardware_setup.json"):
         raise FreezeError("hardware setup snapshot does not match its resolved provenance")
+    ultrasonic = runtime.get("ultrasonic_provenance")
+    if ultrasonic is not None:
+        # the panel runs window A's ultrasonic modules: the snapshots must be the files it resolved
+        for name, entry in sorted((ultrasonic.get("files") or {}).items()):
+            if files.get(name) != (entry or {}).get("sha256"):
+                raise FreezeError("ultrasonic snapshot %s does not match its resolved provenance" % name)
     source = str(provenance.get("source_path", ""))
     wheel = runtime.get("wheel_candidate") or {}
     checks = {"hardware_setup_source": source,
@@ -144,6 +153,9 @@ def freeze(output, config_root, session_id, config_path=LIVE_CONFIG, compare_cel
               "lidar_time_offset_ms": lidar_offset,
               "lidar_time_offset_note": None if lidar_offset is not None else
               "no %s in that checkout: the live chain then needs --lidar-time-offset-ms" % LIDAR_TIME_OFFSET_CONFIG}
+    if ultrasonic is not None:
+        checks["ultrasonic"] = {"files": sorted(ultrasonic.get("files") or {}),
+                                "not_verified": ultrasonic.get("not_verified")}
     bias = gyro_bias or (output / "confirmed_gyro_bias.json" if "confirmed_gyro_bias.json" in files else None)
     if bias is not None:
         live = load_live_config(output, output / "hardware_setup.json", bias)

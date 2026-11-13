@@ -117,7 +117,7 @@ flowchart LR
 - 里程计：原样使用 `wc_runtime.mapping_prior.MotionPrior`（平面 EKF、robot_localization 工作进程）和实时建图节点相同的输入检查。轮速记录和 H30 帧按到达时间进入，位姿只输出到 IMU 与轮速共同水位线为止、不外推，每 20 ms 一个，输出后立即作为先验的检查点，历史保持有界。先验的时钟取消息里最新的主机单调时间，所以录包晚些回放时行为和录制时一样；输入停止由节点另外监视（状态话题报 STALE，里程计不再延伸，TF 变旧后闸门停车）。
 - 配置：外参、主机滤波、运动先验和设备编号取自 `--cell`；轮参数取自 `--hardware-setup` 的 `wheel_odometry`，陀螺零偏取自 `--gyro-bias`，和前端命令的同名参数一样替换。录包检验用同一录包的冻结前端作 `--cell`；ZL1107 系列录包冻结的是旧轮参数 0.172/0.61，回放时必须给覆盖文件（0.1646/0.599）和零偏文件。上车时不用录包前端（它的轮参数来自覆盖文件，还带离线时间锚点和旧会话），而用 `freeze-config` 冻结的面板当前配置（见下面“上车配置”）。IMU 用到达时间；冻结前端用的设备相对时间模型只能离线拟合，A 确认实时第一步不需要设备时间。
 - 两个进程：扫描和里程计分开运行。放在一个进程时，点云处理会挡住轮速和 IMU 回调，里程计平均晚 0.27 s、最多 0.54 s；分开后平均 0.09 s、最多 0.17 s（主要是 10 Hz 轮速的水位线），扫描平均晚 0.06 s。
-- 上车时传感器话题在面板的域里。影子框架不进那个域发布；由单向转发进程（`relay_node`）只订阅这三个话题（开三维障碍输入时再加右雷达，共四个）的序列化消息，原样在影子自己的隔离域里重发，细节见下面“实车影子模式的单向转发”。
+- 上车时传感器话题在面板的域里。影子框架不进那个域发布；由单向转发进程（`relay_node`）只订阅这三个话题（开三维障碍输入时再加右雷达，共四个；开超声波时再加所配探头的 Range 和 A 的超声波状态）的序列化消息，原样在影子自己的隔离域里重发，细节见下面“实车影子模式的单向转发”。
 
 验证包 ZL21107 的原始 rosbag2 用 `ros2 bag play --clock` 按录包时间回放到域 100（只放这三个话题，不启动任何驱动或面板节点），与冻结前端逐帧比较（`reports/navigation_live_shadow/20261107T132206Z_inputs_dc29134f`）：
 
@@ -245,7 +245,7 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
 ## 实车影子模式的单向转发（第一次上车前由总管和用户评审）
 
-转发是影子框架和车上面板之间唯一的接触点。它订阅、只订阅下面的话题：默认是前三个；开三维障碍输入时加第四个，共四个（D5，用户 2026-11-10 同意）。
+转发是影子框架和车上面板之间唯一的接触点。它订阅、只订阅下面的话题：默认是前三个；开三维障碍输入时加第四个，共四个（D5，用户 2026-11-10 同意）；开超声波（`--monitor-ultrasonic front|all`）时再加所配探头的 Range 话题和 A 的超声波状态，front 多 3 个，all 多 5 个（总管 2026-11-13 D4 第 2 条；转发的范围变了，上车前要再评审）。
 
 | 话题（面板域） | 类型 | 约频率 | 订阅方式 |
 |---|---|---|---|
@@ -253,8 +253,11 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 | `/wc_mapping/imu/source_frame` | `wc_interfaces/msg/H30Frame` | 200 Hz | best effort、volatile、keep last 100，序列化字节 |
 | `/wc_mapping/wheel/feedback_raw` | `std_msgs/msg/String` | 10 Hz | best effort、volatile、keep last 20，序列化字节 |
 | `/wc_mapping/lidar_right/source_frame_filtered`（只在开障碍输入时） | `wc_interfaces/msg/SourceFrame` | 10 Hz，每帧约 150 KB | best effort、volatile、keep last 3，序列化字节 |
+| `/wc_mapping/ultrasonic/<探头>/range`（只在开超声波时，所配的探头：front 是 left_front、right_front，all 再加 left_side、right_side） | `sensor_msgs/msg/Range` | 每个探头约 2 Hz（四个探头依次轮询，相隔 0.11 s） | best effort、volatile、keep last 5，序列化字节 |
+| `/wc_mapping/ultrasonic/status`（只在开超声波时） | `std_msgs/msg/String`（JSON） | 每轮一次 | best effort、volatile、keep last 2，序列化字节；影子域里照 A 的发法 latched 重发 |
 
 - 两档话题写死在 `relay_node.py` 里。转发配置只有一个布尔值 `obstacles` 选档，命令开了障碍输入就是 true。
+- 超声波的五个话题也写死在 `relay_node.py` 里（`ULTRASONIC_TOPICS`，A 的四个 range 加状态）。转发配置的 `ultrasonic` 是探头列表，命令开了 `--monitor-ultrasonic` 就是那几个探头，转发只订阅它们的 range 和状态；默认是空的，和以前一样。超声波的静态变换不转发，由监督进程按冻结的几何发（见下面闭环一节的“超声波检查”）。
 - 不订阅相机、TF、面板状态或任何控制话题，也不调用面板的任何服务；不开障碍输入时也不订阅右雷达。
 - 在影子域里，转发后的话题改名为 `/wc_live/relayed/...`，扫描、里程计和 obstacles 进程订阅改名后的话题，不会和面板的话题混淆。
 
@@ -270,8 +273,8 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 1. 进程边界：只有转发进程的“入口节点”进入面板域。影子框架的其他进程（扫描、里程计、AMCL、Nav2、闸门、目标、记录器、监督）都在域 100，启动时由 `require_isolated_domain` 检查 `ROS_DOMAIN_ID` 和 `ROS_LOCALHOST_ONLY=1`。转发进程的第二个节点在域 100 里把字节原样重发，并发布 `/wc_live/relay_status`。
 2. 入口节点不能写：它的类（`read_only_node_class`）创建发布者、服务、客户端都会抛错；rclpy 在每个节点里自建的 `/parameter_events` 发布者被换成不进 DDS 的空对象（否则声明 `use_sim_time` 时会在面板域发一条参数事件）；rosout 日志和参数服务关闭；不接受全局 ROS 参数，重映射不会作用到它。
 3. 订阅都是 best effort、volatile、keep last：读者不向面板的发布者回送确认（ACK/NACK），不参与结束录制时的确认等待，也不会造成反压；消息不反序列化、不修改，原样转出。
-4. 启动自检：入口节点建好订阅后，从本地图查询自己的条目，必须是 0 个发布者、0 个服务、0 个客户端、恰好当前这一档的订阅（三个，开障碍输入时四个）；否则转发进程退出，影子运行随之停止。自检结果写进 `/wc_live/relay_status`、`result.json` 的 `supervisor.relay_self_check` 和 `events.jsonl`。
-5. 面板域里能看到的只有一个 DDS 参与者（发现报文）和它的三个（开障碍输入时四个）读者，没有任何写者。面板侧每多一个读者，发布方多发一份数据（雷达约 1.5 MB/s，本机回环）。
+4. 启动自检：入口节点建好订阅后，从本地图查询自己的条目，必须是 0 个发布者、0 个服务、0 个客户端、恰好当前这一档的订阅（三个，开障碍输入时四个，开超声波时再多 3 或 5 个）；否则转发进程退出，影子运行随之停止。自检结果写进 `/wc_live/relay_status`、`result.json` 的 `supervisor.relay_self_check` 和 `events.jsonl`。
+5. 面板域里能看到的只有一个 DDS 参与者（发现报文）和它的三个（开障碍输入时四个，开超声波时再多 3 或 5 个）读者，没有任何写者。面板侧每多一个读者，发布方多发一份数据（雷达约 1.5 MB/s，本机回环）。
 6. 转发非隔离域（96–101 以外）需要用户当次同意：`WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则进程拒绝启动；同域测试必须用话题前缀，防止回环。
 
 在同一个域里用前缀做的录包检验（`--relay-test`，录包放在 `/relay_source` 下，不等面板订阅者）里，自检通过，转发后的扫描和里程计与直接回放完全相同。开障碍输入的同样检验（2026-11-10，`20261110T063930Z_shadow_2211f044`）：自检要求并查到四个订阅，四路分别转了 487、9813、467、487 条；运行中在同一域执行 `relay-graph --obstacles --source-prefix /relay_source`，结果 PASS（入口节点四个订阅都是 best effort、volatile，没有别的端点，查询节点自己也没有端点）。还需要上车前在车上核实（评审时一起看）：
@@ -279,7 +282,7 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 - 从面板域看，入口节点的发布者和服务是否为空。
 - 面板的录制和预览在多一个订阅者时是否照常，录包结束后不是 PARTIAL。
 
-从面板域查入口节点用 `navigation_live_shadow relay-graph --sensor-domain <面板域>`（开障碍输入的运行加 `--obstacles`），需要和转发相同的用户同意环境变量。
+从面板域查入口节点用 `navigation_live_shadow relay-graph --sensor-domain <面板域>`（开障碍输入的运行加 `--obstacles`，开超声波的运行加 `--ultrasonic front|all`），需要和转发相同的用户同意环境变量。
 - 它在面板域只建一个参与者，节点用入口节点同一个只读类，不建任何订阅，不发 rosout，不开参数服务。读完本地发现缓存，打印入口节点的条目和要转发的话题的发布者、订阅者（含 QoS）就退出，并核对查询节点自己的条目为空。
 - 不要用 `ros2 node info`：它会在面板域起 ros2 daemon。那是一个有发布者和服务的节点，命令结束后还留在域里，所以不是只读查询。
 
@@ -373,6 +376,41 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
     - 第一次干跑（`…163027Z_shadow_0463112d`）把障碍节点暂停 4 s 两次。第一次恢复以后，右雷达 16.6 s 没送到它；第二次以后，扫描进程也收不到左雷达了，/scan 一直停到运行结束，闸门一直是 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)`。闸门始终输出零。
     - 多半是 Fast-DDS 的共享内存传输：每个发布进程的共享内存段约 536 KB（`/dev/shm/fastrtps_*`），只放得下 3 帧 SourceFrame（每帧约 155 KB），卡住的订阅者占着缓冲区。`ROS_LOCALHOST_ONLY=1` 时 rmw 自己加共享内存传输，用 XML 配置只留 UDP 也关不掉（试过：进程照样打开共享内存文件）。
     - 车上发布雷达帧的是转发节点，情况应该一样：障碍节点卡住几秒，/scan 可能跟着停。闸门会因为定位条件停车，但链路不会自己恢复，要结束运行再启动。
+- 超声波检查（总管 2026-11-13 D4 第 2 条；`require_ultrasonic`，默认关）：
+  - 命令给了 C 的 `--monitor-ultrasonic front|all` 时，监督进程打开它，影子和闭环都开：这个选项本身就是要这几个探头当刹车。闸门配置写所配的探头（`require_ultrasonic`）和 `ultrasonic_max_age_s` 1.0 s（C 的 `RANGE_MAX_AGE_S`，也是碰撞监控的 source_timeout），节点配置写话题前缀 `ultrasonic_prefix`（车上和 `--relay-test` 是 `/wc_live/relayed`）。不给这个选项时什么都不变。
+  - 闸门订阅每个探头的 `/wc_mapping/ultrasonic/<探头>/range`（best effort，和碰撞监控一样）。每个周期用 C 的 `ultrasonic.range_health` 判每个探头最新的一条（`live/ultrasonic_check.verdicts`）。年龄是闸门的节点时钟减去消息的时间戳：A 打的是回复到达时主机的墙钟，碰撞监控也是这样算年龄；录包里是录制时间。
+  - 不正常时是新状态 `ULTRASONIC_HOLD`，输出零。原因码是 C 定的四个，每个码只写一次，按探头顺序：`ULTRASONIC_NO_DATA`（没收到过）、`ULTRASONIC_OLD`（超过 1 s 没有新的，或时间戳在闸门时钟之后）、`ULTRASONIC_INVALID`（NaN，或消息的量程不是 0 < min < max）、`ULTRASONIC_TOO_CLOSE`（−inf，或低于最小量程）。没回波（+inf）和量程内的读数都算正常。
+  - 排在 `OBSTACLES_UNTRUSTED` 之后、`START_BLOCKED` 之前。行进中也查；恢复正常以后闸门自己放行，没有保持时间。`preview`（影子判断）也带上它。
+  - 太近（`ULTRASONIC_TOO_CLOSE`）拦全部运动，原地转也拦。理由：
+    - 前探头装在 x = 0.323 m、左右 ±0.26 m 处。盲区现在是暂定的 0.25 m，到 x ≈ 0.57 m，还在车身外形以内（前沿 0.81 m）。读数低于最小量程，说明车身外形以内、探头前面已经有东西；也可能是乘坐者的膝盖、脚或脚托挡着，这要 A 的现场核对来看。
+    - 往前开就碰上。原地转时车头两角（离车轴约 0.85 m）扫过的正是这一块。闸门从不放倒车。
+    - 碰撞监控不管盲区里的读数（C：range < min_range 时不出点），只有闸门能拦。
+    - 侧探头太近时只拦原地转、放行直行，在门口会有用。但现在不打算开侧探头（C：先开 front，1.1.20 里侧探头几乎没用），而且一条读数里没有能区分这两种情况的东西。
+    - 这个检查只会多刹车，不会少刹车：误停可以接受，漏停不行。
+  - 闭环要 A 的现场核对：`--closed-loop --monitor-ultrasonic` 只在冻结目录里的 `ultrasonic_live.json` 五项核对都做完（A 的 `not_verified()` 为空）时才启动，否则命令拒绝（“the closed loop needs the field-checked ultrasonic configuration”）。A 写明核对完以前谁都不能按这些读数刹车，C 也建议核对完以前不开。影子运行不受这一条限制。
+  - 几何和静态变换（`live/ultrasonic_check.settings`）：
+    - 从 `--cell` 读冻结的 `ultrasonic_live.json` 和 `hardware_setup.json`，用 A 的 `probe_transforms` 算 base_link → ultrasonic_<探头>，和 A 的 `--publish-tf base_link` 是同一个算法（CAD 名义值）。结果写进 `run_config.json` 的 `ultrasonic`。
+    - 冻结目录的 `runtime_config.json` 有面板的 `ultrasonic_provenance` 时，再核对文件的 sha256 和每个探头的几何，对不上就不启动。
+    - 监督进程在影子域发这几个静态变换，`result.json` 的 `supervisor.ultrasonic` 记发了什么。不转发 /tf_static：会把面板的全部静态变换都带进来，而且 best effort、volatile 的读者收不到 latched 的消息。录包也不录 /tf_static。
+    - 冻结目录里没有 `ultrasonic_live.json`（面板会话没开超声波）时命令不启动。
+  - `freeze-config`：面板会话开着超声波（`mapping_live.json` 的 `ultrasonic_enabled`）时，A 的 `configuration()` 给出两份文件原文。冻结目录现在多 `ultrasonic_capture.json`、`ultrasonic_live.json` 两份快照，sha256 要和 `ultrasonic_provenance` 一致，`runtime_config.json` 里不再带原文，核对结果多一项 `ultrasonic`（文件和还没核对的项）。没开时和以前一样。
+  - 录包模式开超声波时，回放也带上这几个探头的 range 和状态话题；以前的录制里没有。
+  - `gate_status` 的 `conditions` 多 `ultrasonic_ok`、`ultrasonic_reasons`；另有一节 `ultrasonic`：ok，每个探头的 ok、reason、range_m（+inf、−inf、NaN 写成字符串）、age_s、messages。`result.json` 的 `closed_loop.gate_ultrasonic` 是最后一次。
+  - 状态行加 `ultrasonic_check.operator_text`，例如“超声波 左前 没回波、右前 1.20 m”、“超声波 左前 1.6 s 没更新、右前 没回波：不要开始自动”。A 的状态话题说 `verified` 是 false 时写“超声波（未核对）”：闭环只用核对过的冻结配置，出现这几个字说明面板正在用的配置和冻结的不一致。
+  - 录包闭环干跑（~/.kiro_work_live/d4/field_dryrun4.py 取现场 `run_closed_loop.sh` 的选项，加 `--monitor-ultrasonic front --relay-test`；录制、起点和 D2 的干跑相同；冻结目录是 11-11 那份加一份只供干跑的 ultrasonic_live.json，五项标成已核对，什么都没量）。合成的发布者按 A 的接口在 `/relay_source` 下发两个前探头的 Range（每 0.21 s 轮一个，每个探头 0.42 s 一条，时间戳用录制时间）和 verified 为 true 的状态，经转发进影子域。开始自动以后：
+
+    | 合成读数 | 闸门 | 恢复 |
+    |---|---|---|
+    | 20–23 s 左前停发 | 20.68 s 起 `ULTRASONIC_HOLD(ULTRASONIC_OLD)`（年龄 1.05 s） | 23.42 s 收到新读数，ACTIVE |
+    | 26–28 s 右前 −inf | 26.18 s 起 `ULTRASONIC_HOLD(ULTRASONIC_TOO_CLOSE)` | 28.28 s ACTIVE |
+    | 31–33 s 左前 NaN | 31.42 s 起 `ULTRASONIC_HOLD(ULTRASONIC_INVALID)` | 33.07 s ACTIVE |
+    | 36–39 s 左前 0.45 m | 闸门正常（ACTIVE）；碰撞监控在第一条 0.45 m 的同一时刻停车（“Robot to stop due to FootprintStop polygon”），闸门输出一直是零；38.4 s 以后监控停发（Humble 停车 2 s 后不再发），闸门 0.35 s `COMMAND_STALE` | 39.35 s 读数变回 +inf，监控又出 0.10 m/s |
+
+    - 运行目录 `reports/navigation_live_shadow/20261113T154720Z_shadow_52926587`。闸门不放行的时段里，送到轮控所有者的决定线速度、角速度都是 0；轮控所有者 1047 个决定，0 次拒绝、0 次违规。
+    - 0.45 m 那一段说明静态变换对了：圆弧在 base_link 里落进了停车区。碰撞监控的日志里没有变换出错。
+    - 转发自检要求并查到 7 个订阅（3 个传感器、右雷达、两个前探头的 range、状态），两个探头分别转了 130、137 条，状态 137 条。
+    - 左前停发的那段，碰撞监控打了 55 条 “Ignoring the source”，照常放行：Humble 的监控遇到旧读数不停车，所以闸门要管。
+  - 录包影子干跑（现场 `run_shadow3d.sh` 的选项加 `--monitor-ultrasonic front --relay-test`，冻结目录用 A 仓库里那份没核对的 `ultrasonic_live.json`，合成读数一直是 +inf；`…155054Z_shadow_a3651d67`）：影子接受没核对的配置，闸门开着超声波检查，整段没拦，结果 COMPLETE。运行中执行 `relay-graph --sensor-domain 100 --source-prefix /relay_source --obstacles --ultrasonic front`，PASS：入口节点 7 个订阅都是 best effort、volatile，没有别的端点。
 
 监督进程（闭环模式）：
 - 启动前查三件事：今天的 `WC_AUTO_DRIVE_APPROVAL`（和桥同一个变量）；域 100；面板会话的 `auto.sock` 存在。socket 路径按 `--panel-root`、`--session-root`、`--session-id` 算，和桥用同样的参数。车上另外还要实车影子的同意。

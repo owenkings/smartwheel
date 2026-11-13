@@ -99,7 +99,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   - `--smoother-feedback open_loop` 退回开环；`--smoother-timeout S` 是平滑器的速度超时（默认 0.3 s，0.2–5 s）。
   - 读回核对包括平滑器的 `feedback`、`odom_topic`、`velocity_timeout`；逐周期记录在 `velocity_feedback.csv`，实际用的值在 `run_config.json`。
 - `--source bag`：上面的录包检验，录包时间，域 100。
-- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间，影子框架在域 100（`WC_AUTONOMY_ROS_DOMAIN=100`，用户 2026-11-07 同意）；三个传感器话题（开三维障碍输入时加右雷达，共四个）经单向转发从面板域进影子域，转发的订阅范围和只读保证见[设计说明](../architecture/live_shadow.md#实车影子模式的单向转发第一次上车前由总管和用户评审)。第一次上车前总管和用户先评审这一部分；之后只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。
+- `--source vehicle --sensor-domain <面板域>`：在车上，墙钟时间，影子框架在域 100（`WC_AUTONOMY_ROS_DOMAIN=100`，用户 2026-11-07 同意）；三个传感器话题（开三维障碍输入时加右雷达，共四个；开超声波时再加所配探头的 Range 和 A 的超声波状态）经单向转发从面板域进影子域，转发的订阅范围和只读保证见[设计说明](../architecture/live_shadow.md#实车影子模式的单向转发第一次上车前由总管和用户评审)。第一次上车前总管和用户先评审这一部分；之后只有在用户在场并同意时运行，命令前设置 `WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日期>`，否则拒绝启动。
 
 输出在 `reports/navigation_live_shadow/<时间>_shadow_<编号>/`：`commands.csv`（四级指令）、`odom.csv`（人推的实际运动）、`localization.csv`（AMCL 位姿与协方差、`map→odom`）、`plans.jsonl`、`events.jsonl`（闸门、输入、目标的状态变化）和 `result.json`（推车行驶时各级指令的结局占比、闸门各状态和定位不可信的秒数、AMCL 统计；录包检验还给出 AMCL 车位与对齐的冻结路线的差）。
 
@@ -130,6 +130,7 @@ WC_AUTONOMY_ROS_DOMAIN=100 bash scripts/navigation_live_shadow shadow --source b
   - 它只在面板域建一个没有任何端点的只读节点（和转发入口同一个类），读发现缓存，打印后退出。
   - `status` 为 `PASS` 的条件：入口节点没有发布者、服务、客户端，正好三个订阅，都是 best effort、volatile；查询节点自己也没有端点。
   - 开三维障碍输入的运行要加 `--obstacles`：这时入口节点应正好四个订阅，多的是右雷达 host_filtered。
+  - 开超声波（`--monitor-ultrasonic front|all`）的运行要加 `--ultrasonic front|all`：入口节点再多 3 个（front）或 5 个（all）订阅，是所配探头的 `/wc_mapping/ultrasonic/<探头>/range` 和 `/wc_mapping/ultrasonic/status`。
   - 不要在面板域用 `ros2 node info`、`ros2 topic list` 这类 ros2 命令：它们会在面板域起 ros2 daemon，那是一个有发布者和服务、命令结束后还留着的节点。
 - 初始位姿的朝向：车头朝向必须和 `--initial-pose` 的 YAW_DEG 一致。
   - 给用户的检查单和提示一律按看板地图说方向：右 = 地图 +x，左 = 地图 −x。不用东西南北：用户 2026-11-10 说明，现实里地图 −x 是东。
@@ -239,13 +240,20 @@ WC_AUTONOMY_ROS_DOMAIN=100 WC_LIVE_SHADOW_VEHICLE_APPROVAL=APPROVED_BY_USER_<日
   - FAILED 不会自己恢复：按 Ctrl-C 结束，看运行目录的 `obstacles.jsonl` 和 `logs/obstacles.log`，再重新启动。
   - /scan 停了由定位条件管：约 1 s 后闸门报 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)`。
   - 障碍节点卡住几秒时，/scan 也可能跟着停（录包干跑里见过，雷达帧走共享内存传输）。闸门照样停车，但不会自己恢复：按 Ctrl-C 结束，再重新启动。
+- 超声波检查（总管 2026-11-13 D4 第 2 条；给了 `--monitor-ultrasonic front|all` 时打开，影子和闭环都开）：
+  - 冻结目录里要有 `ultrasonic_live.json`：面板会话开着超声波（`mapping_live.json` 的 `ultrasonic_enabled`）时，`freeze-config` 才会冻结它，否则命令不启动。
+  - 闭环要等 A 的现场核对做完：冻结的 `ultrasonic_live.json` 五项（地址对应、原始单位、无回波值、量程、卷尺核对几何）都是核对过的值，否则命令不启动（“the closed loop needs the field-checked ultrasonic configuration”）。影子不受这一条限制。
+  - 状态行每个探头一项，例如“超声波 左前 没回波、右前 1.20 m”。某个探头没有读数、1 s 没更新、读数无效或太近（盲区里有东西）时写“……：不要开始自动”，闸门在 `ULTRASONIC_HOLD(原因)` 输出零。行进中、原地转都一样；读数恢复以后闸门自己放行。
+  - 太近时先看车前是不是贴着东西，或者乘坐者的脚、脚托挡着探头。
+  - 状态行出现“超声波（未核对）”时，面板正在用的超声波配置还没核对，和冻结的不一致：停下来，重新冻结配置再启动。
+  - 碰撞监控要的静态变换 base_link → ultrasonic_<探头> 由监督进程按冻结的几何发，`result.json` 的 `supervisor.ultrasonic` 记发了什么，`closed_loop.gate_ultrasonic` 是闸门最后一次的判定。
 - 按一次 Ctrl-C 结束：先停桥，轮控所有者退出自动、写零，再停其他进程。`result.json` 的 `closed_loop` 一节记最后一条底盘状态（含桥的计数）、闸门各状态的计数和 `front_check`（开始前站着时的点数）。
 - 桥自己退出（例如轮控所有者 FAULT 结束了会话）时，运行停止：`supervisor.stopped` 是 `BASE_BRIDGE_EXITED`，`supervisor.stop_reason` 写一句原因，终端也打印这一句，例如“底盘桥退出（退出码 1：wheel owner closed the automatic control socket）；轮控所有者最后报 STOPPING（FEEDBACK_OVERSPEED）；会话轮控日志：NOT_STATIONARY_AFTER_STOP”。细节在 `closed_loop.bridge_exit`。
 
 上车前检查单：`bash scripts/navigation_live_shadow checklist`。内容与命令里的相同，要点：
 - 用户同意并记录。
-- 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。开障碍输入时面板要用两台雷达。
-- 整个命令以 nice 10 运行；转发 RUNNING 后用 `relay-graph` 查入口节点（开障碍输入时加 `--obstacles`）。
+- 先在面板里开始录制并看到设备就绪，再启动影子命令；转发会等面板自己的订阅者到齐才订阅。开障碍输入时面板要用两台雷达，开超声波时面板会话要开着超声波。
+- 整个命令以 nice 10 运行；转发 RUNNING 后用 `relay-graph` 查入口节点（开障碍输入时加 `--obstacles`，开超声波时加 `--ultrasonic front|all`）。
 - 物理急停可用；在影子域确认订阅闸门输出的只有平滑器反馈节点，没有进程发布 `/cmd_vel`。
 - 传感器频率；开障碍输入时两台雷达的 host_filtered 都约 10 Hz。
 - 用 `freeze-config` 冻结并核对当前配置，零偏二选一。

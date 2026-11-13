@@ -197,6 +197,7 @@ class LiveMonitor:
         self.front, self.front_pub, self.front_value = None, None, None
         self.front_before_start = []         # median counts published before the gate was first ACTIVE
         self.gate_was_active = False
+        self.ultrasonic_topic = None         # --monitor-ultrasonic: window A's status topic (setup_ultrasonic)
 
     def _on_status(self, topic, message):
         self.status[topic] = json.loads(message.data)
@@ -206,6 +207,49 @@ class LiveMonitor:
         """(latest status of window C's 3D obstacle input or None, seconds since it came or None)."""
         received = self.received.get(OBSTACLES_STATUS)
         return self.status.get(OBSTACLES_STATUS), (None if received is None else time.monotonic() - received)
+
+    def setup_ultrasonic(self, block):
+        """--monitor-ultrasonic (总管 2026-11-13 D4 item 2): publish the static transforms base_link ->
+        ultrasonic_<module> the collision monitor needs, from the run's frozen geometry (ultrasonic_check.settings:
+        the recordings carry no /tf_static and the relay does not bring the panel's), and read window A's ultrasonic
+        status for the status line. Returns what was sent, for result.json."""
+        from geometry_msgs.msg import TransformStamped
+        from std_msgs.msg import String
+        from tf2_ros import StaticTransformBroadcaster
+        from ..autonomy.ros_util import sensor_qos
+        from .ultrasonic_check import static_transforms
+        stamp = self.node.get_clock().now().to_msg()
+        messages, sent = [], []
+        for parent, child, xyz, quaternion in static_transforms(block):
+            message = TransformStamped()
+            message.header.stamp, message.header.frame_id, message.child_frame_id = stamp, parent, child
+            translation, rotation = message.transform.translation, message.transform.rotation
+            translation.x, translation.y, translation.z = xyz
+            rotation.x, rotation.y, rotation.z, rotation.w = quaternion
+            messages.append(message)
+            sent.append({"parent": parent, "child": child, "translation_m": list(xyz),
+                         "rotation_xyzw": list(quaternion)})
+        self.ultrasonic_tf = StaticTransformBroadcaster(self.node)
+        self.ultrasonic_tf.sendTransform(messages)
+        self.ultrasonic_topic = block["status_topic"]
+        # best effort: matches window A's latched publisher and the relay's latched copy alike
+        self.node.create_subscription(String, self.ultrasonic_topic, self._on_ultrasonic_status, sensor_qos())
+        return {"static_transforms": sent, "status_topic": self.ultrasonic_topic}
+
+    def _on_ultrasonic_status(self, message):
+        names = {"NaN": "nan", "Infinity": "+inf", "-Infinity": "-inf"}      # result.json allows no NaN
+        try:
+            value = json.loads(message.data, parse_constant=names.get)
+        except ValueError:
+            value = None
+        self.status[self.ultrasonic_topic] = value if isinstance(value, dict) else {"state": None}
+        self.received[self.ultrasonic_topic] = time.monotonic()
+
+    def ultrasonic_status(self):
+        """Window A's latest ultrasonic status ({} before the first one)."""
+        if self.ultrasonic_topic is None:
+            return {}
+        return self.status.get(self.ultrasonic_topic) or {}
 
     def setup_front_check(self, check):
         """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck); a check on
@@ -383,6 +427,10 @@ class LiveSupervisor(Supervisor):
     def start_bag(self):
         cfg = self.config
         topics = source_topics(bool(cfg.get("obstacles")))
+        if cfg.get("ultrasonic"):
+            # a recording of a panel session with the modules has their ranges and status (older ones have none)
+            from ..perception.ultrasonic import STATUS_TOPIC, topic
+            topics += tuple(topic(p) for p in cfg["ultrasonic"]["probes"]) + (STATUS_TOPIC,)
         command = ["ros2", "bag", "play", cfg["bag"], "--clock", "100", "--rate", str(cfg.get("bag_rate", 1.0)),
                    "--topics", *topics]
         if cfg.get("bag_remap_prefix"):
@@ -461,6 +509,12 @@ class LiveSupervisor(Supervisor):
                 # also while driving (OBSTACLES_UNTRUSTED); the collision monitor ignores old clouds
                 from ..perception.live_obstacles import STATUS_MAX_AGE_S
                 gate.update(require_obstacles=True, obstacles_status_timeout_s=STATUS_MAX_AGE_S)
+        ultrasonic = cfg.get("ultrasonic")
+        if ultrasonic:
+            # 总管 2026-11-13 D4 item 2: no motion unless every configured module has a fresh, valid reading
+            # (ULTRASONIC_HOLD, also while driving); in the shadow too, which asked for the modules explicitly
+            gate.update(require_ultrasonic=list(ultrasonic["probes"]), ultrasonic_max_age_s=ultrasonic["max_age_s"])
+            gate_node["ultrasonic_prefix"] = ultrasonic["prefix"]
         files["gate"] = self.node_config("gate_config", gate_node)
         files["goals"] = self.node_config("goals_config", {
             "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"],
@@ -536,9 +590,11 @@ class LiveSupervisor(Supervisor):
         _say(self.status_line(monitor))
 
     def status_line(self, monitor):
-        """The closed loop's status line, with window C's 3D obstacle input when the run has it."""
+        """The closed loop's status line, with window C's 3D obstacle input and the ultrasonic modules when the run
+        has them."""
         return closed_loop_line(monitor.status,
-                                obstacles=monitor.obstacles_input() if self.config.get("obstacles") else None)
+                                obstacles=monitor.obstacles_input() if self.config.get("obstacles") else None,
+                                ultrasonic=monitor.ultrasonic_status() if self.config.get("ultrasonic") else None)
 
     def initial_pose(self, monitor):
         cfg = self.config
@@ -736,6 +792,9 @@ class LiveSupervisor(Supervisor):
             foreign = monitor.foreign_nodes()
             if foreign:
                 raise RunError("ROS domain %s is already in use: %s" % (simulation_domain(), foreign))
+            if cfg.get("ultrasonic"):
+                # --monitor-ultrasonic: the modules' static transforms, before the collision monitor starts
+                self.report["ultrasonic"] = monitor.setup_ultrasonic(cfg["ultrasonic"])
             self.start_common(monitor, files)
             if profile is not None:
                 self.start_localization(monitor, files)
@@ -858,11 +917,13 @@ def _switch(*values):
     return "否" if any(v is False for v in values) else "未知"
 
 
-def closed_loop_line(status, obstacles=None):
+def closed_loop_line(status, obstacles=None, ultrasonic=None):
     """The operator's one-line view of the closed loop (every second, also standing before "start automatic").
 
     ``obstacles``: (latest status, seconds since it came) of window C's 3D obstacle input when the run has it,
-    shown with C's ``live_obstacles.operator_text``; None without the input.
+    shown with C's ``live_obstacles.operator_text``; None without the input. ``ultrasonic``: window A's latest
+    ultrasonic status ({} before the first one) when the run has the modules (--monitor-ultrasonic): their part is
+    the gate's verdict (``ultrasonic_check.operator_text``); None without them.
     """
     gate = status.get(GATE_STATUS_TOPIC) or {}
     base = status.get(BASE_STATUS_TOPIC) or {}
@@ -888,6 +949,9 @@ def closed_loop_line(status, obstacles=None):
     if obstacles is not None:            # the gate holds the chair while this is not 正常 (D2 item 1)
         from ..perception.live_obstacles import operator_text as obstacles_text
         parts.append(obstacles_text(*obstacles))
+    if ultrasonic is not None:           # the gate holds the chair while a module is not ok (ULTRASONIC_HOLD)
+        from .ultrasonic_check import operator_text as ultrasonic_text
+        parts.append(ultrasonic_text(gate.get("ultrasonic"), ultrasonic))
     if base:
         parts.append("底盘 %s%s" % (base.get("auto_state") or "未知",
                                     "" if base.get("base_auto") else "(%s)" % base.get("reason")))
@@ -1005,6 +1069,8 @@ def closed_loop_report(status):
              "goal_status": status.get(GOAL_STATUS_TOPIC)}
     if gate.get("obstacles") is not None:          # the gate's obstacle input check (require_obstacles), last verdict
         value["gate_obstacles"] = gate["obstacles"]
+    if gate.get("ultrasonic") is not None:         # the gate's ultrasonic check (require_ultrasonic), last verdict
+        value["gate_ultrasonic"] = gate["ultrasonic"]
     return value
 
 
