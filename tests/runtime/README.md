@@ -17,6 +17,7 @@
 - [test_capture_preview.py](test_capture_preview.py)
 - [test_capture_receipt_readiness.py](test_capture_receipt_readiness.py)
 - [test_project_config.py](test_project_config.py)：验证完整本机覆盖、无效覆盖拒绝、雷达目录完整性和录包原始字节冻结；不打开设备。
+- [test_ultrasonic_live.py](test_ultrasonic_live.py)
 - 其余同类文件遵守本目录的职责和命名规则。
 
 ## 添加与验证

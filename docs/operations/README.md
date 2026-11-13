@@ -20,6 +20,7 @@
 - [runtime_limits_zh.md](runtime_limits_zh.md)
 - [single_lidar_mapping_zh.md](single_lidar_mapping_zh.md)
 - [storage.md](storage.md)
+- [ultrasonic_field_check.md](ultrasonic_field_check.md)：四个超声波探头的现场核对（约 20 分钟）：USB 绑定、地址对应、单位、盲区、波束、串扰、几何，每项的合格标准和量完写到哪里
 
 ## 添加与验证
 

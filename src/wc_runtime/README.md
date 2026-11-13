@@ -33,6 +33,7 @@
 - [supervisor.py](supervisor.py)：管理本会话所属组件与生命周期，不接管其他任务。
 - [project_config.py](project_config.py)：统一选择当前项目配置及雷达配置目录；本机覆盖采用完整文件或完整目录，不合并字段，损坏或链接覆盖直接报错。
 - [legacy_contracts.json](legacy_contracts.json)：旧档案字段的精确兼容映射，保留原始序列化标识。
+- [ultrasonic_live.py](ultrasonic_live.py)：超声波实时发布：和录制同样的只读事务，加四个 sensor_msgs/Range、状态话题和 CAD_NOMINAL 几何；默认关（[现场核对](../../docs/operations/ultrasonic_field_check.md)）
 - 其余同类文件遵守本目录的职责和命名规则。
 
 ## 添加与验证

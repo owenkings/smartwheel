@@ -18,6 +18,8 @@
 - [mapping_live.json](mapping_live.json)
 - [quality_experimental.json](quality_experimental.json)
 - [storage.json](storage.json)
+- [ultrasonic_capture.json](ultrasonic_capture.json)：超声波 CH340 的 USB 口绑定（它没有序列号）和只读协议；现场换口用 `wc_runtime.ultrasonic_live --write-local-binding` 写本机覆盖
+- [ultrasonic_live.json](ultrasonic_live.json)：四个超声波探头的地址、单位、量程和视场；现场核对以前都是占位值，见[超声波现场核对](../docs/operations/ultrasonic_field_check.md)
 - `storage.local.json`：本机数据根目录与可移除介质身份，不随仓库提供。
 - [wheel_auto_drive_evidence.template.json](wheel_auto_drive_evidence.template.json)：自动速度通道的证据模板，加载时总被拒绝；格式见[速度通道设计](../docs/architecture/velocity_channel.md)第 8、11 节。
 - 其余同类文件遵守本目录的职责和命名规则。
@@ -25,7 +27,7 @@
 ## 本机覆盖和任务冻结
 
 - `device_bindings.local.json`、`storage.local.json`、`imu_timing.local.json` 分别完整覆盖设备绑定、存储及时序策略。
-- `local/project/` 按基础配置的相对路径保存完整机器副本，支持相机、轮反馈、在线设备身份、安装几何及建图配置。固定支持列表由 [project_config.py](../src/wc_runtime/project_config.py) 定义。
+- `local/project/` 按基础配置的相对路径保存完整机器副本，支持相机、轮反馈、在线设备身份、安装几何、建图配置及超声波的串口绑定和探头设置。固定支持列表由 [project_config.py](../src/wc_runtime/project_config.py) 定义。
 - `local/lidar/` 保存完整雷达 YAML 和 xtcfg 输入，不能只复制单侧或混合多个来源。
 - `local/imu_timing/` 保存实际时序证据的原字节和校验。公共示例证据不能改写为现场证据。
 - `panel_profiles/`、`calibration/panel_extrinsics/`、`calibration/panel_live/` 是现场生成的参数档案与证据，忽略且不安装；需私下备份。

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "probes": [
+    {"name": "left_front", "address": 1, "lidar": "left", "view": "front",
+     "cad_point": "double_hole_left_front_unbound_mechanical_reference"},
+    {"name": "right_front", "address": 2, "lidar": "right", "view": "front",
+     "cad_point": "double_hole_right_front_unbound_mechanical_reference"},
+    {"name": "left_side", "address": 3, "lidar": "left", "view": "left",
+     "cad_point": "double_hole_left_side_unbound_mechanical_reference"},
+    {"name": "right_side", "address": 4, "lidar": "right", "view": "right",
+     "cad_point": "double_hole_right_side_unbound_mechanical_reference"}
+  ],
+  "address_mapping_status": "UNVERIFIED",
+  "raw_unit_m": 0.001,
+  "raw_unit_status": "UNVERIFIED",
+  "no_echo_raw": [],
+  "no_echo_status": "UNMEASURED",
+  "field_of_view_rad": 0.7,
+  "min_range_m": 0.25,
+  "max_range_m": 2.0,
+  "range_limits_status": "UNMEASURED",
+  "geometry_status": "CAD_NOMINAL",
+  "geometry_tape_check": "NOT_DONE",
+  "status_period_s": 1.0,
+  "evidence": "2026-11-13 window A (coordinator relay A3 item 3): nothing here is measured yet. Address to probe is a placeholder order; the field check (docs/operations/ultrasonic_field_check.md) covers each probe in turn and writes the result here (address_mapping_status VERIFIED). raw_unit_m 0.001 assumes millimetres: on 2026-10-12 the four addresses read 252-968 at unknown distances, which only millimetres keep within a room; the board at 0.5 / 1.0 / 1.5 m decides. field_of_view_rad, min_range_m, max_range_m are placeholders until the beam-width, blind-zone and no-echo checks; no FD07-34R manual was found. Geometry: the CAD outward face centre of each dual-hole module (config/hardware_setup.json mechanical_reference) relative to the same-side lidar's CAD face centre, composed with that lidar's mount; nominal view direction front +x, left +y, right -y."
+}
