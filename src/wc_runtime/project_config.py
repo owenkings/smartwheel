@@ -13,6 +13,9 @@ PROJECT_CONFIG_NAMES = frozenset((
     'wheel_feedback_current.json', 'live_unvalidated.json',
     'mapping_3d_diagnostic.json', 'comparison_20260917_handpush/mapping.json',
     'wheel_manual_stop_evidence.template.json',
+    # The ultrasonic CH340 has no serial: its USB port binding is a field fact (wc_runtime.ultrasonic_live
+    # --write-local-binding); the live probe settings are filled in by the field check.
+    'ultrasonic_capture.json', 'ultrasonic_live.json',
 ))
 LIDAR_CONFIG_FILES = (
     'left.yaml', 'right.yaml', 'left-2026-09-11.xtcfg',

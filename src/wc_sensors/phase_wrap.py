@@ -157,11 +157,10 @@ def organized_shape(message):
     return rows, cols
 
 
-def source_frame_mask(message, cfg=PhaseWrapFilter()):
-    """Flat ghost mask (one entry per point, in cloud order) of a SourceFrame (ROS message or dict alike).
+def frame_points(message):
+    """(xyz float64 (n, 3), amplitude float64 (n,), (rows, cols)) of a SourceFrame's cloud in cloud order.
 
-    Reads x, y, z and the amplitude field (``intensity`` or ``amplitude``) of ``message.cloud``; the message is
-    not modified.
+    The amplitude is the ``intensity`` or ``amplitude`` field; the message is not modified.
     """
     cloud = _get(message, "cloud")
     rows, cols = organized_shape(message)
@@ -178,5 +177,14 @@ def source_frame_mask(message, cfg=PhaseWrapFilter()):
                           buffer=storage, offset=spec["offset"],
                           strides=(layout["row_step"], layout["point_step"])).reshape(-1).astype(np.float64)
 
-    xyz = np.column_stack([column("x"), column("y"), column("z")])
-    return cloud_ghost_mask(xyz, column(name), (rows, cols), cfg)
+    return np.column_stack([column("x"), column("y"), column("z")]), column(name), (rows, cols)
+
+
+def source_frame_mask(message, cfg=PhaseWrapFilter()):
+    """Flat ghost mask (one entry per point, in cloud order) of a SourceFrame (ROS message or dict alike).
+
+    Reads x, y, z and the amplitude field (``intensity`` or ``amplitude``) of ``message.cloud``; the message is
+    not modified.
+    """
+    xyz, amplitude, shape = frame_points(message)
+    return cloud_ghost_mask(xyz, amplitude, shape, cfg)

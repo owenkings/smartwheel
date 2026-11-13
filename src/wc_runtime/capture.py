@@ -538,7 +538,7 @@ def preflight(root, profile, duration, *, manual_drive=False, capacity_path=None
     if profile == 'all_sensors':
         from .ultrasonic_capture import identity, validate_config as ultrasound_config
         def ultrasound():
-            cfg = ultrasound_config(json.loads((root/'config/ultrasonic_capture.json').read_text()))
+            cfg = ultrasound_config(json.loads(selected_config_path(root, 'ultrasonic_capture.json').read_text()))
             path, _ = identity(cfg)
             require_unoccupied(path)
             return {'path': str(path), 'probe_response': 'NOT_QUERIED', 'physical_roles': 'UNVERIFIED'}

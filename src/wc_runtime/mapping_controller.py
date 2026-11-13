@@ -258,6 +258,27 @@ def configuration(request):
         config['cameras_provenance']={'source_path':logical_path(ROOT, camera_path),
             'sha256':hashlib.sha256(camera_raw).hexdigest(),'snapshot_file':'cameras_config.json',
             'images_recorded':False}
+    if type(config.get('ultrasonic_enabled',False)) is not bool:
+        raise ValueError('ultrasonic_enabled must be boolean')
+    if config.get('ultrasonic_enabled'):
+        # Off by default (coordinator relay 2026-11-12 A3 item 3): wc_runtime.ultrasonic_live owns the CH340 for the
+        # session, journals and publishes the raw transactions, the four ranges and a status.
+        from .ultrasonic_capture import validate_config as validate_ultrasonic
+        from .ultrasonic_live import not_verified, probe_transforms, validate_live_config
+        files={}
+        for key,default,name in (('ultrasonic_capture_config','config/ultrasonic_capture.json','ultrasonic_capture.json'),
+                                 ('ultrasonic_live_config','config/ultrasonic_live.json','ultrasonic_live.json')):
+            path=_current_configuration_path(config.get(key,default),select_local=current_configuration)
+            data=path.read_bytes()
+            if len(data)>131072:raise ValueError('超声波配置超过 128 KiB')
+            files[name]=(path,data)
+        validate_ultrasonic(_json_loads(files['ultrasonic_capture.json'][1].decode('utf-8')))
+        live=validate_live_config(_json_loads(files['ultrasonic_live.json'][1].decode('utf-8')))
+        transforms=probe_transforms(live,_json_loads(config['_hardware_setup_raw_text']))
+        config['_ultrasonic_raw_texts']={name:data.decode('utf-8') for name,(path,data) in files.items()}
+        config['ultrasonic_provenance']={'files':{name:{'source_path':logical_path(ROOT,path),
+            'sha256':hashlib.sha256(data).hexdigest()} for name,(path,data) in files.items()},
+            'not_verified':not_verified(live),'geometry':transforms}
     hardware_path=_current_configuration_path(config['wheel_hardware_config'], select_local=current_configuration)
     if hardware_path != project_path(ROOT,config['wheel_hardware_config']):
         config['wheel_hardware_config']=logical_path(ROOT,hardware_path)
@@ -421,6 +442,13 @@ def preflight(request):
     if c.get('cameras_enabled'):
         optional+=['src/wc_runtime/mapping_cameras.py','install/main/wc_camera_panel/lib/libwc_camera_panel.so']
     if c.get('visualization'):optional+=['src/wc_runtime/mapping_visuals.py']
+    if c.get('ultrasonic_enabled'):
+        optional+=['src/wc_runtime/ultrasonic_live.py']
+        from .ultrasonic_capture import identity as ultrasonic_identity, validate_config as validate_ultrasonic
+        from wc_imu.ros_node import require_unoccupied as serial_free
+        device,_=ultrasonic_identity(validate_ultrasonic(_json_loads(
+            c['_ultrasonic_raw_texts']['ultrasonic_capture.json'])))
+        serial_free(device)
     if c.get('manual_controls') is not None:optional+=['src/wc_runtime/mapping_wheel.py']
     if not c['mapping_enabled']:optional+=['src/wc_runtime/mapping_preview.py']
     for path in optional:
@@ -443,6 +471,10 @@ def plan(request,config,*,lidar_directory=None):
     topics += ['/wc_mapping/app/'+topic for topic in ('input_cloud','scan_cloud','prior_odom','odom','info',
                'mapData','mapGraph','mapPath','cloud_map','grid_map','tf','tf_static','status_markers')]
     if odometry_source=='icp':topics.append('/wc_mapping/app/odom_info')
+    ultrasonic=bool(config.get('ultrasonic_enabled'))
+    if ultrasonic:
+        from .ultrasonic_live import TOPICS as ULTRASONIC_TOPICS
+        topics += list(ULTRASONIC_TOPICS)
     commands=[ros_command(['ros2','bag','record','-s','sqlite3','--max-bag-size','536870912','-o',directory/'bag',*topics]),
         ros_command(['ros2','launch',ROOT/'src/wc_bringup/launch/mapping_app.launch.py','session_root:='+str(directory),
                      'odometry_source:='+odometry_source]),
@@ -469,16 +501,25 @@ def plan(request,config,*,lidar_directory=None):
         # A single serial owner keeps real feedback available before activation.
         # No separate teleop process may race the feedback transport for the port.
         commands[6]=ros_command([sys.executable,'-s','-m','wc_runtime.mapping_wheel','--session-root',directory,*close_args])
+    camera_command=ultrasonic_command=None
     if config.get('cameras_enabled'):
-        commands.append(ros_command([sys.executable,'-s','-m','wc_runtime.mapping_cameras',
-            '--config',directory/'cameras_config.json','--output-root',directory/'cameras','--duration',str(source_duration),*close_args]))
+        camera_command=ros_command([sys.executable,'-s','-m','wc_runtime.mapping_cameras',
+            '--config',directory/'cameras_config.json','--output-root',directory/'cameras','--duration',str(source_duration),*close_args])
+        commands.append(camera_command)
+    if ultrasonic:
+        # The session's frozen copies; the raw transactions also go to <session>/ultrasonic/events.jsonl.
+        ultrasonic_command=ros_command([sys.executable,'-s','-m','wc_runtime.ultrasonic_live','--project-root',ROOT,
+            '--capture-config',directory/'ultrasonic_capture.json','--live-config',directory/'ultrasonic_live.json',
+            '--hardware-setup',directory/'hardware_setup.json','--output',directory/'ultrasonic','--run-root',RUN,
+            '--session',request['session_id'],'--allow-read-queries','--publish-tf','base_link'])
+        commands.append(ultrasonic_command)
     if not config['mapping_enabled']:
         # Raw single-frame preview does not instantiate SLAM, motion integration,
         # archive workers, a rosbag recorder or an IMU acquisition process.
         native_preview = any(side not in config.get('mounts', {}) for side in sides)
         commands=([commands[6]] if config.get('manual_controls') is not None else [])+[commands[7],ros_command([sys.executable,'-s','-m',
-            'wc_runtime.mapping_preview','--session-root',directory])]+(
-                [commands[-1]] if config.get('cameras_enabled') else [])
+            'wc_runtime.mapping_preview','--session-root',directory])]+[
+                command for command in (camera_command,ultrasonic_command) if command is not None]
         topics=[]
     commands.append(ros_command([sys.executable,'-s','-m','wc_runtime.runtime_health',
                                  '--session-root',directory,'--watch']))
@@ -533,6 +574,12 @@ def archive_configuration(directory,config):
         if hashlib.sha256(camera_bytes).hexdigest()!=config['cameras_provenance']['sha256']:
             raise ValueError('摄像头配置快照哈希不一致')
         write_new(directory/'cameras_config.json',camera_bytes)
+    if config.get('ultrasonic_enabled'):
+        for name,text in config.pop('_ultrasonic_raw_texts').items():
+            data=text.encode('utf-8')
+            if hashlib.sha256(data).hexdigest()!=config['ultrasonic_provenance']['files'][name]['sha256']:
+                raise ValueError('超声波配置快照哈希不一致: '+name)
+            write_new(directory/name,data)
     write_new(directory/'wheel_candidate.json',json_bytes(config['wheel_candidate']))
     if config.get('_gyro_bias_raw_text') is not None:
         bias_bytes=config.pop('_gyro_bias_raw_text').encode('utf-8')

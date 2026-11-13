@@ -20,7 +20,7 @@ def configuration():
 
 def test_current_topology_is_configuration_driven_but_other_identity_protocol_fields_remain_strict():
     config = configuration()
-    assert config['expected_usb_path'] == 'platform-3610000.usb-usb-0:2.1:1.0'
+    assert config['expected_usb_path'] == 'platform-3610000.usb-usb-0:2.2:1.0'    # re-plugged 2026-11-11
     assert source.validate_config(config) == config
     config['expected_usb_path'] = 'platform-3610000.usb-usb-0:3.1:1.0'
     assert source.validate_config(config) == config

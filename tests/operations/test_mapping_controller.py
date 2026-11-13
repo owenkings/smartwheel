@@ -516,6 +516,38 @@ def test_camera_preview_can_be_disabled_without_removing_mapping(setup):
     assert '/wc_mapping/app/view_grid' not in task['bag_topics']
 
 
+def test_ultrasonic_is_off_by_default_and_runs_on_frozen_copies_when_switched_on(setup, monkeypatch):
+    task=controller.plan(setup,controller.configuration(setup))
+    assert not any('wc_runtime.ultrasonic_live' in c for c in task['commands'])
+    assert not any('/ultrasonic/' in topic for topic in task['bag_topics'])
+    change_config(setup,lambda c:c.update(ultrasonic_enabled='yes'))
+    with pytest.raises(ValueError,match='ultrasonic_enabled'):
+        controller.configuration(setup)
+    for name in ('ultrasonic_capture.json','ultrasonic_live.json'):
+        shutil.copy2(PROJECT/'config'/name,Path(setup['project_root'])/'config'/name)
+    from wc_runtime import ultrasonic_live
+    # the legacy schema-1 setup of this fixture has no CAD reference points (test_ultrasonic_live covers them)
+    monkeypatch.setattr(ultrasonic_live,'probe_transforms',lambda cfg,hardware:{'left_front':'CAD_NOMINAL'})
+    change_config(setup,lambda c:c.update(ultrasonic_enabled=True))
+    config=controller.configuration(setup)
+    assert config['ultrasonic_provenance']['not_verified']==['address_mapping_status','raw_unit_status',
+        'no_echo_status','range_limits_status','geometry_tape_check']
+    directory=Path(setup['output_dir']);directory.mkdir(parents=True)
+    frozen=controller.archive_configuration(directory,config)
+    for name in ('ultrasonic_capture.json','ultrasonic_live.json'):
+        assert (directory/name).read_bytes()==(PROJECT/'config'/name).read_bytes()
+    assert '_ultrasonic_raw_texts' not in frozen
+    task=controller.plan(setup,frozen)
+    command=next(c for c in task['commands'] if 'wc_runtime.ultrasonic_live' in c)
+    for flag,name in (('--capture-config','ultrasonic_capture.json'),('--live-config','ultrasonic_live.json'),
+                      ('--hardware-setup','hardware_setup.json'),('--output','ultrasonic')):
+        assert command[command.index(flag)+1]==str(directory/name)
+    assert '--allow-read-queries' in command and command[command.index('--publish-tf')+1]=='base_link'
+    assert '/tf_static' not in task['bag_topics']
+    assert set(ultrasonic_live.TOPICS)<=set(task['bag_topics'])<=set(task['commands'][0])
+    preview=controller.plan(setup,{**frozen,'mapping_enabled':False})
+    assert any('wc_runtime.ultrasonic_live' in c for c in preview['commands']) and preview['bag_topics']==[]
+    assert any('wc_runtime.mapping_cameras' in c for c in preview['commands'])==bool(frozen.get('cameras_enabled'))
 def test_failed_session_reports_original_component_reason(setup):
     directory=Path(setup['output_dir']);(directory/'input').mkdir(parents=True)
     (directory/'input/status.json').write_text(json.dumps({'failure_reason':'ARCHIVE_QUEUE_FULL'}))
