@@ -168,12 +168,12 @@ class LiveMonitor:
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self.node)
         self.status = {}
+        self.received = {}                   # monotonic time each of these statuses last came (the line's ages)
         self.enabled = False
         self.Bool, self.Pose = Bool, PoseWithCovarianceStamped
         for topic in ("/wc_live/inputs_status/scan", "/wc_live/inputs_status/odometry", "/wc_nav/gate_status",
                       "/wc_live/goal_status", "/wc_live/relay_status", OBSTACLES_STATUS):
-            self.node.create_subscription(String, topic, lambda m, t=topic: self.status.__setitem__(
-                t, json.loads(m.data)), latched_qos())
+            self.node.create_subscription(String, topic, lambda m, t=topic: self._on_status(t, m), latched_qos())
         self.enable_pub = None
         # The wheel owner's (auto_state, reason, immediate_reason) as reported through the bridge, adjacent
         # repeats merged: why the bridge exited is told from this when the owner closes its socket (D.md 23:40).
@@ -197,6 +197,15 @@ class LiveMonitor:
         self.front, self.front_pub, self.front_value = None, None, None
         self.front_before_start = []         # median counts published before the gate was first ACTIVE
         self.gate_was_active = False
+
+    def _on_status(self, topic, message):
+        self.status[topic] = json.loads(message.data)
+        self.received[topic] = time.monotonic()
+
+    def obstacles_input(self):
+        """(latest status of window C's 3D obstacle input or None, seconds since it came or None)."""
+        received = self.received.get(OBSTACLES_STATUS)
+        return self.status.get(OBSTACLES_STATUS), (None if received is None else time.monotonic() - received)
 
     def setup_front_check(self, check):
         """Start counting scan points in the map's free space ahead (``check``: front_check.FrontCheck); a check on
@@ -447,6 +456,11 @@ class LiveSupervisor(Supervisor):
             gate.update(require_base=True, enable_source_node=closed["bridge_node"],
                         enable_timeout_s=closed["enable_timeout_s"])
             gate_node["clock"] = "monotonic"
+            if cfg.get("obstacles"):
+                # 总管 2026-11-12 D2 item 1 (C.md 11-12 15:12): no motion unless window C's 3D obstacle input runs,
+                # also while driving (OBSTACLES_UNTRUSTED); the collision monitor ignores old clouds
+                from ..perception.live_obstacles import STATUS_MAX_AGE_S
+                gate.update(require_obstacles=True, obstacles_status_timeout_s=STATUS_MAX_AGE_S)
         files["gate"] = self.node_config("gate_config", gate_node)
         files["goals"] = self.node_config("goals_config", {
             "use_sim_time": sim, "goals": cfg["goals"], "advance_radius_m": cfg["advance_radius_m"],
@@ -519,7 +533,12 @@ class LiveSupervisor(Supervisor):
         topics = (BASE_STATUS_TOPIC, "/wc_nav/enable", "/wc_nav/estop")
         self.wait_for(monitor, lambda: all(monitor.node.count_publishers(t) > 0 for t in topics)
                       and monitor.status.get(BASE_STATUS_TOPIC) is not None, 30, "bridge_ready")
-        _say(closed_loop_line(monitor.status))
+        _say(self.status_line(monitor))
+
+    def status_line(self, monitor):
+        """The closed loop's status line, with window C's 3D obstacle input when the run has it."""
+        return closed_loop_line(monitor.status,
+                                obstacles=monitor.obstacles_input() if self.config.get("obstacles") else None)
 
     def initial_pose(self, monitor):
         cfg = self.config
@@ -739,7 +758,7 @@ class LiveSupervisor(Supervisor):
                 self.check_alive(allow=("bag_play", "goals"))      # the bridge or the gate exiting ends the run
                 monitor.spin(0.2)
                 if closed and time.monotonic() - last_line >= 1.0:
-                    _say(closed_loop_line(monitor.status))         # also while standing before "start automatic"
+                    _say(self.status_line(monitor))                # also while standing before "start automatic"
                     last_line = time.monotonic()
             self.report["stages"].append({"stage": "source_finished", "wall_s": round(time.monotonic() - self.t0, 2),
                                           "bag_exit_code": None if bag is None else bag.returncode})
@@ -839,8 +858,12 @@ def _switch(*values):
     return "否" if any(v is False for v in values) else "未知"
 
 
-def closed_loop_line(status):
-    """The operator's one-line view of the closed loop (every second, also standing before "start automatic")."""
+def closed_loop_line(status, obstacles=None):
+    """The operator's one-line view of the closed loop (every second, also standing before "start automatic").
+
+    ``obstacles``: (latest status, seconds since it came) of window C's 3D obstacle input when the run has it,
+    shown with C's ``live_obstacles.operator_text``; None without the input.
+    """
     gate = status.get(GATE_STATUS_TOPIC) or {}
     base = status.get(BASE_STATUS_TOPIC) or {}
     goal = status.get(GOAL_STATUS_TOPIC) or {}
@@ -862,6 +885,9 @@ def closed_loop_line(status):
     if FRONT_TOPIC in status:            # --front-check block|warn (总管 2026-11-11 item 2)
         from .front_check import operator_text
         parts.append(operator_text(status[FRONT_TOPIC]))
+    if obstacles is not None:            # the gate holds the chair while this is not 正常 (D2 item 1)
+        from ..perception.live_obstacles import operator_text as obstacles_text
+        parts.append(obstacles_text(*obstacles))
     if base:
         parts.append("底盘 %s%s" % (base.get("auto_state") or "未知",
                                     "" if base.get("base_auto") else "(%s)" % base.get("reason")))
@@ -974,9 +1000,12 @@ def closed_loop_report(status):
     """result.json's closed_loop block: the last bridge status (with its counters and the owner's status) and the
     gate's identity and state counts as last published."""
     gate = status.get(GATE_STATUS_TOPIC) or {}
-    return {"base_status": status.get(BASE_STATUS_TOPIC), "gate_id": gate.get("gate_id"), "gate_seq": gate.get("seq"),
-            "gate_state": gate.get("state"), "gate_counts": gate.get("counts"), "gate_sources": gate.get("sources"),
-            "goal_status": status.get(GOAL_STATUS_TOPIC)}
+    value = {"base_status": status.get(BASE_STATUS_TOPIC), "gate_id": gate.get("gate_id"), "gate_seq": gate.get("seq"),
+             "gate_state": gate.get("state"), "gate_counts": gate.get("counts"), "gate_sources": gate.get("sources"),
+             "goal_status": status.get(GOAL_STATUS_TOPIC)}
+    if gate.get("obstacles") is not None:          # the gate's obstacle input check (require_obstacles), last verdict
+        value["gate_obstacles"] = gate["obstacles"]
+    return value
 
 
 def lower_priority(target):

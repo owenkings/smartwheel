@@ -1130,6 +1130,61 @@ def test_the_closed_loop_gate_and_goals_configuration(tmp_path):
     assert json.loads(files["goals"].read_text())["closed_loop"] is False
 
 
+def test_the_closed_loop_gate_checks_the_obstacle_input_only_when_the_run_has_it(tmp_path):
+    # 总管 2026-11-12 D2 item 1 (C.md 11-12 15:12): the closed loop with window C's 3D obstacle input
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.autonomy.safety_gate import GateConfig
+    from wc_navigation.live import cli
+    from wc_navigation.live.supervisor import LiveSupervisor
+    from wc_navigation.perception.live_obstacles import STATUS_MAX_AGE_S
+    base = {"use_sim_time": False, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
+            "gate_limits": {"correction_translation_m": 0.25, "correction_yaw_deg": 10.0,
+                            "correction_reference": "robot", "covariance_xy_std_m": 0.5,
+                            "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
+                            "slow_linear": 0.05},
+            "goals": [[-4.3, -0.4, math.pi]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
+            "smoother_timeout_s": 0.3}
+    closed = {"bridge_node": "/wc_auto_bridge", "enable_timeout_s": 0.5, "panel_root": "/p", "session_root": "/s",
+              "session_id": "capture_x", "controller_params": [list(p) for p in cli.CLOSED_LOOP_CONTROLLER_PARAMS],
+              "global_live_scans": cli.CLOSED_LOOP_GLOBAL_LIVE_SCANS}
+    obstacles = {"plan": {"published": ["left", "right"], "filtered_scan": True}}
+    profile = nav2_config.NavProfile(max_linear=0.10, max_angular=0.30)
+    gates = {}
+    for name, config in (("closed_3d", dict(base, closed_loop=closed, obstacles=obstacles)),
+                         ("closed", dict(base, closed_loop=closed)), ("shadow_3d", dict(base, obstacles=obstacles))):
+        (tmp_path / name).mkdir()
+        files = LiveSupervisor(tmp_path / name, tmp_path / name, config).prepare_shadow(profile)
+        gates[name] = json.loads(files["gate"].read_text())["gate"]
+    gate = GateConfig(**gates["closed_3d"])
+    assert (gate.require_obstacles, gate.obstacles_status_timeout_s, gate.require_base) == (True, STATUS_MAX_AGE_S, True)
+    assert "require_obstacles" not in gates["closed"] and "require_obstacles" not in gates["shadow_3d"]
+
+
+def test_the_closed_loop_status_line_shows_the_obstacle_input(tmp_path):
+    from wc_navigation.live.supervisor import GATE_STATUS_TOPIC, LiveSupervisor, closed_loop_line, closed_loop_report
+    running = {"role": "obstacles", "state": "RUNNING", "stale_inputs": [], "failure": None,
+               "timing_ms": {"latency_ms": {"median": 61.2, "p90": 90.0, "max": 120.0}}}
+    assert "三维障碍输入 正常，延迟中位 61 ms" in closed_loop_line({}, obstacles=(running, 0.3))
+    assert "三维障碍输入" not in closed_loop_line({})                   # runs without the input: as before
+    assert "三维障碍输入 没有状态：不要开始自动" in closed_loop_line({}, obstacles=(None, None))
+    assert "三维障碍输入 状态 2.0 s 没更新：不要开始自动" in closed_loop_line({}, obstacles=(running, 2.0))
+    stale = dict(running, state="STALE", stale_inputs=["right"])
+    assert "三维障碍输入 STALE（右雷达 没有数据）：不要开始自动" in closed_loop_line({}, obstacles=(stale, 0.2))
+    failed = dict(running, state="FAILED", failure="frame: ValueError: bad cloud")
+    assert "三维障碍输入 FAILED：frame: ValueError: bad cloud：不要开始自动" in closed_loop_line(
+        {}, obstacles=(failed, 0.2))
+    monitor = SimpleNamespace(status={}, obstacles_input=lambda: (running, 0.3))
+    with_input = LiveSupervisor(tmp_path, tmp_path, {"obstacles": {"plan": {}}})
+    without = LiveSupervisor(tmp_path, tmp_path, {})
+    assert "三维障碍输入 正常" in with_input.status_line(monitor) and "三维障碍输入" not in without.status_line(monitor)
+    gate = {"state": "OBSTACLES_UNTRUSTED", "reasons": ["OBSTACLES_STATUS_OLD"], "counts": {},
+            "obstacles": {"ok": False, "reason": "OBSTACLES_STATUS_OLD", "age_s": 1.6, "messages": 40,
+                          "state": "RUNNING", "stale_inputs": [], "failure": None}}
+    assert "闸门 OBSTACLES_UNTRUSTED(OBSTACLES_STATUS_OLD)" in closed_loop_line({GATE_STATUS_TOPIC: gate})
+    assert closed_loop_report({GATE_STATUS_TOPIC: gate})["gate_obstacles"]["reason"] == "OBSTACLES_STATUS_OLD"
+    assert "gate_obstacles" not in closed_loop_report({GATE_STATUS_TOPIC: dict(gate, obstacles=None)})
+
+
 def test_closed_loop_rotation_speeds_must_be_given_and_within_the_angular_limit():
     from wc_navigation.autonomy.bringup import RunError
     from wc_navigation.live.supervisor import closed_loop_rotation_readback

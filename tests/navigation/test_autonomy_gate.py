@@ -626,3 +626,68 @@ def test_the_front_check_message_is_parsed_strictly():
     assert parse(json.dumps({"schema": SCHEMA, "clear": False, "reason": "FRONT_NOT_CLEAR"})) == (False, "FRONT_NOT_CLEAR")
     for bad in ("{", "[]", json.dumps({"schema": "other", "clear": True}), json.dumps({"schema": SCHEMA, "clear": 1})):
         assert parse(bad) == (False, "FRONT_CHECK_INVALID")
+
+
+# ---- 3D obstacle input check (总管 2026-11-12 D2 item 1; C.md 11-12 15:12) -----------------------------------
+def test_obstacle_check_is_off_by_default_and_holds_the_chair_also_while_it_drives():
+    from wc_navigation.perception.live_obstacles import STATUS_MAX_AGE_S
+    assert GateConfig().require_obstacles is False and GateConfig().obstacles_status_timeout_s == STATUS_MAX_AGE_S
+    assert active_gate().evaluate(0.1).state == "ACTIVE"            # no obstacle input needed by default
+    gate = active_gate(require_obstacles=True)
+    decision = gate.evaluate(0.1)
+    assert (decision.state, decision.reasons, decision.linear, decision.angular) == (
+        "OBSTACLES_UNTRUSTED", ("OBSTACLES_NO_STATUS",), 0.0, 0.0)
+    gate.on_obstacles(True)
+    assert gate.evaluate(0.15).state == "ACTIVE"
+    for reason in ("OBSTACLES_STATUS_OLD", "OBSTACLES_STALE", "OBSTACLES_FAILED", "OBSTACLES_STATUS_INVALID",
+                   "OBSTACLES_NO_STATUS"):
+        gate.on_obstacles(False, reason)                            # while driving: zero at once
+        gate.on_enable(True, 0.2)
+        gate.on_command(0.2, 0.1, 0.2)
+        decision = gate.evaluate(0.25)
+        assert (decision.state, decision.reasons, decision.linear, decision.angular) == (
+            "OBSTACLES_UNTRUSTED", (reason,), 0.0, 0.0)
+        gate.on_obstacles(True)                                     # running again: passes, no new start needed
+        decision = gate.evaluate(0.25)
+        assert (decision.state, decision.linear, decision.angular) == ("ACTIVE", 0.2, 0.1)
+    gate.on_obstacles(False, "SOMETHING")
+    assert gate.evaluate(0.25).reasons == ("OBSTACLES_STATUS_INVALID",)
+    for bad in ({"require_obstacles": 1}, {"obstacles_status_timeout_s": 0.0}):
+        with pytest.raises(ValueError):
+            GateConfig(**bad)
+
+
+def test_obstacle_check_order_preview_and_conditions():
+    gate = active_gate(require_obstacles=True, front_hold=True, require_base=True, enable_source_node="/wc_auto_bridge")
+    gate.on_sources(True)
+    gate.on_base(True)
+    gate.on_localization(False, "MAP_TO_BASE_TF_STALE")
+    assert gate.evaluate(0.1).state == "LOCALIZATION_UNTRUSTED"     # localization comes first
+    gate.on_localization(True)
+    gate.on_front(False, "FRONT_NOT_CLEAR", 0.1)
+    assert gate.evaluate(0.1).reasons == ("OBSTACLES_NO_STATUS",)   # before START_BLOCKED: the front check needs it
+    gate.on_obstacles(True)
+    assert gate.evaluate(0.1).state == "START_BLOCKED"
+    gate.on_enable(False, 0.1)
+    gate.on_obstacles(False, "OBSTACLES_STALE")
+    decision, preview = gate.evaluate(0.12), gate.preview(0.12)
+    assert decision.state == "DISABLED"
+    assert (preview.state, preview.reasons, preview.linear) == ("OBSTACLES_UNTRUSTED", ("OBSTACLES_STALE",), 0.0)
+    assert (gate.conditions()["obstacles_ok"], gate.conditions()["obstacles_reason"]) == (False, "OBSTACLES_STALE")
+    assert "obstacles_ok" not in active_gate().conditions()
+    gate.on_obstacles(True)
+    gate.on_front(False, "FRONT_SCAN_STALE", 0.2)                   # the front check's own reason is kept (789135b5)
+    assert gate.preview(0.22).reasons == ("FRONT_SCAN_STALE",)
+
+
+def test_obstacles_health_is_window_c_input_health_on_the_age_since_receipt():
+    from wc_navigation.autonomy.gate_node import obstacles_health
+    running = {"role": "obstacles", "state": "RUNNING"}
+    assert obstacles_health(None, None, 10.0, 1.5) == (False, "OBSTACLES_NO_STATUS", None)
+    assert obstacles_health(running, 9.8, 10.0, 1.5) == (True, "", pytest.approx(0.2))
+    assert obstacles_health(running, 8.4, 10.0, 1.5)[:2] == (False, "OBSTACLES_STATUS_OLD")
+    assert obstacles_health(running, 10.5, 10.0, 1.5)[:2] == (False, "OBSTACLES_STATUS_OLD")   # received "later"
+    assert obstacles_health(dict(running, state="STALE"), 9.9, 10.0, 1.5)[:2] == (False, "OBSTACLES_STALE")
+    assert obstacles_health(dict(running, state="FAILED"), 9.9, 10.0, 1.5)[:2] == (False, "OBSTACLES_FAILED")
+    for bad in ({"role": None}, {"role": "scan", "state": "RUNNING"}, dict(running, state="OK"), [1]):
+        assert obstacles_health(bad, 9.9, 10.0, 1.5)[:2] == (False, "OBSTACLES_STATUS_INVALID")

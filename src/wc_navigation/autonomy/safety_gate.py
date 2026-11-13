@@ -3,7 +3,8 @@
 The gate passes a command only while every condition holds: no latched
 emergency stop, a fresh operator enable, trusted localization and a fresh
 command; in the vehicle closed loop also a base that runs automatic control and
-a single enable source. Otherwise it outputs an explicit zero twist. It also
+a single enable source, and with the 3D obstacle input a running obstacle input.
+Otherwise it outputs an explicit zero twist. It also
 clamps speeds and blocks reverse motion because the wheelchair has no
 rear-facing range sensor. The gate is a software layer; it does not replace a
 validated physical stop.
@@ -16,13 +17,18 @@ import math
 from ..geometry import _number
 
 STATES = ("ESTOP_LATCHED", "DISABLED", "ENABLE_STALE", "BASE_NOT_READY", "LOCALIZATION_UNTRUSTED",
-          "START_BLOCKED", "COMMAND_STALE", "ACTIVE")
+          "OBSTACLES_UNTRUSTED", "START_BLOCKED", "COMMAND_STALE", "ACTIVE")
 # BASE_NOT_READY (only with GateConfig.require_base): the base bridge's /wc_nav/base_status does not say that the
 # wheel serial owner runs automatic control, or it is stale or unreadable (velocity_channel.md 9.2 item 4).
 BASE_REASONS = ("BASE_NOT_AUTO", "BASE_STATUS_STALE", "BASE_STATUS_INVALID")
 # START_BLOCKED (only with GateConfig.front_hold): from an enable rising edge until the first ACTIVE, the live
 # chain's front check (live/front_check.py) does not report the free space ahead as clear, or its verdict is stale.
-FRONT_REASONS = ("FRONT_NOT_CLEAR", "FRONT_CHECK_STALE", "FRONT_CHECK_INVALID", "NO_POSE_OR_SCAN")
+FRONT_REASONS = ("FRONT_NOT_CLEAR", "FRONT_CHECK_STALE", "FRONT_CHECK_INVALID", "NO_POSE_OR_SCAN",
+                 "FRONT_SCAN_STALE")
+# OBSTACLES_UNTRUSTED (only with GateConfig.require_obstacles): window C's 3D obstacle input does not report RUNNING
+# in a recent status (perception.live_obstacles.input_health, whose reason codes these are), also while driving.
+OBSTACLE_REASONS = ("OBSTACLES_NO_STATUS", "OBSTACLES_STATUS_INVALID", "OBSTACLES_STATUS_OLD", "OBSTACLES_STALE",
+                    "OBSTACLES_FAILED")
 # The gate's decision of every cycle for the base bridge, next to /wc_nav/cmd_vel_gated (velocity_channel.md 9.2
 # item 1; the same field list as window A's wc_motion.auto_protocol.GATE_COMMAND_FIELDS).
 GATE_COMMAND_TOPIC = "/wc_nav/gate_command"
@@ -96,14 +102,21 @@ class GateConfig:
     # older than front_check_timeout_s. Once ACTIVE, obstacles ahead are Nav2's and the collision monitor's.
     front_hold: bool = False
     front_check_timeout_s: float = 1.0
+    # Obstacle input check (总管 2026-11-12 D2 item 1; C.md 11-12 15:12), off by default: the gate holds the chair
+    # (OBSTACLES_UNTRUSTED), also while it drives, unless window C's 3D obstacle input reported RUNNING in a status
+    # received at most obstacles_status_timeout_s ago (perception.live_obstacles.input_health and its
+    # STATUS_MAX_AGE_S). Without it nothing stops the chair when the input stops: the Humble collision monitor only
+    # logs "Ignoring the source" for a cloud older than its source_timeout, and the costmaps keep the last scan.
+    require_obstacles: bool = False
+    obstacles_status_timeout_s: float = 1.5
 
     def __post_init__(self):
         for name in ("max_linear", "max_angular", "command_timeout_s", "enable_timeout_s",
                      "localization_max_age_s", "covariance_xy_std_max_m", "covariance_yaw_std_max_rad",
                      "slow_std_m", "slow_hysteresis_m", "slow_linear", "slow_decel", "slow_accel",
-                     "base_status_timeout_s", "front_check_timeout_s"):
+                     "base_status_timeout_s", "front_check_timeout_s", "obstacles_status_timeout_s"):
             object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
-        for name in ("allow_reverse", "require_covariance", "require_base", "front_hold"):
+        for name in ("allow_reverse", "require_covariance", "require_base", "front_hold", "require_obstacles"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(name + " must be a boolean")
         node = self.enable_source_node
@@ -339,6 +352,8 @@ class SafetyGate:
         # front_hold: the last front check verdict and its receipt time; started = ACTIVE since the last enable edge
         self._front_clear, self._front_reason, self._front_time = False, "FRONT_CHECK_STALE", -math.inf
         self._started = False
+        # require_obstacles: the node feeds the obstacle input's verdict on every cycle
+        self._obstacles_ok, self._obstacles_reason = False, "OBSTACLES_NO_STATUS"
         # lateral covariance mode: slow-down state, last assessed spread and the ramped speed ceiling
         self._slow = False
         self._spread = None
@@ -389,6 +404,11 @@ class SafetyGate:
         self._front_reason = "" if clear else (reason if reason in FRONT_REASONS else "FRONT_NOT_CLEAR")
         self._front_time = float(now)
 
+    def on_obstacles(self, ok, reason=""):
+        """Whether window C's 3D obstacle input runs (require_obstacles); ``reason`` one of OBSTACLE_REASONS."""
+        self._obstacles_ok = bool(ok)
+        self._obstacles_reason = "" if ok else (reason if reason in OBSTACLE_REASONS else "OBSTACLES_STATUS_INVALID")
+
     def _front_stop(self, now, held):
         """START_BLOCKED while the chair is about to start and the front is not confirmed clear, else None."""
         cfg = self.config
@@ -419,6 +439,8 @@ class SafetyGate:
             value["sources_ok"] = self._sources_ok
         if self.config.front_hold:
             value.update(front_clear=self._front_clear, front_reason=self._front_reason, started=self._started)
+        if self.config.require_obstacles:
+            value.update(obstacles_ok=self._obstacles_ok, obstacles_reason=self._obstacles_reason)
         return value
 
     def check_covariance(self, covariance, yaw=None):
@@ -546,6 +568,8 @@ class SafetyGate:
             return stop("BASE_NOT_READY", self._base_reason)
         if not self._localization_ok:
             return stop("LOCALIZATION_UNTRUSTED", self._localization_reason or "LOCALIZATION_FAILED")
+        if cfg.require_obstacles and not self._obstacles_ok:
+            return stop("OBSTACLES_UNTRUSTED", self._obstacles_reason or "OBSTACLES_NO_STATUS")
         blocked = self._front_stop(now, held)
         if blocked is not None:
             return blocked
@@ -570,6 +594,9 @@ class SafetyGate:
         if not self._localization_ok:
             return GateDecision(0.0, 0.0, "LOCALIZATION_UNTRUSTED",
                                 (self._localization_reason or "LOCALIZATION_FAILED",), held)
+        if self.config.require_obstacles and not self._obstacles_ok:
+            return GateDecision(0.0, 0.0, "OBSTACLES_UNTRUSTED", (self._obstacles_reason or "OBSTACLES_NO_STATUS",),
+                                held)
         blocked = self._front_stop(now, held)
         if blocked is not None:
             return blocked

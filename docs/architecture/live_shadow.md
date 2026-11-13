@@ -345,6 +345,30 @@ B 在仿真里发现闸门会卡死（`reports/navigation_autonomy/20261107T1749
 
 - 不在闭环配置时，闸门的判断和以前完全一样（总管 14:40：默认都不变）。单调钟下使能、命令的年龄不会是负数，所以“负的年龄当过期”只在 TF 年龄上做，见上表。
 - `gate_status` 加了 `gate_id`、`seq`、`clock`、`linear_ceiling`、`conditions`、`command` 和 `preview`。`conditions` 列出定位、底盘、使能来源各自的判断，前面的条件挡着时也看得到定位可不可信；`preview` 见下面“点‘开始自动’之前”。
+- 三维障碍输入检查（总管 2026-11-12 D2 第 1 条，回 C 11-12 15:12 的请求；`require_obstacles`，默认关）：
+  - 闭环开了 C 的三维障碍输入（`run_config.json` 有 obstacles）时，监督进程自动打开。影子模式、没开障碍输入的闭环都不变。
+  - 闸门订阅 `/wc_live/inputs_status/obstacles`（latched；C 的节点按 steady clock 每 0.5 s 发一次），记下收到的时刻（闭环用单调钟）。每个周期用 C 的 `live_obstacles.input_health(最新状态, 收到以后的秒数)` 判：只有 1.5 s 内收到的 RUNNING 算正常（`obstacles_status_timeout_s`，等于 C 的 `STATUS_MAX_AGE_S`）。
+  - 不正常时是新状态 `OBSTACLES_UNTRUSTED`，输出零。它排在 `LOCALIZATION_UNTRUSTED` 之后、`START_BLOCKED` 之前，因为车前检查读的过滤扫描也出自这个输入。原因码是 C 定的五个：`OBSTACLES_NO_STATUS`、`OBSTACLES_STATUS_INVALID`、`OBSTACLES_STATUS_OLD`、`OBSTACLES_STALE`（某台雷达或 /odom 停了 1 s 以上）、`OBSTACLES_FAILED`。
+  - 行进中也查，不只第一次 ACTIVE 以前。恢复正常以后闸门自己放行，和 `LOCALIZATION_UNTRUSTED` 一样；`preview`（影子判断）也带上它。
+  - 为什么要：C 查过，Humble 的碰撞监控遇到比 source_timeout 旧的点云只打一条 “Ignoring the source”，不停车；代价地图留着最后的过滤扫描；C 的节点出错以后锁在 FAILED，进程不退出。没有这一条，障碍输入停了，车照样走。
+  - C 的节点 FAILED 以后不会自己恢复，闸门就一直输出零，要结束运行再重启。
+  - `gate_status` 的 `conditions` 多 `obstacles_ok`、`obstacles_reason`，另有一节 `obstacles`（判定、原因、年龄、收到几条、节点报的 state、stale_inputs、failure）。`result.json` 的 `closed_loop.gate_obstacles` 是最后一次。状态行加 C 的 `operator_text`，例如“三维障碍输入 正常，延迟中位 60 ms”，年龄按监督进程自己收到的时刻算。
+  - A 的协议不用改：`auto_protocol` 只要求 state 是大写字母、数字和下划线，不认识的状态照收，只有 ACTIVE 能带非零速度。
+  - /scan 停了不另外查。AMCL 每收一帧 /scan 才重发一次 map→odom，时间戳是扫描时刻加 0.5 s（transform_tolerance）。/scan 停了约 1 s 以后，map→base_link 就旧过 0.5 s，闸门报 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)`，行进中也一样。组合方案里 /scan 只给 AMCL 用。
+  - 录包闭环验证（A 的 DryRun 轮控所有者；`~/.kiro_work_live/d2/field_dryrun.py` 直接取现场 `run_closed_loop.sh` 的选项，只换掉和车有关的几项；录制是 11-09 第一次实车影子 ZL1108shadow_2026_1109_203823，车头朝看板地图左，起点用那次的真实位姿 (0.61, −0.55, 177.4°)，目标朝向 180°）。开始自动以后依次注入：
+
+    | 注入 | 闸门 | 恢复 |
+    |---|---|---|
+    | 暂停扫描进程 2 s（/scan 停） | 0.87 s 后 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)` | 恢复后 0.12 s ACTIVE |
+    | 暂停障碍节点 3 s，同时另一个进程发 FAILED 状态 | 0.07 s 后 `OBSTACLES_UNTRUSTED(OBSTACLES_FAILED)` | 节点恢复后 0.48 s ACTIVE |
+    | 暂停障碍节点 2.5 s（状态停发） | 1.22 s 后 `OBSTACLES_STATUS_OLD` | 恢复后 0.12 s ACTIVE。接着右雷达 2.6 s 没送到节点，`OBSTACLES_STALE`，送到以后又 ACTIVE |
+
+    - 运行目录 `reports/navigation_live_shadow/20261112T163923Z_shadow_3cf21761`。闸门不放行的时段里，送到轮控所有者的每个决定线速度、角速度都是 0；轮控所有者 0 次拒绝、0 次违规。
+    - 状态行例：“闸门 OBSTACLES_UNTRUSTED(OBSTACLES_FAILED)；……；三维障碍输入 FAILED：processing: RuntimeError: ……：不要开始自动”，“三维障碍输入 STALE（右雷达 没有数据）：不要开始自动”，“三维障碍输入 状态 2.4 s 没更新：不要开始自动”。
+  - 同时发现：雷达帧的一个订阅者卡住几秒，别的订阅者也会收不到雷达帧。
+    - 第一次干跑（`…163027Z_shadow_0463112d`）把障碍节点暂停 4 s 两次。第一次恢复以后，右雷达 16.6 s 没送到它；第二次以后，扫描进程也收不到左雷达了，/scan 一直停到运行结束，闸门一直是 `LOCALIZATION_UNTRUSTED(MAP_TO_BASE_TF_STALE)`。闸门始终输出零。
+    - 多半是 Fast-DDS 的共享内存传输：每个发布进程的共享内存段约 536 KB（`/dev/shm/fastrtps_*`），只放得下 3 帧 SourceFrame（每帧约 155 KB），卡住的订阅者占着缓冲区。`ROS_LOCALHOST_ONLY=1` 时 rmw 自己加共享内存传输，用 XML 配置只留 UDP 也关不掉（试过：进程照样打开共享内存文件）。
+    - 车上发布雷达帧的是转发节点，情况应该一样：障碍节点卡住几秒，/scan 可能跟着停。闸门会因为定位条件停车，但链路不会自己恢复，要结束运行再启动。
 
 监督进程（闭环模式）：
 - 启动前查三件事：今天的 `WC_AUTO_DRIVE_APPROVAL`（和桥同一个变量）；域 100；面板会话的 `auto.sock` 存在。socket 路径按 `--panel-root`、`--session-root`、`--session-id` 算，和桥用同样的参数。车上另外还要实车影子的同意。
