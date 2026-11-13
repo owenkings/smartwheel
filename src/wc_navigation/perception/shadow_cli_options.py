@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .nav2_obstacles import OBSTACLE_INPUTS, OBSTACLE_SCANS, SIDES
-from .obstacle_cloud import ObstacleFilter
+from .obstacle_cloud import WRAP_DELETE_NOT_WIRED, ObstacleFilter
 
 # The same bound as the live chain and the AMCL replay (live.scan_adapter.MAX_LIDAR_TIME_OFFSET_MS).
 MAX_LIDAR_TIME_OFFSET_MS = 250.0
@@ -99,6 +99,8 @@ def check_arguments(parser, args):
         args.obstacle_filter_settings = ObstacleFilter(**json.loads(args.obstacle_filter))
     except (TypeError, ValueError) as exc:
         parser.error("--obstacle-filter: " + str(exc))
+    if args.obstacle_filter_settings.wrap_delete:
+        parser.error("--obstacle-filter: " + WRAP_DELETE_NOT_WIRED)
     if not args.obstacle_sides:
         args.obstacle_sides = ["left", "right"] if args.obstacle_right_cell else ["left"]
     if "right" in args.obstacle_sides and not args.obstacle_right_cell:
@@ -264,6 +266,8 @@ def check_live_arguments(parser, args):
         settings = ObstacleFilter(**json.loads(args.obstacle_filter))
     except (TypeError, ValueError) as exc:
         parser.error("3D obstacle input: " + str(exc))
+    if settings.wrap_delete:
+        parser.error("3D obstacle input: " + WRAP_DELETE_NOT_WIRED)
     args.obstacle_live = {"plan": plan, "config": timing, "filter": settings}
 
 

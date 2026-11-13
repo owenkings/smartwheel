@@ -50,6 +50,19 @@ Stages, in order (each removed point is counted under the first stage that drops
    or when the other lidar returns a wrong far value there. A ghost lying in front of
    the other lidar is usually not judged (that lidar's own wrapped return stops its
    ray before the ghost) and stays.
+5b. ``phase_wrap`` (off by default, ``wrap_delete``; prediction and confirmation,
+   status/C.md 2026-11-13): a remaining cluster is dropped only when window A's fold
+   prediction marks at least ``wrap_min_share`` of its points, all of them are
+   dimmer than ``wrap_max_amplitude``, it does not stand on the floor (as stage 5a),
+   no point lies in the stop zone (body + ``wrap_stop_margin_m``), the localization
+   the prediction used is trusted, and the other lidar does not confirm it: it hit
+   fewer than ``WITNESS_CONFIRM_SHARE`` of its voxels and saw through, or had no
+   echo at, at least ``wrap_unconfirmed_share`` of them (``consensus.EchoWitness``
+   over its whole received frame). Each frame records the deleted clusters and why
+   the others stayed (``phase_wrap_clusters``). What it can wrongly drop: a dim
+   thing that does not stand on the floor, only this lidar sees, and that lies where
+   the prediction expects a fold. No command passes its inputs in yet
+   (``WRAP_DELETE_NOT_WIRED``).
 6. ``transient`` (off by default, ``persist_min_age_s`` > 0): an unsupported cluster
    that survived stage 5 is dropped when less than ``persist_min_share`` of its
    voxels had a candidate of the same lidar at the same world position
@@ -106,6 +119,16 @@ class ObstacleFilter:
     witness_scope: str = "unsupported"
     # Stage 5a keeps a cluster with a return of the same lidar between min_height_m and this height in its column.
     seen_through_floor_m: float = 0.25
+    # Stage 5b "phase_wrap" (prediction and confirmation; off by default): a cluster goes only when at least
+    # wrap_min_share of its points are predicted wraps, all are dimmer than wrap_max_amplitude, nothing of it
+    # stands on the floor (as stage 5a) or lies in the stop zone (body + wrap_stop_margin_m), the localization is
+    # trusted, and the other lidar hit fewer than WITNESS_CONFIRM_SHARE of its voxels while it saw through, or had
+    # no echo at, at least wrap_unconfirmed_share of them.
+    wrap_delete: bool = False
+    wrap_min_share: float = 0.9
+    wrap_max_amplitude: float = 400.0
+    wrap_unconfirmed_share: float = 0.5
+    wrap_stop_margin_m: float = 0.02
     # Stage "transient": 0 = off; otherwise the age window of the same lidar's earlier frames checked.
     persist_min_age_s: float = 0.0
     persist_max_age_s: float = 2.0
@@ -165,21 +188,42 @@ class ObstacleFilter:
         if not (math.isfinite(floor_m) and self.min_height_m < floor_m <= 1.0):
             raise ValueError("seen_through_floor_m must be above min_height_m and at most 1 m")
         object.__setattr__(self, "seen_through_floor_m", floor_m)
+        if not isinstance(self.wrap_delete, bool):
+            raise ValueError("wrap_delete must be a boolean")
+        for name in ("wrap_min_share", "wrap_unconfirmed_share"):
+            share = float(getattr(self, name))
+            if not 0 < share <= 1:
+                raise ValueError(name + " must be within (0, 1]")
+            object.__setattr__(self, name, share)
+        amplitude, margin = float(self.wrap_max_amplitude), float(self.wrap_stop_margin_m)
+        if not (math.isfinite(amplitude) and 0 < amplitude <= 4096):
+            raise ValueError("wrap_max_amplitude must be within (0, 4096]")
+        if not (math.isfinite(margin) and 0 <= margin <= 0.5):
+            raise ValueError("wrap_stop_margin_m must be within [0, 0.5] m")
+        object.__setattr__(self, "wrap_max_amplitude", amplitude)
+        object.__setattr__(self, "wrap_stop_margin_m", margin)
 
     def as_dict(self):
         values = asdict(self)
         if self.witness_scope == "unsupported":
             values.pop("witness_scope")     # the default: recorded settings stay as before the option
-            if self.seen_through_floor_m == 0.25:
+            if self.seen_through_floor_m == 0.25 and not self.wrap_delete:
                 values.pop("seen_through_floor_m")
+        if not self.wrap_delete:            # likewise for the phase-wrap stage at its defaults
+            defaults = ObstacleFilter.__dataclass_fields__
+            for name in ("wrap_delete", "wrap_min_share", "wrap_max_amplitude", "wrap_unconfirmed_share",
+                         "wrap_stop_margin_m"):
+                if values[name] == defaults[name].default:
+                    values.pop(name)
         return values
 
     @property
     def stage_order(self):
-        """Stage names in the order they drop points (``seen_through`` only while witness_scope is "all")."""
-        if self.witness_scope == "all":
-            return STAGES[:6] + ("seen_through",) + STAGES[6:]
-        return STAGES
+        """Stage names in the order they drop points (``seen_through`` only while witness_scope is "all",
+        ``phase_wrap`` only while wrap_delete is on)."""
+        stages = STAGES[:6] + (("seen_through",) if self.witness_scope == "all" else ())
+        stages += ("phase_wrap",) if self.wrap_delete else ()
+        return stages + STAGES[6:]
 
     @property
     def floor_z_base(self):
@@ -364,8 +408,78 @@ def scan_ranges(points, cfg=ObstacleFilter()):
     return ranges
 
 
+WRAP_REASONS = ("not_predicted", "bright", "on_floor", "stop_zone", "confirmed", "no_verdict")
+# Stage 5b needs per frame window A's fold prediction (wc_sensors.phase_wrap_model) and window D's map pose and
+# localization trust. No command or node passes them in yet, so there the option would delete nothing; they refuse
+# it with this message instead of running a silent no-op (status/C.md 2026-11-13).
+WRAP_DELETE_NOT_WIRED = ("wrap_delete is not wired into this command yet: it needs window A's fold prediction and "
+                         "window D's map pose and localization trust per frame (status/C.md 2026-11-13)")
+
+
+def phase_wrap_clusters(base, h, keep, cfg, body, wrap):
+    """Stage 5b ``phase_wrap``: (drop mask, per-reason counts, deleted clusters) of one frame.
+
+    ``wrap``: ``fold`` (bool per point: the fold prediction marked its pixel), ``amplitude`` (per point, the SDK's
+    amplitude), ``trusted`` (the localization the prediction used is trusted) and ``witness`` (``consensus.
+    EchoWitness`` of the other lidar's frame, or None). Every remaining cluster is checked in this order; the first
+    condition it fails names the reason it stays (WRAP_REASONS): fewer than wrap_min_share of its points predicted;
+    an amplitude of wrap_max_amplitude or more; a return of the same lidar between min_height_m and
+    seen_through_floor_m within cluster_voxel_m (x, y) of its points (it stands on the floor); a point in the stop
+    zone; the other lidar hit WITNESS_CONFIRM_SHARE or more of its voxels; the other lidar saw through or had no
+    echo at fewer than wrap_unconfirmed_share of them (outside its view, behind a nearer return, or no witness).
+    Nothing is dropped while the localization is not trusted.
+    """
+    drop = np.zeros(len(base), dtype=bool)
+    reasons = {r: 0 for r in WRAP_REASONS}
+    deleted = []
+    if wrap is None or not wrap.get("trusted"):
+        return drop, reasons, deleted, False
+    fold = np.asarray(wrap["fold"], dtype=bool)
+    amplitude = np.asarray(wrap["amplitude"], dtype=float)
+    witness = wrap.get("witness")
+    stop_zone = grow_convex(body, cfg.wrap_stop_margin_m) if body else []
+    floor_tree = None
+    for members in all_clusters(base, keep, cfg.cluster_voxel_m):
+        if fold[members].mean() < cfg.wrap_min_share:
+            reasons["not_predicted"] += 1
+            continue
+        if not (amplitude[members] < cfg.wrap_max_amplitude).all():
+            reasons["bright"] += 1
+            continue
+        if floor_tree is None:
+            from scipy.spatial import cKDTree
+            low = np.flatnonzero((h >= cfg.min_height_m) & (h <= cfg.seen_through_floor_m))
+            floor_tree = cKDTree(base[low, :2]) if len(low) else False
+        if floor_tree is not False and any(floor_tree.query_ball_point(base[members, :2], cfg.cluster_voxel_m)):
+            reasons["on_floor"] += 1
+            continue
+        if stop_zone and inside_convex(base[members, :2], stop_zone).any():
+            reasons["stop_zone"] += 1
+            continue
+        evidence = witness.evidence(base[members]) if witness is not None else None
+        if evidence is not None and evidence["hit"] >= WITNESS_CONFIRM_SHARE:
+            reasons["confirmed"] += 1
+            continue
+        if evidence is None or evidence["through"] + evidence["empty"] < cfg.wrap_unconfirmed_share:
+            reasons["no_verdict"] += 1
+            continue
+        drop[members] = True
+        c = base[members]
+        deleted.append({"points": int(len(members)), "voxels": evidence["voxels"],
+                        "centre": [round(float(v), 2) for v in c.mean(axis=0)],
+                        "height_m": [round(float(h[members].min()), 2), round(float(h[members].max()), 2)],
+                        "predicted": round(float(fold[members].mean()), 2),
+                        "amplitude_max": round(float(amplitude[members].max()), 1),
+                        "through": round(evidence["through"], 2), "empty": round(evidence["empty"], 2),
+                        "hit": round(evidence["hit"], 2)})
+    return drop, reasons, deleted, True
+
+
+EXPLAIN_KEPT, EXPLAIN_BEYOND, EXPLAIN_NOT_FINITE = -1, -2, -3
+
+
 def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, clearing=False, scan=False,
-                 recent=None):
+                 recent=None, wrap=None, explain=False):
     """Obstacle products of one frame.
 
     ``points``: Nx3 prepared cloud (lidar origin, axle-aligned axes); ``lever``: the
@@ -377,11 +491,17 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     nothing, the size rule of stage ``floating`` applies. ``recent``: optional
     ``consensus.Recent`` of the same lidar's earlier candidates for stage
     ``transient`` (only with ``persist_min_age_s`` > 0; None gives no verdict).
+    ``wrap``: inputs of stage ``phase_wrap`` (only with ``wrap_delete``; see
+    ``phase_wrap_clusters``), with ``fold`` and ``amplitude`` per input point; None
+    judges nothing. ``explain``: also return ``dropped_by`` (per input point the
+    index into ``stage_names`` of the stage that dropped it, or EXPLAIN_KEPT,
+    EXPLAIN_BEYOND, EXPLAIN_NOT_FINITE) and ``stage_names``.
 
     Returns a dict: ``points`` (kept points within ``max_range_m`` in the lidar
     frame, float32 Mx3 after voxel reduction), ``stats`` (per-stage removal counts),
     with ``clearing`` also ``rays`` (``clearing_rays`` without the points dropped
-    as floating, contradicted or transient) and with ``scan`` also ``scan``
+    as floating, contradicted, seen through, phase wrap or transient), with
+    ``wrap_delete`` also ``phase_wrap`` (the deleted clusters) and with ``scan`` also ``scan``
     (``scan_ranges`` of all kept points up to ``scan_max_range_m``, before voxel
     reduction). With ``persist_min_age_s`` > 0 also ``candidates``: this frame's
     points that reached stage ``transient``, one per ``cluster_voxel_m`` voxel in
@@ -398,11 +518,16 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     horizontal = np.hypot(p[:, 0], p[:, 1])
     stats = {"input_points": int(finite.size), "finite_points": int(len(p))}
     keep = np.ones(len(p), dtype=bool)
+    # explain: per finite point the index (in ``cfg.stage_order`` and "sparse") of the stage that dropped it
+    order = cfg.stage_order
+    dropped_by = np.full(len(p), EXPLAIN_KEPT, dtype=np.int8) if explain else None
 
     def drop(name, mask):
         removed = keep & mask
         stats["removed_" + name] = int(removed.sum())
         keep[removed] = False
+        if dropped_by is not None:
+            dropped_by[removed] = order.index(name)
 
     drop("height", (h < cfg.min_height_m) | (h > cfg.max_height_m))
     drop("range", horizontal > (max(cfg.max_range_m, cfg.scan_max_range_m) if scan else cfg.max_range_m))
@@ -450,6 +575,18 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
         stats["clusters_judged_by_witness"] = judged
         drop("seen_through", seen_through)
     result = {}
+    wrapped = np.zeros(len(p), dtype=bool)
+    if cfg.wrap_delete:
+        inputs = None
+        if wrap is not None:
+            inputs = dict(wrap, fold=np.asarray(wrap["fold"], dtype=bool).reshape(-1)[finite],
+                          amplitude=np.asarray(wrap["amplitude"], dtype=float).reshape(-1)[finite])
+        wrapped, reasons, deleted, judged = phase_wrap_clusters(base, h, keep, cfg, body, inputs)
+        stats["phase_wrap_trusted"] = int(judged)        # 0: no inputs or localization not trusted, nothing judged
+        stats.update({"phase_wrap_kept_" + r: n for r, n in reasons.items()})
+        stats["phase_wrap_clusters"] = len(deleted)
+        result["phase_wrap"] = deleted
+        drop("phase_wrap", wrapped)
     transient = np.zeros(len(p), dtype=bool)
     if cfg.persist_min_age_s > 0:
         candidates = np.flatnonzero(keep)
@@ -474,6 +611,8 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
         beyond = keep & (horizontal > cfg.max_range_m)
         stats["beyond_cloud_range"] = int(beyond.sum())
         keep &= ~beyond                     # the cloud itself stays within max_range_m
+        if dropped_by is not None:
+            dropped_by[beyond] = EXPLAIN_BEYOND
     kept = np.flatnonzero(keep)
     if len(kept):
         keys = _voxel_keys(base[kept], cfg.voxel_m)
@@ -500,8 +639,13 @@ def filter_frame(points, lever, cfg=ObstacleFilter(), body=(), witness=None, *, 
     stats["kept_points"] = int(len(kept))
     stats["voxels"] = int(len(out))
     result.update(points=out, stats=stats)
+    if dropped_by is not None:
+        full = np.full(len(finite), EXPLAIN_NOT_FINITE, dtype=np.int8)
+        full[finite] = dropped_by
+        result["dropped_by"] = full         # per input point; -1 kept, -2 scan only (beyond max_range_m)
+        result["stage_names"] = list(order)
     if clearing:
-        result["rays"] = clearing_rays(p, lever, contradicted | floating | seen_through | transient, cfg)
+        result["rays"] = clearing_rays(p, lever, contradicted | floating | seen_through | wrapped | transient, cfg)
         stats["clearing_rays"] = int(len(result["rays"]))
     return result
 

@@ -349,6 +349,8 @@ def test_cli_cloud_options(tmp_path):
                                    "right", "--obstacle-scan", "filtered"],
                                   ["--obstacle-input", "cloud", "--obstacle-right-lever", "1,2"],
                                   ["--obstacle-input", "cloud", "--obstacle-filter", "{\"min_height_m\": 5}"],
+                                  # stage 5b is not wired into the shadow runs yet (status/C.md 2026-11-13)
+                                  ["--obstacle-input", "cloud", "--obstacle-filter", "{\"wrap_delete\": true}"],
                                   ["--obstacle-input", "cloud", "--obstacle-scan", "filtered", "--global-costmap",
                                    "static"]])
 def test_cli_rejects_inconsistent_options(argv):

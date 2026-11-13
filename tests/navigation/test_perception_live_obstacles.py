@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from wc_navigation.perception import live_obstacles as lo
-from wc_navigation.perception.consensus import BoxWitness, RecentFrames, Witness, move, planar_relative
+from wc_navigation.perception.consensus import BoxWitness, EchoWitness, RecentFrames, Witness, move, planar_relative
 from wc_navigation.perception.nav2_obstacles import CLOUD_FRAMES
 from wc_navigation.perception.obstacle_cloud import ObstacleFilter, body_outline, filter_frame
 
@@ -57,6 +57,32 @@ def test_box_witness_gives_the_same_shares_as_the_witness(seed):
     assert BoxWitness(np.zeros((0, 3)), other).shares(clusters[0]) == (0.0, 0.0)
     assert not BoxWitness(np.zeros((0, 3)), other).seen_through(clusters[0], 0.5, 0.3)
     assert not BoxWitness(returns, other).seen_through(np.zeros((0, 3)), 0.5, 0.3)
+
+
+def test_echo_witness_adds_the_pixels_without_a_return_to_the_box_witness():
+    rng = np.random.default_rng(11)
+    other = RIGHT
+    returns = np.vstack([scene(other, rng) + other, other + rng.uniform(-4, 4, (300, 3)) * [1, 1, 0.3]])
+    box, echo = BoxWitness(returns, other), EchoWitness(returns, other)
+    clusters = [rng.uniform([0.5, -1.5, 0.0], [4.0, 1.5, 1.6], (int(rng.integers(1, 40)), 3)) for _ in range(40)]
+    for points in clusters + [returns[:5]]:           # without empty pixels: the box witness's shares
+        found = echo.evidence(points)
+        assert (found["through"], found["hit"]) == box.shares(points) and found["empty"] == 0.0
+        assert found["hit"] + found["through"] + found["unseen"] == pytest.approx(1.0)
+    assert echo.evidence(np.zeros((0, 3)))["voxels"] == 0
+    ghost = block(2.2, 2.32, 0.15, 0.30, 0.85, 0.94, LEFT) + LEFT                       # base_link
+    units = (ghost - other) / np.linalg.norm(ghost - other, axis=1)[:, None]
+    seen = EchoWitness(other + 6.0 * units, other).evidence(ghost)                       # returns 6 m behind it
+    empty = EchoWitness(np.zeros((0, 3)), other, units).evidence(ghost)                  # no returns at all
+    assert empty["empty"] == seen["through"] >= 0.8 and empty["through"] == empty["hit"] == 0.0
+    # an empty pixel tells nothing beyond empty_reach_m; a return next to a voxel makes it hit, not empty
+    assert EchoWitness(np.zeros((0, 3)), other, units, empty_reach_m=1.0).evidence(ghost)["unseen"] == 1.0
+    wide = block(2.2, 2.32, -0.3, 0.6, 0.85, 0.94, LEFT) + LEFT
+    wide_units = (wide - other) / np.linalg.norm(wide - other, axis=1)[:, None]
+    alone = EchoWitness(np.zeros((0, 3)), other, wide_units).evidence(wide)
+    both = EchoWitness(wide[wide[:, 1] < -0.2], other, wide_units).evidence(wide)       # returns at one end only
+    assert 0 < both["hit"] < 0.5 and 0 < both["empty"] < alone["empty"]
+    assert both["hit"] + both["through"] + both["empty"] + both["unseen"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("scope", ["unsupported", "all"])
@@ -291,6 +317,47 @@ def test_a_frame_without_pose_keeps_its_points_and_skips_witness_and_persistence
     assert not out["right"]["witness"]                     # its partner has no pose either
     missing = lo.process_cycle(released_cycle(10 ** 10, {"left": (0, 0, 0)}, frames=("left",)), {}, g, plan, cfg, ())
     assert missing == {}                                   # no cloud (rejected frame): nothing published
+
+
+def test_the_phase_wrap_stage_uses_the_other_lidars_received_frame_and_needs_both_poses():
+    rng = np.random.default_rng(8)
+    g = geometry()
+    ghost = block(1.9, 1.94, 0.0, 0.15, 0.27, 1.0, LEFT).astype(np.float32)       # supported: stage 5 keeps it
+    clouds = {"left": np.vstack([scene(LEFT, rng, ghost=False), ghost]), "right": scene(RIGHT, rng, ghost=False)}
+    fold = np.r_[np.zeros(len(clouds["left"]) - len(ghost), dtype=bool), np.ones(len(ghost), dtype=bool)]
+    gb = ghost.astype(float) + LEFT
+    past = RIGHT + 6.0 * (gb - RIGHT) / np.linalg.norm(gb - RIGHT, axis=1)[:, None]  # right rays through the ghost
+    received = {"points": np.vstack([clouds["right"].astype(float), past - RIGHT]), "empty": np.zeros((0, 3))}
+
+    def inputs(trusted=True):
+        return {"trusted": trusted, "sides": {
+            "left": {"fold": fold, "amplitude": np.full(len(fold), 200.0), "received": None},
+            "right": {"fold": np.zeros(len(clouds["right"]), dtype=bool),
+                      "amplitude": np.full(len(clouds["right"]), 200.0), "received": received}}}
+
+    plan = lo.output_plan("cloud", ("left", "right"))
+    cfg = ObstacleFilter(wrap_delete=True)
+    body = body_outline(MEASURED)
+    still = {"left": (0.0, 0.0, 0.0), "right": (0.0, 0.0, 0.0)}
+    out = lo.process_cycle(released_cycle(10 ** 10, still), clouds, g, plan, cfg, body, wrap=inputs(), explain=True)
+    left, right = out["left"], out["right"]
+    assert left["stats"]["removed_phase_wrap"] == len(ghost) and [c["points"] for c in left["phase_wrap"]] == [len(ghost)]
+    assert (left["dropped_by"] == left["stage_names"].index("phase_wrap")).sum() == len(ghost)
+    # the right lidar's own clusters are judged (nothing predicted there), with no received left frame as witness
+    assert right["stats"]["phase_wrap_trusted"] == 1 and right["phase_wrap"] == []
+    # without the right pose there is no witness; without the left pose, or untrusted, nothing is judged
+    out = lo.process_cycle(released_cycle(10 ** 10, dict(still, right=None)), clouds, g, plan, cfg, body, wrap=inputs())
+    assert out["left"]["stats"]["removed_phase_wrap"] == 0 and out["left"]["stats"]["phase_wrap_kept_no_verdict"] == 1
+    out = lo.process_cycle(released_cycle(10 ** 10, dict(still, left=None)), clouds, g, plan, cfg, body, wrap=inputs())
+    assert out["left"]["stats"]["phase_wrap_trusted"] == 0 and out["left"]["stats"]["removed_phase_wrap"] == 0
+    out = lo.process_cycle(released_cycle(10 ** 10, still), clouds, g, plan, cfg, body, wrap=inputs(trusted=False))
+    assert [o["stats"]["phase_wrap_trusted"] for o in out.values()] == [0, 0]
+    # with the stage off the inputs change nothing
+    plain = lo.process_cycle(released_cycle(10 ** 10, still), clouds, g, plan, ObstacleFilter(), body)
+    given = lo.process_cycle(released_cycle(10 ** 10, still), clouds, g, plan, ObstacleFilter(), body, wrap=inputs())
+    for side in plain:
+        assert plain[side]["stats"] == given[side]["stats"] and "phase_wrap" not in given[side]
+        np.testing.assert_array_equal(plain[side]["points"], given[side]["points"])
 
 
 def test_records_carry_hashes_poses_and_stats():
@@ -626,3 +693,20 @@ def test_the_monitor_slow_margin_option_shortens_only_the_slowdown_box(tmp_path)
     for bad in ("0", "2.5", "nan"):
         with pytest.raises(SystemExit):
             arguments(shadow + ["--monitor-slow-margin", bad])
+
+
+def test_the_phase_wrap_stage_is_refused_until_its_inputs_are_wired(tmp_path, capsys):
+    from wc_navigation.live.cli import arguments
+    from wc_navigation.perception import evaluate, track_eval
+    on = '{"wrap_delete": true}'
+    live = ["inputs", "--project-root", str(tmp_path), "--cell", "c", "--hardware-setup", "h", "--gyro-bias", "b",
+            "--bag", "x", "--obstacle-scan", "filtered", "--obstacle-filter", on]
+    offline = ["--project-root", str(tmp_path), "--left-cell", str(tmp_path), "--filter", on]
+    for parse, argv in ((arguments, live), (evaluate.arguments, offline), (track_eval.arguments, offline)):
+        with pytest.raises(SystemExit):
+            parse(argv)
+        assert "wrap_delete is not wired" in capsys.readouterr().err
+    assert arguments(live[:-2]).obstacle_live["filter"].wrap_delete is False
+    from wc_navigation.perception.obstacles_node import ObstacleInput
+    with pytest.raises(ValueError, match="wrap_delete is not wired"):              # a hand-edited run_config
+        ObstacleInput(None, {"obstacles": {"filter": {"wrap_delete": True}}})

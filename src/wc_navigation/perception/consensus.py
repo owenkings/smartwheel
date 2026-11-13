@@ -140,8 +140,11 @@ class BoxWitness(Witness):
 
     def _crossing(self, lo, hi):
         """Rays whose sampled segment [first sample, reach] can enter the box of voxels lo..hi."""
+        return self._rays_crossing(self._unit, self._reach, self._samples[0], lo, hi)
+
+    def _rays_crossing(self, u, reach, first, lo, hi):
         box_lo, box_hi = lo * self.voxel - self._PAD_M, (hi + 1) * self.voxel + self._PAD_M
-        u, o = self._unit, self._origin
+        o = self._origin
         with np.errstate(divide="ignore", invalid="ignore"):
             t1, t2 = (box_lo - o) / u, (box_hi - o) / u
         tmin, tmax = np.minimum(t1, t2), np.maximum(t1, t2)
@@ -150,8 +153,7 @@ class BoxWitness(Witness):
         tmin = np.where(parallel, np.where(inside, -np.inf, np.inf), tmin)
         tmax = np.where(parallel, np.where(inside, np.inf, -np.inf), tmax)
         enter, leave = tmin.max(axis=1), tmax.min(axis=1)
-        return np.flatnonzero((enter <= leave) & (leave >= self._samples[0] - self._PAD_M)
-                              & (enter <= self._reach + self._PAD_M))
+        return np.flatnonzero((enter <= leave) & (leave >= first - self._PAD_M) & (enter <= reach + self._PAD_M))
 
     def _hit(self, points_base):
         """(voxel keys, codes, box lo, box hi, hit per voxel) of a cluster; None for an empty one."""
@@ -205,6 +207,51 @@ class BoxWitness(Witness):
         if hit.mean() >= hit_veto:
             return False
         return self._through(codes, lo, hi, hit).mean() >= min_share
+
+
+class EchoWitness(BoxWitness):
+    """``BoxWitness`` over the other lidar's whole received frame, with its pixels that returned nothing.
+
+    ``points_base``: every return of the other lidar's frame as received (before the live point filter, so ceiling
+    and floor returns count too), in the filtered frame's base_link; ``empty_units_base``: unit directions of its
+    pixels without a return; their rays count as seen through up to ``empty_reach_m``. Used by the phase-wrap stage
+    of ``obstacle_cloud`` (prediction and confirmation, status/C.md 2026-11-13): there "the other lidar does not
+    confirm it" means it saw through the cluster or had no echo there, and voxels on none of its rays (outside its
+    field of view, or behind a nearer return) give no verdict.
+    """
+
+    def __init__(self, points_base, origin_base, empty_units_base=(), empty_reach_m=6.5, **kwargs):
+        super().__init__(points_base, origin_base, **kwargs)
+        self._empty = np.asarray(empty_units_base, dtype=float).reshape(-1, 3)
+        self.empty_reach_m = float(empty_reach_m)
+
+    def _empty_through(self, codes, lo, hi, hit):
+        out = np.zeros(len(codes), dtype=bool)
+        if not len(self._empty):
+            return out
+        step = float(self._inputs[2])
+        samples = np.arange(step, self.empty_reach_m + step / 2, step)
+        chosen = self._rays_crossing(self._empty, self.empty_reach_m, samples[0], lo, hi)
+        if len(chosen):
+            pts = self._origin + self._empty[chosen][:, None, :] * samples[None, :, None]
+            keys = np.floor(pts.reshape(-1, 3) / self.voxel)
+            keys = keys[np.all((keys >= lo) & (keys <= hi), axis=1)]
+            if len(keys):
+                out = np.isin(codes, _codes(keys)) & ~hit
+        return out
+
+    def evidence(self, points_base):
+        """Shares of the cluster's voxels: hit (a return in or next to it), through (on a return's ray before it),
+        empty (on a ray that returned nothing, and neither of those), and unseen (none of these)."""
+        found = self._hit(points_base)
+        if found is None:
+            return {"voxels": 0, "hit": 0.0, "through": 0.0, "empty": 0.0, "unseen": 0.0}
+        _, codes, lo, hi, hit = found
+        through = self._through(codes, lo, hi, hit)
+        empty = self._empty_through(codes, lo, hi, hit) & ~through
+        n = float(len(codes))
+        return {"voxels": int(len(codes)), "hit": float(hit.mean()), "through": float(through.mean()),
+                "empty": float(empty.mean()), "unseen": float((~(hit | through | empty)).sum() / n)}
 
 
 class Recent:

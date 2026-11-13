@@ -26,7 +26,8 @@ import numpy as np
 
 from . import frontend_frames
 from .consensus import RecentFrames, Witness, move, planar_relative
-from .obstacle_cloud import ObstacleFilter, body_outline, filter_frame, grow_convex, inside_convex
+from .obstacle_cloud import (WRAP_DELETE_NOT_WIRED, ObstacleFilter, body_outline, filter_frame, grow_convex,
+                             inside_convex)
 
 SCAN_ANGLE_MIN, SCAN_INCREMENT, SCAN_BINS = -math.pi / 3, math.pi / 240, 161
 
@@ -247,6 +248,8 @@ def arguments(argv=None):
     if not 0.5 <= args.horizon <= 20:
         parser.error("--horizon must be within 0.5..20 s")
     args.filter = ObstacleFilter(**json.loads(args.filter))
+    if args.filter.wrap_delete:
+        parser.error("--filter: " + WRAP_DELETE_NOT_WIRED)
     return args
 
 

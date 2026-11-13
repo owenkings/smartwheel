@@ -29,7 +29,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 nice -n 10 bash scripts/navigation_nav2_shadow --mode 
 | `--obstacle-sides left right` | 发布哪几台的障碍点（默认：左，给了右前端时左右都发）。 |
 | `--obstacle-no-consensus` | 不用另一台雷达否决悬空小团，只按尺寸判别。 |
 | `--obstacle-right-lever frozen\|symmetric\|X,Y,Z` | 右雷达杆臂：冻结的现场外参（默认）、左雷达的镜像位置，或显式值。 |
-| `--obstacle-filter '{"max_range_m": 3.5}'` | 覆盖过滤参数（`ObstacleFilter` 的字段，见源码）。例如 `{"persist_min_age_s": 0.6}` 打开前后帧持续性检查：通过见证和尺寸规则的悬空小团，0.6–2 s 前同一台雷达在同一世界位置没有候选点的就去掉（默认关）。`{"witness_scope": "all"}` 打开雷达相位折叠的兜底过滤（默认关）：有支撑的团也让另一台雷达判，看穿的去掉；超过 400 个点的团和站在地上的团（离地 0.05 到 `seen_through_floor_m`，默认 0.25 m，有回波）不判。会误删什么见[设计说明](../architecture/obstacle_avoidance.md#雷达相位折叠11-11)。 |
+| `--obstacle-filter '{"max_range_m": 3.5}'` | 覆盖过滤参数（`ObstacleFilter` 的字段，见源码）。例如 `{"persist_min_age_s": 0.6}` 打开前后帧持续性检查：通过见证和尺寸规则的悬空小团，0.6–2 s 前同一台雷达在同一世界位置没有候选点的就去掉（默认关）。`{"witness_scope": "all"}` 打开雷达相位折叠的兜底过滤（默认关）：有支撑的团也让另一台雷达判，看穿的去掉；超过 400 个点的团和站在地上的团（离地 0.05 到 `seen_through_floor_m`，默认 0.25 m，有回波）不判。会误删什么见[设计说明](../architecture/obstacle_avoidance.md#雷达相位折叠11-11)。`{"wrap_delete": true}`（预测加确认，第 5b 级）现在所有命令都拒绝：要 A 的逐帧折叠预测和 D 的地图位姿、定位可信，还没接进来，只能在离线评估脚本里调，见[设计说明](../architecture/obstacle_avoidance.md#折叠假点预测加确认11-13)。 |
 
 验证包和建图包是两段录包，要在建图包地图上跑验证包时，加定位模式 `--localization fixed|amcl --map-alignment-json <对齐结果>`（见[实车影子链路](navigation_live_shadow.md)）。障碍点坐标系由回放进程里一个不受重映射影响的节点发布，三种定位模式下都可用。
 
@@ -90,7 +90,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
 |---|---|
 | `--obstacle-input`、`--obstacle-monitor`、`--obstacle-scan` | 和影子运行同名选项一样，决定发哪些话题、Nav2 怎么接。上面是“组合”：代价地图用过滤扫描，碰撞监控用两台雷达的三维点云。 |
 | `--obstacle-sides` | 发布哪台雷达的障碍点（默认两台；只用过滤扫描时只发左雷达，右雷达只作见证）。 |
-| `--obstacle-filter JSON` | ObstacleFilter 的参数覆盖，例如持续性检查 `persist_min_age_s`；雷达相位折叠的兜底过滤 `{"witness_scope": "all"}`（默认关，见上面录包影子那张表）。 |
+| `--obstacle-filter JSON` | ObstacleFilter 的参数覆盖，例如持续性检查 `persist_min_age_s`；雷达相位折叠的兜底过滤 `{"witness_scope": "all"}`（默认关，见上面录包影子那张表）。`{"wrap_delete": true}` 现在会被拒绝（同上）。 |
 | `--obstacle-rate-hz HZ` | 每秒处理几对帧（默认 5，最多 10）；两台雷达都是 10 Hz。 |
 | `--obstacle-no-witness` | 不读另一台雷达判悬空团。 |
 | `--compare-right-cell`（只 `inputs`） | 右雷达的冻结前端，也核对右雷达的点云。 |

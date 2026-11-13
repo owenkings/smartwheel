@@ -4,8 +4,9 @@ import math
 import numpy as np
 import pytest
 
-from wc_navigation.perception.consensus import Recent, RecentFrames, Witness, move, planar_relative
-from wc_navigation.perception.obstacle_cloud import (ObstacleFilter, body_outline, clearing_rays, filter_frame,
+from wc_navigation.perception.consensus import EchoWitness, Recent, RecentFrames, Witness, move, planar_relative
+from wc_navigation.perception.obstacle_cloud import (EXPLAIN_BEYOND, EXPLAIN_KEPT, EXPLAIN_NOT_FINITE, WRAP_REASONS,
+                                                     ObstacleFilter, body_outline, clearing_rays, filter_frame,
                                                      filter_points, grow_convex, inside_convex, scan_ranges)
 
 LEVER = np.array([0.323, 0.22875, 0.5915])          # left lidar in base_link (frozen mount)
@@ -170,6 +171,136 @@ def test_witness_scope_setting():
     for bad in ({"witness_scope": "everything"}, {"seen_through_floor_m": 0.05}, {"seen_through_floor_m": 1.5}):
         with pytest.raises(ValueError):
             ObstacleFilter(**bad)
+
+
+# -- stage 5b phase_wrap: prediction and confirmation (status/C.md 2026-11-13) ----------------------------------
+def wrap_ghost():
+    """A phase-wrap ghost as on 11-11: 0.27-1.0 m above the floor, 300 points; stage 5 keeps it."""
+    return block(1.9, 1.94, 0.0, 0.15, 0.27, 1.0, step=0.03)
+
+
+def echo(points_base, empty=False, reach_m=6.0):
+    """The other lidar's frame with a ray through every given point: to a return ``reach_m`` from it, or
+    (``empty``) from a pixel without a return."""
+    d = points_base - OTHER
+    units = d / np.linalg.norm(d, axis=1)[:, None]
+    if empty:
+        return EchoWitness(np.zeros((0, 3)), OTHER, units)
+    return EchoWitness(OTHER + reach_m * units, OTHER)
+
+
+def wrap_inputs(n, witness, trusted=True, fold=None, amplitude=None):
+    return {"fold": np.ones(n, dtype=bool) if fold is None else fold, "trusted": trusted, "witness": witness,
+            "amplitude": np.full(n, 200.0) if amplitude is None else amplitude}
+
+
+def test_phase_wrap_stage_is_off_by_default_and_changes_nothing_then():
+    cfg = ObstacleFilter()
+    assert not cfg.wrap_delete and "phase_wrap" not in cfg.stage_order
+    assert not any(name.startswith("wrap_") for name in cfg.as_dict())
+    ghost = wrap_ghost()
+    plain = filter_frame(ghost, LEVER, cfg, clearing=True, scan=True)
+    given = filter_frame(ghost, LEVER, cfg, clearing=True, scan=True,
+                         wrap=wrap_inputs(len(ghost), echo(base_of(ghost))))
+    assert plain["stats"] == given["stats"] and "removed_phase_wrap" not in given["stats"]
+    assert "phase_wrap" not in given and "dropped_by" not in given and len(given["points"]) > 0
+    for key in ("points", "rays", "scan"):
+        np.testing.assert_array_equal(plain[key], given[key])
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_phase_wrap_deletes_a_predicted_dim_cluster_the_other_lidar_saw_through_or_had_no_echo_at(empty):
+    ghost = wrap_ghost()
+    cfg = ObstacleFilter(wrap_delete=True)
+    order = cfg.stage_order
+    assert order.index("floating") < order.index("phase_wrap") < order.index("transient")
+    result = filter_frame(ghost, LEVER, cfg, clearing=True, scan=True,
+                          wrap=wrap_inputs(len(ghost), echo(base_of(ghost), empty=empty)))
+    stats, [deleted] = result["stats"], result["phase_wrap"]
+    assert stats["removed_phase_wrap"] == len(ghost) and stats["phase_wrap_clusters"] == 1
+    assert stats["phase_wrap_trusted"] == 1 and all(stats["phase_wrap_kept_" + r] == 0 for r in WRAP_REASONS)
+    # gone from the cloud and the scan, and no clearing ray stops at it
+    assert len(result["points"]) == 0 and not np.isfinite(result["scan"]).any() and len(result["rays"]) == 0
+    assert deleted["points"] == len(ghost) and deleted["predicted"] == 1.0 and deleted["amplitude_max"] == 200.0
+    assert deleted["hit"] == 0.0 and (deleted["empty"] if empty else deleted["through"]) >= cfg.wrap_unconfirmed_share
+    assert deleted["through" if empty else "empty"] == 0.0
+    assert 0.25 < deleted["height_m"][0] < deleted["height_m"][1] < 1.05
+
+
+def test_phase_wrap_keeps_a_cluster_and_names_the_first_condition_it_fails():
+    cfg = ObstacleFilter(wrap_delete=True)
+    ghost = wrap_ghost()
+    gb, n = base_of(ghost), len(ghost)
+
+    def reasons(cloud, wrap, body=()):
+        result = filter_frame(cloud, LEVER, cfg, body, wrap=wrap)
+        stats = result["stats"]
+        assert stats["removed_phase_wrap"] == 0 and result["phase_wrap"] == [] and len(result["points"]) > 0
+        return [r for r in WRAP_REASONS if stats["phase_wrap_kept_" + r]]
+
+    fold = np.ones(n, dtype=bool)
+    fold[: int(0.15 * n)] = False                                   # 85 % of its points predicted
+    assert reasons(ghost, wrap_inputs(n, echo(gb), fold=fold)) == ["not_predicted"]
+    amplitude = np.full(n, 200.0)
+    amplitude[0] = cfg.wrap_max_amplitude                           # one point as bright as a real surface
+    assert reasons(ghost, wrap_inputs(n, echo(gb), amplitude=amplitude)) == ["bright"]
+    standing = block(1.9, 1.94, 0.0, 0.15, 0.06, 1.0, step=0.03)    # reaches down to the floor
+    assert reasons(standing, wrap_inputs(len(standing), echo(base_of(standing)))) == ["on_floor"]
+    near = block(0.82, 0.88, -0.1, 0.1, 0.3, 0.9, step=0.03)        # 1 cm ahead of the measured front edge
+    assert reasons(near, wrap_inputs(len(near), echo(base_of(near))), MEASURED) == ["stop_zone"]
+    assert reasons(ghost, wrap_inputs(n, EchoWitness(gb, OTHER))) == ["confirmed"]       # the other lidar hit it
+    assert reasons(ghost, wrap_inputs(n, None)) == ["no_verdict"]                       # no frame of the other lidar
+    assert reasons(ghost, wrap_inputs(n, echo(gb, reach_m=0.8))) == ["no_verdict"]      # behind a nearer return
+    elsewhere = echo(base_of(block(1.0, 1.1, -0.8, -0.7, 0.85, 0.91)))                  # outside its rays
+    assert reasons(ghost, wrap_inputs(n, elsewhere)) == ["no_verdict"]
+
+
+def test_phase_wrap_judges_nothing_while_the_localization_is_not_trusted():
+    cfg = ObstacleFilter(wrap_delete=True)
+    ghost = wrap_ghost()
+    for wrap in (wrap_inputs(len(ghost), echo(base_of(ghost)), trusted=False), None):
+        result = filter_frame(ghost, LEVER, cfg, wrap=wrap)
+        stats = result["stats"]
+        assert stats["phase_wrap_trusted"] == 0 and stats["removed_phase_wrap"] == 0 and result["phase_wrap"] == []
+        assert all(stats["phase_wrap_kept_" + r] == 0 for r in WRAP_REASONS) and len(result["points"]) > 0
+
+
+def test_phase_wrap_settings():
+    cfg = ObstacleFilter(wrap_delete=True)
+    values = cfg.as_dict()
+    assert values["wrap_delete"] is True and values["wrap_min_share"] == 0.9 and values["wrap_max_amplitude"] == 400.0
+    assert values["wrap_unconfirmed_share"] == 0.5 and values["wrap_stop_margin_m"] == 0.02
+    assert values["seen_through_floor_m"] == 0.25                   # its floor guard is recorded with it
+    assert ObstacleFilter(**values) == cfg
+    order = ObstacleFilter(wrap_delete=True, witness_scope="all").stage_order
+    assert order.index("seen_through") < order.index("phase_wrap") < order.index("transient")
+    assert ObstacleFilter(wrap_min_share=0.8).as_dict()["wrap_min_share"] == 0.8   # changed values are recorded
+    for bad in ({"wrap_delete": 1}, {"wrap_min_share": 0.0}, {"wrap_min_share": 1.5}, {"wrap_unconfirmed_share": 0.0},
+                {"wrap_max_amplitude": 0.0}, {"wrap_max_amplitude": float("nan")}, {"wrap_max_amplitude": 5000.0},
+                {"wrap_stop_margin_m": -0.01}, {"wrap_stop_margin_m": 0.6}):
+        with pytest.raises(ValueError):
+            ObstacleFilter(**bad)
+
+
+def test_explain_names_the_stage_that_dropped_each_point():
+    ghost = wrap_ghost()
+    parts = [floor(1.5, 3.0, -1, 1), block(1.2, 1.3, -0.1, 0.1, 0.0, 0.35), ghost,
+             block(4.6, 4.62, -0.5, 0.5, 0.6, 1.2)]                 # the last beyond max_range_m: in the scan only
+    cloud = np.vstack(parts + [np.full((1, 3), np.nan)])
+    n = len(cloud)
+    fold = np.zeros(n, dtype=bool)
+    start = len(parts[0]) + len(parts[1])
+    fold[start:start + len(ghost)] = True
+    cfg = ObstacleFilter(wrap_delete=True)
+    result = filter_frame(cloud, LEVER, cfg, scan=True, explain=True,
+                          wrap=wrap_inputs(n, echo(base_of(ghost)), fold=fold))
+    codes, names, stats = result["dropped_by"], result["stage_names"], result["stats"]
+    assert len(codes) == n and names == list(cfg.stage_order) and codes[-1] == EXPLAIN_NOT_FINITE
+    for k, name in enumerate(names):
+        assert (codes == k).sum() == stats["removed_" + name], name
+    assert (codes[start:start + len(ghost)] == names.index("phase_wrap")).all()
+    assert (codes == EXPLAIN_BEYOND).sum() == stats["beyond_cloud_range"] > 0
+    assert (codes == EXPLAIN_KEPT).sum() == stats["kept_points"] > 0
 
 
 def test_clearing_rays_stop_short_of_surfaces_and_of_the_floor_layer():

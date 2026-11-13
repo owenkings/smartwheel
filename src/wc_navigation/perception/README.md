@@ -4,8 +4,8 @@
 
 | 文件 | 职责 |
 |---|---|
-| [obstacle_cloud.py](obstacle_cloud.py) | 单帧过滤（纯 numpy）：高度窗、远处低点门限、车体外形剔除、悬空小团判别、体素降采样、清除射线。 |
-| [consensus.py](consensus.py) | 另一台雷达的“见证”：它的射线穿过、却没有回波的体素，用来否决这台雷达的悬空小团（`BoxWitness` 只在团附近采样，结论相同、快约 2.5 倍，给实时用）；同一台雷达 0.6–2 s 前在同一世界位置的候选点（持续性检查，默认关）。 |
+| [obstacle_cloud.py](obstacle_cloud.py) | 单帧过滤（纯 numpy）：高度窗、远处低点门限、车体外形剔除、悬空小团判别、折叠假点的兜底（5a）和预测加确认（5b，`wrap_delete`，默认关，命令里暂不接受）、体素降采样、清除射线；`explain` 给出每个点被哪一级去掉。 |
+| [consensus.py](consensus.py) | 另一台雷达的“见证”：它的射线穿过、却没有回波的体素，用来否决这台雷达的悬空小团（`BoxWitness` 只在团附近采样，结论相同、快约 2.5 倍，给实时用）；`EchoWitness` 再加上它没有回波的像素方向，给折叠假点的“预测加确认”（第 5b 级，默认关）用；同一台雷达 0.6–2 s 前在同一世界位置的候选点（持续性检查，默认关）。 |
 | [frontend_frames.py](frontend_frames.py) | 按索引哈希逐帧读取单左或单右冻结前端（mapping_reference 点云和帧位姿）。 |
 | [nav2_obstacles.py](nav2_obstacles.py) | 局部代价地图 VoxelLayer 和碰撞监控 pointcloud 源的参数片段、代价地图用的过滤扫描 `/obstacles/left/scan`、话题与坐标系约定。 |
 | [shadow_obstacles.py](shadow_obstacles.py)、[shadow_cli_options.py](shadow_cli_options.py) | 影子运行的障碍输入：在 prepare_recording 里过滤左右前端并写进 recording.npz，命令行选项与结果里的停车区核查。 |
