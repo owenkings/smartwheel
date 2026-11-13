@@ -91,14 +91,22 @@ class NavProfile:
     # does not scale with the speed; 0.15 m keeps the left lidar's floating bands of 2026-11-07/09 out of it at
     # 0.10 m/s (window C, status/C.md 11-10).
     monitor_slow_margin_m: float = DEFAULT_SLOW_MARGIN_M
+    # Ultrasonic modules read by the collision monitor as range sources (perception.ultrasonic; window C, user
+    # 2026-11-12 22:05: a further brake, off by default), and the run's topic prefix for their Range topics.
+    monitor_ultrasonic: tuple = ()
+    monitor_ultrasonic_prefix: str = ""
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
             if name not in ("footprint", "obstacle_input", "obstacle_clouds", "obstacle_scan", "obstacle_monitor",
-                            "monitor_base_shift"):
+                            "monitor_base_shift", "monitor_ultrasonic", "monitor_ultrasonic_prefix"):
                 object.__setattr__(self, name, _number(getattr(self, name), name, positive=True))
         if not isinstance(self.monitor_base_shift, bool):
             raise ValueError("monitor_base_shift must be a boolean")
+        from ..perception.ultrasonic import check_probes
+        probes, prefix = check_probes(self.monitor_ultrasonic, self.monitor_ultrasonic_prefix)
+        object.__setattr__(self, "monitor_ultrasonic", probes)
+        object.__setattr__(self, "monitor_ultrasonic_prefix", prefix)
         if self.monitor_slow_margin_m > MAX_SLOW_MARGIN_M:
             raise ValueError("monitor_slow_margin_m must be within (0, %g] m" % MAX_SLOW_MARGIN_M)
         if self.max_linear > 1.0 or self.max_angular > 1.5:
@@ -151,6 +159,12 @@ class NavProfile:
             values.pop("monitor_base_shift")        # the default: recorded profile unchanged
         if self.monitor_slow_margin_m == DEFAULT_SLOW_MARGIN_M:
             values.pop("monitor_slow_margin_m")     # likewise
+        if self.monitor_ultrasonic:
+            values["monitor_ultrasonic"] = list(self.monitor_ultrasonic)
+        else:
+            values.pop("monitor_ultrasonic")        # likewise
+        if not self.monitor_ultrasonic_prefix:
+            values.pop("monitor_ultrasonic_prefix")
         return values
 
 
@@ -437,6 +451,10 @@ def _navigation_parameters(profile, *, mode, bt_to_pose_path, bt_through_poses_p
                                                                                 profile.obstacle_clouds))
         if profile.monitor_input == "cloud":
             sources.pop("scan")
+    if profile.monitor_ultrasonic:                  # ultrasonic range sources (perception.ultrasonic)
+        from ..perception import ultrasonic
+        extra = ultrasonic.monitor_sources(profile.monitor_ultrasonic, profile.monitor_ultrasonic_prefix)
+        sources.update(extra, observation_sources=list(sources["observation_sources"]) + list(extra))
     return {
         "controller_server": _p({
             "use_sim_time": True, "controller_frequency": profile.controller_frequency_hz,
@@ -651,13 +669,18 @@ def _readback_expectations(profile, mode):
     if profile.obstacle_input != "scan":           # the obstacle clouds must really be wired in
         from ..perception import nav2_obstacles
         local_body = dict(local_body, plugins=nav2_obstacles.local_plugins(profile.obstacle_input))
-    if profile.monitor_input != "scan":
-        from ..perception import nav2_obstacles
-        names = nav2_obstacles.monitor_source_names(profile.monitor_input, profile.obstacle_clouds)
-        # and each cloud source must read its lidar's obstacle topic
-        stop = dict(stop, observation_sources=names,
-                    **{name + ".topic": nav2_obstacles.CLOUD_TOPICS[name[len("cloud_"):]]
-                       for name in names if name.startswith("cloud_")})
+    if profile.monitor_input != "scan" or profile.monitor_ultrasonic:
+        from ..perception import nav2_obstacles, ultrasonic
+        names = (nav2_obstacles.monitor_source_names(profile.monitor_input, profile.obstacle_clouds)
+                 if profile.monitor_input != "scan" else ["scan"])
+        # and each cloud source must read its lidar's obstacle topic, each ultrasonic source its module's Range
+        topics = {name + ".topic": nav2_obstacles.CLOUD_TOPICS[name[len("cloud_"):]]
+                  for name in names if name.startswith("cloud_")}
+        for name, source in ultrasonic.monitor_sources(profile.monitor_ultrasonic,
+                                                       profile.monitor_ultrasonic_prefix).items():
+            names = names + [name]
+            topics[name + ".topic"] = source["topic"]
+        stop = dict(stop, observation_sources=names, **topics)
     if profile.obstacle_scan != "raw":             # and so must the filtered scan
         from ..perception import nav2_obstacles
         topic = {"obstacle_layer.scan.topic": nav2_obstacles.scan_topic(profile.obstacle_scan)}

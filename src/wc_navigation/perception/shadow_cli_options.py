@@ -220,6 +220,23 @@ def add_live_arguments(parser, inputs=False):
         group.add_argument("--footprint-source", default="EXAMPLE_NOT_MEASURED")
     else:
         _add_monitor_base_shift(group)
+        from .ultrasonic import MODES
+        group.add_argument("--monitor-ultrasonic", choices=tuple(MODES), default="off",
+                           help="ultrasonic modules the collision monitor reads as range sources (a further brake): "
+                                "off (default), front (the two facing ahead) or all (also the two side ones). Needs "
+                                "window A's Range topics, relayed by window D on the vehicle; see "
+                                "docs/architecture/obstacle_avoidance.md")
+
+
+def ultrasonic_profile_fields(args):
+    """NavProfile fields of --monitor-ultrasonic: the modules, and the relay's prefix on the vehicle or in a relay
+    test (the live command's source_prefix, live/cli.py)."""
+    from .ultrasonic import MODES
+    probes = MODES[getattr(args, "monitor_ultrasonic", "off") or "off"]
+    if not probes:
+        return {}
+    relayed = getattr(args, "source", None) == "vehicle" or bool(getattr(args, "relay_test", False))
+    return {"monitor_ultrasonic": probes, "monitor_ultrasonic_prefix": "/wc_live/relayed" if relayed else ""}
 
 
 def check_live_arguments(parser, args):
@@ -251,8 +268,9 @@ def check_live_arguments(parser, args):
 
 
 def live_profile_fields(args):
-    """NavProfile fields of the live shadow command (obstacle input and the monitor's base shift)."""
-    fields = _base_shift_field(args)
+    """NavProfile fields of the live shadow command (obstacle input, the monitor's base shift, slowdown box and
+    ultrasonic sources)."""
+    fields = dict(_base_shift_field(args), **ultrasonic_profile_fields(args))
     live = getattr(args, "obstacle_live", None)
     if live is None:
         return fields

@@ -97,6 +97,7 @@ WC_AUTONOMY_ROS_DOMAIN=99 bash scripts/navigation_live_shadow inputs --project-r
 | `--footprint`、`--footprint-source`（只 `inputs`；`shadow` 用它自己的外形） | 过滤用的车体外形，不给时按 0.55 m 假设圆。 |
 | `--monitor-base-shift on\|off`（只 `shadow`，和障碍输入无关） | 碰撞监控的 base_shift_correction。on（默认）时每个周期都要等里程计发出“现在”的 odom→base_link，最多 0.3 s，等不到就这一周期不看传感器；off 只用静态外参。用户 2026-11-10 同意实车影子用 off，默认值不改。 |
 | `--monitor-slow-margin M`（只 `shadow`，和障碍输入无关） | 碰撞监控减速框伸出车头多远，默认 0.65 m，不随速度变。0.10 m/s 的第一次闭环用 0.15：11-07、11-09 的左雷达悬空薄带就进不了框。读回会核对 PolygonSlow.points。 |
+| `--monitor-ultrasonic off\|front\|all`（只 `shadow`，和障碍输入无关） | 超声波探头当碰撞监控的 range 源，只刹车（默认 off）：front 是两个前探头，all 再加两个侧面的。读 A 发的 `/wc_mapping/ultrasonic/<探头>/range`（车上加转发前缀），读回核对每路源的话题。要先有 A 的发布和 D 的转发；探头的视场、盲区和现场核对见[设计说明](../architecture/obstacle_avoidance.md#超声波进碰撞监控11-13)。 |
 
 - 处理：每对帧（两台雷达同一周期，相差几毫秒）先过 D 的 `scan_adapter.reference_points`（生产主机滤波、转到 mapping_reference，和冻结前端逐点相同），每台雷达用自己的外参和设备编号。再等 /odom 覆盖 stamp − 偏移的时刻（最多 0.3 s），然后按影子运行的规则过滤，另一台雷达作见证（`consensus.BoxWitness`，结论和 `Witness` 相同）。等不到位姿的帧照样发，只是没有见证和持续性检查，状态里计数。
 - 输出：`/obstacles/<left|right>/points`（坐标系 `obstacles_lidar_<side>`，静态变换在雷达原点、轴和 base_link 一致），VoxelLayer 时还有 `/clearing`，过滤扫描时有 `/obstacles/left/scan`。时间戳和 /scan 一样是雷达时间戳减偏移，偏移就是命令为 /scan 解析出的那一个。状态在 `/wc_live/inputs_status/obstacles`（RUNNING/STALE/FAILED、计数、耗时）。每处理一帧，运行目录的 `obstacles.jsonl` 写一行：位姿、配对、输入和输出的 sha256、各级计数、耗时。
