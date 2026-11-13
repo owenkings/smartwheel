@@ -15,10 +15,13 @@ Modes: ``block`` (default) stops the run on a mismatch and warns on AMBIGUOUS; `
 ``warn`` only reports; ``off`` skips the check.
 
 Start-pose correction (``--start-pose-correction apply``, off by default; user 2026-11-12, D.md 11-12 00:15):
-on the same standing scans, ``correction`` moves the given position, never the heading, when the given pose fits
-poorly (support < 0.5) and some position within +-0.4 m along and across the given heading fits at that heading
-(>= 0.6; in every case of the 11-11 study where the rule applied this held, 0.76-0.86, also with the heading 3 deg
-off). Of the positions whose support is within 0.01 of the best, it takes the one nearest the given position. In a
+on the same standing scans, ``correction`` moves the given position, never the heading, when some position within
++-0.4 m along and across the given heading fits at that heading (>= 0.6; in every case of the 11-11 study where the
+rule applied this held, 0.76-0.86, also with the heading 3 deg off) and either the given pose fits poorly
+(support < 0.5) or that best position fits at least 0.25 better (user 2026-11-13 00:10: at the 11-11 20:56 start
+facing map -x a placement 0.2 m off across the corridor and 1 deg off in heading still fitted 54 %, against 82 %
+nearby; in the 11-11 study no case the first rule left alone gained more than 0.20). Of the positions whose support
+is within 0.01 of the best, it takes the one nearest the given position. In a
 corridor the support is flat along the corridor and sharp across it, so this rule fixes the offset across the
 corridor and leaves the along-corridor position as given (taking the best instead added 0.30-0.47 m along the
 corridor in the 11-11 study); the supervisor then sends the corrected pose to AMCL before Nav2 starts.
@@ -42,7 +45,9 @@ CORRECTION_MODES = ("off", "apply")
 CORRECTION_SPAN_M = 0.4           # along and across the given heading
 CORRECTION_STEP_M = 0.025
 CORRECTION_POOR = 0.5             # the given pose fits worse than this ...
-CORRECTION_GOOD = 0.6             # ... and the best position nearby, at the given heading, at least this well
+CORRECTION_GAIN = 0.25            # ... or the best position nearby fits at least this much better (user 2026-11-13)
+CORRECTION_GOOD = 0.6             # ... and that best position, at the given heading, fits at least this well
+CORRECTION_TRIGGERS = ("GIVEN_POSE_POOR", "BEST_MUCH_BETTER")
 CORRECTION_TOLERANCE = 0.01       # near-best at the given heading: within this of its best
 
 
@@ -124,17 +129,39 @@ def support_grid(scorer, points, lever, pose, span_m=CORRECTION_SPAN_M, step_m=C
     return values.reshape(len(offsets), len(offsets)), offsets
 
 
+def correction_trigger(before, best):
+    """(triggers, reason) of the correction rule for the given pose's support and the best nearby at its heading.
+
+    ``triggers``: the CORRECTION_TRIGGERS that ask for a correction (GIVEN_POSE_POOR: before < CORRECTION_POOR;
+    BEST_MUCH_BETTER: best - before >= CORRECTION_GAIN), empty when none applies; ``reason`` then says why:
+    GIVEN_POSE_FITS (neither), NOTHING_FITS_NEARBY (best < CORRECTION_GOOD). BEST_MUCH_BETTER alone needs
+    before >= 0.5, so its best is >= 0.75 and always fits.
+    """
+    triggers = []
+    if before < CORRECTION_POOR:
+        triggers.append("GIVEN_POSE_POOR")
+    if best - before >= CORRECTION_GAIN - 1e-9:
+        triggers.append("BEST_MUCH_BETTER")
+    if not triggers:
+        return (), "GIVEN_POSE_FITS"
+    if best < CORRECTION_GOOD:
+        return (), "NOTHING_FITS_NEARBY"
+    return tuple(triggers), None
+
+
 def correction(scorer, scans, lever, pose):
     """The minimum-offset start-pose correction for base pose (x, y, yaw rad) and the start check's standing scans.
 
     Returns a dict for result.json: ``applied`` and, when applied, ``corrected_pose`` (same yaw), the offset along
-    and across the given heading and in map axes, and the support before and after; else ``reason``:
-    GIVEN_POSE_FITS, NOTHING_FITS_NEARBY, NO_DATA or GIVEN_POSE_IS_NEAREST.
+    and across the given heading and in map axes, the support before and after and the ``trigger``
+    (``correction_trigger``); else ``reason``: GIVEN_POSE_FITS, NOTHING_FITS_NEARBY, NO_DATA or
+    GIVEN_POSE_IS_NEAREST.
     """
     points = local_endpoints(scans)
     result = {"rule": "minimum_offset", "span_m": CORRECTION_SPAN_M, "step_m": CORRECTION_STEP_M,
-              "poor_below": CORRECTION_POOR, "good_from": CORRECTION_GOOD, "tolerance": CORRECTION_TOLERANCE,
-              "given_pose": [float(v) for v in pose], "scans": len(scans), "applied": False}
+              "poor_below": CORRECTION_POOR, "gain_from": CORRECTION_GAIN, "good_from": CORRECTION_GOOD,
+              "tolerance": CORRECTION_TOLERANCE, "given_pose": [float(v) for v in pose], "scans": len(scans),
+              "applied": False}
     if len(scans) < MIN_SCANS or len(points) < 50:
         result["reason"] = "NO_DATA"
         return result
@@ -145,12 +172,11 @@ def correction(scorer, scans, lever, pose):
     i, j = near[int(np.argmin(np.hypot(offsets[near[:, 0]], offsets[near[:, 1]])))]
     before = float(grid[centre, centre])
     result.update(support_before=round(before, 3), best_nearby=round(best, 3))
-    if before >= CORRECTION_POOR:
-        result["reason"] = "GIVEN_POSE_FITS"
+    triggers, reason = correction_trigger(before, best)
+    if not triggers:
+        result["reason"] = reason
         return result
-    if best < CORRECTION_GOOD:
-        result["reason"] = "NOTHING_FITS_NEARBY"
-        return result
+    result["trigger"] = list(triggers)
     along, across = float(offsets[i]), float(offsets[j])
     if i == centre and j == centre:
         result["reason"] = "GIVEN_POSE_IS_NEAREST"
@@ -178,7 +204,8 @@ def correction_message(result):
         return ("起点修正：给定位姿贴图 %.0f%%，初始位姿改到 (%.2f, %.2f)，%s，贴图 %.0f%%；朝向不变，Nav2 启动前已重发"
                 % (100 * result["support_before"], x, y, "、".join(moves), 100 * result["support_after"]))
     if reason == "GIVEN_POSE_FITS":
-        return "起点修正：不用改，给定位姿贴图 %.0f%%" % (100 * result["support_before"])
+        return "起点修正：不用改，给定位姿贴图 %.0f%%，附近最好 %.0f%%" % (100 * result["support_before"],
+                                                                100 * result["best_nearby"])
     if reason == "NOTHING_FITS_NEARBY":
         return ("起点修正：不改，给定朝向下 ±%.1f m 内最好的贴图只有 %.0f%%（要 %.0f%% 以上）。请核对车的摆放和 --initial-pose"
                 % (CORRECTION_SPAN_M, 100 * result["best_nearby"], 100 * CORRECTION_GOOD))

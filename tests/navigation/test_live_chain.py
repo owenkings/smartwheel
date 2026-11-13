@@ -828,6 +828,41 @@ def test_start_pose_correction_fixes_both_directions_where_the_view_has_a_wall_a
     assert "向后" in text and "向车左" in text
 
 
+def test_start_pose_correction_trigger_table():
+    # user 2026-11-13 00:10: also correct when the best nearby fits 0.25 better than the given pose
+    from wc_navigation.live.start_check import CORRECTION_GAIN, correction_trigger
+    assert CORRECTION_GAIN == 0.25
+    cases = {(0.2, 0.86): (("GIVEN_POSE_POOR", "BEST_MUCH_BETTER"), None),
+             (0.45, 0.62): (("GIVEN_POSE_POOR",), None),
+             (0.535, 0.823): (("BEST_MUCH_BETTER",), None),       # 11-11 20:56, 0.2 m off across and 1 deg
+             (0.5, 0.75): (("BEST_MUCH_BETTER",), None),
+             (0.5, 0.749): ((), "GIVEN_POSE_FITS"),
+             (0.662, 0.823): ((), "GIVEN_POSE_FITS"),             # the field script's tape point at 20:56
+             (0.638, 0.835): ((), "GIVEN_POSE_FITS"),             # the 11-11 study's largest gain left alone
+             (0.2, 0.5): ((), "NOTHING_FITS_NEARBY"),             # 0.3 better, but nothing fits nearby
+             (0.0, 0.0): ((), "NOTHING_FITS_NEARBY")}
+    for (before, best), expected in cases.items():
+        assert correction_trigger(before, best) == expected, (before, best)
+
+
+def test_start_pose_correction_also_when_the_best_nearby_fits_much_better():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    scans = _scans_seen_from((1.0, 0.0, 0.0), scorer)                 # the wall across the corridor 3 m ahead
+    result = start_check.correction(scorer, scans, (0.0, 0.0), (1.2, 0.0, 0.0))     # placed 0.2 m too far ahead
+    assert result["support_before"] >= 0.5 and result["best_nearby"] - result["support_before"] >= 0.25
+    assert result["applied"] and result["trigger"] == ["BEST_MUCH_BETTER"] and result["gain_from"] == 0.25
+    assert result["offset_along_m"] < 0 and result["offset_across_m"] == 0.0 and result["support_after"] == 1.0
+    assert "向后" in start_check.correction_message(result)
+    # down the corridor the along-corridor offset is not seen: the given pose fits as well, nothing changes
+    along = _scans_seen_from((-3.0, 0.0, math.pi), scorer)
+    kept = start_check.correction(scorer, along, (0.0, 0.0), (-3.2, 0.0, math.pi))
+    assert not kept["applied"] and kept["reason"] == "GIVEN_POSE_FITS" and "trigger" not in kept
+    assert start_check.correction_message(kept) == "起点修正：不用改，给定位姿贴图 92%，附近最好 100%"
+    poor = start_check.correction(scorer, along, (0.0, 0.0), (-3.0, 0.25, math.pi))
+    assert poor["trigger"] == ["GIVEN_POSE_POOR", "BEST_MUCH_BETTER"]
+
+
 def test_start_pose_correction_option(tmp_path):
     from wc_navigation.live import cli
     argv = _closed_argv(tmp_path)
