@@ -38,7 +38,7 @@ python3 -s -B -m wc_runtime.ultrasonic_live --allow-read-queries --no-ros \
   --run-root /tmp/wc_ultrasonic_run --session ultrasonic_check_${T}
 ```
 
-- 每行的 `raw` 是四个地址的原始读数，按现在配置里的占位顺序标成 left_front、right_front、left_side、right_side。顺序在第 1 步改正。
+- 每行的 `raw` 是轮询的各个地址的原始读数（核对时四个都读），按现在配置里的占位顺序标成 left_front、right_front、left_side、right_side。顺序在第 1 步改正。
 - `cycle_s` 是一轮的秒数。
 - 读数为 null 表示那次没回复。
 
@@ -69,14 +69,17 @@ python3 -s -B -m wc_runtime.ultrasonic_live --allow-read-queries --no-ros \
    python3 -s -B -m wc_runtime.ultrasonic_live --print-transforms
    ```
 4. 要在面板会话里一起发布，把 `config/local/project/mapping_live.json` 里的 `"ultrasonic_enabled"` 设为 true（默认是 false）。会话目录会多出 `ultrasonic/events.jsonl`、`ultrasonic_capture.json`、`ultrasonic_live.json`，录包里多出 `/wc_mapping/ultrasonic/` 下的六个话题。
-5. 状态话题的 `not_verified` 变成空列表、`verified` 变成 true 以后，C 才能接进刹车。
+5. C 只开两个前探头（`--monitor-ultrasonic front`）时，在本机的 `ultrasonic_live.json` 里写 `"poll_probes": ["left_front", "right_front"]`：只轮询这两个，一轮约 0.42 s，C 的 1.0 s 门限有余量。不写这一项就是四个都读。
+   - 没轮询的探头没有 Range 发布者，状态话题里是 `NOT_POLLED`，`polled_probes` 写着这次轮询了哪几个。
+   - 单独运行时也可以用 `--probes left_front,right_front` 临时指定。
+6. 状态话题的 `not_verified` 变成空列表、`verified` 变成 true 以后，C 才能接进刹车。
 
 ## 话题（面板会话，域 83）
 
 | 话题 | 类型 | 内容 |
 |---|---|---|
 | `/wc_mapping/ultrasonic/<探头>/range` | sensor_msgs/Range | `<探头>` 是 left_front、right_front、left_side、right_side。frame 是 `ultrasonic_<探头>`；ULTRASOUND；没回波或比 max_range 远是 +inf，比 min_range 近是 -inf；时间戳是收到回复的时间；没回复的那次不发 |
-| `/wc_mapping/ultrasonic/status` | std_msgs/String（JSON，latched） | 每轮一次：每个探头的最后状态、原始值、距离、年龄、计数，一轮的时间、CPU、几何、`verified` 和 `not_verified` |
+| `/wc_mapping/ultrasonic/status` | std_msgs/String（JSON，latched） | 每轮一次：这次轮询了哪几个（`polled_probes`、`not_polled_probes`），每个探头的最后状态、原始值、距离、年龄、计数，一轮的时间、CPU、几何、`verified` 和 `not_verified` |
 | `/wc_mapping/ultrasonic/feedback_raw` | std_msgs/String（JSON） | 每次事务一条，字段和录制时的超声波事务相同 |
 
 几何：base_link（车轴）到 `ultrasonic_<探头>` 的静态变换，标记为 CAD_NOMINAL。
@@ -88,3 +91,4 @@ python3 -s -B -m wc_runtime.ultrasonic_live --allow-read-queries --no-ros \
 - CPU：稳定时占一个核的 2.3 %（50 s 内 1.13 s CPU），内存 80 MB。
 - 一轮 2.05 s：每个地址等满 0.4 s 超时，再加 0.11 s 间隔。
 - 10-12 有回复时，每个地址从发请求到收齐回复约 94 ms，一轮约 0.84 s。C 的年龄门限是 1.0 s，余量只有约 0.16 s；有一个探头不回复，一轮就变成约 1.15 s。
+- 只轮询两个前探头时一轮约 0.42 s（两个地址各约 0.21 s）；有一个不回复约 0.72 s，仍在 1.0 s 以内。

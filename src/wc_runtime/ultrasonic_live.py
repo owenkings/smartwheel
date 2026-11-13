@@ -5,7 +5,10 @@ brake). Off unless asked for: mapping_live.json "ultrasonic_enabled" (default fa
 session; ``python3 -s -m wc_runtime.ultrasonic_live --allow-read-queries ...`` runs it alone (field check).
 
 Device access is ultrasonic_capture's: the same identity check, lease and FC03 / register 0x0001 request, polled
-address by address with the configured inter-sensor interval. Each transaction is
+address by address with the configured inter-sensor interval. Which probes: ultrasonic_live.json "poll_probes"
+(absent: all four) or --probes; window C's front mode needs only left_front and right_front, which halves the cycle
+(about 0.42 s instead of 0.84 s with replies, against C's 1.0 s age limit; coordinator relay 2026-11-13 A4 item 1).
+A probe that is not polled gets no Range publisher and shows NOT_POLLED in the status. Each transaction is
   - journaled (<output>/events.jsonl: the capture's row fields, then one source_finalization row) and published as
     that JSON row on /wc_mapping/ultrasonic/feedback_raw (std_msgs/String; the session's bag records it);
   - when valid, also published as sensor_msgs/Range on /wc_mapping/ultrasonic/<probe>/range: frame
@@ -109,7 +112,23 @@ def validate_live_config(value):
     echo = value.get('no_echo_raw')
     if not isinstance(echo, list) or any(type(v) is not int or not 0 <= v <= 65535 for v in echo):
         raise ValueError('no_echo_raw must be a list of raw register values')
+    if 'poll_probes' in value:
+        check_poll(value['poll_probes'])
     return value
+
+
+def check_poll(names):
+    """The probes to poll, in PROBES order: a non-empty list of distinct probe names."""
+    if not isinstance(names, (list, tuple)) or not names or len(set(names)) != len(names) \
+            or any(not isinstance(n, str) or n not in PROBES for n in names):
+        raise ValueError('poll_probes must be a non-empty list of distinct names out of ' + ', '.join(PROBES))
+    return tuple(n for n in PROBES if n in names)
+
+
+def polled(cfg):
+    """The probes this configuration polls: ``poll_probes`` (window C's front mode needs only the two front ones,
+    a cycle of about 0.42 s instead of 0.84 s); all four when the key is absent."""
+    return check_poll(cfg['poll_probes']) if 'poll_probes' in cfg else PROBES
 
 
 def not_verified(cfg):
@@ -200,16 +219,19 @@ def probe_transforms(cfg, hardware_setup):
 class StatusBook:
     """What the status topic reports: per probe the last transaction, counts and age; cycle times; CPU."""
 
-    def __init__(self, cfg, transforms, *, config_sha256=None, cpu_clock=time.process_time):
+    def __init__(self, cfg, transforms, *, config_sha256=None, cpu_clock=time.process_time, poll=None):
         self.cfg, self.transforms, self.config_sha256 = cfg, transforms, config_sha256
+        self.poll = check_poll(poll) if poll is not None else polled(cfg)
         self.cpu_clock = cpu_clock
         self.started_cpu, self.started_ns = cpu_clock(), time.monotonic_ns()
         self.window = deque(maxlen=64)                    # (monotonic ns, cpu s) per cycle
         self.window.append((self.started_ns, self.started_cpu))
         self.cycles = deque(maxlen=200)
         self.transactions = 0
+        self.lease_open_s = None
         self.probes = {p['name']: {'address': p['address'], 'topic': range_topic(p['name']),
-                                   'frame_id': frame_id(p['name']), 'status': None, 'raw': None,
+                                   'frame_id': frame_id(p['name']), 'polled': p['name'] in self.poll,
+                                   'status': None if p['name'] in self.poll else 'NOT_POLLED', 'raw': None,
                                    'range_m': None, 'received_wall_ns': None, 'received_monotonic_ns': None,
                                    'counts': {}, 'consecutive_failures': 0} for p in cfg['probes']}
 
@@ -244,9 +266,13 @@ class StatusBook:
                                                                      ('+inf' if value > 0 else '-inf')),
                                 age_s=None if probe['received_monotonic_ns'] is None else
                                 round((now_ns - probe['received_monotonic_ns']) / 1e9, 3))
-        failing = [name for name, probe in self.probes.items() if probe['status'] != 'VALID_RESPONSE']
+        failing = [name for name, probe in self.probes.items()
+                   if probe['polled'] and probe['status'] != 'VALID_RESPONSE']
         return {'schema_version': 1, 'stamp_wall_ns': time.time_ns(),
                 'state': 'RUNNING' if not failing else 'DEGRADED', 'failing_probes': failing,
+                'polled_probes': list(self.poll),
+                'not_polled_probes': [name for name in PROBES if name not in self.poll],
+                'lease_open_s': self.lease_open_s,
                 'verified': not open_checks, 'not_verified': open_checks,
                 'transactions': self.transactions, 'cycles': int(len(self.cycles)),
                 'cycle_s': None if not len(cycles) else {'last': round(float(cycles[-1]), 3),
@@ -352,6 +378,8 @@ def main(argv=None):
     parser.add_argument('--write-local-binding', action='store_true')
     parser.add_argument('--replace', action='store_true')
     parser.add_argument('--print-transforms', action='store_true')
+    parser.add_argument('--probes', help='comma list of the probes to poll, e.g. left_front,right_front '
+                                         '(default: poll_probes of the live configuration, else all four)')
     args = parser.parse_args(argv)
     from .project_config import selected_config_path
     root = args.project_root
@@ -388,13 +416,15 @@ def main(argv=None):
         stopped = True
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, stop)
+    poll = check_poll([n.strip() for n in args.probes.split(',')]) if args.probes is not None else polled(live)
     by_address = {p['address']: p['name'] for p in live['probes']}
-    book = StatusBook(live, transforms, config_sha256=hashlib.sha256(live_raw).hexdigest())
+    addresses = [a for a in capture['addresses'] if by_address[a] in poll]     # address order, as before
+    book = StatusBook(live, transforms, config_sha256=hashlib.sha256(live_raw).hexdigest(), poll=poll)
     journal = SourceJournal(args.output, 'ultrasonic')
     lease = DistanceLease(capture, args.run_root)
     ros = node = raw_pub = status_pub = None
     range_pubs, error, epoch, sequence, published = {}, None, str(uuid.uuid4()), 0, 0
-    started = time.monotonic()
+    started = time.monotonic()     # restarted when polling starts: --duration-s is polling time
     try:
         if not args.no_ros:
             import rclpy as ros
@@ -408,7 +438,8 @@ def main(argv=None):
             latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
             status_pub = node.create_publisher(String, STATUS_TOPIC, latched)
-            range_pubs = {name: node.create_publisher(Range, range_topic(name), 10) for name in by_address.values()}
+            # only the polled probes get a publisher: a consumer of another probe sees none, not a silent one
+            range_pubs = {name: node.create_publisher(Range, range_topic(name), 10) for name in poll}
             if args.publish_tf != 'off':
                 from geometry_msgs.msg import TransformStamped
                 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
@@ -425,12 +456,17 @@ def main(argv=None):
                     messages.append(message)
                 tf_static = StaticTransformBroadcaster(node)    # kept alive with the node until the end
                 tf_static.sendTransform(messages)
+        opening = time.monotonic()
         lease.open()
+        # On 2026-11-13 23:03 opening the CH340 took 11 s in the kernel (0.0x s earlier that day): reported, and
+        # not counted into --duration-s.
+        book.lease_open_s = round(time.monotonic() - opening, 2)
         atomic_json(args.output / 'identity.json', observed_identity(capture, lease, args.session))
+        started = time.monotonic()
         cycles = 0
         while not stopped:
             cycle_start = time.monotonic_ns()
-            for address in capture['addresses']:
+            for address in addresses:
                 if stopped:
                     break
                 name = by_address[address]
@@ -467,7 +503,7 @@ def main(argv=None):
                 status_pub.publish(String(data=json.dumps(status)))
             if args.no_ros:
                 print(json.dumps({k: status[k] for k in ('state', 'cycle_s', 'cpu_percent_recent')} | {
-                    'raw': {n: p['raw'] for n, p in status['probes'].items()}}), flush=True)
+                    'raw': {n: p['raw'] for n, p in status['probes'].items() if p['polled']}}), flush=True)
             if (args.cycles and cycles >= args.cycles) or (args.duration_s and time.monotonic() - started >= args.duration_s):
                 break
     except Exception as exc:
@@ -483,7 +519,8 @@ def main(argv=None):
             journal.append({'event': 'source_finalization', 'session_id': args.session, 'stream_epoch': epoch,
                             'completed_transactions': sequence, 'published_transactions': published,
                             'lease_closed': not any(x.startswith('lease close:') for x in cleanup_errors),
-                            'cleanup_errors': cleanup_errors, 'cycles': final['cycles'],
+                            'cleanup_errors': cleanup_errors, 'polled_probes': list(poll),
+                            'lease_open_s': final['lease_open_s'], 'cycles': final['cycles'],
                             'cycle_s': final['cycle_s'], 'cpu_percent_since_start': final['cpu_percent_since_start'],
                             'counts': {n: p['counts'] for n, p in final['probes'].items()}})
         except Exception as exc:
