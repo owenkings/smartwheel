@@ -10,6 +10,13 @@ from wc_runtime.source_time import SourceClock,event_key,select_stamps
 from wc_runtime.icp_shadow import point_to_plane
 from wc_runtime.mapping_compare import compare_cells
 
+def test_rotation_check_is_skipped_only_for_identical_values():
+    from wc_runtime.measurement import rotation
+    R=Rotation.from_euler('xyz',[.3,-.2,.5]).as_matrix()
+    assert rotation(R) is R and rotation(R) is R and rotation(R.tolist()).tobytes()==R.tobytes()
+    R[0,0]+=1e-3  # same array, new values: checked again
+    with pytest.raises(ValueError,match='proper rotation'): rotation(R)
+    with pytest.raises(ValueError,match='proper rotation'): rotation(np.zeros((2,2)))
 def test_native_bias_subtracts_before_installed_axis_rotation_and_rotates_covariance():
     rotation=Rotation.from_euler('xyz',[.3,-.2,.5]).as_matrix()
     raw=np.array([.04,-.03,.08]); bias=np.array([.001,.002,-.003]); cov=np.diag([.001,.002,.003])
