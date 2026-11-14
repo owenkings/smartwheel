@@ -11,10 +11,14 @@ Read-only, no ROS nodes; from the run directory (run_config.json, obstacles.json
    the node's pairing, pose handling, persistence state and publication against the pure functions.
 3. Timing: per lidar the processed rate, pose waits and timeouts, latency from arrival to publication, the CPU
    time of the host filter and of the obstacle filter.
+
+Shadow runs (vehicle, bag, closed loop) are judged by FIELD_CRITERIA (``summarize_run``, ``main``), counted from the
+node's first RUNNING to ``end_grace_s`` before its last processed frame (``judged_window``).
 """
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -40,9 +44,14 @@ FIELD_CRITERIA = {
     # empty, the chair is not stopped).
     "age_p99_ms": 500.0,
     "age_max_ms": 800.0,
+    # Every check counts the cycles from the node's first RUNNING (both lidars and /odom fresh; window D's gate holds
+    # the chair until then) to end_grace_s before its last processed frame, where the sources stop one by one: in
+    # the panel's recordings the wheel feedback starts up to 3.2 s after the lidars and ends up to 3.3 s before
+    # them, and on the vehicle /odom ended 1.7-3.3 s before /scan (11-09, 11-11; status/C.md 2026-11-13, C4).
+    "end_grace_s": 5.0,
 }
 # Status changes this close to the last processed frame belong to the end of the run (the sources stop first).
-END_GRACE_S = 2.0
+END_GRACE_S = FIELD_CRITERIA["end_grace_s"]
 # Stage counts that exist only with a non-default filter option (witness_scope "all"), summarised when logged.
 OPTIONAL_STAT_KEYS = ("clusters_judged_by_witness", "removed_seen_through")
 STAT_KEYS = ("unsupported_clusters", "unsupported_confirmed_by_witness", "removed_contradicted", "removed_floating",
@@ -221,11 +230,18 @@ def evaluate(summary, inputs=None, outputs=None, states=(), failure=None):
     return {"status": "FAIL" if reasons else "PASS", "reasons": reasons}
 
 
-def not_running_after_start(events, end_s=None):
+def first_running_s(events):
+    """When the node first reported RUNNING (recorder's events.jsonl, the node's clock), or None."""
+    times = [float(e["time_s"]) for e in events if e.get("topic") == lo.STATUS_TOPIC and "time_s" in e
+             and isinstance(e.get("value"), dict) and e["value"].get("state") == "RUNNING"]
+    return min(times) if times else None
+
+
+def not_running_after_start(events, end_s=None, grace_s=END_GRACE_S):
     """Seconds the node reported anything but RUNNING after it first reported RUNNING, and what it named stale.
 
     From the recorder's events.jsonl, which logs the status when its state or stale inputs change. ``end_s`` is the
-    last processed frame's arrival: a change less than END_GRACE_S before it is the end of the run (the sources
+    last processed frame's arrival: a change less than ``grace_s`` before it is the end of the run (the sources
     stop before the node: the bag ends, Ctrl-C), and an interval still open at the end ends there.
     """
     changes = [(float(e["time_s"]), e["value"]) for e in events
@@ -239,7 +255,7 @@ def not_running_after_start(events, end_s=None):
         if t < started:
             continue
         if v.get("state") != "RUNNING":
-            if end_s is not None and t >= end_s - END_GRACE_S:
+            if end_s is not None and t >= end_s - grace_s:
                 continue                              # the end of the run
             names.update(v.get("stale_inputs") or [])
             if since is None:
@@ -252,21 +268,53 @@ def not_running_after_start(events, end_s=None):
             "stale_inputs": sorted(names)}
 
 
-def field_criteria(records, entries, events=(), limits=None):
-    """The checks of FIELD_CRITERIA on a run's obstacles.jsonl and events.jsonl: {"status", "checks", "limits"}.
+def judged_window(records, events, end_grace_s=END_GRACE_S):
+    """The part of a run that FIELD_CRITERIA judge, on the node's clock (seconds), and the cycles in it.
 
-    Each check is {"name", "side", "value", "limit", "ok"}; any failed check fails the run's obstacle section.
+    From the node's first RUNNING (from its first frame when it never reported one; that run fails not_running_s)
+    to ``end_grace_s`` before its last processed frame. A cycle belongs to it by the arrival of its first frame.
+    """
+    if not records:
+        return {"start_s": None, "end_s": None, "first_frame_s": None, "last_frame_s": None, "skipped_start_s": None,
+                "skipped_end_s": None, "cycles": 0, "cycles_judged": 0, "from_running": False, "judged": set()}
+    arrival = {}
+    for r in records:
+        arrival[r["cycle"]] = min(arrival.get(r["cycle"], r["arrival_ns"]), r["arrival_ns"])
+    first_s, last_s = min(arrival.values()) * 1e-9, max(r["arrival_ns"] for r in records) * 1e-9
+    running = first_running_s(events)
+    start_s = running if running is not None else first_s
+    end_s = last_s - float(end_grace_s)
+    judged = {c for c, t in arrival.items() if start_s <= t * 1e-9 <= end_s}
+    return {"start_s": round(start_s, 3), "end_s": round(end_s, 3), "first_frame_s": round(first_s, 3),
+            "last_frame_s": round(last_s, 3), "skipped_start_s": round(max(0.0, start_s - first_s), 2),
+            "skipped_end_s": round(float(end_grace_s), 2), "cycles": len(arrival), "cycles_judged": len(judged),
+            "from_running": running is not None, "judged": judged}
+
+
+def field_criteria(records, entries, events=(), limits=None):
+    """The checks of FIELD_CRITERIA on a run's obstacles.jsonl and events.jsonl: {"status", "checks", "limits",
+    "not_running", "window"}.
+
+    Each check is {"name", "side", "value", "limit", "ok"}, the shares also with "count" and "total"; any failed
+    check fails the run's obstacle section. All of them count only the cycles of ``judged_window``: before the
+    node first reports RUNNING its inputs are still starting, and at the end the sources stop one by one.
     """
     limits = dict(FIELD_CRITERIA, **(limits or {}))
     plan, cfg, _, _, _ = entries_parts(entries)
+    window = judged_window(records, events, limits["end_grace_s"])
+    judged = window.pop("judged")
+    kept = [r for r in records if r["cycle"] in judged]
     checks = []
 
-    def check(name, side, value, limit, ok):
-        checks.append({"name": name, "side": side, "value": None if value is None else round(float(value), 3),
-                       "limit": limit, "ok": bool(ok)})
+    def check(name, side, value, limit, ok, count=None, total=None):
+        entry = {"name": name, "side": side, "value": None if value is None else round(float(value), 3),
+                 "limit": limit, "ok": bool(ok)}
+        if total is not None:
+            entry.update(count=int(count), total=int(total))
+        checks.append(entry)
 
     for side in plan["read"]:
-        rows = [r for r in records if r["side"] == side]
+        rows = [r for r in kept if r["side"] == side]
         stamps = np.asarray([r["stamp_ns"] for r in rows], dtype=np.int64)
         span = float(stamps.max() - stamps.min()) * 1e-9 if len(rows) > 1 else 0.0
         rate = (len(rows) - 1) / span if span > 0 else 0.0
@@ -274,28 +322,32 @@ def field_criteria(records, entries, events=(), limits=None):
         check("rate_hz", side, rate, round(limits["rate_share"] * cfg.rate_hz, 3), rate >= limits["rate_share"] * cfg.rate_hz)
         if not rows:
             continue
-        check("paired_share", side, np.mean([r["paired"] for r in rows]), limits["paired_share"],
-              np.mean([r["paired"] for r in rows]) >= limits["paired_share"])
+        paired = sum(bool(r["paired"]) for r in rows)
+        check("paired_share", side, paired / len(rows), limits["paired_share"],
+              paired / len(rows) >= limits["paired_share"], paired, len(rows))
         published = [r for r in rows if r["published"]]
         if side in plan["published"]:
-            share = np.mean([r["witness"] for r in published]) if published else 0.0
+            seen = sum(bool(r["witness"]) for r in published)
+            share = seen / len(published) if published else 0.0
             if plan["witness"]:
-                check("witness_share", side, share, limits["witness_share"], share >= limits["witness_share"])
+                check("witness_share", side, share, limits["witness_share"], share >= limits["witness_share"],
+                      seen, len(published))
             age = [(r["arrival_ns"] - r["measured_ns"]) * 1e-6 + r["timing_ms"]["latency"] for r in published
                    if (r.get("timing_ms") or {}).get("latency") is not None]
             a99 = float(np.percentile(age, 99)) if age else None
             check("age_p99_ms", side, a99, limits["age_p99_ms"], a99 is not None and a99 <= limits["age_p99_ms"])
             amax = float(np.max(age)) if age else None
             check("age_max_ms", side, amax, limits["age_max_ms"], amax is not None and amax <= limits["age_max_ms"])
-    cycles = len({r["cycle"] for r in records})
-    timeouts = len({r["cycle"] for r in records if r["pose_timeout"]})
+    cycles = len(judged)
+    timeouts = len({r["cycle"] for r in kept if r["pose_timeout"]})
     share = timeouts / cycles if cycles else 1.0
-    check("pose_timeout_share", None, share, limits["pose_timeout_share"], share <= limits["pose_timeout_share"])
-    end_s = max((r["arrival_ns"] for r in records), default=None)
-    gaps = not_running_after_start(events, None if end_s is None else end_s * 1e-9)
+    check("pose_timeout_share", None, share, limits["pose_timeout_share"], share <= limits["pose_timeout_share"],
+          timeouts, cycles)
+    gaps = not_running_after_start(events, window["last_frame_s"], limits["end_grace_s"])
     check("not_running_s", None, gaps["seconds"], 0.0, gaps["seconds"] == 0.0)
     failed = [c for c in checks if not c["ok"]]
-    return {"status": "FAIL" if failed else "PASS", "checks": checks, "limits": limits, "not_running": gaps}
+    return {"status": "FAIL" if failed else "PASS", "checks": checks, "limits": limits, "not_running": gaps,
+            "window": window}
 
 
 def bag_clouds(bag_dir, entries, host_filter, wanted):
@@ -369,13 +421,18 @@ def summarize_run(output, config):
     if not records:
         return {"status": "NO_RECORDS", "node_states": states, "failure": failure}
     summary = summarize(records, config["obstacles"])
-    verdict = evaluate(summary, states=states, failure=failure)
+    # the rate and pose-timeout rules of ``evaluate`` count the same cycles as the field criteria
+    judged = judged_window(records, events, FIELD_CRITERIA["end_grace_s"])["judged"]
+    steady = summarize([r for r in records if r["cycle"] in judged] or records, config["obstacles"])
+    verdict = evaluate(steady, states=states, failure=failure)
     criteria = field_criteria(records, config["obstacles"], events)
-    reasons = verdict["reasons"] + ["%s%s %s, limit %s" % (c["name"], " (%s)" % c["side"] if c["side"] else "",
-                                                           c["value"], c["limit"])
+    reasons = verdict["reasons"] + ["%s%s %s, limit %s%s" % (c["name"], " (%s)" % c["side"] if c["side"] else "",
+                                                             c["value"], c["limit"],
+                                                             " (%d of %d)" % (c["count"], c["total"])
+                                                             if "total" in c else "")
                                     for c in criteria["checks"] if not c["ok"]]
-    return {"status": "FAIL" if reasons else "PASS", "reasons": reasons, "summary": summary, "criteria": criteria,
-            "node_states": states}
+    return {"status": "FAIL" if reasons else "PASS", "reasons": reasons, "summary": summary,
+            "summary_judged": steady, "criteria": criteria, "node_states": states}
 
 
 CHECK_TEXT = {"span_s": "处理时长 s", "rate_hz": "处理频率 Hz", "paired_share": "两台同周期的份额",
@@ -385,22 +442,58 @@ CHECK_TEXT = {"span_s": "处理时长 s", "rate_hz": "处理频率 Hz", "paired_
 SIDE_TEXT = {"left": "左", "right": "右", None: ""}
 
 
+def shortfall_text(check):
+    """How far a failed check misses its limit, in the operator's words ("" when it passes or has no value)."""
+    name, value, limit = check["name"], check["value"], check["limit"]
+    if check["ok"] or value is None:
+        return ""
+    if "total" in check:
+        if name == "pose_timeout_share":
+            return "多 %d 个周期" % (check["count"] - int(math.floor(limit * check["total"] + 1e-9)))
+        return "差 %d 帧" % (int(math.ceil(limit * check["total"] - 1e-9)) - check["count"])
+    if name == "span_s":
+        return "差 %.1f s" % (limit - value)
+    if name == "rate_hz":
+        return "差 %.2f Hz" % (limit - value)
+    if name.endswith("_ms"):
+        return "超 %.0f ms" % (value - limit)
+    return ""
+
+
+def window_text(window, grace_s):
+    """The operator's line on which cycles the criteria counted."""
+    if not window.get("cycles"):
+        return "  没有处理过的周期"
+    if not window.get("from_running"):
+        return "  节点没报过 RUNNING：从第一帧算起，最后 %g s 不算（%d 个周期里算了 %d 个）" % (
+            grace_s, window["cycles"], window["cycles_judged"])
+    return "  只算节点第一次 RUNNING 以后、最后 %g s 以前的周期：%d 个周期里算了 %d 个（开头去掉 %.1f s）" % (
+        grace_s, window["cycles"], window["cycles_judged"], window["skipped_start_s"])
+
+
 def report_text(section):
-    """Chinese lines for the operator: one per field criterion, then the verdict."""
+    """Chinese lines for the operator: which cycles count, one line per field criterion, then the verdict."""
     if section.get("status") == "NO_RECORDS":
         return ["三维障碍输入：没有 obstacles.jsonl 记录（节点没处理任何帧）", "结论：不通过"]
     lines = ["三维障碍输入（%s）：" % ", ".join(section.get("node_states") or [])]
-    for c in section["criteria"]["checks"]:
+    criteria = section["criteria"]
+    if criteria.get("window"):
+        lines.append(window_text(criteria["window"], criteria["limits"].get("end_grace_s", END_GRACE_S)))
+    for c in criteria["checks"]:
         limit = c["limit"]
         relation = "≤" if c["name"].endswith("_ms") or c["name"] in ("pose_timeout_share", "not_running_s") else "≥"
-        lines.append("  %s %s%s：%s（要 %s %s）%s" % ("通过" if c["ok"] else "不通过", SIDE_TEXT[c["side"]],
-                                                CHECK_TEXT.get(c["name"], c["name"]),
-                                                "无" if c["value"] is None else c["value"], relation, limit,
-                                                "" if c["ok"] else "  <==="))
+        counted = ""
+        if "total" in c:
+            counted = "%d / %d %s；" % (c["count"], c["total"], "个周期" if c["name"] == "pose_timeout_share" else "帧")
+        short = shortfall_text(c)
+        lines.append("  %s %s%s：%s（%s要 %s %s）%s%s" % (
+            "通过" if c["ok"] else "不通过", SIDE_TEXT[c["side"]], CHECK_TEXT.get(c["name"], c["name"]),
+            "无" if c["value"] is None else c["value"], counted, relation, limit,
+            "  " + short if short else "", "" if c["ok"] else "  <==="))
     gaps = section["criteria"].get("not_running") or {}
     if gaps.get("stale_inputs"):
         lines.append("  停过的输入：" + ", ".join(gaps["stale_inputs"]))
-    for side, e in (section.get("summary") or {}).get("sides", {}).items():
+    for side, e in (section.get("summary_judged") or section.get("summary") or {}).get("sides", {}).items():
         timing = {k: e.get(k) or {} for k in ("latency_ms", "pose_wait_ms", "filter_ms")}
         if timing["latency_ms"]:
             lines.append("  %s 参考：到达→发布 中位 %s / p99 %s ms（其中等位姿 中位 %s / p99 %s），过滤 中位 %s / p99 %s ms" % (

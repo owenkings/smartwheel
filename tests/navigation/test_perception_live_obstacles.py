@@ -518,7 +518,7 @@ def timed(lines, latency_ms=50.0):
 def test_field_criteria_name_what_fails():
     from wc_navigation.perception import live_check
     plan = lo.output_plan("scan", ("left", "right"), "filtered", "cloud")
-    e, lines, _ = simulated_node(plan, seconds=6.0)
+    e, lines, _ = simulated_node(plan, seconds=12.0)           # 7 s judged: the last 5 s are the end of the run
     short = {"min_span_s": 5.0}
     ok = live_check.field_criteria(timed(lines), e, limits=short, events=[
         {"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["left"]}},
@@ -548,10 +548,60 @@ def test_field_criteria_name_what_fails():
     right_gone = [x for x in timed(lines) if x["side"] == "left"]
     assert ("rate_hz", "right") in failed(right_gone) and ("span_s", "right") in failed(right_gone)
     t_end = max(x["arrival_ns"] for x in lines) * 1e-9
-    stalled = [{"time_s": t_end - 5.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}},
-               {"time_s": t_end - 3.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["right"]}},
-               {"time_s": t_end - 1.5, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}]
+    stalled = [{"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}},
+               {"time_s": t_end - 9.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["right"]}},
+               {"time_s": t_end - 7.5, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}]
     assert failed(timed(lines), events=stalled) == {("not_running_s", None)}
+
+
+def test_field_criteria_count_from_the_first_running_to_the_end_grace_but_not_a_burst_in_between():
+    """D 11-13 01:00: a bag whose right lidar starts late and whose wheel feedback ends early fails only on its start
+    and end; a burst of pose timeouts between them still fails (status/C.md 2026-11-13, C4)."""
+    from wc_navigation.perception import live_check
+    plan = lo.output_plan("scan", ("left", "right"), "filtered", "cloud")
+    e, lines, _ = simulated_node(plan, seconds=30.0)
+    t0, t_end = 1000.0, max(x["arrival_ns"] for x in lines) * 1e-9
+    short = {"min_span_s": 20.0}
+
+    def at(x):
+        return x["arrival_ns"] * 1e-9
+
+    def judge(records, events):
+        return live_check.field_criteria(records, e, limits=short, events=events)
+
+    # the right lidar's first 1.5 s missing (its partner unpaired, no witness) and no pose in the last 3 s
+    edges = [x for x in timed(lines) if not (x["side"] == "right" and at(x) < t0 + 1.5)]
+    edges = [dict(x, paired=False, witness=False) if at(x) < t0 + 1.5 else x for x in edges]
+    edges = [dict(x, pose=None, pose_timeout=True, witness=False) if at(x) > t_end - 3.0 else x for x in edges]
+    running = [{"time_s": t0 + 1.6, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}},
+               {"time_s": t_end - 1.0, "topic": lo.STATUS_TOPIC, "value": {"state": "STALE", "stale_inputs": ["odom"]}}]
+    result = judge(edges, running)
+    assert result["status"] == "PASS", [c for c in result["checks"] if not c["ok"]]
+    window = result["window"]
+    assert window["from_running"] and window["skipped_start_s"] == pytest.approx(1.6, abs=0.01)
+    assert window["cycles"] == 150 and window["cycles_judged"] == pytest.approx(117, abs=1)
+    # counted over the whole run (as before 2026-11-13) the same run fails on its start and end alone
+    whole = live_check.field_criteria(edges, e, limits=dict(short, end_grace_s=0.0),
+                                      events=[{"time_s": 999.0, "topic": lo.STATUS_TOPIC, "value": {"state": "RUNNING"}}])
+    assert {c["name"] for c in whole["checks"] if not c["ok"]} >= {"pose_timeout_share", "witness_share"}
+    # 3 s without poses in the middle: 15 of about 117 cycles
+    burst = [dict(x, pose=None, pose_timeout=True, witness=False) if t0 + 10 <= at(x) < t0 + 13 else x for x in edges]
+    result = judge(burst, running)
+    bad = {(c["name"], c["side"]): c for c in result["checks"] if not c["ok"]}
+    assert set(bad) == {("pose_timeout_share", None), ("witness_share", "left"), ("witness_share", "right")}
+    timeouts = bad[("pose_timeout_share", None)]
+    assert timeouts["count"] == 15 and live_check.shortfall_text(timeouts) == "多 %d 个周期" % (
+        15 - int(0.02 * timeouts["total"]))
+    assert live_check.shortfall_text(bad[("witness_share", "left")]).startswith("差 ")
+    # the operator's lines name the window and how far each failed check misses
+    section = {"status": "FAIL", "node_states": ["RUNNING"], "criteria": result, "reasons": [], "summary": {}}
+    text = "\n".join(live_check.report_text(section))
+    assert "只算节点第一次 RUNNING 以后、最后 5 s 以前的周期" in text and "开头去掉 1.6 s" in text
+    assert "不通过 等不到位姿的周期份额" in text and "15 / %d 个周期" % timeouts["total"] in text
+    assert "多 %d 个周期  <===" % (15 - int(0.02 * timeouts["total"])) in text
+    assert live_check.shortfall_text({"name": "span_s", "value": 31.2, "limit": 60.0, "ok": False}) == "差 28.8 s"
+    assert live_check.shortfall_text({"name": "age_p99_ms", "value": 650.0, "limit": 500.0, "ok": False}) == "超 150 ms"
+    assert live_check.shortfall_text({"name": "rate_hz", "value": 4.345, "limit": 4.75, "ok": False}) == "差 0.41 Hz"
 
 
 def test_time_not_running_counts_after_the_start_and_before_the_end():
@@ -563,13 +613,20 @@ def test_time_not_running_counts_after_the_start_and_before_the_end():
     events = [event(0.0, "STALE", ["left", "right", "odom"]), event(1.0, "RUNNING"), event(5.0, "STALE", ["right"]),
               event(7.0, "RUNNING"), event(15.0, "FAILED"), event(20.0, "STALE", ["left", "right", "odom"]),
               {"time_s": 6.0, "topic": "/wc_live/inputs_status/scan", "value": {"state": "STALE"}}]
-    result = live_check.not_running_after_start(events, end_s=19.0)
+    result = live_check.not_running_after_start(events, end_s=19.0, grace_s=2.0)
     assert result == {"first_running_s": 1.0, "seconds": 6.0, "intervals": 2, "stale_inputs": ["right"]}
     assert live_check.not_running_after_start(events[:1])["seconds"] is None     # never ran: fails the check
     assert live_check.not_running_after_start(events[:4], end_s=19.0)["seconds"] == 2.0
-    # a source that stops in the last END_GRACE_S before the last frame is the end of the run (bag end, Ctrl-C)
-    assert live_check.not_running_after_start(events[:4] + [event(18.0, "STALE", ["odom"])], end_s=19.0)["seconds"] == 2.0
-    assert live_check.not_running_after_start(events[:4] + [event(16.0, "STALE", ["odom"])], end_s=19.0)["seconds"] == 5.0
+    # a source that stops in the last grace_s before the last frame is the end of the run (bag end, Ctrl-C)
+    assert live_check.not_running_after_start(events[:4] + [event(18.0, "STALE", ["odom"])], end_s=19.0,
+                                              grace_s=2.0)["seconds"] == 2.0
+    assert live_check.not_running_after_start(events[:4] + [event(16.0, "STALE", ["odom"])], end_s=19.0,
+                                              grace_s=2.0)["seconds"] == 5.0
+    # by default the last END_GRACE_S (5 s): the panel's wheel feedback ends up to 3.3 s before its lidars
+    assert live_check.END_GRACE_S == live_check.FIELD_CRITERIA["end_grace_s"] == 5.0
+    assert live_check.not_running_after_start(events, end_s=19.0)["seconds"] == 2.0
+    assert live_check.not_running_after_start(events[:4] + [event(13.0, "STALE", ["odom"])], end_s=19.0)["seconds"] == 8.0
+    assert live_check.first_running_s(events) == 1.0 and live_check.first_running_s(events[:1]) is None
 
 
 def test_the_run_check_command_reads_a_run_directory(tmp_path, capsys):
