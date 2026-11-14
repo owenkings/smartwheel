@@ -1,5 +1,6 @@
 import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -828,6 +829,41 @@ def test_start_pose_correction_fixes_both_directions_where_the_view_has_a_wall_a
     assert "向后" in text and "向车左" in text
 
 
+def test_start_pose_correction_trigger_table():
+    # user 2026-11-13 00:10: also correct when the best nearby fits 0.25 better than the given pose
+    from wc_navigation.live.start_check import CORRECTION_GAIN, correction_trigger
+    assert CORRECTION_GAIN == 0.25
+    cases = {(0.2, 0.86): (("GIVEN_POSE_POOR", "BEST_MUCH_BETTER"), None),
+             (0.45, 0.62): (("GIVEN_POSE_POOR",), None),
+             (0.535, 0.823): (("BEST_MUCH_BETTER",), None),       # 11-11 20:56, 0.2 m off across and 1 deg
+             (0.5, 0.75): (("BEST_MUCH_BETTER",), None),
+             (0.5, 0.749): ((), "GIVEN_POSE_FITS"),
+             (0.662, 0.823): ((), "GIVEN_POSE_FITS"),             # the field script's tape point at 20:56
+             (0.638, 0.835): ((), "GIVEN_POSE_FITS"),             # the 11-11 study's largest gain left alone
+             (0.2, 0.5): ((), "NOTHING_FITS_NEARBY"),             # 0.3 better, but nothing fits nearby
+             (0.0, 0.0): ((), "NOTHING_FITS_NEARBY")}
+    for (before, best), expected in cases.items():
+        assert correction_trigger(before, best) == expected, (before, best)
+
+
+def test_start_pose_correction_also_when_the_best_nearby_fits_much_better():
+    from wc_navigation.live import start_check
+    scorer = _start_check_scorer()
+    scans = _scans_seen_from((1.0, 0.0, 0.0), scorer)                 # the wall across the corridor 3 m ahead
+    result = start_check.correction(scorer, scans, (0.0, 0.0), (1.2, 0.0, 0.0))     # placed 0.2 m too far ahead
+    assert result["support_before"] >= 0.5 and result["best_nearby"] - result["support_before"] >= 0.25
+    assert result["applied"] and result["trigger"] == ["BEST_MUCH_BETTER"] and result["gain_from"] == 0.25
+    assert result["offset_along_m"] < 0 and result["offset_across_m"] == 0.0 and result["support_after"] == 1.0
+    assert "向后" in start_check.correction_message(result)
+    # down the corridor the along-corridor offset is not seen: the given pose fits as well, nothing changes
+    along = _scans_seen_from((-3.0, 0.0, math.pi), scorer)
+    kept = start_check.correction(scorer, along, (0.0, 0.0), (-3.2, 0.0, math.pi))
+    assert not kept["applied"] and kept["reason"] == "GIVEN_POSE_FITS" and "trigger" not in kept
+    assert start_check.correction_message(kept) == "起点修正：不用改，给定位姿贴图 92%，附近最好 100%"
+    poor = start_check.correction(scorer, along, (0.0, 0.0), (-3.0, 0.25, math.pi))
+    assert poor["trigger"] == ["GIVEN_POSE_POOR", "BEST_MUCH_BETTER"]
+
+
 def test_start_pose_correction_option(tmp_path):
     from wc_navigation.live import cli
     argv = _closed_argv(tmp_path)
@@ -1522,3 +1558,282 @@ def test_a_bridge_exit_ends_the_run_as_base_bridge_exited(tmp_path):
     with pytest.raises(supervisor.RunError) as other:
         run.check_alive()
     assert not isinstance(other.value, supervisor.BridgeExited)
+
+
+# -- ultrasonic modules (总管 2026-11-13 D4 item 2) -----------------------------------------------------------------
+REPOSITORY = Path(__file__).resolve().parents[2]
+
+
+def ultrasonic_cell(tmp_path, verified=False, name="cell_us"):
+    """A frozen configuration with window A's ultrasonic file (as freeze-config writes it when the panel runs them)."""
+    cell = tmp_path / name
+    cell.mkdir()
+    config = json.loads((REPOSITORY / "config/ultrasonic_live.json").read_text(encoding="utf-8"))
+    if verified:
+        from wc_runtime.ultrasonic_live import CHECKS
+        config.update({key: allowed[1] for key, allowed in CHECKS.items()})
+    (cell / "ultrasonic_live.json").write_text(json.dumps(config), encoding="utf-8")
+    (cell / "hardware_setup.json").write_bytes((REPOSITORY / "config/hardware_setup.json").read_bytes())
+    return cell
+
+
+def test_ultrasonic_settings_come_from_the_frozen_configuration(tmp_path):
+    import hashlib
+    from wc_navigation.live import ultrasonic_check
+    from wc_runtime.ultrasonic_live import probe_transforms
+    with pytest.raises(ValueError, match="ultrasonic_enabled"):
+        ultrasonic_check.settings(tmp_path, ("left_front",))             # the panel ran without the modules
+    cell = ultrasonic_cell(tmp_path)
+    block = ultrasonic_check.settings(cell, ("right_front", "left_front"), "/wc_live/relayed")
+    assert block["probes"] == ["left_front", "right_front"] and block["max_age_s"] == 1.0
+    assert block["topics"]["left_front"] == "/wc_live/relayed/wc_mapping/ultrasonic/left_front/range"
+    assert block["status_topic"] == "/wc_live/relayed/wc_mapping/ultrasonic/status"
+    assert block["verified"] is False and len(block["not_verified"]) == 5
+    assert block["config"]["sha256"] == hashlib.sha256((cell / "ultrasonic_live.json").read_bytes()).hexdigest()
+    left = block["geometry"]["left_front"]
+    assert (left["parent"], left["frame_id"]) == ("base_link", "ultrasonic_left_front")
+    assert left["translation_m"][:2] == pytest.approx([0.323, 0.2595], abs=1e-6)
+    assert left["yaw_rad"] == pytest.approx(0.0, abs=1e-9)
+    sides = ultrasonic_check.settings(cell, ("left_side", "right_side"))["geometry"]
+    assert sides["left_side"]["translation_m"][:2] == pytest.approx([0.273, 0.3095], abs=1e-6)
+    assert (sides["left_side"]["yaw_rad"], sides["right_side"]["yaw_rad"]) == pytest.approx((math.pi / 2, -math.pi / 2))
+    transforms = ultrasonic_check.static_transforms(block)
+    assert [t[:2] for t in transforms] == [("base_link", "ultrasonic_left_front"),
+                                           ("base_link", "ultrasonic_right_front")]
+    assert transforms[0][3] == pytest.approx((0.0, 0.0, 0.0, 1.0), abs=1e-9)
+    json.dumps(block, allow_nan=False)
+    for probes in ((), ("left_rear",)):
+        with pytest.raises(ValueError):
+            ultrasonic_check.settings(cell, probes)
+    # the closed loop needs window A's field check: nothing may brake on these ranges before it (A, C 2026-11-13)
+    with pytest.raises(ValueError, match="field-checked"):
+        ultrasonic_check.settings(cell, ("left_front",), closed_loop=True)
+    checked = ultrasonic_cell(tmp_path, verified=True, name="cell_checked")
+    assert ultrasonic_check.settings(checked, ("left_front",), closed_loop=True)["verified"] is True
+    # with the panel's provenance in the frozen runtime configuration: the same file and the same geometry
+    live = json.loads((checked / "ultrasonic_live.json").read_text(encoding="utf-8"))
+    setup = json.loads((checked / "hardware_setup.json").read_text(encoding="utf-8"))
+    provenance = {"files": {"ultrasonic_live.json": {"sha256": hashlib.sha256(
+        (checked / "ultrasonic_live.json").read_bytes()).hexdigest()}}, "not_verified": [],
+        "geometry": probe_transforms(live, setup)}
+    (checked / "runtime_config.json").write_text(json.dumps({"ultrasonic_provenance": provenance}))
+    assert ultrasonic_check.settings(checked, ("left_front", "right_front"))["verified"] is True
+    provenance["geometry"]["right_front"]["T_base_probe"]["translation_m"][0] += 0.01
+    (checked / "runtime_config.json").write_text(json.dumps({"ultrasonic_provenance": provenance}))
+    with pytest.raises(ValueError, match="right_front geometry"):
+        ultrasonic_check.settings(checked, ("left_front", "right_front"))
+    provenance["files"]["ultrasonic_live.json"]["sha256"] = "0" * 64
+    (checked / "runtime_config.json").write_text(json.dumps({"ultrasonic_provenance": provenance}))
+    with pytest.raises(ValueError, match="does not match"):
+        ultrasonic_check.settings(checked, ("left_front",))
+
+
+def test_ultrasonic_verdicts_are_window_c_range_health_on_the_age_from_the_stamp():
+    from wc_navigation.autonomy.safety_gate import ULTRASONIC_REASONS
+    from wc_navigation.live.ultrasonic_check import verdicts
+    span = {"min_range": 0.25, "max_range": 2.0}
+    latest = {"left_front": None, "right_front": dict(span, range=math.inf, stamp_s=99.5, messages=3),
+              "left_side": dict(span, range=-math.inf, stamp_s=99.9, messages=4),
+              "right_side": dict(span, range=1.2, stamp_s=98.5, messages=5)}
+    out = verdicts(latest, 100.0, 1.0)
+    assert list(out) == ["left_front", "right_front", "left_side", "right_side"]
+    assert (out["left_front"]["ok"], out["left_front"]["reason"], out["left_front"]["messages"]) == (
+        False, "ULTRASONIC_NO_DATA", 0)
+    assert (out["right_front"]["ok"], out["right_front"]["range_m"], out["right_front"]["age_s"]) == (True, "+inf", 0.5)
+    assert (out["left_side"]["reason"], out["left_side"]["range_m"]) == ("ULTRASONIC_TOO_CLOSE", "-inf")
+    assert (out["right_side"]["reason"], out["right_side"]["range_m"]) == ("ULTRASONIC_OLD", 1.2)
+    json.dumps(out, allow_nan=False)                                       # the gate's status allows no NaN
+    nan = verdicts({"left_front": dict(span, range=float("nan"), stamp_s=99.9)}, 100.0, 1.0)["left_front"]
+    assert (nan["reason"], nan["range_m"]) == ("ULTRASONIC_INVALID", "nan")
+    ahead = verdicts({"left_front": dict(span, range=1.0, stamp_s=100.3)}, 100.0, 1.0)["left_front"]
+    assert ahead["reason"] == "ULTRASONIC_OLD"                             # stamped after the gate's now
+    bad = verdicts({"left_front": {"range": 1.0, "min_range": 2.0, "max_range": 1.0, "stamp_s": 99.9}}, 100.0, 1.0)
+    assert bad["left_front"]["reason"] == "ULTRASONIC_INVALID"
+    assert {v["reason"] for v in out.values() if not v["ok"]} <= set(ULTRASONIC_REASONS)
+
+
+def test_the_closed_loop_status_line_shows_the_ultrasonic_modules(tmp_path):
+    from wc_navigation.live.supervisor import GATE_STATUS_TOPIC, LiveSupervisor, closed_loop_line, closed_loop_report
+    from wc_navigation.live.ultrasonic_check import operator_text
+    ok = {"ok": True, "probes": {
+        "left_front": {"ok": True, "reason": "", "range_m": "+inf", "age_s": 0.2, "messages": 9},
+        "right_front": {"ok": True, "reason": "", "range_m": 1.2, "age_s": 0.1, "messages": 9}}}
+    gate = {"state": "DISABLED", "reasons": ["OPERATOR_ENABLE_OFF"], "ultrasonic": ok}
+    line = closed_loop_line({GATE_STATUS_TOPIC: gate}, ultrasonic={"verified": True})
+    assert "超声波 左前 没回波、右前 1.20 m" in line and "不要开始自动" not in line
+    assert "超声波" not in closed_loop_line({GATE_STATUS_TOPIC: gate})        # runs without the modules: as before
+    held = {"ok": False, "probes": {
+        "left_front": {"ok": False, "reason": "ULTRASONIC_OLD", "range_m": "+inf", "age_s": 1.4, "messages": 9},
+        "right_front": {"ok": False, "reason": "ULTRASONIC_TOO_CLOSE", "range_m": "-inf", "age_s": 0.1, "messages": 9}}}
+    gate = {"state": "ULTRASONIC_HOLD", "reasons": ["ULTRASONIC_OLD", "ULTRASONIC_TOO_CLOSE"], "ultrasonic": held}
+    line = closed_loop_line({GATE_STATUS_TOPIC: gate}, ultrasonic={})
+    assert "闸门 ULTRASONIC_HOLD(ULTRASONIC_OLD,ULTRASONIC_TOO_CLOSE)" in line
+    assert "超声波 左前 1.4 s 没更新、右前 太近（盲区里有东西）：不要开始自动" in line
+    assert "超声波（未核对） 左前" in closed_loop_line({GATE_STATUS_TOPIC: gate}, ultrasonic={"verified": False})
+    assert operator_text(None) == "超声波 闸门还没有判定"
+    assert operator_text({"ok": False, "probes": {
+        "left_front": {"ok": False, "reason": "ULTRASONIC_NO_DATA", "range_m": None},
+        "right_front": {"ok": False, "reason": "ULTRASONIC_INVALID", "range_m": "nan"}}}) == (
+        "超声波 左前 没有读数、右前 读数无效：不要开始自动")
+    assert closed_loop_report({GATE_STATUS_TOPIC: gate})["gate_ultrasonic"] == held
+    assert "gate_ultrasonic" not in closed_loop_report({GATE_STATUS_TOPIC: {"state": "ACTIVE"}})
+    monitor = SimpleNamespace(status={GATE_STATUS_TOPIC: gate}, obstacles_input=lambda: (None, None),
+                              ultrasonic_status=lambda: {"verified": True})
+    assert "超声波 左前" in LiveSupervisor(tmp_path, tmp_path, {"ultrasonic": {"probes": ["left_front"]}}).status_line(
+        monitor)
+    assert "超声波" not in LiveSupervisor(tmp_path, tmp_path, {}).status_line(monitor)
+
+
+def test_the_gate_and_the_bag_carry_the_ultrasonic_modules_only_when_the_run_has_them(tmp_path):
+    from wc_navigation.autonomy import nav2_config
+    from wc_navigation.autonomy.safety_gate import GateConfig
+    from wc_navigation.live.supervisor import LiveSupervisor
+    base = {"use_sim_time": True, "map_yaml": "m.yaml", "amcl": {"params": "framework", "changes_from_framework": {}},
+            "gate_limits": {"correction_translation_m": 0.25, "correction_yaw_deg": 10.0,
+                            "correction_reference": "robot", "covariance_xy_std_m": 0.5,
+                            "covariance_yaw_std_deg": 14.3, "covariance_mode": "lateral", "slow_std_m": 0.5,
+                            "slow_linear": 0.15},
+            "goals": [[1.0, 2.0, 0.0]], "advance_radius_m": 1.0, "smoother_feedback": "open_loop",
+            "smoother_timeout_s": 0.3}
+    block = {"probes": ["left_front", "right_front"], "prefix": "/wc_live/relayed", "max_age_s": 1.0}
+    nodes = {}
+    for name, config in (("modules", dict(base, ultrasonic=block)), ("plain", base)):
+        (tmp_path / name).mkdir()
+        files = LiveSupervisor(tmp_path / name, tmp_path / name, config).prepare_shadow(nav2_config.NavProfile())
+        nodes[name] = json.loads(files["gate"].read_text())
+    gate = GateConfig(**nodes["modules"]["gate"])
+    assert (gate.require_ultrasonic, gate.ultrasonic_max_age_s) == (("left_front", "right_front"), 1.0)
+    assert nodes["modules"]["ultrasonic_prefix"] == "/wc_live/relayed"     # in the shadow too: it asked for them
+    assert "require_ultrasonic" not in nodes["plain"]["gate"] and "ultrasonic_prefix" not in nodes["plain"]
+    # a recording of a panel session with the modules plays their ranges and status as well (older ones have none)
+    commands = {}
+    for name, extra in (("modules", {"ultrasonic": block}), ("plain", {})):
+        run = LiveSupervisor(tmp_path, tmp_path, {"bag": "/b", "bag_remap_prefix": "/relay_source", **extra})
+        run.launch = lambda process, args, key=name: commands.__setitem__(key, args)
+        run.start_bag()
+    played = commands["modules"]
+    assert played[played.index("--topics") + 4:played.index("--remap")] == [
+        "/wc_mapping/ultrasonic/left_front/range", "/wc_mapping/ultrasonic/right_front/range",
+        "/wc_mapping/ultrasonic/status"]
+    assert "/wc_mapping/ultrasonic/status:=/relay_source/wc_mapping/ultrasonic/status" in played
+    assert not any("ultrasonic" in str(a) for a in commands["plain"])
+
+
+def test_the_relay_reads_the_ultrasonic_topics_only_for_the_configured_modules():
+    from wc_navigation.live import relay_node
+    from wc_navigation.perception.ultrasonic import FRONT, PROBES
+    assert relay_node.relayed_topics(False, ()) == relay_node.RELAYED_TOPICS
+    assert len(relay_node.ULTRASONIC_TOPICS) == 5 and relay_node.ULTRASONIC_TOPICS[-1] == "/wc_mapping/ultrasonic/status"
+    front = relay_node.relayed_topics(False, ("right_front", "left_front"))
+    assert front == relay_node.RELAYED_TOPICS + ("/wc_mapping/ultrasonic/left_front/range",
+                                                 "/wc_mapping/ultrasonic/right_front/range",
+                                                 "/wc_mapping/ultrasonic/status")
+    every = relay_node.relayed_topics(True, PROBES)
+    assert len(every) == 9 and set(every[4:]) == set(relay_node.ULTRASONIC_TOPICS)
+    for topic in relay_node.ULTRASONIC_TOPICS:
+        qos = relay_node.source_qos(topic)
+        assert (qos.reliability.name, qos.durability.name) == ("BEST_EFFORT", "VOLATILE")
+    assert relay_node.source_qos("/wc_mapping/ultrasonic/left_front/range").depth == 5
+    assert relay_node.source_qos("/wc_mapping/ultrasonic/status").depth == 2
+    ok = {"source_domain": 100, "source_prefix": "/p"}
+    assert relay_node.check_relay_config(dict(ok, ultrasonic=list(FRONT)), "100") == (100, "/p", relay_node.OUTPUT_PREFIX)
+    for bad in ("left_front", ["left_rear"], ["left_front", "left_front"], 1):
+        with pytest.raises(ValueError):
+            relay_node.check_relay_config(dict(ok, ultrasonic=bad), "100")
+    expected = ["/p" + t for t in front]
+    subscriptions = [(t, ["type"]) for t in expected]
+    assert relay_node.graph_check([], subscriptions, [], [], expected)["status"] == "PASS"
+    assert relay_node.graph_check([], subscriptions[:-1], [], [], expected)["status"] == "FAIL"   # no status reader
+    three = ["/p" + t for t in relay_node.RELAYED_TOPICS]
+    assert relay_node.graph_check([], subscriptions, [], [], three)["status"] == "FAIL"           # three too many
+
+
+def test_the_shadow_command_takes_the_ultrasonic_modules_from_the_frozen_configuration(tmp_path, monkeypatch):
+    from wc_navigation.live import cli, config as live_config, supervisor
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_run(self):
+        captured.update(self.config)
+        raise Stop()
+    runs = iter(range(10))
+    monkeypatch.setenv("WC_LIVE_SHADOW_VEHICLE_APPROVAL", "APPROVED_BY_USER_20261113")
+    monkeypatch.setenv("ROS_DOMAIN_ID", "100")
+    monkeypatch.setenv("WC_AUTONOMY_ROS_DOMAIN", "100")
+    monkeypatch.setattr(live_config, "load_live_config", lambda *a: {"provenance": {}})
+    monkeypatch.setattr(supervisor.LiveSupervisor, "run", fake_run)
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "shm")
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.check", lambda self: None)
+    monkeypatch.setattr("wc_runtime.storage_policy.StoragePolicy.resolve",
+                        lambda self, value: tmp_path / ("run%d" % next(runs)))
+    map_yaml = tmp_path / "m.yaml"
+    map_yaml.write_text("image: m.pgm\n")
+    write_offset(tmp_path / "config/calibration/lidar_time_offset.json", 75.0)
+    cell = ultrasonic_cell(tmp_path)
+    argv = ["shadow", "--project-root", str(tmp_path), "--cell", str(cell), "--hardware-setup", "h", "--gyro-bias", "b",
+            "--source", "vehicle", "--sensor-domain", "83", "--map", str(map_yaml), "--initial-pose", "0", "0", "0",
+            "--goal", "1", "2", "0"]
+    with pytest.raises(Stop):
+        cli.main(argv + ["--monitor-ultrasonic", "front"])
+    block = captured["ultrasonic"]
+    assert (block["probes"], block["prefix"], block["verified"]) == (["left_front", "right_front"], "/wc_live/relayed",
+                                                                     False)
+    assert captured["relay"]["ultrasonic"] == ["left_front", "right_front"]
+    captured.clear()
+    with pytest.raises(Stop):
+        cli.main(argv)
+    assert "ultrasonic" not in captured and "ultrasonic" not in captured["relay"]        # off by default: as before
+    # the closed loop with the modules needs window A's field check of the frozen file
+    monkeypatch.setattr(cli, "closed_loop_settings", lambda args: {"bridge_node": "/wc_auto_bridge", "stub": True})
+    closed = argv + ["--closed-loop", "--panel-root", str(tmp_path), "--session-root", str(tmp_path),
+                     "--session-id", "capture_x", "--monitor-ultrasonic", "front"]
+    captured.clear()
+    with pytest.raises(SystemExit, match="--monitor-ultrasonic: the closed loop needs the field-checked"):
+        cli.main(closed)
+    assert captured == {}                                                                # nothing was started
+    closed[closed.index(str(cell))] = str(ultrasonic_cell(tmp_path, verified=True, name="cell_checked"))
+    with pytest.raises(Stop):
+        cli.main(closed)
+    assert captured["ultrasonic"]["verified"] is True and captured["closed_loop"]["stub"] is True
+    # the relay graph query checks the modules' topics too
+    seen = {}
+    monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
+    monkeypatch.setattr("wc_navigation.live.relay_node.entry_graph",
+                        lambda *a, **k: seen.update(k) or {"status": "PASS"})
+    assert cli.arguments(["relay-graph", "--sensor-domain", "83"]).ultrasonic == "off"
+    assert cli.main(["relay-graph", "--sensor-domain", "83", "--ultrasonic", "front"]) == 0
+    assert seen["ultrasonic"] == ("left_front", "right_front")
+
+
+def test_freeze_config_keeps_the_panel_ultrasonic_files_when_it_runs_them(tmp_path, monkeypatch):
+    import hashlib
+    from wc_navigation.live import current_config
+    cell, setup, bias, _ = write_cell(tmp_path)
+    runtime = json.loads((cell / "runtime_config.json").read_text())
+    prior = json.loads((cell / "prior_config.json").read_text())
+    setup_text = setup.read_text()
+    texts = {name: (REPOSITORY / "config" / name).read_text(encoding="utf-8")
+             for name in ("ultrasonic_capture.json", "ultrasonic_live.json")}
+    runtime["hardware_setup_provenance"] = {"source_path": "config/local/project/hardware_setup.json",
+                                            "sha256": hashlib.sha256(setup_text.encode()).hexdigest()}
+    runtime["ultrasonic_provenance"] = {"files": {name: {"sha256": hashlib.sha256(text.encode()).hexdigest()}
+                                                  for name, text in texts.items()},
+                                        "not_verified": ["address_mapping_status"], "geometry": {}}
+    snapshots = {"hardware_setup.json": setup_text, **texts}
+    resolved = {"root": str(tmp_path), "runtime": runtime, "prior": prior, "snapshots": snapshots}
+    monkeypatch.setattr(current_config, "resolve", lambda root, session, path: ({"mode": "left"}, resolved))
+    record = current_config.freeze(tmp_path / "frozen", tmp_path, "s1")
+    assert (tmp_path / "frozen/ultrasonic_live.json").read_text(encoding="utf-8") == texts["ultrasonic_live.json"]
+    assert record["checks"]["ultrasonic"] == {"files": ["ultrasonic_capture.json", "ultrasonic_live.json"],
+                                              "not_verified": ["address_mapping_status"]}
+    assert record["files_sha256"]["ultrasonic_live.json"] == runtime["ultrasonic_provenance"]["files"][
+        "ultrasonic_live.json"]["sha256"]
+    snapshots["ultrasonic_live.json"] += " "
+    with pytest.raises(current_config.FreezeError, match="ultrasonic snapshot ultrasonic_live.json"):
+        current_config.freeze(tmp_path / "frozen2", tmp_path, "s2")
+    del runtime["ultrasonic_provenance"]
+    del snapshots["ultrasonic_live.json"], snapshots["ultrasonic_capture.json"]
+    assert "ultrasonic" not in current_config.freeze(tmp_path / "frozen3", tmp_path, "s3")["checks"]   # as before
+    assert "_raw_texts" in current_config.CHILD and '"_raw_text", "_raw_texts"' in current_config.CHILD
