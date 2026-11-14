@@ -532,6 +532,7 @@ def test_ultrasonic_is_off_by_default_and_runs_on_frozen_copies_when_switched_on
     config=controller.configuration(setup)
     assert config['ultrasonic_provenance']['not_verified']==['address_mapping_status','raw_unit_status',
         'no_echo_status','range_limits_status','geometry_tape_check']
+    assert config['ultrasonic_provenance']['polled_probes']==list(ultrasonic_live.PROBES)
     directory=Path(setup['output_dir']);directory.mkdir(parents=True)
     frozen=controller.archive_configuration(directory,config)
     for name in ('ultrasonic_capture.json','ultrasonic_live.json'):

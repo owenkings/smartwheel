@@ -264,7 +264,7 @@ def configuration(request):
         # Off by default (coordinator relay 2026-11-12 A3 item 3): wc_runtime.ultrasonic_live owns the CH340 for the
         # session, journals and publishes the raw transactions, the four ranges and a status.
         from .ultrasonic_capture import validate_config as validate_ultrasonic
-        from .ultrasonic_live import not_verified, probe_transforms, validate_live_config
+        from .ultrasonic_live import not_verified, polled, probe_transforms, validate_live_config
         files={}
         for key,default,name in (('ultrasonic_capture_config','config/ultrasonic_capture.json','ultrasonic_capture.json'),
                                  ('ultrasonic_live_config','config/ultrasonic_live.json','ultrasonic_live.json')):
@@ -278,7 +278,7 @@ def configuration(request):
         config['_ultrasonic_raw_texts']={name:data.decode('utf-8') for name,(path,data) in files.items()}
         config['ultrasonic_provenance']={'files':{name:{'source_path':logical_path(ROOT,path),
             'sha256':hashlib.sha256(data).hexdigest()} for name,(path,data) in files.items()},
-            'not_verified':not_verified(live),'geometry':transforms}
+            'not_verified':not_verified(live),'polled_probes':list(polled(live)),'geometry':transforms}
     hardware_path=_current_configuration_path(config['wheel_hardware_config'], select_local=current_configuration)
     if hardware_path != project_path(ROOT,config['wheel_hardware_config']):
         config['wheel_hardware_config']=logical_path(ROOT,hardware_path)

@@ -162,6 +162,146 @@ def test_the_loop_journals_every_transaction_and_keeps_polling_through_failures(
                                                      'right_side': 100}
 
 
+def test_poll_probes_selects_a_subset_and_defaults_to_all_four():
+    cfg = config()
+    assert cfg['poll_probes'] == list(live.PROBES) and live.polled(cfg) == live.PROBES
+    del cfg['poll_probes']
+    assert live.polled(live.validate_live_config(cfg)) == live.PROBES          # absent: all four, as before
+    cfg['poll_probes'] = ['right_front', 'left_front']
+    assert live.polled(live.validate_live_config(cfg)) == ('left_front', 'right_front')   # PROBES order
+    for bad in ([], ['front'], ['left_front', 'left_front'], 'left_front', [1], None):
+        with pytest.raises(ValueError, match='poll_probes'):
+            live.validate_live_config(dict(cfg, poll_probes=bad))
+
+
+def test_status_names_the_polled_probes_and_does_not_count_the_others_as_failing():
+    cfg = dict(config(), poll_probes=['left_front', 'right_front'])
+    book = live.StatusBook(cfg, {}, cpu_clock=lambda: 0.0)
+    book.record('left_front', row(1, raw=400), 0.4)
+    book.record('right_front', row(2, raw=600), 0.6)
+    message = book.message(now_ns=2_000_000_000)
+    assert message['polled_probes'] == ['left_front', 'right_front']
+    assert message['not_polled_probes'] == ['left_side', 'right_side']
+    assert message['state'] == 'RUNNING' and message['failing_probes'] == []
+    assert message['probes']['left_side']['status'] == 'NOT_POLLED' and message['probes']['left_side']['polled'] is False
+    assert message['probes']['left_front']['polled'] is True
+    assert message['lease_open_s'] is None                                     # set by main once the port is open
+    assert live.StatusBook(cfg, {}, poll=['right_side']).message()['polled_probes'] == ['right_side']
+
+
+def run_loop(tmp_path, monkeypatch, live_cfg, extra=(), cycles=3):
+    from wc_runtime import ultrasonic_capture
+    monkeypatch.setattr(ultrasonic_capture, 'DistanceLease', FakeLease)
+    monkeypatch.setattr(ultrasonic_capture, 'observed_identity', lambda *a: {'source_id': 'ultrasonic'})
+    capture = json.loads((ROOT / 'config/ultrasonic_capture.json').read_text(encoding='utf-8'))
+    capture['inter_sensor_delay_s'] = 0.1
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'capture.json').write_text(json.dumps(capture), encoding='utf-8')
+    (tmp_path / 'live.json').write_text(json.dumps(live_cfg), encoding='utf-8')
+    out = tmp_path / 'ultrasonic'
+    code = live.main(['--capture-config', str(tmp_path / 'capture.json'), '--live-config', str(tmp_path / 'live.json'),
+                      '--hardware-setup', str(ROOT / 'config/hardware_setup.json'), '--output', str(out),
+                      '--run-root', str(tmp_path / 'run'), '--session', 's', '--allow-read-queries',
+                      '--cycles', str(cycles), *extra])
+    rows = [json.loads(line) for line in (out / 'events.jsonl').read_text().splitlines()]
+    return code, rows
+
+
+def test_only_the_configured_probes_are_polled(tmp_path, monkeypatch, capsys):
+    code, rows = run_loop(tmp_path, monkeypatch, dict(config(), poll_probes=['left_front', 'right_front']),
+                          extra=['--no-ros'])
+    transactions = [r for r in rows if r['event'] == 'transaction']
+    assert code == 0 and [r['address'] for r in transactions] == [1, 2] * 3
+    assert rows[-1]['polled_probes'] == ['left_front', 'right_front'] and rows[-1]['lease_open_s'] >= 0.0
+    assert rows[-1]['counts']['left_side'] == {} and rows[-1]['counts']['right_front'] == {'RESPONSE_TIMEOUT': 3}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{')]
+    assert lines[-1]['raw'] == {'left_front': 500, 'right_front': None}
+
+
+def test_the_command_line_overrides_the_configured_probes(tmp_path, monkeypatch):
+    code, rows = run_loop(tmp_path, monkeypatch, config(), extra=['--no-ros', '--probes', 'right_side'], cycles=2)
+    assert code == 0 and [r['address'] for r in rows if r['event'] == 'transaction'] == [4, 4]
+    assert rows[-1]['polled_probes'] == ['right_side']
+    with pytest.raises(ValueError, match='poll_probes'):
+        run_loop(tmp_path / 'b', monkeypatch, config(), extra=['--no-ros', '--probes', 'front'])
+
+
+def ros_stub(monkeypatch):
+    """Stand-ins for rclpy, its QoS and signal modules, sensor_msgs/Range and std_msgs/String (no ROS graph)."""
+    import sys
+    import time as clock
+    import types
+
+    class Publisher:
+        def __init__(self, kind, topic):
+            self.kind, self.topic, self.messages = kind, topic, []
+
+        def publish(self, message):
+            self.messages.append(message)
+
+    class Node:
+        def __init__(self):
+            self.publishers = {}
+
+        def create_publisher(self, kind, topic, qos):
+            self.publishers[topic] = Publisher(kind, topic)
+            return self.publishers[topic]
+
+        def destroy_node(self):
+            pass
+
+    node = Node()
+    rclpy = types.ModuleType('rclpy')
+    rclpy.init = lambda **kwargs: None
+    rclpy.create_node = lambda name: node
+    rclpy.spin_once = lambda node, timeout_sec=0: clock.sleep(timeout_sec)
+    rclpy.ok = lambda: True
+    rclpy.shutdown = lambda: None
+    qos = types.ModuleType('rclpy.qos')
+    qos.QoSProfile = lambda **kwargs: kwargs
+    qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL='transient_local')
+    qos.ReliabilityPolicy = types.SimpleNamespace(RELIABLE='reliable')
+    signals = types.ModuleType('rclpy.signals')
+    signals.SignalHandlerOptions = types.SimpleNamespace(NO='no')
+
+    class Range:
+        ULTRASOUND = 0
+
+        def __init__(self):
+            self.header = types.SimpleNamespace(stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id='')
+            self.radiation_type = self.field_of_view = self.min_range = self.max_range = self.range = None
+
+    class String:
+        def __init__(self, data=''):
+            self.data = data
+
+    sensor_msgs, sensor_msg = types.ModuleType('sensor_msgs'), types.ModuleType('sensor_msgs.msg')
+    sensor_msg.Range = Range
+    std_msgs, std_msg = types.ModuleType('std_msgs'), types.ModuleType('std_msgs.msg')
+    std_msg.String = String
+    for name, module in (('rclpy', rclpy), ('rclpy.qos', qos), ('rclpy.signals', signals),
+                         ('sensor_msgs', sensor_msgs), ('sensor_msgs.msg', sensor_msg),
+                         ('std_msgs', std_msgs), ('std_msgs.msg', std_msg)):
+        monkeypatch.setitem(sys.modules, name, module)
+    return node
+
+
+def test_only_polled_probes_get_a_range_publisher(tmp_path, monkeypatch):
+    node = ros_stub(monkeypatch)
+    code, rows = run_loop(tmp_path, monkeypatch, dict(config(), poll_probes=['left_front', 'right_front']))
+    assert code == 0
+    assert set(node.publishers) == {live.RAW_TOPIC, live.STATUS_TOPIC, live.range_topic('left_front'),
+                                    live.range_topic('right_front')}
+    ranges = node.publishers[live.range_topic('left_front')].messages
+    assert len(ranges) == 3 and ranges[0].range == pytest.approx(0.5) and ranges[0].header.frame_id == \
+        'ultrasonic_left_front'
+    assert node.publishers[live.range_topic('right_front')].messages == []    # timeouts: no Range
+    assert len(node.publishers[live.RAW_TOPIC].messages) == 6
+    status = [json.loads(m.data) for m in node.publishers[live.STATUS_TOPIC].messages]
+    assert len(status) == 3 and status[-1]['polled_probes'] == ['left_front', 'right_front']
+    assert status[-1]['failing_probes'] == ['right_front']
+
+
 def test_reading_needs_the_explicit_selection(tmp_path):
     with pytest.raises(ValueError, match='explicit'):
         live.main(['--live-config', str(ROOT / 'config/ultrasonic_live.json'),
